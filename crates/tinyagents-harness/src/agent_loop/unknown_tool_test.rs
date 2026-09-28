@@ -6,7 +6,12 @@ fn names(list: &[&str]) -> Vec<String> {
 
 #[test]
 fn keeps_the_unknown_tool_prefix_hosts_classify_on() {
-    let message = unknown_tool_message("web_search_tool", &names(&["web_fetch"]), true);
+    let message = unknown_tool_message(
+        "web_search_tool",
+        &serde_json::json!({}),
+        &names(&["web_fetch"]),
+        true,
+    );
     assert!(
         message.starts_with("unknown tool `web_search_tool`"),
         "{message}"
@@ -17,7 +22,7 @@ fn keeps_the_unknown_tool_prefix_hosts_classify_on() {
 fn points_to_tool_search_instead_of_listing_every_tool() {
     let mut available = names(&["web_fetch", "memory_recall", "shell"]);
     available.extend((0..200).map(|i| format!("CONNECTOR_ACTION_{i}")));
-    let message = unknown_tool_message("web_search_tool", &available, true);
+    let message = unknown_tool_message("web_search_tool", &serde_json::json!({}), &available, true);
     assert!(
         message.contains("call `tool_search` with what you want to do"),
         "{message}"
@@ -30,7 +35,12 @@ fn points_to_tool_search_instead_of_listing_every_tool() {
 
 #[test]
 fn without_tool_search_it_does_not_mention_it() {
-    let message = unknown_tool_message("web_search_tool", &names(&["web_fetch"]), false);
+    let message = unknown_tool_message(
+        "web_search_tool",
+        &serde_json::json!({}),
+        &names(&["web_fetch"]),
+        false,
+    );
     assert!(!message.contains("tool_search"), "{message}");
     assert!(
         message.contains("Use only the tools in your tool list."),
@@ -41,7 +51,8 @@ fn without_tool_search_it_does_not_mention_it() {
 #[test]
 fn names_close_matches_for_a_near_miss() {
     let available = names(&["web_fetch", "web_search", "file_read", "shell"]);
-    let message = unknown_tool_message("web_search_tool", &available, false);
+    let message =
+        unknown_tool_message("web_search_tool", &serde_json::json!({}), &available, false);
     assert!(
         message.contains("Closest available: `web_search`, `web_fetch`."),
         "{message}"
@@ -50,7 +61,12 @@ fn names_close_matches_for_a_near_miss() {
 
 #[test]
 fn no_close_match_means_no_suggestion_line() {
-    let message = unknown_tool_message("frobnicate", &names(&["file_read", "shell"]), true);
+    let message = unknown_tool_message(
+        "frobnicate",
+        &serde_json::json!({}),
+        &names(&["file_read", "shell"]),
+        true,
+    );
     assert!(!message.contains("Closest available"), "{message}");
 }
 
@@ -81,4 +97,12 @@ fn the_requested_name_itself_is_never_suggested() {
         closest_tool_names("web_search_tool", &available, 3),
         vec!["web_fetch"]
     );
+}
+
+#[test]
+fn message_echoes_the_attempted_arguments() {
+    let args = serde_json::json!({"path": "/tmp/a"});
+    let message = unknown_tool_message("missing", &args, &names(&["file_read"]), false);
+    assert!(message.starts_with("unknown tool `missing`"), "{message}");
+    assert!(message.contains("\"path\":\"/tmp/a\""), "{message}");
 }

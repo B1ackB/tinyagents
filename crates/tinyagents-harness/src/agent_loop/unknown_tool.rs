@@ -24,16 +24,19 @@ const GENERIC_TOKENS: &[&str] = &["tool", "tools", "mcp", "get", "set", "run"];
 
 /// Builds the tool-error text for an unknown call to `requested`.
 ///
-/// `available` is what the model may call (already filtered by the host
+/// `arguments` are the attempted call arguments, echoed so the model can re-issue
+/// them against the right tool. `available` is what the model may call (already filtered by the host
 /// allowlist); `tool_search_available` is whether the discovery bridge is
 /// advertised on this run.
 pub(super) fn unknown_tool_message(
     requested: &str,
+    arguments: &serde_json::Value,
     available: &[String],
     tool_search_available: bool,
 ) -> String {
+    let args_repr = serde_json::to_string(arguments).unwrap_or_else(|_| "<unserializable>".into());
     let mut message = format!(
-        "unknown tool `{requested}`: no tool with that name is available to you, and calling it \
+        "unknown tool `{requested}` (arguments: {args_repr}): no tool with that name is available to you, and calling it \
          again will fail the same way."
     );
     let suggestions = closest_tool_names(requested, available, MAX_SUGGESTIONS);
