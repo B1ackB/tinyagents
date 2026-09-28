@@ -1498,9 +1498,10 @@ async fn hosted_turn_screens_only_the_new_user_input_not_replayed_history() {
         .invoke_agent(
             AgentInvocation::new(
                 host,
-                AgentTurnRequest::new("helper", messages).with_replayed_prefix(5),
+                AgentTurnRequest::new("helper", messages),
                 RunContext::new(RunConfig::new("history-not-rescreened"), ()),
-            ),
+            )
+            .with_replayed_prefix(5),
             &(),
         )
         .await
@@ -1548,9 +1549,10 @@ async fn hosted_turn_still_blocks_new_user_input_and_screens_all_by_default() {
             .invoke_agent(
                 AgentInvocation::new(
                     host,
-                    AgentTurnRequest::new("helper", messages).with_replayed_prefix(replayed_prefix),
+                    AgentTurnRequest::new("helper", messages),
                     RunContext::new(RunConfig::new("new-input-block"), ()),
-                ),
+                )
+                .with_replayed_prefix(replayed_prefix),
                 &(),
             )
             .await
@@ -1588,10 +1590,10 @@ async fn hosted_turn_rejects_a_replayed_prefix_past_the_messages() {
                 AgentTurnRequest::new(
                     "helper",
                     vec![tinyinference_llm::message::Message::user("secret")],
-                )
-                .with_replayed_prefix(2),
+                ),
                 RunContext::new(RunConfig::new("prefix-past-end"), ()),
-            ),
+            )
+            .with_replayed_prefix(2),
             &(),
         )
         .await
@@ -1612,10 +1614,10 @@ async fn hosted_turn_accepts_a_replayed_prefix_covering_every_message() {
                 AgentTurnRequest::new(
                     "helper",
                     vec![tinyinference_llm::message::Message::user("hello")],
-                )
-                .with_replayed_prefix(1),
+                ),
                 RunContext::new(RunConfig::new("prefix-at-end"), ()),
-            ),
+            )
+            .with_replayed_prefix(1),
             &(),
         )
         .await
@@ -1652,9 +1654,10 @@ async fn hosted_turn_replays_the_redacted_form_of_an_admitted_user_row() {
         .invoke_agent(
             AgentInvocation::new(
                 replay_host(Arc::new(RedactJsonUserGate), model.clone()),
-                AgentTurnRequest::new("helper", replay).with_replayed_prefix(replayed),
+                AgentTurnRequest::new("helper", replay),
                 RunContext::new(RunConfig::new("redact-replay"), ()),
-            ),
+            )
+            .with_replayed_prefix(replayed),
             &(),
         )
         .await

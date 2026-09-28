@@ -499,7 +499,7 @@ async fn prepared_tools_are_dynamic_and_never_reused() {
 #[tokio::test]
 async fn driver_history_is_the_committed_history_plus_exactly_the_turn_input() {
     // Hosts mark everything before the last message as replayed history
-    // (`AgentTurnRequest::with_replayed_prefix(len - 1)`, openhuman#6710) and
+    // (`AgentInvocation::with_replayed_prefix(len - 1)`, openhuman#6710) and
     // screen only that last message. That is sound only while a turn appends
     // exactly its one input: a second appended row would go unscreened.
     let driver = Arc::new(Driver::new(vec![
