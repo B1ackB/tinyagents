@@ -15,7 +15,9 @@ use serde_json::json;
 use tinyagents_harness::config::ToolDispatcher;
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::events::{AgentEvent, RecordingListener};
-use tinyagents_harness::middleware::Middleware;
+use tinyagents_harness::middleware::{
+    Middleware, MiddlewareModelOutcome, ModelHandler, ModelMiddleware,
+};
 use tinyagents_harness::runtime::{AgentHarness, EndStrategy, RunPolicy};
 use tinyagents_harness::testkit::{FakeTool, ScriptedModel, StreamingMock};
 use tinyinference_llm::message::{Message, MessageDelta};
@@ -1427,4 +1429,193 @@ async fn a_decodable_or_plain_text_dialect_reply_is_not_nudged() {
             "no undecodable-call nudge was sent"
         );
     }
+}
+
+/// Streams `chunks` then completes with their concatenation and `finish`.
+fn text_stream(chunks: &[&str], finish: &str) -> Vec<ModelStreamItem> {
+    let mut items = vec![ModelStreamItem::Started];
+    items.extend(
+        chunks
+            .iter()
+            .map(|chunk| ModelStreamItem::MessageDelta(MessageDelta::text(*chunk))),
+    );
+    let mut completed = ModelResponse::assistant(chunks.concat());
+    completed.finish_reason = Some(finish.to_string());
+    items.push(ModelStreamItem::Completed(completed));
+    items
+}
+
+/// Turns a failed model call into a fixed plain answer, the way a
+/// degradation middleware might, without issuing another attempt.
+struct AnswerOnFailure;
+
+#[async_trait]
+impl ModelMiddleware<(), ()> for AnswerOnFailure {
+    fn name(&self) -> &str {
+        "answer_on_failure"
+    }
+
+    async fn wrap_model(
+        &self,
+        ctx: &mut RunContext<()>,
+        state: &(),
+        request: ModelRequest,
+        next: ModelHandler<'_, (), ()>,
+    ) -> tinyagents_harness::Result<MiddlewareModelOutcome> {
+        match next.run(ctx, state, request).await {
+            Ok(outcome) => Ok(outcome),
+            Err(_) => Ok(ModelResponse::assistant("Here is the answer.").into()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failed_attempts_undecodable_block_does_not_nudge_the_answer_that_replaced_it() {
+    // The streamed attempt scrubs an undecodable block and then fails; a wrap
+    // middleware answers instead. That answer made no call attempt, so the
+    // failed attempt's count must not turn it into a nudge.
+    let mut items = vec![ModelStreamItem::Started];
+    items.push(ModelStreamItem::MessageDelta(MessageDelta::text(
+        UNDECODABLE_CALL,
+    )));
+    items.push(ModelStreamItem::Failed("stream reset".to_string()));
+    let model = Arc::new(StreamingMock::new(items));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model, &listener);
+    harness
+        .push_model_middleware(Arc::new(AnswerOnFailure))
+        .with_policy(xml_policy());
+
+    let run = harness
+        .invoke_streaming_default(&(), vec![Message::user("go")])
+        .await
+        .expect("the middleware's answer ends the run");
+
+    assert_eq!(
+        run.model_calls, 1,
+        "the replacement answer is final, not nudged"
+    );
+    assert_eq!(run.tool_calls, 0);
+}
+
+#[tokio::test]
+async fn a_stream_that_stops_inside_a_call_block_is_nudged() {
+    // The model stopped (`stop`, not `length`) before closing its block:
+    // it attempted a call and forgot the closer. The block is unterminated,
+    // not malformed, and must count the same way.
+    let items = text_stream(
+        &[
+            "Let me look.\n\n<tool_",
+            "call>{\"name\":\"lookup\",",
+            "\"arguments\":{\"q\":\"x",
+        ],
+        "stop",
+    );
+    let model = Arc::new(StreamingMock::new(items));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model, &listener);
+    harness.with_policy(xml_policy());
+
+    let run = harness
+        .invoke_streaming_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run ends instead of looping");
+
+    assert_eq!(
+        run.model_calls, 4,
+        "three nudges, then the answer is taken as final"
+    );
+    assert_eq!(run.tool_calls, 0);
+}
+
+#[tokio::test]
+async fn a_length_cut_inside_a_call_block_is_left_to_truncation_handling() {
+    // Control for the test above: a block cut by the token cap is truncation,
+    // not a forgotten closer, and is not answered with the parse nudge.
+    let items = text_stream(
+        &[
+            "Let me look.\n\n<tool_",
+            "call>{\"name\":\"lookup\",",
+            "\"arguments\":{\"q\":\"x",
+        ],
+        "length",
+    );
+    let model = Arc::new(StreamingMock::new(items));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model, &listener);
+    harness.with_policy(xml_policy());
+
+    let run = harness
+        .invoke_streaming_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 1, "no parse nudge for a length cut");
+}
+
+#[tokio::test]
+async fn an_undecodable_block_under_native_text_recovery_is_nudged() {
+    // A native model with text recovery on parses every grammar out of its
+    // prose, so a claimed-but-undecodable block there is the same dropped
+    // call as under a forced text dialect.
+    let profile = ModelProfile {
+        tool_calling: true,
+        ..ModelProfile::default()
+    };
+    let model = Arc::new(ProfiledScriptedModel::new(
+        profile,
+        vec![
+            ModelResponse::assistant(UNDECODABLE_CALL),
+            ModelResponse::assistant("done"),
+        ],
+    ));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model.clone(), &listener);
+    harness.with_policy(RunPolicy {
+        text_dialect_recovery: tinyagents_harness::runtime::TextDialectRecovery::On,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    let requests = model.requests();
+    assert!(
+        !requests[0].tools.is_empty(),
+        "precondition: native dialect, schemas on the wire"
+    );
+    assert_eq!(run.model_calls, 2, "one nudge, then the final answer");
+    let nudge = requests[1].messages.last().expect("nudge appended").text();
+    assert!(nudge.contains(UNDECODABLE_NUDGE_MARKER), "{nudge}");
+}
+
+#[tokio::test]
+async fn an_undecodable_block_is_nudged_before_an_empty_response_retry() {
+    // A streamed reply that is only an undecodable block scrubs to empty
+    // text. With empty-response retries on, a blind retry must not pre-empt
+    // (or add to) the nudges that tell the model why nothing ran: the run is
+    // bounded by the nudge budget alone.
+    let items = text_stream(
+        &["<tool_", "call>\nnot a call at all\n</tool_call>"],
+        "stop",
+    );
+    let model = Arc::new(StreamingMock::new(items));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model, &listener);
+    harness.with_policy(RunPolicy {
+        empty_response_retries: 1,
+        ..xml_policy()
+    });
+
+    let run = harness
+        .invoke_streaming_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run ends instead of looping");
+
+    assert_eq!(
+        run.model_calls, 4,
+        "three nudges and the final reply, no blind empty-response retry"
+    );
 }

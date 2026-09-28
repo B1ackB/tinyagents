@@ -1460,9 +1460,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
             let mut request = request;
             super::run_loop::refresh_prompt_cache_fingerprint(&mut request);
             let binding = self.rebind(ctx, &request).await?;
-            self.harness
+            // Dropped-block counts describe the response this call returns.
+            // Clear them first (a cache hit makes no attempt), and again on
+            // failure: a wrap middleware may answer in place of the failed
+            // attempt, and that answer attempted no call.
+            self.shape.recovery.dropped.reset();
+            let result = self
+                .harness
                 .invoke_model_with_retry(state, ctx, &request, &self.call_id, binding, &self.shape)
-                .await
+                .await;
+            if result.is_err() {
+                self.shape.recovery.dropped.reset();
+            }
+            result
         })
     }
 }

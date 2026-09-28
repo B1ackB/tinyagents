@@ -990,7 +990,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 super::dialect::TextRecovery {
                     offered: Arc::new(request.tools.clone()),
                     registry: dialect.registry_for(&request.tools),
-                    malformed: Arc::default(),
+                    dropped: Arc::default(),
                 }
             } else {
                 super::dialect::TextRecovery::default()
@@ -1537,10 +1537,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // row stays on the transcript so the model sees what it did.
                 //
                 // A text dialect always finishes with `stop`, so its dropped
-                // call is the block a grammar claimed and could not decode:
-                // scrubbed from the text, no call, only the lead-in prose left.
-                let malformed_blocks = recovery.malformed_blocks();
-                let undecodable_text_call = forced_text_dialect && malformed_blocks > 0;
+                // call is a block a grammar recognised that became no call:
+                // one whose body did not decode (scrubbed, only the lead-in
+                // prose left), or one the model stopped inside without a
+                // closer. A `length` stop inside a block is truncation, not a
+                // forgotten closer, and is left to the truncation handling.
+                // Native models with text recovery on parse the same grammars
+                // out of their prose, so the same drop applies to them.
+                let malformed_blocks = recovery.dropped.malformed();
+                let unterminated_blocks = if response.finish_reason.as_deref() == Some("length") {
+                    0
+                } else {
+                    recovery.dropped.unterminated()
+                };
+                let undecodable_text_call = (forced_text_dialect || text_dialect_recovery_enabled)
+                    && malformed_blocks + unterminated_blocks > 0;
                 if tool_calls.is_empty()
                     && (response.finish_reason.as_deref() == Some("tool_calls")
                         || undecodable_text_call)
@@ -1554,6 +1565,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             run_id = %ctx.run_id(),
                             call_id = %call_id,
                             malformed_blocks,
+                            unterminated_blocks,
                             attempt = dropped_tool_call_nudges_used,
                             "[agent_loop] nudging after undecodable text-dialect tool call"
                         );
@@ -2412,24 +2424,13 @@ fn recover_text_dialect_calls<Ctx>(
     }
 
     let before = response.message.tool_calls.len();
-    let malformed = super::dialect::recover_text_calls(
+    super::dialect::recover_text_calls(
         response,
         model_call_id,
         &recovery.offered,
         recovery.registry.as_deref(),
+        &recovery.dropped,
     );
-    if malformed > 0 {
-        recovery
-            .malformed
-            .fetch_add(malformed, std::sync::atomic::Ordering::Relaxed);
-        tracing::warn!(
-            target: "tinyagents::agent_loop",
-            run_id = %ctx.run_id(),
-            call_id = %model_call_id,
-            malformed,
-            "[agent_loop] text-dialect block(s) did not decode into a call"
-        );
-    }
     let recovered = response.message.tool_calls.len().saturating_sub(before);
     if recovered == 0 {
         return;
@@ -2542,7 +2543,7 @@ mod recovery_tests {
                     .collect(),
             ),
             registry: None,
-            malformed: Arc::default(),
+            dropped: Arc::default(),
         }
     }
 
