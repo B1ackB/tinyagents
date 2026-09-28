@@ -11,6 +11,7 @@
 //! [`RunPolicy::tool_dialect`]: crate::runtime::RunPolicy::tool_dialect
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{
@@ -18,7 +19,7 @@ use tinyinference_llm::model::{
 };
 use tinyinference_llm::tool::{ToolCall, ToolSchema};
 use tinytools_agent::dialect::{CodeDialect, CodeStyle, PFormatDialect};
-use tinytools_agent::types::{ParseOptions, ParsedToolCall};
+use tinytools_agent::types::{ParseDiagnostic, ParseOptions, ParsedToolCall};
 use tinytools_agent::{PFormatRegistry, StreamScrubber};
 
 use crate::config::ToolDispatcher;
@@ -339,6 +340,65 @@ pub(super) struct TextRecovery {
     pub(super) offered: Arc<Vec<ToolSchema>>,
     /// The P-Format layouts, for [`RunDialect::PFormat`].
     pub(super) registry: Option<Arc<PFormatRegistry>>,
+    /// Call blocks the model attempted that produced no call, on the
+    /// attempt whose response the loop is about to read.
+    pub(super) dropped: Arc<DroppedBlocks>,
+}
+
+/// Tool-call blocks a grammar recognised on one model attempt that did not
+/// become a call. Without this count the loop sees only the prose around
+/// such a block and takes it as a final answer.
+#[derive(Debug, Default)]
+pub(super) struct DroppedBlocks {
+    /// Closed blocks whose body did not decode (`MalformedBlock`); the
+    /// scrubber removes these from the visible text.
+    malformed: AtomicUsize,
+    /// Openers with no closer at end of text (`UnterminatedBlock`); the raw
+    /// markup is released as visible text.
+    unterminated: AtomicUsize,
+}
+
+impl DroppedBlocks {
+    /// Claimed-but-undecodable blocks on the current attempt.
+    pub(super) fn malformed(&self) -> usize {
+        self.malformed.load(Ordering::Relaxed)
+    }
+
+    /// Unclosed blocks on the current attempt.
+    pub(super) fn unterminated(&self) -> usize {
+        self.unterminated.load(Ordering::Relaxed)
+    }
+
+    /// Forgets the counts: the next response comes from a new attempt, or
+    /// the attempt that produced them failed and its response is discarded.
+    pub(super) fn reset(&self) {
+        self.malformed.store(0, Ordering::Relaxed);
+        self.unterminated.store(0, Ordering::Relaxed);
+    }
+
+    /// Adds the dropped blocks among `diagnostics`, logging any it finds.
+    fn record(&self, diagnostics: &[ParseDiagnostic], model_call_id: &CallId) {
+        let (mut malformed, mut unterminated) = (0, 0);
+        for diagnostic in diagnostics {
+            match diagnostic {
+                ParseDiagnostic::MalformedBlock { .. } => malformed += 1,
+                ParseDiagnostic::UnterminatedBlock { .. } => unterminated += 1,
+                _ => {}
+            }
+        }
+        if malformed + unterminated == 0 {
+            return;
+        }
+        self.malformed.fetch_add(malformed, Ordering::Relaxed);
+        self.unterminated.fetch_add(unterminated, Ordering::Relaxed);
+        tracing::warn!(
+            target: "tinyagents::agent_loop",
+            call_id = %model_call_id,
+            malformed,
+            unterminated,
+            "[agent_loop] tool-call block(s) did not become a call"
+        );
+    }
 }
 
 impl TextRecovery {
@@ -346,7 +406,15 @@ impl TextRecovery {
     /// offered and there is nothing to recover.
     pub(super) fn scrubber(&self, model_call_id: &CallId) -> Option<DeltaScrubber> {
         (!self.offered.is_empty()).then(|| {
-            DeltaScrubber::new(model_call_id.clone(), &self.offered, self.registry.clone())
+            // A fresh scrubber is one provider attempt; a retried attempt
+            // must not inherit the previous one's count.
+            self.dropped.reset();
+            DeltaScrubber::new(
+                model_call_id.clone(),
+                &self.offered,
+                self.registry.clone(),
+                Arc::clone(&self.dropped),
+            )
         })
     }
 }
@@ -386,11 +454,14 @@ fn to_tool_call(call: ParsedToolCall, model_call_id: &CallId, slot: usize) -> To
 /// Reads text-dialect calls out of a response that carries no structured
 /// ones, through every grammar `tinytools-agent` knows, with the offered
 /// tools enabling name repair. Non-text content blocks (reasoning) survive.
+///
+/// Blocks that did not become a call are added to `dropped`.
 pub(super) fn recover_text_calls(
     response: &mut ModelResponse,
     model_call_id: &CallId,
     offered: &[ToolSchema],
     registry: Option<&PFormatRegistry>,
+    dropped: &DroppedBlocks,
 ) {
     if offered.is_empty() {
         return;
@@ -402,11 +473,14 @@ pub(super) fn recover_text_calls(
     }
     let text = response.text();
     let outcome = tinytools_agent::parse_text(&text, &options);
-    if outcome.calls.is_empty() {
-        return;
-    }
+    // Logged before the empty-calls return: a response whose only block was
+    // undecodable is exactly the one that needs a trace.
     for diagnostic in &outcome.diagnostics {
         tracing::debug!(?diagnostic, "[agent_loop] text-dialect recovery");
+    }
+    dropped.record(&outcome.diagnostics, model_call_id);
+    if outcome.calls.is_empty() {
+        return;
     }
     // Appended, not assigned: a provider can legitimately return one native
     // structured call *and* narrate a second one as text in the same
@@ -457,6 +531,7 @@ pub(super) struct DeltaScrubber {
     inner: StreamScrubber,
     model_call_id: CallId,
     calls: Vec<ToolCall>,
+    dropped: Arc<DroppedBlocks>,
 }
 
 impl DeltaScrubber {
@@ -465,6 +540,7 @@ impl DeltaScrubber {
         model_call_id: CallId,
         offered: &[ToolSchema],
         registry: Option<Arc<PFormatRegistry>>,
+        dropped: Arc<DroppedBlocks>,
     ) -> Self {
         let known = offered.iter().map(|tool| tool.name.clone()).collect();
         let mut inner = StreamScrubber::new().with_known_tools(known);
@@ -475,24 +551,26 @@ impl DeltaScrubber {
             inner,
             model_call_id,
             calls: Vec::new(),
+            dropped,
         }
     }
 
     /// Feeds one text delta; returns the text safe to forward.
     pub(super) fn feed(&mut self, text: &str) -> String {
         let step = self.inner.feed(text);
-        self.collect(step.calls);
+        self.collect(step.calls, &step.diagnostics);
         step.text
     }
 
     /// Drains the remainder at end of stream.
     pub(super) fn flush(&mut self) -> String {
         let step = self.inner.flush();
-        self.collect(step.calls);
+        self.collect(step.calls, &step.diagnostics);
         step.text
     }
 
-    fn collect(&mut self, calls: Vec<ParsedToolCall>) {
+    fn collect(&mut self, calls: Vec<ParsedToolCall>, diagnostics: &[ParseDiagnostic]) {
+        self.dropped.record(diagnostics, &self.model_call_id);
         for call in calls {
             let slot = self.calls.len() + 1;
             self.calls
