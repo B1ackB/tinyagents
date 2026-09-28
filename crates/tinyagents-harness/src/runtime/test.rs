@@ -1560,6 +1560,119 @@ async fn hosted_turn_still_blocks_new_user_input_and_screens_all_by_default() {
     }
 }
 
+fn replay_host(
+    gate: Arc<dyn SecurityGate>,
+    model: Arc<ScriptedModel>,
+) -> crate::host::HostCapabilities<()> {
+    crate::host::HostCapabilities::new(
+        Arc::new(StaticContextComposer::empty()),
+        Arc::new(InMemoryDefinitionRegistry::new(vec![AgentDefinition::new(
+            "helper",
+            "Helper",
+            "test helper",
+        )])),
+        gate,
+        Arc::new(FixedModelResolver::new(model)),
+    )
+}
+
+#[tokio::test]
+async fn hosted_turn_rejects_a_replayed_prefix_past_the_messages() {
+    // A prefix past the end is always a host bug; clamping it would silently
+    // skip screening of the whole request.
+    let model = Arc::new(ScriptedModel::replies(vec!["must not run"]));
+    let error = AgentHarness::<()>::new()
+        .invoke_agent(
+            AgentInvocation::new(
+                replay_host(Arc::new(BlockExtensionGate), model.clone()),
+                AgentTurnRequest::new(
+                    "helper",
+                    vec![tinyinference_llm::message::Message::user("secret")],
+                )
+                .with_replayed_prefix(2),
+                RunContext::new(RunConfig::new("prefix-past-end"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect_err("an out-of-range replayed prefix is rejected");
+    assert_eq!(error.kind, crate::runtime::HostedErrorKind::Policy);
+    assert!(model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn hosted_turn_accepts_a_replayed_prefix_covering_every_message() {
+    // Equal to the length is legitimate (a deferred resume has no new input);
+    // it is logged when the last message is a user message, not rejected.
+    let model = Arc::new(ScriptedModel::replies(vec!["answer"]));
+    AgentHarness::<()>::new()
+        .invoke_agent(
+            AgentInvocation::new(
+                replay_host(Arc::new(BlockExtensionGate), model.clone()),
+                AgentTurnRequest::new(
+                    "helper",
+                    vec![tinyinference_llm::message::Message::user("hello")],
+                )
+                .with_replayed_prefix(1),
+                RunContext::new(RunConfig::new("prefix-at-end"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect("a prefix equal to the message count is accepted");
+    assert_eq!(model.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn hosted_turn_replays_the_redacted_form_of_an_admitted_user_row() {
+    // The replayed_prefix contract: a host replays rows as the gate returned
+    // them. The run's transcript carries the redacted form, so a host that
+    // persists it never sends the raw secret on a later turn.
+    let model = Arc::new(ScriptedModel::replies(vec!["first", "second"]));
+    let harness = AgentHarness::<()>::new();
+    let first = harness
+        .invoke_agent(
+            AgentInvocation::new(
+                replay_host(Arc::new(RedactJsonUserGate), model.clone()),
+                AgentTurnRequest::new(
+                    "helper",
+                    vec![tinyinference_llm::message::Message::user("my secret")],
+                ),
+                RunContext::new(RunConfig::new("redact-first"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect("first turn succeeds");
+
+    let mut replay = first.messages.clone();
+    let replayed = replay.len();
+    replay.push(tinyinference_llm::message::Message::user("and now?"));
+    harness
+        .invoke_agent(
+            AgentInvocation::new(
+                replay_host(Arc::new(RedactJsonUserGate), model.clone()),
+                AgentTurnRequest::new("helper", replay).with_replayed_prefix(replayed),
+                RunContext::new(RunConfig::new("redact-replay"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect("replayed turn succeeds");
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let second = format!("{:?}", requests[1].messages);
+    assert!(
+        second.contains("and now?"),
+        "the new input reached the model"
+    );
+    assert!(
+        !second.contains("secret"),
+        "the replayed row must stay redacted: {second}"
+    );
+}
+
 #[tokio::test]
 async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
     let model = Arc::new(ScriptedModel::replies(vec!["root", "child"]));

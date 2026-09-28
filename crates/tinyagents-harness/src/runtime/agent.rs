@@ -229,6 +229,15 @@ impl AgentTurnRequest {
     /// The default of `0` screens every user message. A host that replays tool
     /// output as user rows (text tool dialects) needs this, or a replayed row
     /// is re-screened under the user policy on every later turn.
+    ///
+    /// Opt in only if your replayed history stores user rows as the gate
+    /// returned them (redacted), e.g. the `messages` of the [`AgentRun`] that
+    /// admitted them; otherwise a secret redacted on its first turn reaches the
+    /// model raw on later turns.
+    ///
+    /// A `count` greater than `messages.len()` is rejected as a host bug. Equal
+    /// to it screens nothing, which is right for a deferred resume and is
+    /// logged when the last message is a user message.
     #[must_use]
     pub fn with_replayed_prefix(mut self, count: usize) -> Self {
         self.replayed_prefix = count;
@@ -914,7 +923,27 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             .thread_id()
             .cloned()
             .unwrap_or_else(|| ThreadId::from(context.run_id().as_str()));
-        let replayed = request.replayed_prefix.min(request.messages.len());
+        let replayed = request.replayed_prefix;
+        if replayed > request.messages.len() {
+            return Err(TinyAgentsError::Validation(format!(
+                "replayed_prefix {replayed} exceeds the {} request messages",
+                request.messages.len()
+            )));
+        }
+        if replayed > 0
+            && replayed == request.messages.len()
+            && matches!(
+                request.messages.last(),
+                Some(tinyinference_llm::message::Message::User(_))
+            )
+        {
+            tracing::warn!(
+                agent_id = %request.agent_id,
+                replayed,
+                "[host] replayed_prefix covers a trailing user message; it is not screened \
+                 (expected only when resuming deferred calls)"
+            );
+        }
         let input_text = screen_user_messages(&host, &mut request.messages[replayed..]).await?;
         let context_request =
             TurnContextRequest::new(&request.agent_id, thread_id.clone(), &input_text);
