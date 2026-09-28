@@ -715,25 +715,37 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 } else {
                     // `ReturnToolError` (or a Rewrite whose target is also
                     // missing): inject a tool-error result naming the
-                    // requested tool and the valid tools, then continue so
-                    // the model can correct itself. This consumed one
-                    // tool-call budget slot above, bounding the loop.
-                    let valid = self
+                    // requested tool, then continue so the model can correct
+                    // itself. The result points to `tool_search` when the
+                    // discovery bridge is advertised and names a few close
+                    // matches, instead of listing every callable tool (see
+                    // `unknown_tool`). The attempted arguments are echoed in the
+                    // message and kept on the `UnknownToolCall` event. This consumed one tool-call
+                    // budget slot above, bounding the loop.
+                    let host_allows = |name: &str| {
+                        allowed_tools
+                            .as_ref()
+                            .is_none_or(|allowed| allowed.contains(name))
+                    };
+                    let available = self
                         .tools
                         .model_callable_names()
                         .into_iter()
-                        .filter(|name| {
-                            allowed_tools
-                                .as_ref()
-                                .is_none_or(|allowed| allowed.contains(name))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let args_repr = serde_json::to_string(&arguments)
-                        .unwrap_or_else(|_| "<unserializable>".to_string());
-                    let message = format!(
-                        "unknown tool `{requested}` (arguments: {args_repr}); \
-                         valid tools: [{valid}]"
+                        .filter(|name| host_allows(name))
+                        .collect::<Vec<_>>();
+                    // A host-registered `tool_search` takes precedence over the
+                    // intrinsic bridge (see `admit_tool_call`), so only advertise
+                    // discovery when the bridge would receive the call.
+                    let tool_search_available = self
+                        .tools
+                        .dispatch(crate::tool::discover::TOOL_SEARCH_NAME)
+                        .is_none()
+                        && !self.deferred_catalog(&host_allows).is_empty();
+                    let message = super::unknown_tool::unknown_tool_message(
+                        &requested,
+                        &arguments,
+                        &available,
+                        tool_search_available,
                     );
                     let record = ctx.emit(AgentEvent::UnknownToolCall {
                         call_id,

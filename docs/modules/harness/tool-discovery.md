@@ -20,8 +20,10 @@ the rest.**
 
 `ToolRegistry::schemas()` returns only `Direct` tools (name-sorted, as before);
 `deferred_schemas()` returns the `Deferred` set. Host code can still reach a
-`Hidden` tool through `ToolRegistry::dispatch`; the model cannot, and the
-"valid tools" list in an unknown-tool answer never names one.
+`Hidden` tool through `ToolRegistry::dispatch`; the model cannot, and an
+unknown-tool answer never suggests one. That answer names at most three close
+matches and, when anything is deferred, tells the model to call `tool_search`
+with what it wants to do instead of listing every callable name.
 
 Mark rarely-needed tools `Deferred`: third-party catalogues (MCP servers,
 plugins, connector actions), event-triggered utilities, anything a model reaches

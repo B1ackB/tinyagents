@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::events::{AgentEvent, RecordingListener};
 use tinyagents_harness::middleware::Middleware;
-use tinyagents_harness::runtime::{AgentHarness, RunPolicy};
+use tinyagents_harness::runtime::{AgentHarness, RunPolicy, UnknownToolPolicy};
 use tinyagents_harness::testkit::FakeTool;
 use tinyagents_harness::tool::discover::{TOOL_CALL_NAME, TOOL_SEARCH_NAME, ToolDiscoveryPolicy};
 use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
@@ -368,12 +368,15 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     assert!(tool_messages[0].contains("\"symbol\""));
     assert!(tool_messages[1].contains("stock_quote → ACME"));
     assert!(tool_messages[3].contains("unknown tool `internal_step`"));
-    assert!(tool_messages[3].contains("stock_quote"));
-    let listed = tool_messages[3]
-        .split("valid tools: [")
-        .nth(1)
-        .expect("valid tool listing");
-    assert!(!listed.contains("internal_step"));
+    // The corrective sends the model to discovery rather than dumping every
+    // callable name, and never leaks the hidden tool as a suggestion.
+    assert!(tool_messages[3].contains("call `tool_search`"));
+    assert!(!tool_messages[3].contains("valid tools"));
+    let rest = tool_messages[3]
+        .split_once("unknown tool `internal_step`")
+        .map(|(_, rest)| rest)
+        .expect("corrective names the requested tool");
+    assert!(!rest.contains("internal_step"));
 
     // Events make the surface auditable.
     let events: Vec<AgentEvent> = listener.events().into_iter().map(|r| r.event).collect();
@@ -539,6 +542,50 @@ async fn host_registered_tool_search_wins_over_the_intrinsic_bridge() {
     assert!(!tools.contains("deferred tool(s) are searchable"));
     // …and the call went to the host's tool, not the intrinsic answer.
     assert_eq!(host_search.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn unknown_tool_corrective_does_not_advertise_a_host_registered_tool_search() {
+    let deferred = ExposedTool::new("stock_quote", "Quote.", ToolExposure::Deferred);
+    let host_search = ExposedTool::new(
+        TOOL_SEARCH_NAME,
+        "The host's own search tool.",
+        ToolExposure::Direct,
+    );
+    let model = RecordingModel::new(vec![
+        tool_call("c1", "nonexistent_tool", json!({"x": 1})),
+        text("done"),
+    ]);
+
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", model.clone())
+        .set_default_model("mock")
+        .register_tool(deferred)
+        .register_tool(host_search)
+        .with_policy(RunPolicy {
+            unknown_tool: UnknownToolPolicy::ReturnToolError,
+            ..RunPolicy::default()
+        });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    let message = run
+        .messages
+        .iter()
+        .find(|message| matches!(message, Message::Tool(_)))
+        .map(Message::text)
+        .unwrap();
+    assert!(
+        message.starts_with("unknown tool `nonexistent_tool`"),
+        "{message}"
+    );
+    // The host's `tool_search` shadows the intrinsic bridge, so the corrective
+    // must not promise the bridge's discovery behaviour.
+    assert!(!message.contains("call `tool_search`"), "{message}");
 }
 
 /// Regression: the collision check that decides whether to advertise an

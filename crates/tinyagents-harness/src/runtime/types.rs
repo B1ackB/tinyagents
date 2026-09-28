@@ -84,7 +84,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> Clone for HostInvocationBinding<State
 ///
 /// The default is [`UnknownToolPolicy::ReturnToolError`]: a hallucinated tool
 /// name is a routine model mistake, not a harness fault, so the run keeps going
-/// and the model gets told which tools actually exist. Each recovery still
+/// and the model is told the name does not exist, pointed at `tool_search` when
+/// the discovery bridge is advertised, and given a few close matches (not the
+/// whole tool list, which floods the context). Each recovery still
 /// consumes a tool-call budget slot, so [`RunLimits::max_tool_calls`] bounds any
 /// unknown-tool loop.
 ///
@@ -102,9 +104,10 @@ pub enum UnknownToolPolicy {
     /// Abort the run with
     /// [`TinyAgentsError::ToolNotFound`][crate::error::TinyAgentsError::ToolNotFound].
     Fail,
-    /// Inject a tool-error result (naming the originally requested tool and
-    /// listing the registered tools) back into the transcript and continue the
-    /// loop, letting the model retry with a valid tool. The default.
+    /// Inject a tool-error result (naming the originally requested tool, with
+    /// a `tool_search` pointer and close matches) back into the transcript and
+    /// continue the loop, letting the model retry with a valid tool. The
+    /// default.
     #[default]
     ReturnToolError,
     /// Rewrite an unknown call to a fixed compatibility tool name and retry the
