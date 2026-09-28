@@ -1646,17 +1646,21 @@ async fn dispatched_from_first_reply(text: &str, streamed: bool) -> usize {
         tool_dialect: ToolDispatcher::Xml,
         limits: tinyagents_harness::limits::RunLimits {
             max_model_calls: 1,
+            behavior: tinyagents_harness::limits::LimitBehavior::StopWithPartial,
             ..tinyagents_harness::limits::RunLimits::default()
         },
         ..RunPolicy::default()
     });
-    let _ = if streamed {
+    let result = if streamed {
         harness
             .invoke_streaming_default(&(), vec![Message::user("go")])
             .await
     } else {
         harness.invoke_default(&(), vec![Message::user("go")]).await
     };
+    // The one-call cap stops the run cleanly after a dispatched call; an
+    // error here would mean the count below was read from a failed run.
+    assert!(result.is_ok(), "run failed: {:?}", result.err());
     dispatched_ids(&listener).len()
 }
 
