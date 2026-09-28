@@ -1466,6 +1466,101 @@ async fn hosted_turn_blocks_provider_extension_user_blocks_before_model_submissi
 }
 
 #[tokio::test]
+async fn hosted_turn_screens_only_the_new_user_input_not_replayed_history() {
+    // A text-dialect host replays prior tool results as user rows. They were
+    // screened when admitted; re-screening them every turn bricks the thread
+    // the moment one scores over the threshold (openhuman#6710).
+    let model = Arc::new(ScriptedModel::replies(vec!["answer"]));
+    let host = crate::host::HostCapabilities::new(
+        Arc::new(StaticContextComposer::empty()),
+        Arc::new(InMemoryDefinitionRegistry::new(vec![AgentDefinition::new(
+            "helper",
+            "Helper",
+            "test helper",
+        )])),
+        Arc::new(BlockExtensionGate),
+        Arc::new(FixedModelResolver::new(model.clone())),
+    );
+    let harness: AgentHarness<()> = AgentHarness::new();
+    // Also covers a turn that failed after a tool round: the host persists the
+    // accepted request, so history ends on the results row and the new input
+    // follows it directly, with no assistant row between them.
+    let messages = vec![
+        tinyinference_llm::message::Message::user("[Tool results]\nsecret-looking payload"),
+        tinyinference_llm::message::Message::assistant("summary of the results"),
+        tinyinference_llm::message::Message::user("look again"),
+        tinyinference_llm::message::Message::assistant("<tool_call>…</tool_call>"),
+        tinyinference_llm::message::Message::user("[Tool results]\nmore secret-looking payload"),
+        tinyinference_llm::message::Message::user("?"),
+    ];
+
+    harness
+        .invoke_agent(
+            AgentInvocation::new(
+                host,
+                AgentTurnRequest::new("helper", messages).with_replayed_prefix(5),
+                RunContext::new(RunConfig::new("history-not-rescreened"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect("replayed history must not be re-screened as new user input");
+    assert_eq!(model.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn hosted_turn_still_blocks_new_user_input_and_screens_all_by_default() {
+    // The first turn of a new thread, and a new message after replayed
+    // history: the turn's own input is still screened as user input.
+    for (messages, replayed_prefix) in [
+        (vec![tinyinference_llm::message::Message::user("secret")], 0),
+        (
+            vec![
+                tinyinference_llm::message::Message::user("hello"),
+                tinyinference_llm::message::Message::assistant("hi"),
+                tinyinference_llm::message::Message::user("secret"),
+            ],
+            2,
+        ),
+        // Without a boundary every user message is screened, as before: a
+        // host that never opts in loses no screening (openhuman#6710).
+        (
+            vec![
+                tinyinference_llm::message::Message::user("secret"),
+                tinyinference_llm::message::Message::assistant("hi"),
+                tinyinference_llm::message::Message::user("hello"),
+            ],
+            0,
+        ),
+    ] {
+        let model = Arc::new(ScriptedModel::replies(vec!["must not run"]));
+        let host = crate::host::HostCapabilities::new(
+            Arc::new(StaticContextComposer::empty()),
+            Arc::new(InMemoryDefinitionRegistry::new(vec![AgentDefinition::new(
+                "helper",
+                "Helper",
+                "test helper",
+            )])),
+            Arc::new(BlockExtensionGate),
+            Arc::new(FixedModelResolver::new(model.clone())),
+        );
+        let error = AgentHarness::<()>::new()
+            .invoke_agent(
+                AgentInvocation::new(
+                    host,
+                    AgentTurnRequest::new("helper", messages).with_replayed_prefix(replayed_prefix),
+                    RunContext::new(RunConfig::new("new-input-block"), ()),
+                ),
+                &(),
+            )
+            .await
+            .expect_err("the new user input must still be screened");
+        assert_eq!(error.kind, crate::runtime::HostedErrorKind::Policy);
+        assert!(model.requests().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
     let model = Arc::new(ScriptedModel::replies(vec!["root", "child"]));
     let resolver = Arc::new(LeadRecordingResolver {

@@ -203,6 +203,9 @@ pub struct AgentTurnRequest {
     /// Resolutions for the deferred tool calls left pending on `messages`
     /// by a previous hosted turn (A2). See [`Self::with_deferred_results`].
     pub deferred_results: Option<crate::tool::DeferredToolResults>,
+    /// Number of leading `messages` the host is replaying from a transcript it
+    /// already screened. See [`Self::with_replayed_prefix`].
+    pub replayed_prefix: usize,
 }
 
 impl AgentTurnRequest {
@@ -215,7 +218,21 @@ impl AgentTurnRequest {
             agent_id: agent_id.into(),
             messages,
             deferred_results: None,
+            replayed_prefix: 0,
         }
+    }
+
+    /// Marks the first `count` messages as replayed history: they were screened
+    /// when they were first admitted, so only the messages after them are
+    /// screened as this turn's user input.
+    ///
+    /// The default of `0` screens every user message. A host that replays tool
+    /// output as user rows (text tool dialects) needs this, or a replayed row
+    /// is re-screened under the user policy on every later turn.
+    #[must_use]
+    pub fn with_replayed_prefix(mut self, count: usize) -> Self {
+        self.replayed_prefix = count;
+        self
     }
 
     /// Resumes a hosted turn that stopped with `AgentRun::deferred` set
@@ -897,7 +914,8 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             .thread_id()
             .cloned()
             .unwrap_or_else(|| ThreadId::from(context.run_id().as_str()));
-        let input_text = screen_user_messages(&host, &mut request.messages).await?;
+        let replayed = request.replayed_prefix.min(request.messages.len());
+        let input_text = screen_user_messages(&host, &mut request.messages[replayed..]).await?;
         let context_request =
             TurnContextRequest::new(&request.agent_id, thread_id.clone(), &input_text);
         let system = host.context.compose_system_prompt(&context_request).await?;
@@ -1219,7 +1237,8 @@ fn start_progress_dispatcher(
     })
 }
 
-/// Screens every text/JSON block of every user message through the host's
+/// Screens every text/JSON block of every user message in `messages` (the
+/// turn's input past [`AgentTurnRequest::replayed_prefix`]) through the host's
 /// [`crate::host::SecurityGate`], rewriting redacted blocks in place, and
 /// returns the visible text joined by newlines for use as the turn's
 /// memory/experience recall query.
