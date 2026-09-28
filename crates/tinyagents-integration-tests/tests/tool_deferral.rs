@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::events::{AgentEvent, RecordingListener};
 use tinyagents_harness::middleware::Middleware;
-use tinyagents_harness::runtime::{AgentHarness, RunPolicy};
+use tinyagents_harness::runtime::{AgentHarness, RunPolicy, UnknownToolPolicy};
 use tinyagents_harness::testkit::FakeTool;
 use tinyagents_harness::tool::discover::{TOOL_CALL_NAME, TOOL_SEARCH_NAME, ToolDiscoveryPolicy};
 use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
@@ -579,7 +579,10 @@ async fn unknown_tool_corrective_does_not_advertise_a_host_registered_tool_searc
         .find(|message| matches!(message, Message::Tool(_)))
         .map(Message::text)
         .unwrap();
-    assert!(message.starts_with("unknown tool `nonexistent_tool`"), "{message}");
+    assert!(
+        message.starts_with("unknown tool `nonexistent_tool`"),
+        "{message}"
+    );
     // The host's `tool_search` shadows the intrinsic bridge, so the corrective
     // must not promise the bridge's discovery behaviour.
     assert!(!message.contains("call `tool_search`"), "{message}");
