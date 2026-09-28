@@ -11,6 +11,7 @@
 //! [`RunPolicy::tool_dialect`]: crate::runtime::RunPolicy::tool_dialect
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{
@@ -18,7 +19,7 @@ use tinyinference_llm::model::{
 };
 use tinyinference_llm::tool::{ToolCall, ToolSchema};
 use tinytools_agent::dialect::{CodeDialect, CodeStyle, PFormatDialect};
-use tinytools_agent::types::{ParseOptions, ParsedToolCall};
+use tinytools_agent::types::{ParseDiagnostic, ParseOptions, ParsedToolCall};
 use tinytools_agent::{PFormatRegistry, StreamScrubber};
 
 use crate::config::ToolDispatcher;
@@ -339,14 +340,32 @@ pub(super) struct TextRecovery {
     pub(super) offered: Arc<Vec<ToolSchema>>,
     /// The P-Format layouts, for [`RunDialect::PFormat`].
     pub(super) registry: Option<Arc<PFormatRegistry>>,
+    /// Blocks a grammar claimed but could not decode during this model call
+    /// (`ParseDiagnostic::MalformedBlock`). Such a block is scrubbed from the
+    /// visible text and yields no call, so without this count the loop sees
+    /// only the prose around it and takes it as a final answer.
+    pub(super) malformed: Arc<AtomicUsize>,
 }
 
 impl TextRecovery {
+    /// Claimed-but-undecodable blocks seen so far on this model call.
+    pub(super) fn malformed_blocks(&self) -> usize {
+        self.malformed.load(Ordering::Relaxed)
+    }
+
     /// A scrubber for one streamed model call, or `None` when no tools were
     /// offered and there is nothing to recover.
     pub(super) fn scrubber(&self, model_call_id: &CallId) -> Option<DeltaScrubber> {
         (!self.offered.is_empty()).then(|| {
-            DeltaScrubber::new(model_call_id.clone(), &self.offered, self.registry.clone())
+            // A fresh scrubber is one provider attempt; a retried attempt
+            // must not inherit the previous one's count.
+            self.malformed.store(0, Ordering::Relaxed);
+            DeltaScrubber::new(
+                model_call_id.clone(),
+                &self.offered,
+                self.registry.clone(),
+                Arc::clone(&self.malformed),
+            )
         })
     }
 }
@@ -386,14 +405,16 @@ fn to_tool_call(call: ParsedToolCall, model_call_id: &CallId, slot: usize) -> To
 /// Reads text-dialect calls out of a response that carries no structured
 /// ones, through every grammar `tinytools-agent` knows, with the offered
 /// tools enabling name repair. Non-text content blocks (reasoning) survive.
+///
+/// Returns how many blocks a grammar claimed but could not decode.
 pub(super) fn recover_text_calls(
     response: &mut ModelResponse,
     model_call_id: &CallId,
     offered: &[ToolSchema],
     registry: Option<&PFormatRegistry>,
-) {
+) -> usize {
     if offered.is_empty() {
-        return;
+        return 0;
     }
     let known: Vec<String> = offered.iter().map(|tool| tool.name.clone()).collect();
     let mut options = ParseOptions::new().with_known_tools(&known);
@@ -402,11 +423,14 @@ pub(super) fn recover_text_calls(
     }
     let text = response.text();
     let outcome = tinytools_agent::parse_text(&text, &options);
-    if outcome.calls.is_empty() {
-        return;
-    }
+    // Logged before the empty-calls return: a response whose only block was
+    // undecodable is exactly the one that needs a trace.
     for diagnostic in &outcome.diagnostics {
         tracing::debug!(?diagnostic, "[agent_loop] text-dialect recovery");
+    }
+    let malformed = count_malformed(&outcome.diagnostics);
+    if outcome.calls.is_empty() {
+        return malformed;
     }
     // Appended, not assigned: a provider can legitimately return one native
     // structured call *and* narrate a second one as text in the same
@@ -421,6 +445,15 @@ pub(super) fn recover_text_calls(
     response.message.tool_calls.extend(recovered);
     response.message.content =
         replace_text_blocks(std::mem::take(&mut response.message.content), outcome.text);
+    malformed
+}
+
+/// How many of `diagnostics` report a claimed block that did not decode.
+fn count_malformed(diagnostics: &[ParseDiagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic, ParseDiagnostic::MalformedBlock { .. }))
+        .count()
 }
 
 /// Keeps every non-text block in place and substitutes one cleaned text at
@@ -457,6 +490,7 @@ pub(super) struct DeltaScrubber {
     inner: StreamScrubber,
     model_call_id: CallId,
     calls: Vec<ToolCall>,
+    malformed: Arc<AtomicUsize>,
 }
 
 impl DeltaScrubber {
@@ -465,6 +499,7 @@ impl DeltaScrubber {
         model_call_id: CallId,
         offered: &[ToolSchema],
         registry: Option<Arc<PFormatRegistry>>,
+        malformed: Arc<AtomicUsize>,
     ) -> Self {
         let known = offered.iter().map(|tool| tool.name.clone()).collect();
         let mut inner = StreamScrubber::new().with_known_tools(known);
@@ -475,24 +510,35 @@ impl DeltaScrubber {
             inner,
             model_call_id,
             calls: Vec::new(),
+            malformed,
         }
     }
 
     /// Feeds one text delta; returns the text safe to forward.
     pub(super) fn feed(&mut self, text: &str) -> String {
         let step = self.inner.feed(text);
-        self.collect(step.calls);
+        self.collect(step.calls, &step.diagnostics);
         step.text
     }
 
     /// Drains the remainder at end of stream.
     pub(super) fn flush(&mut self) -> String {
         let step = self.inner.flush();
-        self.collect(step.calls);
+        self.collect(step.calls, &step.diagnostics);
         step.text
     }
 
-    fn collect(&mut self, calls: Vec<ParsedToolCall>) {
+    fn collect(&mut self, calls: Vec<ParsedToolCall>, diagnostics: &[ParseDiagnostic]) {
+        let malformed = count_malformed(diagnostics);
+        if malformed > 0 {
+            self.malformed.fetch_add(malformed, Ordering::Relaxed);
+            tracing::warn!(
+                target: "tinyagents::agent_loop",
+                call_id = %self.model_call_id,
+                malformed,
+                "[agent_loop] scrubbed tool-call block(s) that did not decode into a call"
+            );
+        }
         for call in calls {
             let slot = self.calls.len() + 1;
             self.calls

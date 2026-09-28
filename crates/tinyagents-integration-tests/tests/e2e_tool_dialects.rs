@@ -1324,3 +1324,107 @@ async fn a_terminal_only_stream_with_no_preceding_deltas_still_recovers_the_call
         "raw markup must not survive in the transcript: {assistant:?}"
     );
 }
+
+/// A block the tagged grammar claims but cannot decode into a call. Under a
+/// text dialect it is scrubbed from the visible text and yields no call, so
+/// only the lead-in prose is left (openhuman#6723).
+const UNDECODABLE_CALL: &str = "Let me look.\n\n<tool_call>\nnot a call at all\n</tool_call>";
+const UNDECODABLE_NUDGE_MARKER: &str = "could not be parsed";
+
+fn xml_policy() -> RunPolicy {
+    RunPolicy {
+        tool_dialect: ToolDispatcher::Xml,
+        ..RunPolicy::default()
+    }
+}
+
+#[tokio::test]
+async fn an_undecodable_text_dialect_call_is_nudged_instead_of_ending_the_turn() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        UNDECODABLE_CALL,
+        "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"}}</tool_call>",
+        "done",
+    ]));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model.clone(), &listener);
+    harness.with_policy(xml_policy());
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 3, "one nudge, one call, one final");
+    assert_eq!(run.tool_calls, 1, "the re-issued call ran");
+    let second = &model.requests()[1];
+    let nudge = second.messages.last().expect("nudge appended").text();
+    assert!(nudge.contains(UNDECODABLE_NUDGE_MARKER), "{nudge}");
+}
+
+#[tokio::test]
+async fn a_streamed_undecodable_text_dialect_call_is_nudged_within_the_budget() {
+    // The scrubber removes the block from the streamed text, so the terminal
+    // response no longer carries it: only the scrubber's own count can tell
+    // the loop a call was attempted. The mock replays the same stream every
+    // call, so the run is bounded by the nudge budget.
+    let chunks = [
+        "Let me look.\n\n<tool_",
+        "call>\nnot a call",
+        " at all\n</tool_call>",
+    ];
+    assert_eq!(chunks.concat(), UNDECODABLE_CALL);
+    let mut items = vec![ModelStreamItem::Started];
+    items.extend(
+        chunks
+            .iter()
+            .map(|chunk| ModelStreamItem::MessageDelta(MessageDelta::text(*chunk))),
+    );
+    items.push(ModelStreamItem::Completed(ModelResponse::assistant(
+        UNDECODABLE_CALL,
+    )));
+    let model = Arc::new(StreamingMock::new(items));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model, &listener);
+    harness.with_policy(xml_policy());
+
+    let run = harness
+        .invoke_streaming_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run ends instead of looping");
+
+    assert_eq!(
+        run.model_calls, 4,
+        "three nudges, then the answer is taken as final"
+    );
+    assert_eq!(run.tool_calls, 0);
+}
+
+#[tokio::test]
+async fn a_decodable_or_plain_text_dialect_reply_is_not_nudged() {
+    // Control for the two tests above: the nudge keys on an undecodable
+    // block, not on the text dialect or on a no-call answer.
+    let model = Arc::new(ScriptedModel::replies(vec![
+        "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"}}</tool_call>",
+        "Let me know if you need anything else.",
+    ]));
+    let listener = Arc::new(RecordingListener::new());
+    let mut harness = harness_with(model.clone(), &listener);
+    harness.with_policy(xml_policy());
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 2, "call, then a plain final with no nudge");
+    assert_eq!(run.tool_calls, 1);
+    for request in model.requests() {
+        assert!(
+            !request
+                .messages
+                .iter()
+                .any(|m| m.text().contains(UNDECODABLE_NUDGE_MARKER)),
+            "no undecodable-call nudge was sent"
+        );
+    }
+}

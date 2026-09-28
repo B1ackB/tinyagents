@@ -990,6 +990,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 super::dialect::TextRecovery {
                     offered: Arc::new(request.tools.clone()),
                     registry: dialect.registry_for(&request.tools),
+                    malformed: Arc::default(),
                 }
             } else {
                 super::dialect::TextRecovery::default()
@@ -1534,13 +1535,33 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // call a tool, but nothing arrived — structured or in text.
                 // A bounded re-prompt asks for the call itself. The assistant
                 // row stays on the transcript so the model sees what it did.
+                //
+                // A text dialect always finishes with `stop`, so its dropped
+                // call is the block a grammar claimed and could not decode:
+                // scrubbed from the text, no call, only the lead-in prose left.
+                let malformed_blocks = recovery.malformed_blocks();
+                let undecodable_text_call = forced_text_dialect && malformed_blocks > 0;
                 if tool_calls.is_empty()
-                    && response.finish_reason.as_deref() == Some("tool_calls")
+                    && (response.finish_reason.as_deref() == Some("tool_calls")
+                        || undecodable_text_call)
                     && tools_available_this_turn
                     && dropped_tool_call_nudges_used < self.policy.dropped_tool_call_nudges
                 {
                     dropped_tool_call_nudges_used += 1;
-                    messages.push(Message::user(DROPPED_TOOL_CALL_NUDGE));
+                    let nudge = if undecodable_text_call {
+                        tracing::info!(
+                            target: "tinyagents::agent_loop",
+                            run_id = %ctx.run_id(),
+                            call_id = %call_id,
+                            malformed_blocks,
+                            attempt = dropped_tool_call_nudges_used,
+                            "[agent_loop] nudging after undecodable text-dialect tool call"
+                        );
+                        UNDECODABLE_TOOL_CALL_NUDGE
+                    } else {
+                        DROPPED_TOOL_CALL_NUDGE
+                    };
+                    messages.push(Message::user(nudge));
                     let record = ctx.emit(AgentEvent::RetryScheduled {
                         call_id: call_id.clone(),
                         attempt: dropped_tool_call_nudges_used as usize,
@@ -2391,12 +2412,24 @@ fn recover_text_dialect_calls<Ctx>(
     }
 
     let before = response.message.tool_calls.len();
-    super::dialect::recover_text_calls(
+    let malformed = super::dialect::recover_text_calls(
         response,
         model_call_id,
         &recovery.offered,
         recovery.registry.as_deref(),
     );
+    if malformed > 0 {
+        recovery
+            .malformed
+            .fetch_add(malformed, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            target: "tinyagents::agent_loop",
+            run_id = %ctx.run_id(),
+            call_id = %model_call_id,
+            malformed,
+            "[agent_loop] text-dialect block(s) did not decode into a call"
+        );
+    }
     let recovered = response.message.tool_calls.len().saturating_sub(before);
     if recovered == 0 {
         return;
@@ -2416,6 +2449,13 @@ fn recover_text_dialect_calls<Ctx>(
 const DROPPED_TOOL_CALL_NUDGE: &str = "Your previous turn indicated a tool call but none was \
      included. If you meant to call a tool, issue the actual tool call now; otherwise answer \
      directly.";
+
+/// The re-prompt sent when a text-dialect tool-call block could not be
+/// decoded: no tool ran, and the model should know why rather than assume
+/// its call went through.
+const UNDECODABLE_TOOL_CALL_NUDGE: &str = "Your previous turn contained a tool-call block that \
+     could not be parsed, so no tool ran. Re-issue the call using exactly the format from the \
+     tool protocol; otherwise answer directly.";
 
 /// The tool calls on the transcript's last assistant row that have no
 /// matching tool-result row after it — the calls a previous run deferred
@@ -2502,6 +2542,7 @@ mod recovery_tests {
                     .collect(),
             ),
             registry: None,
+            malformed: Arc::default(),
         }
     }
 
