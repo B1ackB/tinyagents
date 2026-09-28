@@ -106,8 +106,8 @@ pub enum UnknownToolPolicy {
     Fail,
     /// Inject a tool-error result (naming the originally requested tool, with
     /// a `tool_search` pointer and close matches) back into the transcript and
-    /// continue the
-    /// loop, letting the model retry with a valid tool. The default.
+    /// continue the loop, letting the model retry with a valid tool. The
+    /// default.
     #[default]
     ReturnToolError,
     /// Rewrite an unknown call to a fixed compatibility tool name and retry the

@@ -368,12 +368,15 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     assert!(tool_messages[0].contains("\"symbol\""));
     assert!(tool_messages[1].contains("stock_quote → ACME"));
     assert!(tool_messages[3].contains("unknown tool `internal_step`"));
-    assert!(tool_messages[3].contains("stock_quote"));
-    let listed = tool_messages[3]
-        .split("valid tools: [")
-        .nth(1)
-        .expect("valid tool listing");
-    assert!(!listed.contains("internal_step"));
+    // The corrective sends the model to discovery rather than dumping every
+    // callable name, and never leaks the hidden tool as a suggestion.
+    assert!(tool_messages[3].contains("call `tool_search`"));
+    assert!(!tool_messages[3].contains("valid tools"));
+    let rest = tool_messages[3]
+        .split_once("unknown tool `internal_step`")
+        .map(|(_, rest)| rest)
+        .expect("corrective names the requested tool");
+    assert!(!rest.contains("internal_step"));
 
     // Events make the surface auditable.
     let events: Vec<AgentEvent> = listener.events().into_iter().map(|r| r.event).collect();
