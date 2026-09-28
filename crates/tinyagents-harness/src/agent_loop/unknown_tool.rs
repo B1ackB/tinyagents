@@ -100,5 +100,9 @@ pub(super) fn closest_tool_names<'a>(
             .then(a.2.len().cmp(&b.2.len()))
             .then(a.2.cmp(b.2))
     });
-    scored.into_iter().take(limit).map(|(_, _, name)| name).collect()
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, name)| name)
+        .collect()
 }

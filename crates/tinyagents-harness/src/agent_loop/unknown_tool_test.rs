@@ -7,7 +7,10 @@ fn names(list: &[&str]) -> Vec<String> {
 #[test]
 fn keeps_the_unknown_tool_prefix_hosts_classify_on() {
     let message = unknown_tool_message("web_search_tool", &names(&["web_fetch"]), true);
-    assert!(message.starts_with("unknown tool `web_search_tool`"), "{message}");
+    assert!(
+        message.starts_with("unknown tool `web_search_tool`"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -15,7 +18,10 @@ fn points_to_tool_search_instead_of_listing_every_tool() {
     let mut available = names(&["web_fetch", "memory_recall", "shell"]);
     available.extend((0..200).map(|i| format!("CONNECTOR_ACTION_{i}")));
     let message = unknown_tool_message("web_search_tool", &available, true);
-    assert!(message.contains("call `tool_search` with what you want to do"), "{message}");
+    assert!(
+        message.contains("call `tool_search` with what you want to do"),
+        "{message}"
+    );
     assert!(!message.contains("valid tools"), "{message}");
     assert!(!message.contains("CONNECTOR_ACTION"), "{message}");
     assert!(!message.contains("memory_recall"), "{message}");
@@ -26,7 +32,10 @@ fn points_to_tool_search_instead_of_listing_every_tool() {
 fn without_tool_search_it_does_not_mention_it() {
     let message = unknown_tool_message("web_search_tool", &names(&["web_fetch"]), false);
     assert!(!message.contains("tool_search"), "{message}");
-    assert!(message.contains("Use only the tools in your tool list."), "{message}");
+    assert!(
+        message.contains("Use only the tools in your tool list."),
+        "{message}"
+    );
 }
 
 #[test]
