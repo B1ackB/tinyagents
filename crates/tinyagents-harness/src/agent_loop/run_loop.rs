@@ -1155,8 +1155,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // above); the `forced_text_dialect || text_dialect_recovery_enabled`
             // gate additionally skips a resolved model whose profile reports
             // native tool calling under `RunPolicy::text_dialect_recovery`'s
-            // `Auto` default. The fenced-code guard and the audit event live
-            // in the wrapper.
+            // `Auto` default. The audit event lives in the wrapper; which
+            // fenced code is protected is `tinytools-agent`'s call.
             if forced_text_dialect || text_dialect_recovery_enabled {
                 recover_text_dialect_calls(ctx, &mut response, &call_id, &recovery);
             }
@@ -2371,32 +2371,6 @@ fn apply_host_budget_compression<Ctx>(
     Ok(())
 }
 
-/// Whether `recover_text_dialect_calls` should even attempt to parse `text`.
-///
-/// Fenced code blocks are always skipped regardless of
-/// [`crate::runtime::TextDialectRecovery`]: a model demonstrating
-/// `<tool_call>` syntax inside a ``` fence — explaining the format, echoing a
-/// worked example — is manifestly not making a call, and recovering it would
-/// silently execute quoted documentation as a real action.
-fn text_dialect_markup_only_in_fenced_code(text: &str) -> bool {
-    let mut in_fence = false;
-    let mut saw_marker_outside_fence = false;
-    let mut saw_marker_anywhere = false;
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if line.contains("<tool_call") {
-            saw_marker_anywhere = true;
-            if !in_fence {
-                saw_marker_outside_fence = true;
-            }
-        }
-    }
-    saw_marker_anywhere && !saw_marker_outside_fence
-}
-
 /// Recovers text-dialect calls through `tinytools-agent`
 /// ([`super::dialect::recover_text_calls`]) while preserving every non-text
 /// provider content block (notably reasoning blocks).
@@ -2405,9 +2379,11 @@ fn text_dialect_markup_only_in_fenced_code(text: &str) -> bool {
 /// it is already empty when nothing could be recovered — no tools offered,
 /// an effective `ToolChoice::None`, or
 /// [`crate::runtime::RunPolicy::text_dialect_recovery`] resolving to off for
-/// the resolved model (see the `recovery` binding in `run_loop_body`). On top
-/// of that, markup that appears only inside a fenced code block is always
-/// skipped. Emits [`AgentEvent::ControlApplied`] when it actually rewrites
+/// the resolved model (see the `recovery` binding in `run_loop_body`).
+/// Whether markup inside a fenced code block is a call or a quoted example is
+/// `tinytools-agent`'s decision (its protected ranges): a language-tagged
+/// fence is protected, a bare one is not. The stream scrubber applies the
+/// same policy, so a streamed and a unary reply parse alike. Emits [`AgentEvent::ControlApplied`] when it actually rewrites
 /// the response, so the recovery is auditable rather than a silent transform.
 fn recover_text_dialect_calls<Ctx>(
     ctx: &RunContext<Ctx>,
@@ -2416,10 +2392,6 @@ fn recover_text_dialect_calls<Ctx>(
     recovery: &super::dialect::TextRecovery,
 ) {
     if recovery.offered.is_empty() {
-        return;
-    }
-
-    if text_dialect_markup_only_in_fenced_code(&response.text()) {
         return;
     }
 
@@ -2589,13 +2561,14 @@ mod recovery_tests {
     }
 
     /// I-2 regression: a final answer that quotes `<tool_call>` markup inside
-    /// a fenced code block must never be executed, even when recovery is
-    /// otherwise enabled and tools were offered.
+    /// a language-tagged fenced code block must never be executed, even when
+    /// recovery is otherwise enabled and tools were offered. (A *bare* fence
+    /// is not protected: `tinytools-agent` treats it as a wrapped call.)
     #[test]
     fn text_dialect_markup_inside_a_fenced_code_block_is_never_recovered() {
         let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
         let mut response = ModelResponse::assistant(
-            "Here is the format:\n```\n<tool_call>{\"name\": \"shell\", \"arguments\": {}}</tool_call>\n```\n",
+            "Here is the format:\n```xml\n<tool_call>{\"name\": \"shell\", \"arguments\": {}}</tool_call>\n```\n",
         );
 
         recover_text_dialect_calls(
@@ -2612,8 +2585,8 @@ mod recovery_tests {
         assert!(response.text().contains("<tool_call>"));
     }
 
-    /// Sanity check for the fenced-code-block guard: markup outside any fence
-    /// is still recovered when the policy and tool offer both allow it.
+    /// Sanity check for the fence policy: markup outside any fence is still
+    /// recovered when the policy and tool offer both allow it.
     #[test]
     fn text_dialect_markup_outside_a_fenced_code_block_is_recovered() {
         let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
