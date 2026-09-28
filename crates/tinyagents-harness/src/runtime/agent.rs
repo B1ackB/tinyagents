@@ -253,6 +253,8 @@ pub struct AgentInvocation<State: Send + Sync, Ctx: Send + Sync = ()> {
     /// Invocation-owned registries and middleware. Absence selects the durable
     /// harness that receives `invoke_agent`.
     runtime: Option<std::sync::Arc<InvocationRuntime<State, Ctx>>>,
+    /// See [`Self::with_replayed_prefix`].
+    replayed_prefix: usize,
 }
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentInvocation<State, Ctx> {
@@ -267,6 +269,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentInvocation<State, Ctx> {
             request,
             context,
             runtime: None,
+            replayed_prefix: 0,
         }
     }
 
@@ -274,6 +277,28 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentInvocation<State, Ctx> {
     /// invocation tree without mutating the durable harness.
     pub fn with_runtime(mut self, runtime: InvocationRuntime<State, Ctx>) -> Self {
         self.runtime = Some(std::sync::Arc::new(runtime));
+        self
+    }
+
+    /// Marks the first `count` messages as replayed history: they were screened
+    /// when they were first admitted, so only the messages after them are
+    /// screened as this turn's user input.
+    ///
+    /// The default of `0` screens every user message. A host that replays tool
+    /// output as user rows (text tool dialects) needs this, or a replayed row
+    /// is re-screened under the user policy on every later turn.
+    ///
+    /// Opt in only if your replayed history stores user rows as the gate
+    /// returned them (redacted), e.g. the `messages` of the [`AgentRun`] that
+    /// admitted them; otherwise a secret redacted on its first turn reaches the
+    /// model raw on later turns.
+    ///
+    /// A `count` greater than `request.messages.len()` is rejected as a host bug. Equal
+    /// to it screens nothing, which is right for a deferred resume and is
+    /// logged when the last message is a user message.
+    #[must_use]
+    pub fn with_replayed_prefix(mut self, count: usize) -> Self {
+        self.replayed_prefix = count;
         self
     }
 
@@ -292,6 +317,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentInvocation<State, Ctx> {
             request,
             context,
             runtime,
+            // A child's input is new to it: screen every user message.
+            replayed_prefix: 0,
         }
     }
 }
@@ -668,6 +695,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             request,
             mut context,
             runtime,
+            replayed_prefix,
         } = invocation;
         let runner = runtime
             .as_deref()
@@ -677,7 +705,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             context = context.with_deferred_results(results);
         }
         let mut prepared = runner
-            .prepare_agent_turn_bounded(host, request, &context)
+            .prepare_agent_turn_bounded(host, request, replayed_prefix, &context)
             .await?;
         prepared.binding.runtime = runtime.clone();
         let agent_id = prepared.binding.agent_id.clone();
@@ -730,6 +758,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             request,
             mut context,
             runtime,
+            replayed_prefix,
         } = invocation;
         let runner = runtime
             .as_deref()
@@ -744,7 +773,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             context = context.with_deferred_results(results);
         }
         let mut prepared = runner
-            .prepare_agent_turn_bounded(host, request, &context)
+            .prepare_agent_turn_bounded(host, request, replayed_prefix, &context)
             .await
             .map_err(sanitize_hosted_preparation_error)?;
         prepared.binding.runtime = runtime.clone();
@@ -804,9 +833,10 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
         &self,
         host: std::sync::Arc<crate::host::HostCapabilities<State>>,
         request: AgentTurnRequest,
+        replayed_prefix: usize,
         context: &RunContext<Ctx>,
     ) -> Result<PreparedAgentTurn<State, Ctx>> {
-        let preparation = self.prepare_agent_turn(host, request, context);
+        let preparation = self.prepare_agent_turn(host, request, replayed_prefix, context);
         context
             .bounded(self.host_io_budget(context), preparation, || {
                 format!(
@@ -852,6 +882,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
         &self,
         host: std::sync::Arc<crate::host::HostCapabilities<State>>,
         mut request: AgentTurnRequest,
+        replayed: usize,
         context: &RunContext<Ctx>,
     ) -> Result<PreparedAgentTurn<State, Ctx>> {
         if request.agent_id.trim().is_empty() {
@@ -897,7 +928,27 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             .thread_id()
             .cloned()
             .unwrap_or_else(|| ThreadId::from(context.run_id().as_str()));
-        let input_text = screen_user_messages(&host, &mut request.messages).await?;
+        if replayed > request.messages.len() {
+            return Err(TinyAgentsError::Validation(format!(
+                "replayed_prefix {replayed} exceeds the {} request messages",
+                request.messages.len()
+            )));
+        }
+        if replayed > 0
+            && replayed == request.messages.len()
+            && matches!(
+                request.messages.last(),
+                Some(tinyinference_llm::message::Message::User(_))
+            )
+        {
+            tracing::warn!(
+                agent_id = %request.agent_id,
+                replayed,
+                "[host] replayed_prefix covers a trailing user message; it is not screened \
+                 (expected only when resuming deferred calls)"
+            );
+        }
+        let input_text = screen_user_messages(&host, &mut request.messages[replayed..]).await?;
         let context_request =
             TurnContextRequest::new(&request.agent_id, thread_id.clone(), &input_text);
         let system = host.context.compose_system_prompt(&context_request).await?;
@@ -1219,7 +1270,8 @@ fn start_progress_dispatcher(
     })
 }
 
-/// Screens every text/JSON block of every user message through the host's
+/// Screens every text/JSON block of every user message in `messages` (the
+/// turn's input past [`AgentInvocation::with_replayed_prefix`]) through the host's
 /// [`crate::host::SecurityGate`], rewriting redacted blocks in place, and
 /// returns the visible text joined by newlines for use as the turn's
 /// memory/experience recall query.
