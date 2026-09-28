@@ -544,6 +544,47 @@ async fn host_registered_tool_search_wins_over_the_intrinsic_bridge() {
     assert_eq!(host_search.calls.lock().unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn unknown_tool_corrective_does_not_advertise_a_host_registered_tool_search() {
+    let deferred = ExposedTool::new("stock_quote", "Quote.", ToolExposure::Deferred);
+    let host_search = ExposedTool::new(
+        TOOL_SEARCH_NAME,
+        "The host's own search tool.",
+        ToolExposure::Direct,
+    );
+    let model = RecordingModel::new(vec![
+        tool_call("c1", "nonexistent_tool", json!({"x": 1})),
+        text("done"),
+    ]);
+
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", model.clone())
+        .set_default_model("mock")
+        .register_tool(deferred)
+        .register_tool(host_search)
+        .with_policy(RunPolicy {
+            unknown_tool: UnknownToolPolicy::ReturnToolError,
+            ..RunPolicy::default()
+        });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    let message = run
+        .messages
+        .iter()
+        .find(|message| matches!(message, Message::Tool(_)))
+        .map(Message::text)
+        .unwrap();
+    assert!(message.starts_with("unknown tool `nonexistent_tool`"), "{message}");
+    // The host's `tool_search` shadows the intrinsic bridge, so the corrective
+    // must not promise the bridge's discovery behaviour.
+    assert!(!message.contains("call `tool_search`"), "{message}");
+}
+
 /// Regression: the collision check that decides whether to advertise an
 /// intrinsic bridge schema used to look only at `tool_schemas` (the `Direct`
 /// set), while admission's own collision check (`self.tools.dispatch`) sees
