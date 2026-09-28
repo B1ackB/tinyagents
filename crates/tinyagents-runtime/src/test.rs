@@ -497,6 +497,44 @@ async fn prepared_tools_are_dynamic_and_never_reused() {
 }
 
 #[tokio::test]
+async fn driver_history_is_the_committed_history_plus_exactly_the_turn_input() {
+    // Hosts mark everything before the last message as replayed history
+    // (`AgentTurnRequest::with_replayed_prefix(len - 1)`, openhuman#6710) and
+    // screen only that last message. That is sound only while a turn appends
+    // exactly its one input: a second appended row would go unscreened.
+    let driver = Arc::new(Driver::new(vec![
+        Ok(outcome(vec![Message::user("a"), Message::assistant("ok")])),
+        Ok(outcome(vec![
+            Message::user("a"),
+            Message::assistant("ok"),
+            Message::user("b"),
+            Message::assistant("ok"),
+        ])),
+    ]));
+    let mut session = SessionBuilder::new(driver.clone()).build().unwrap();
+    for input in ["a", "b"] {
+        session
+            .turn(
+                SessionTurnRequest::new(Message::user(input)),
+                TurnOptions::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let requests = driver.requests.lock().unwrap();
+    assert_eq!(requests[0].history, vec![Message::user("a")]);
+    assert_eq!(
+        requests[1].history,
+        vec![
+            Message::user("a"),
+            Message::assistant("ok"),
+            Message::user("b"),
+        ],
+        "a turn appends exactly its one input after the committed history"
+    );
+}
+
+#[tokio::test]
 async fn trailing_input_is_deduplicated_and_tool_collisions_fail_closed() {
     let driver = Arc::new(Driver::new(vec![
         Ok(outcome(vec![Message::user("same")])),
