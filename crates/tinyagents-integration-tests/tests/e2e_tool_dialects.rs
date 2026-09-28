@@ -1619,3 +1619,71 @@ async fn an_undecodable_block_is_nudged_before_an_empty_response_retry() {
         "three nudges and the final reply, no blind empty-response retry"
     );
 }
+
+/// A real call a small model wrapped in a bare fence, and the same call
+/// quoted as an example under a language-tagged fence. `tinytools-agent`
+/// owns the fence policy: a bare fence is not protected, a tagged one is
+/// (openhuman#6732). Both model paths must apply that one policy.
+const BARE_FENCED_CALL: &str =
+    "```\n<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"}}</tool_call>\n```";
+const XML_FENCED_CALL: &str = "Example:\n```xml\n<tool_call>{\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"}}</tool_call>\n```";
+
+/// Calls dispatched when an xml-dialect run gets `text` as its first reply,
+/// either streamed or unary, with one model call allowed.
+async fn dispatched_from_first_reply(text: &str, streamed: bool) -> usize {
+    let listener = Arc::new(RecordingListener::new());
+    let model: Arc<dyn ChatModel<()>> = if streamed {
+        Arc::new(StreamingMock::new(vec![
+            ModelStreamItem::Started,
+            ModelStreamItem::MessageDelta(MessageDelta::text(text)),
+            ModelStreamItem::Completed(ModelResponse::assistant(text)),
+        ]))
+    } else {
+        Arc::new(ScriptedModel::replies(vec![text]))
+    };
+    let mut harness = harness_with(model, &listener);
+    harness.with_policy(RunPolicy {
+        tool_dialect: ToolDispatcher::Xml,
+        limits: tinyagents_harness::limits::RunLimits {
+            max_model_calls: 1,
+            ..tinyagents_harness::limits::RunLimits::default()
+        },
+        ..RunPolicy::default()
+    });
+    let _ = if streamed {
+        harness
+            .invoke_streaming_default(&(), vec![Message::user("go")])
+            .await
+    } else {
+        harness.invoke_default(&(), vec![Message::user("go")]).await
+    };
+    dispatched_ids(&listener).len()
+}
+
+#[tokio::test]
+async fn a_bare_fenced_call_is_dispatched_unary_and_streamed() {
+    assert_eq!(
+        dispatched_from_first_reply(BARE_FENCED_CALL, false).await,
+        1,
+        "unary"
+    );
+    assert_eq!(
+        dispatched_from_first_reply(BARE_FENCED_CALL, true).await,
+        1,
+        "streamed"
+    );
+}
+
+#[tokio::test]
+async fn a_language_tagged_fenced_call_is_not_dispatched_unary_or_streamed() {
+    assert_eq!(
+        dispatched_from_first_reply(XML_FENCED_CALL, false).await,
+        0,
+        "unary"
+    );
+    assert_eq!(
+        dispatched_from_first_reply(XML_FENCED_CALL, true).await,
+        0,
+        "streamed"
+    );
+}

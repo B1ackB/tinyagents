@@ -516,9 +516,12 @@ impl Default for OutputRetryPolicy {
 /// gets executed as a real tool call, with the visible text silently
 /// stripped and replaced. [`TextDialectRecovery::Auto`] (the default) closes
 /// the common case of that hazard by skipping recovery for any model whose
-/// resolved profile reports native tool calling; recovery inside fenced code
-/// blocks is always skipped regardless of this policy, since a model
-/// demonstrating the syntax in a code fence is manifestly not making a call.
+/// resolved profile reports native tool calling (on the unary path; the
+/// stream scrubber does not consult this policy, see openhuman#6733). Markup
+/// inside a language-tagged fenced code block is never parsed regardless of
+/// this policy (`tinytools-agent`'s protected ranges); a bare fence is not
+/// protected, since small models wrap a genuine call in one far more often
+/// than they quote one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextDialectRecovery {
     /// Never parse text-dialect tool calls.
