@@ -36,8 +36,10 @@ TinyAgents now has `UnknownToolPolicy::{Fail, ReturnToolError, Rewrite}` on
 `RunPolicy` (`crates/tinyagents-harness/src/runtime/types.rs`), applied in
 `crates/tinyagents-harness/src/agent_loop/tools.rs`. The default is
 `ReturnToolError`: an unregistered tool call is injected back as a tool-error
-result naming the requested tool and the valid tools, so the model can
-self-correct instead of the run aborting. `Fail` restores the old abort
+result naming the requested tool, up to three close matches and, when the
+discovery bridge is advertised, a pointer to `tool_search` (never the full
+list of callable names, which floods the context once a connector catalog is
+deferred), so the model can self-correct instead of the run aborting. `Fail` restores the old abort
 behavior; `Rewrite { tool_name }` retargets the call to a fixed compatibility
 tool. OpenHuman's `UNKNOWN_TOOL_SENTINEL` workaround can be retired.
 
