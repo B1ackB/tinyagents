@@ -1691,3 +1691,108 @@ async fn a_language_tagged_fenced_call_is_not_dispatched_unary_or_streamed() {
         "streamed"
     );
 }
+
+/// A tool with a real schema that records the arguments of every call it
+/// receives, so an acceptance test can assert what was actually dispatched.
+struct RecordingTool {
+    name: &'static str,
+    schema: serde_json::Value,
+    calls: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl Tool for RecordingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Records its calls."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.schema.clone()
+    }
+
+    async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.calls.lock().unwrap().push(arguments);
+        Ok(ToolResult::success("ok"))
+    }
+}
+
+/// A `todo` tool and a `search_repositories` tool shaped like the ones in the
+/// production thread behind openhuman#6722, under the Python code dialect,
+/// with `text` as the model's first reply. Returns each tool's recorded calls.
+async fn python_dialect_dispatch(text: &str) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let todo_calls = Arc::new(Mutex::new(Vec::new()));
+    let search_calls = Arc::new(Mutex::new(Vec::new()));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::new(ScriptedModel::replies(vec![text, "done"])))
+        .set_default_model("mock")
+        .register_tool(Arc::new(RecordingTool {
+            name: "todo",
+            schema: json!({
+                "type": "object",
+                "properties": { "todos": { "type": "array", "items": { "type": "object" } } }
+            }),
+            calls: todo_calls.clone(),
+        }))
+        .register_tool(Arc::new(RecordingTool {
+            name: "search_repositories",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "q": { "type": "string" },
+                    "sort": { "type": "string" },
+                    "per_page": { "type": "integer" }
+                },
+                "required": ["q"]
+            }),
+            calls: search_calls.clone(),
+        }))
+        .with_policy(RunPolicy {
+            tool_dialect: ToolDispatcher::Python,
+            ..RunPolicy::default()
+        });
+    harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+    let todo = todo_calls.lock().unwrap().clone();
+    let search = search_calls.lock().unwrap().clone();
+    (todo, search)
+}
+
+#[tokio::test]
+async fn a_named_invoke_wrapped_in_tool_call_is_dispatched_under_the_python_dialect() {
+    // The shape of the production record behind openhuman#6722 (sanitized):
+    // a `todo` element closed by a stray `</tool_call>`, a code fence opened on
+    // the same line as the next `<tool_call>`, and a named `<invoke>` with
+    // `string=` attributes inside it.
+    let text = "<todo>\n<todos>\n[{\"status\": \"in_progress\", \"description\": \"Find the repositories\"}, {\"status\": \"pending\", \"description\": \"Fetch the issues\"}]\n</todos>\n</tool_call>\n```<tool_call>\n<invoke name=\"search_repositories\">\n<parameter name=\"q\" string=\"true\">example</parameter>\n<parameter name=\"sort\" string=\"true\">stars</parameter>\n<parameter name=\"per_page\" string=\"false\">20</parameter>\n</invoke>\n</tool_call>";
+
+    let (_todo, search) = python_dialect_dispatch(text).await;
+
+    assert_eq!(search.len(), 1, "the wrapped invoke is dispatched once");
+    assert_eq!(search[0]["q"], "example");
+    assert_eq!(search[0]["sort"], "stars");
+    assert_eq!(
+        search[0]["per_page"], 20,
+        "string=\"false\" decodes as JSON"
+    );
+}
+
+#[tokio::test]
+async fn a_todo_element_call_is_dispatched_under_the_python_dialect() {
+    // The `<TOOL><param>…</param></TOOL>` element form the same model used
+    // for its `todo` updates (openhuman#6722).
+    let text = "Let me fetch the issues.\n\n<todo>\n<todos>\n[{\"status\": \"in_progress\", \"description\": \"Fetch the issues\"}, {\"status\": \"pending\", \"description\": \"Build the roadmap\"}]\n</todos>\n</todo>";
+
+    let (todo, search) = python_dialect_dispatch(text).await;
+
+    assert_eq!(todo.len(), 1, "the element call is dispatched once");
+    assert_eq!(todo[0]["todos"][0]["status"], "in_progress");
+    assert_eq!(todo[0]["todos"].as_array().map(Vec::len), Some(2));
+    assert!(search.is_empty());
+}
