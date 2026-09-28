@@ -127,6 +127,7 @@ mod run_loop;
 pub(crate) mod stream;
 mod tool_changes;
 mod tools;
+mod unknown_tool;
 
 pub use stream::AgentStreamItem;
 pub(crate) use stream::{StreamRunner, invoke_stream_with_runner};
@@ -139,3 +140,5 @@ mod rich_tool_test;
 mod run_queue_test;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod unknown_tool_test;
