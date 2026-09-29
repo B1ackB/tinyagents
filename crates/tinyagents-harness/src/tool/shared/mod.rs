@@ -144,10 +144,10 @@ impl Tool for CanonicalSharedToolAdapter {
                 ToolResult::error(format!("{} failed: {error}", self.name))
             }
         };
-        if !result.is_error {
-            if let Some(hook) = &self.early_exit {
-                hook.trigger(&self.name, result.output_for_llm(true));
-            }
+        if !result.is_error
+            && let Some(hook) = &self.early_exit
+        {
+            hook.trigger(&self.name, result.output_for_llm(true));
         }
         Ok(result)
     }
