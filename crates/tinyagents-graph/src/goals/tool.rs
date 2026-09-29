@@ -7,6 +7,12 @@
 //! that wants to expose them, but not part of the default model-facing set
 //! returned by [`goal_tools`].
 //!
+//! Every control answers with the JSON `{ "goal": <ThreadGoal|null>, "text":
+//! <rendered block> }`: `goal` is the structured camelCase goal a UI can draw
+//! a banner from, `text` the model-readable rendering (also attached as the
+//! markdown form). A host that must react to a change (publish an event, refresh
+//! a chip) registers a hook with [`GoalTool::with_update_hook`].
+//!
 //! The target thread is resolved from
 //! [`ToolExecutionContext::thread_id`](tinyagents_harness::tool::ToolExecutionContext),
 //! the harness analogue of an ambient thread id: a tool never takes a
@@ -24,7 +30,15 @@ use super::types::ThreadGoal;
 use tinyagents_harness::error::Result;
 use tinyagents_harness::store::Store;
 use tinyagents_harness::tool::ToolRegistry;
-use tinytools::{Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects};
+use tinytools::{
+    PermissionLevel, Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects,
+};
+
+/// Callback a host registers to observe a goal a tool just wrote.
+///
+/// Called after a successful `goal_set` / `goal_complete` / `goal_pause` /
+/// `goal_resume` with the persisted goal (never for `goal_get` or `goal_clear`).
+pub type GoalUpdateHook = Arc<dyn Fn(&ThreadGoal) + Send + Sync>;
 
 /// Which thread-goal control a [`GoalTool`] implements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,9 +92,11 @@ impl GoalToolKind {
                  usage. Returns 'no goal set' when the thread has none."
             }
             Self::Set => {
-                "Set (or replace) this thread's goal — the durable objective you should keep \
-                 pursuing across turns until it's complete. Changing the objective resets \
-                 usage counters. Optionally set a token_budget; when reached, work halts."
+                "Set (or replace) this thread's goal — the durable objective you should \
+                 keep pursuing across turns until it's complete. Use at the start of a \
+                 non-trivial request, or to refine the objective as it sharpens. Changing \
+                 the objective resets usage counters. Optionally set a token_budget; when \
+                 reached, the goal pauses with a progress summary."
             }
             Self::Complete => {
                 "Mark this thread's goal complete. Only call this when concrete evidence \
@@ -126,12 +142,24 @@ impl GoalToolKind {
 pub struct GoalTool {
     kind: GoalToolKind,
     store: Arc<dyn Store>,
+    on_update: Option<GoalUpdateHook>,
 }
 
 impl GoalTool {
     /// Creates one goal tool of `kind` backed by `store`.
     pub fn new(kind: GoalToolKind, store: Arc<dyn Store>) -> Self {
-        Self { kind, store }
+        Self {
+            kind,
+            store,
+            on_update: None,
+        }
+    }
+
+    /// Registers a [`GoalUpdateHook`] invoked after each successful write.
+    #[must_use]
+    pub fn with_update_hook(mut self, hook: GoalUpdateHook) -> Self {
+        self.on_update = Some(hook);
+        self
     }
 
     /// The control kind this tool implements.
@@ -139,49 +167,73 @@ impl GoalTool {
         self.kind
     }
 
-    /// Dispatches the control against `thread_id`, returning the model-facing
-    /// content and a structured `raw` payload.
-    async fn dispatch(&self, thread_id: &str, args: &Value) -> Result<(String, Option<Value>)> {
+    /// Dispatches the control against `thread_id`, returning the goal (when
+    /// one exists after the call) and a model-facing note.
+    async fn dispatch(
+        &self,
+        thread_id: &str,
+        args: &Value,
+    ) -> std::result::Result<(Option<ThreadGoal>, String), String> {
+        let stringify = |error: tinyagents_harness::error::TinyAgentsError| error.to_string();
         match self.kind {
-            GoalToolKind::Get => match store::get(&self.store, thread_id).await? {
-                Some(goal) => Ok((render_goal(&goal), Some(serde_json::to_value(&goal)?))),
-                None => Ok(("no goal set for this thread".to_string(), None)),
+            GoalToolKind::Get => match store::get(&self.store, thread_id)
+                .await
+                .map_err(stringify)?
+            {
+                Some(goal) => Ok((Some(goal), String::new())),
+                None => Ok((None, "no goal set for this thread".to_string())),
             },
             GoalToolKind::Set => {
                 let Some(objective) = args.get("objective").and_then(Value::as_str) else {
-                    return Ok(("error: missing 'objective' parameter".to_string(), None));
+                    return Err("Missing 'objective' parameter".to_string());
                 };
                 let token_budget = args.get("token_budget").and_then(Value::as_u64);
-                let goal = store::set(&self.store, thread_id, objective, token_budget).await?;
-                Ok((
-                    format!("Goal set.\n{}", render_goal(&goal)),
-                    Some(serde_json::to_value(&goal)?),
-                ))
+                let goal = store::set(&self.store, thread_id, objective, token_budget)
+                    .await
+                    .map_err(stringify)?;
+                Ok((Some(goal), "Goal set.".to_string()))
             }
             GoalToolKind::Complete => {
-                let goal = store::complete(&self.store, thread_id).await?;
-                Ok((
-                    format!("Goal marked complete.\n{}", render_goal(&goal)),
-                    Some(serde_json::to_value(&goal)?),
-                ))
+                let goal = store::complete(&self.store, thread_id)
+                    .await
+                    .map_err(stringify)?;
+                Ok((Some(goal), "Goal marked complete.".to_string()))
             }
             GoalToolKind::Pause => {
-                let goal = store::pause(&self.store, thread_id).await?;
-                Ok((render_goal(&goal), Some(serde_json::to_value(&goal)?)))
+                let goal = store::pause(&self.store, thread_id)
+                    .await
+                    .map_err(stringify)?;
+                Ok((Some(goal), String::new()))
             }
             GoalToolKind::Resume => {
-                let goal = store::resume(&self.store, thread_id).await?;
-                Ok((render_goal(&goal), Some(serde_json::to_value(&goal)?)))
+                let goal = store::resume(&self.store, thread_id)
+                    .await
+                    .map_err(stringify)?;
+                Ok((Some(goal), String::new()))
             }
             GoalToolKind::Clear => {
-                let removed = store::clear(&self.store, thread_id).await?;
-                Ok((
-                    format!("Goal cleared (removed={removed})."),
-                    Some(json!({ "removed": removed })),
-                ))
+                let removed = store::clear(&self.store, thread_id)
+                    .await
+                    .map_err(stringify)?;
+                Ok((None, format!("Goal cleared (removed={removed}).")))
             }
         }
     }
+}
+
+/// Builds the `{ goal, text }` payload every goal control answers with.
+/// `text` is `note` followed by the rendered goal block (or just `note` when
+/// there is no goal).
+fn goal_payload(goal: Option<&ThreadGoal>, note: &str) -> Value {
+    let text = match goal {
+        Some(goal) if note.is_empty() => render_goal(goal),
+        Some(goal) => format!("{note}\n{}", render_goal(goal)),
+        None => note.to_string(),
+    };
+    json!({
+        "goal": goal.map(|goal| serde_json::to_value(goal).unwrap_or(Value::Null)),
+        "text": text,
+    })
 }
 
 /// Renders a goal as a compact, model-readable block.
@@ -243,6 +295,14 @@ impl Tool for GoalTool {
         true
     }
 
+    fn permission_level(&self) -> PermissionLevel {
+        if self.kind.read_only() {
+            PermissionLevel::ReadOnly
+        } else {
+            PermissionLevel::Write
+        }
+    }
+
     fn policy(&self) -> ToolPolicy {
         ToolPolicy {
             classified: true,
@@ -256,7 +316,7 @@ impl Tool for GoalTool {
 
     async fn execute(&self, _args: Value) -> anyhow::Result<ToolResult> {
         Ok(error_result(
-            "goal tools require an active thread (no thread_id in tool context)",
+            "thread goal tools require an active chat thread",
         ))
     }
 
@@ -268,13 +328,25 @@ impl Tool for GoalTool {
     ) -> anyhow::Result<ToolResult> {
         let Some(thread_id) = context.and_then(ToolRunContext::thread_id) else {
             return Ok(error_result(
-                "goal tools require an active thread (no thread_id in tool context)",
+                "thread goal tools require an active chat thread",
             ));
         };
-        let (content, raw) = self.dispatch(thread_id, &args).await?;
-        Ok(match raw {
-            Some(raw) => ToolResult::json(raw).with_markdown(content),
-            None => ToolResult::success(content),
-        })
+        tracing::debug!(
+            tool = self.kind.name(),
+            thread_id,
+            "[thread_goals] goal tool execute"
+        );
+        let (goal, note) = match self.dispatch(thread_id, &args).await {
+            Ok(outcome) => outcome,
+            Err(message) => return Ok(error_result(message)),
+        };
+        if let (Some(goal), Some(hook)) = (goal.as_ref(), self.on_update.as_ref())
+            && !self.kind.read_only()
+        {
+            hook(goal);
+        }
+        let payload = goal_payload(goal.as_ref(), &note);
+        let text = payload["text"].as_str().unwrap_or_default().to_string();
+        Ok(ToolResult::success(payload.to_string()).with_markdown(text))
     }
 }
