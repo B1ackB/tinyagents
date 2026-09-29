@@ -17,7 +17,7 @@ use serde_json::json;
 
 use super::time_parse::{ResolveZone, resolve_expr};
 use crate::tool::ToolRegistry;
-use tinytools::{Tool, ToolPolicy, ToolResult};
+use tinytools::{Tool, ToolCallOptions, ToolPolicy, ToolResult};
 
 /// Declared name of [`CurrentTimeTool`].
 const CURRENT_TIME_NAME: &str = "current_time";
@@ -71,9 +71,60 @@ impl Tool for CurrentTimeTool {
         ToolPolicy::read_only()
     }
 
-    async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
-        Ok(ToolResult::json(current_time_payload(&arguments)))
+    fn supports_markdown(&self) -> bool {
+        true
     }
+
+    async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_options(arguments, ToolCallOptions::default())
+            .await
+    }
+
+    async fn execute_with_options(
+        &self,
+        arguments: serde_json::Value,
+        options: ToolCallOptions,
+    ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(args = %arguments, "[current_time] execute start");
+        let payload = current_time_payload(&arguments);
+        let mut result = ToolResult::success(serde_json::to_string_pretty(&payload)?);
+        if options.prefer_markdown {
+            result = result.with_markdown(current_time_markdown(&payload));
+        }
+        Ok(result)
+    }
+}
+
+/// Renders the [`CurrentTimeTool`] payload as a compact markdown list.
+fn current_time_markdown(payload: &serde_json::Value) -> String {
+    let text = |value: &serde_json::Value| value.as_str().unwrap_or("").to_string();
+    let mut md = String::new();
+    md.push_str(&format!("- **utc**: {}\n", text(&payload["utc"])));
+    md.push_str(&format!(
+        "- **local**: {} ({})\n",
+        text(&payload["local"]),
+        text(&payload["local_timezone"])
+    ));
+    md.push_str(&format!("- **weekday**: {}\n", text(&payload["weekday"])));
+    md.push_str(&format!(
+        "- **unix_seconds**: {}\n",
+        payload["unix_seconds"].as_i64().unwrap_or(0)
+    ));
+    if let Some(requested) = payload.get("requested_timezone") {
+        md.push_str(&format!(
+            "- **{}**: {} ({})\n",
+            text(&requested["name"]),
+            text(&requested["time"]),
+            text(&requested["weekday"])
+        ));
+    }
+    if let Some(error) = payload
+        .get("requested_timezone_error")
+        .and_then(|value| value.as_str())
+    {
+        md.push_str(&format!("- **timezone error**: {error}\n"));
+    }
+    md
 }
 
 /// Builds the JSON payload for [`CurrentTimeTool`]: always UTC + local time,
@@ -174,11 +225,28 @@ impl Tool for ResolveTimeTool {
         ToolPolicy::read_only()
     }
 
+    fn supports_markdown(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_options(arguments, ToolCallOptions::default())
+            .await
+    }
+
+    async fn execute_with_options(
+        &self,
+        arguments: serde_json::Value,
+        options: ToolCallOptions,
+    ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(args = %arguments, "[resolve_time] execute start");
         let expr = match arguments.get("expr").and_then(|value| value.as_str()) {
             Some(expr) => expr,
             None => {
-                return Ok(ToolResult::error("resolve_time: `expr` is required"));
+                return Ok(ToolResult::error(
+                    "resolve_time: `expr` is required (e.g. \"24h ago\", \
+                     \"2026-06-09T19:12:00Z\", \"now\").",
+                ));
             }
         };
 
@@ -198,12 +266,41 @@ impl Tool for ResolveTimeTool {
         let dt = match resolve_expr(expr, zone) {
             Ok(dt) => dt,
             Err(error) => {
+                tracing::debug!(expr = expr, error = %error, "[resolve_time] parse failed");
                 return Ok(ToolResult::error(format!("resolve_time: {error}")));
             }
         };
 
-        Ok(ToolResult::json(resolve_time_payload(expr, &arguments, dt)))
+        let payload = resolve_time_payload(expr, &arguments, dt);
+        tracing::debug!(
+            "[resolve_time] resolved {expr:?} -> {} (unix_s={})",
+            payload["rfc3339"],
+            payload["unix_s"]
+        );
+        let mut result = ToolResult::success(serde_json::to_string_pretty(&payload)?);
+        if options.prefer_markdown {
+            result = result.with_markdown(resolve_time_markdown(&payload));
+        }
+        Ok(result)
     }
+}
+
+/// Renders the [`ResolveTimeTool`] payload as a compact markdown list.
+fn resolve_time_markdown(payload: &serde_json::Value) -> String {
+    let text = |key: &str| match &payload[key] {
+        serde_json::Value::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+    format!(
+        "- **interpreted**: {}\n- **value**: {}\n- **unix_s**: {}\n- **unix_ms**: {}\n\
+         - **slack_ts**: {}\n- **rfc3339**: {}\n",
+        text("interpreted"),
+        text("value"),
+        text("unix_s"),
+        text("unix_ms"),
+        text("slack_ts"),
+        text("rfc3339"),
+    )
 }
 
 /// Builds the JSON payload for [`ResolveTimeTool`]: the resolved instant
