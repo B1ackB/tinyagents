@@ -23,15 +23,13 @@ use tinytools::{Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects};
 
 const TODO_TOOL_NAME: &str = "todo";
 
-const TODO_DESCRIPTION: &str = "Your todo list for this thread. Pass the complete list every \
-    time; it replaces what was there. Use it for work with 3+ steps: write the steps up front, \
-    keep exactly one `in_progress`, mark each `completed` only after its work has actually run \
-    and its result is in this conversation. Writing the list is bookkeeping, not work: after \
-    updating it, immediately carry out the next step, unless this update completes the final item. \
-    Providers that cannot issue parallel tool calls may make that call in the next model turn, and \
-    one update per response is enough. Omit \
-    `todos` to read the current list. The list is bound \
-    automatically to the current thread — do not pass a thread id.";
+/// Paid on every request of every agent that carries the tool, so it states
+/// the contract once and leaves the "do the next step in the same response"
+/// rule to the host prompt that already carries it.
+const TODO_DESCRIPTION: &str = "This thread's todo list for work with 3+ steps. Pass the \
+    complete list each time (it replaces the old one), or omit `todos` to read it. Keep one \
+    item `in_progress`; mark it `completed` only once its result is in the conversation, then \
+    do the next step.";
 
 /// The `todo` harness [`Tool`], backed by a [`Store`](tinyagents_harness::store::Store).
 pub struct TodoTool {
