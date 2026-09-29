@@ -1,6 +1,6 @@
 //! Tests for builtin time/date tools.
 
-use super::time;
+use super::time_parse;
 use super::*;
 use chrono::{SecondsFormat, Utc};
 use chrono_tz::Tz;
@@ -70,11 +70,11 @@ fn relative_past_variants_are_negative_offsets() {
         "24 hours ago",
         "24h",
     ] {
-        let duration = time::parse_relative_duration(expr).unwrap();
+        let duration = time_parse::parse_relative_duration(expr).unwrap();
         assert_eq!(duration.num_seconds(), -86_400, "{expr}");
     }
     assert_eq!(
-        time::parse_relative_duration("2 weeks")
+        time_parse::parse_relative_duration("2 weeks")
             .unwrap()
             .num_seconds(),
         -1_209_600
@@ -84,23 +84,25 @@ fn relative_past_variants_are_negative_offsets() {
 #[test]
 fn relative_future_variants_are_positive_offsets() {
     assert_eq!(
-        time::parse_relative_duration("in 10 minutes")
+        time_parse::parse_relative_duration("in 10 minutes")
             .unwrap()
             .num_seconds(),
         600
     );
     assert_eq!(
-        time::parse_relative_duration("30m from now")
+        time_parse::parse_relative_duration("30m from now")
             .unwrap()
             .num_seconds(),
         1_800
     );
     assert_eq!(
-        time::parse_relative_duration("+2h").unwrap().num_seconds(),
+        time_parse::parse_relative_duration("+2h")
+            .unwrap()
+            .num_seconds(),
         7_200
     );
     assert_eq!(
-        time::parse_relative_duration("next 7d")
+        time_parse::parse_relative_duration("next 7d")
             .unwrap()
             .num_seconds(),
         604_800
@@ -109,11 +111,12 @@ fn relative_future_variants_are_positive_offsets() {
 
 #[test]
 fn resolve_expr_handles_exact_rfc3339_and_explicit_zone_dates() {
-    let dt = time::resolve_expr("2026-06-09T19:12:00Z", time::ResolveZone::Local).unwrap();
+    let dt =
+        time_parse::resolve_expr("2026-06-09T19:12:00Z", time_parse::ResolveZone::Local).unwrap();
     assert_eq!(dt.timestamp(), 1_781_032_320);
 
     let tz: Tz = "Asia/Kolkata".parse().unwrap();
-    let dt = time::resolve_expr("2026-06-09", time::ResolveZone::Iana(tz)).unwrap();
+    let dt = time_parse::resolve_expr("2026-06-09", time_parse::ResolveZone::Iana(tz)).unwrap();
     assert_eq!(
         dt.to_rfc3339_opts(SecondsFormat::Secs, true),
         "2026-06-08T18:30:00Z"
@@ -123,8 +126,8 @@ fn resolve_expr_handles_exact_rfc3339_and_explicit_zone_dates() {
 #[test]
 fn relative_resolution_tracks_now_with_expected_sign() {
     let before = Utc::now().timestamp();
-    let past = time::resolve_expr("24h ago", time::ResolveZone::Local).unwrap();
-    let future = time::resolve_expr("in 10 minutes", time::ResolveZone::Local).unwrap();
+    let past = time_parse::resolve_expr("24h ago", time_parse::ResolveZone::Local).unwrap();
+    let future = time_parse::resolve_expr("in 10 minutes", time_parse::ResolveZone::Local).unwrap();
     let after = Utc::now().timestamp();
 
     assert!(past.timestamp() >= before - 86_400 - 2);
@@ -166,4 +169,25 @@ async fn resolve_time_errors_for_missing_expr_and_bad_timezone() {
         .unwrap();
     assert!(bad_zone.is_error);
     assert!(bad_zone.output().contains("unknown IANA timezone"));
+}
+
+#[tokio::test]
+async fn resolve_time_rejects_out_of_range_duration_without_panicking() {
+    let result = ResolveTimeTool::new()
+        .execute(json!({ "expr": "in 9223372036854776s" }))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert!(result.output().contains("could not parse"));
+}
+
+#[tokio::test]
+async fn resolve_time_accepts_conversational_phrases() {
+    let result = ResolveTimeTool::new()
+        .execute(json!({ "expr": "tomorrow at 9am", "timezone": "Asia/Kolkata" }))
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{}", result.output());
+    let payload: serde_json::Value = serde_json::from_str(&result.output()).unwrap();
+    assert!(payload["unix_s"].is_i64());
 }

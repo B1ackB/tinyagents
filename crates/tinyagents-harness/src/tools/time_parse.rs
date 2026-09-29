@@ -7,7 +7,9 @@
 //! timestamps. Bare durations look backward; `in` and `next` look forward.
 //! Civil dates and clock times are interpreted in a [`ResolveZone`].
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday,
+};
 use chrono_tz::Tz;
 
 /// Parse a relative-duration expression into a **signed** [`Duration`] offset
@@ -201,20 +203,12 @@ fn resolve_calendar_phrase(
             let days = match direction {
                 "next" => {
                     let ahead = (target - current).rem_euclid(7);
-                    if ahead == 0 {
-                        7
-                    } else {
-                        ahead
-                    }
+                    if ahead == 0 { 7 } else { ahead }
                 }
                 "this" => target - current,
                 "last" => {
                     let behind = (current - target).rem_euclid(7);
-                    if behind == 0 {
-                        -7
-                    } else {
-                        -behind
-                    }
+                    if behind == 0 { -7 } else { -behind }
                 }
                 _ => -(current - target).rem_euclid(7),
             };
