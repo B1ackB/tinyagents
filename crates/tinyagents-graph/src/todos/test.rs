@@ -504,6 +504,21 @@ mod tool_tests {
         }
     }
 
+    /// A model that sends the retired `{"cards": ...}` shape gets a tool error
+    /// naming the replacement, never a dispatch error that would end the run.
+    #[tokio::test]
+    async fn retired_cards_shape_is_a_soft_error_naming_todos() {
+        let tool = TodoTool::new(store());
+        let res = run(
+            &tool,
+            Some("t"),
+            json!({ "cards": [{ "content": "x", "status": "todo" }] }),
+        )
+        .await;
+        assert!(res.is_error);
+        assert!(res.output().contains("pass `todos`"), "{}", res.output());
+    }
+
     #[tokio::test]
     async fn invariant_violation_is_a_soft_error() {
         let tool = TodoTool::new(store());
