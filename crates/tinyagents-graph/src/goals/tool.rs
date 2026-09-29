@@ -27,7 +27,6 @@ use serde_json::{Value, json};
 
 use super::store;
 use super::types::ThreadGoal;
-use tinyagents_harness::error::Result;
 use tinyagents_harness::store::Store;
 use tinyagents_harness::tool::ToolRegistry;
 use tinytools::{PermissionLevel, Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects};
