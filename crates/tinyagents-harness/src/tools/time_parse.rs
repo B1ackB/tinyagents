@@ -276,13 +276,13 @@ pub(crate) fn resolve_expr_at(
     }
 
     // Date with a conversational clock time, e.g. "2026-06-09 at 9am".
-    if let Some((date_text, clock_text)) = trimmed.split_once(' ') {
-        if let (Ok(date), Some(time)) = (
+    if let Some((date_text, clock_text)) = trimmed.split_once(' ')
+        && let (Ok(date), Some(time)) = (
             NaiveDate::parse_from_str(date_text, "%Y-%m-%d"),
             parse_clock_time(clock_text),
-        ) {
-            return zone.naive_to_utc(date.and_time(time));
-        }
+        )
+    {
+        return zone.naive_to_utc(date.and_time(time));
     }
 
     // Accept time-first forms too: "11pm tonight", "9am next Friday".
