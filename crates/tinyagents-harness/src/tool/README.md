@@ -119,6 +119,8 @@ the model. Re-exported here as `pub mod select` and via `pub use select::*`.
 | `injected.rs` | Injected (host-only) argument stripping and schema projection. |
 | `schema.rs` | `SchemaCleanr`, `CleaningStrategy`; low-level JSON Schema cleaning. |
 | `schema_prepare.rs` | Provider projection seam built on `schema.rs`; strict-mode sanitizer. |
+| `schema_walk.rs` | Vendor-neutral schema/value walkers: primary array path, response fields, missing and unsupported argument names. |
+| `shared/` | `CanonicalSharedToolAdapter` (a `tinytools::Tool` over shared, non-cloneable registries) and `EarlyExitHook` (pause the run when a designated tool succeeds). |
 | `timeout.rs` | `ToolTimeoutSettings`, `ResolvedToolTimeout`. |
 | `select/` | Prompt-driven tool ranking (own submodule; see its README/module doc). |
 | `*_test.rs`, `test.rs` | Unit tests colocated by concern, listed via `#[path = "..."]` or `mod ..._test;`. |
