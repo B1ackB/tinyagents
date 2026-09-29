@@ -30,9 +30,7 @@ use super::types::ThreadGoal;
 use tinyagents_harness::error::Result;
 use tinyagents_harness::store::Store;
 use tinyagents_harness::tool::ToolRegistry;
-use tinytools::{
-    PermissionLevel, Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects,
-};
+use tinytools::{PermissionLevel, Tool, ToolPolicy, ToolResult, ToolRunContext, ToolSideEffects};
 
 /// Callback a host registers to observe a goal a tool just wrote.
 ///

@@ -24,7 +24,7 @@ mod types;
 pub use budget::{BudgetVerdict, GoalBudgetGuard, account_turn, accrues_usage, turn_tokens};
 pub use continuation::{goal_gate_node, note_user_turn, run_continuation_tick};
 pub use prompt::active_goal_context_block;
-pub use tool::{GoalTool, GoalToolKind, goal_tools, register_goal_tools};
+pub use tool::{GoalTool, GoalToolKind, GoalUpdateHook, goal_tools, register_goal_tools};
 pub use types::{GoalProgress, ThreadGoal, ThreadGoalStatus, TurnOutcome};
 
 #[cfg(test)]

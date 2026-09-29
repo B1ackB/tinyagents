@@ -226,7 +226,11 @@ async fn current_time_markdown_only_when_preferred() {
         )
         .await
         .unwrap();
-    assert!(bad.markdown_formatted.unwrap().contains("- **timezone error**: "));
+    assert!(
+        bad.markdown_formatted
+            .unwrap()
+            .contains("- **timezone error**: ")
+    );
 }
 
 #[tokio::test]
@@ -249,7 +253,10 @@ async fn resolve_time_markdown_lists_every_representation() {
         .unwrap()
         .markdown_formatted
         .expect("markdown rendering");
-    assert!(md.contains("- **interpreted**: 2026-06-09T19:12:00Z\n"), "{md}");
+    assert!(
+        md.contains("- **interpreted**: 2026-06-09T19:12:00Z\n"),
+        "{md}"
+    );
     assert!(md.contains("- **value**: 1781032320.000000\n"), "{md}");
     assert!(md.contains("- **unix_s**: 1781032320\n"), "{md}");
     assert!(md.contains("- **unix_ms**: 1781032320000\n"), "{md}");
