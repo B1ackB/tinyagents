@@ -755,7 +755,11 @@ impl FileTranscriptHistory {
             "[transcript-history] opened discovered path={}",
             path.display()
         );
-        Self { path, seed_meta }
+        Self {
+            path,
+            seed_meta,
+            generation_reservation: Mutex::new(None),
+        }
     }
 
     /// This handle's transcript file.
@@ -809,6 +813,7 @@ fn generation_lock(path: &Path) -> anyhow::Result<File> {
     }
     OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_path)
