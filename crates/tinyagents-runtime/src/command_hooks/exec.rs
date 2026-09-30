@@ -91,11 +91,17 @@ pub async fn run(
             finish(definition, label, started.elapsed(), result)
         }
         HookKind::Prompt => {
-            let timeout = definition.timeout.map(Duration::from_secs).unwrap_or(default_timeout);
-            let result = match tokio::time::timeout(timeout, run_prompt(definition, input, environment)).await {
-                Ok(result) => result,
-                Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
-            };
+            let timeout = definition
+                .timeout
+                .map(Duration::from_secs)
+                .unwrap_or(default_timeout);
+            let result =
+                match tokio::time::timeout(timeout, run_prompt(definition, input, environment))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
+                };
             finish(definition, label, started.elapsed(), result)
         }
     }

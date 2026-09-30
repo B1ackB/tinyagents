@@ -158,7 +158,13 @@ impl HookDefinition {
     /// Identity for per-hook accounting; unlike the short log label this
     /// retains the complete command and matcher.
     pub fn identity(&self) -> String {
-        format!("{}:{}:{:?}:{}", self.layer.map(HookLayer::as_str).unwrap_or("unknown"), self.command, self.matcher, self.kind as u8)
+        format!(
+            "{}:{}:{:?}:{}",
+            self.layer.map(HookLayer::as_str).unwrap_or("unknown"),
+            self.command,
+            self.matcher,
+            self.kind as u8
+        )
     }
 }
 
