@@ -66,10 +66,9 @@ impl TurnStateMirror {
             return;
         }
         let workspace_dir = self.store.workspace_dir();
-        let Some(path) = crate::transcript::find_root_transcript_for_thread(
-            workspace_dir,
-            thread_id,
-        ) else {
+        let Some(path) =
+            crate::transcript::find_root_transcript_for_thread(workspace_dir, thread_id)
+        else {
             tracing::debug!(
                 "{MIRROR_LOG_PREFIX} no root transcript for thread={thread_id} yet — leaving interrupted partial ({} chars) in turn_state snapshot only",
                 partial.len()
