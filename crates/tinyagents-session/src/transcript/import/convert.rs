@@ -17,15 +17,23 @@ pub fn parent_session_key(stem: &str) -> Option<String> {
 }
 
 /// Encode a session key as a collision-free TinyAgents store name.
-/// Hex encoding the original UTF-8 bytes prevents collisions after sanitizing.
+/// Unsafe UTF-8 bytes use percent escapes, including `%` itself, so encoded
+/// bytes cannot collide with literal text. Safe existing names stay unchanged.
 pub fn sanitize_store_name(name: &str) -> String {
     use std::fmt::Write as _;
-    let mut encoded = String::with_capacity(1 + name.len() * 2);
-    encoded.push('s');
+    let mut encoded = String::with_capacity(name.len());
     for byte in name.bytes() {
-        write!(&mut encoded, "{byte:02x}").expect("String writes cannot fail");
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "%{byte:02x}").expect("String writes cannot fail");
+        }
     }
-    encoded
+    if encoded.is_empty() || encoded.bytes().all(|b| b == b'.') {
+        "session".to_string()
+    } else {
+        encoded
+    }
 }
 
 /// Journal stream name for a session.

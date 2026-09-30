@@ -16,9 +16,10 @@ fn parent_key_follows_last_double_underscore() {
 
 #[test]
 fn sanitize_maps_unsafe_bytes_and_guards_dots() {
-    assert_eq!(sanitize_store_name("1719_agent"), "s313731395f6167656e74");
-    assert_eq!(sanitize_store_name("a/b:c d"), "s612f623a632064");
-    assert_eq!(sanitize_store_name(""), "s");
+    assert_eq!(sanitize_store_name("1719_agent"), "1719_agent");
+    assert_eq!(sanitize_store_name("a/b:c d"), "a%2fb%3ac%20d");
+    assert_eq!(sanitize_store_name(""), "session");
+    assert_eq!(sanitize_store_name(".."), "session");
     assert_ne!(sanitize_store_name("a+b"), sanitize_store_name("a_b"));
 }
 
@@ -30,11 +31,11 @@ fn thread_id_synthesized_only_when_absent() {
     );
     assert_eq!(
         effective_thread_id("s1", None),
-        ("imported-s7331".to_string(), true)
+        ("imported-s1".to_string(), true)
     );
     assert_eq!(
         effective_thread_id("s1", Some("")),
-        ("imported-s7331".to_string(), true)
+        ("imported-s1".to_string(), true)
     );
 }
 
@@ -42,6 +43,6 @@ fn thread_id_synthesized_only_when_absent() {
 fn stream_name_is_store_safe() {
     assert_eq!(
         stream_name("1719_a__1720_b"),
-        "session.s313731395f615f5f313732305f62.messages"
+        "session.1719_a__1720_b.messages"
     );
 }
