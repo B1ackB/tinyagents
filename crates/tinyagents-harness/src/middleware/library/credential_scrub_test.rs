@@ -146,6 +146,52 @@ impl ToolBaseCall<(), ()> for FixedBase {
     }
 }
 
+struct FieldsBase;
+
+impl ToolBaseCall<(), ()> for FieldsBase {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a mut RunContext,
+        _state: &'a (),
+        _call: ToolCall,
+    ) -> BoxToolFuture<'a> {
+        Box::pin(async move {
+            Ok(ToolResult {
+                markdown_formatted: Some("api_key=aB3dE5fG7hJ9kL1mN3pQ".into()),
+                follow_up: vec![tinytools::ToolContent::Text {
+                    text: "token=zX9yW8vU7tS6rQ5pO4nM".into(),
+                }],
+                ..ToolResult::default()
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn scrubs_markdown_and_follow_up_fields() {
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push_tool_middleware(Arc::new(CredentialScrubMiddleware::new()));
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("mw-test"), ());
+    let result = stack
+        .run_wrapped_tool(
+            &mut ctx,
+            &(),
+            ToolCall::new("c1", "fetch", serde_json::json!({})),
+            &FieldsBase,
+        )
+        .await
+        .unwrap()
+        .into_result();
+
+    let markdown = result.markdown_formatted.unwrap();
+    assert!(!markdown.contains("aB3dE5fG7hJ9kL1mN3pQ"));
+    let follow_up = match &result.follow_up[0] {
+        tinytools::ToolContent::Text { text } => text,
+        _ => panic!("expected text follow-up"),
+    };
+    assert!(!follow_up.contains("zX9yW8vU7tS6rQ5pO4nM"));
+}
+
 async fn run(mw: CredentialScrubMiddleware, tool: &str, body: &'static str) -> String {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_tool_middleware(Arc::new(mw));
