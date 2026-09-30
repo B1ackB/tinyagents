@@ -128,7 +128,11 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
         };
 
         let mut redactions = 0usize;
-        for block in &mut result.content {
+        for block in result
+            .content
+            .iter_mut()
+            .chain(result.follow_up.iter_mut())
+        {
             let (text, is_json) = match block {
                 tinytools::ToolContent::Text { text } => (text.clone(), false),
                 tinytools::ToolContent::Json { data } => (data.to_string(), true),
@@ -154,6 +158,12 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
                 } else if let tinytools::ToolContent::Text { text } = block {
                     *text = scrubbed;
                 }
+                redactions = redactions.saturating_add(count);
+            }
+        }
+        if let Some(markdown) = &mut result.markdown_formatted {
+            if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, markdown) {
+                *markdown = scrubbed;
                 redactions = redactions.saturating_add(count);
             }
         }

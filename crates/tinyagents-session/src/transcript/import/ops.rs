@@ -59,15 +59,19 @@ pub(super) async fn rewrite_journal_stream(
     let sequence = REWRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let suffix = format!("rewrite-{}-{sequence}", std::process::id());
     let staged_stream = format!("{stream}.{suffix}");
+    // An empty replacement is valid (for example, a metadata-only import).
+    // Ensure the staged stream exists even when there are no appends.
+    let staged = journal_root.join(format!("{staged_stream}.jsonl"));
+    fs::File::create(&staged)
+        .with_context(|| format!("create staged journal stream {}", staged.display()))?;
     for (index, record) in records.into_iter().enumerate() {
         if let Err(error) = journal.append(&staged_stream, record).await {
-            let _ = fs::remove_file(journal_root.join(format!("{staged_stream}.jsonl")));
+            let _ = fs::remove_file(&staged);
             return Err(error).with_context(|| format!("staged journal append {index}"));
         }
     }
 
     let destination = journal_root.join(format!("{stream}.jsonl"));
-    let staged = journal_root.join(format!("{staged_stream}.jsonl"));
     let backup = journal_root.join(format!("{stream}.{suffix}.backup.jsonl"));
     let had_destination = destination.exists();
     if had_destination {
