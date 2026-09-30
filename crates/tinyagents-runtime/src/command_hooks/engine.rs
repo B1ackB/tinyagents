@@ -231,6 +231,7 @@ impl HookEngine {
     ) -> HookOutcome {
         let env = self.env_for(&input).await;
         let default_timeout = *self.default_timeout.read().await;
+        let environment = &self.environment;
         let mut outcome = HookOutcome::default();
         for definition in selected {
             let run = exec::run(&definition, &input, &env, default_timeout, &environment).await;
@@ -272,6 +273,7 @@ impl HookEngine {
     ) {
         let env = self.env_for(&input).await;
         let default_timeout = *self.default_timeout.read().await;
+        let environment = self.environment.clone();
         tokio::spawn(async move {
             for definition in selected {
                 let run = exec::run(&definition, &input, &env, default_timeout, &environment).await;
