@@ -58,7 +58,7 @@ fn the_input_budget_reserves_a_proportional_reply() {
     assert_eq!(legacy_max_input_tokens(8_192), 8_192 - 819);
     assert_eq!(legacy_max_input_tokens(1_000), 1_000 - 512);
     assert_eq!(legacy_max_input_tokens(200_000), 200_000 - 20_000);
-    assert_eq!(legacy_max_input_tokens(2_000_000), 2_000_000 - 500_000);
+    assert_eq!(legacy_max_input_tokens(2_000_000), 2_000_000 - 200_000);
 }
 
 async fn trim(window: u64, messages: Vec<TaMessage>) -> Vec<TaMessage> {
