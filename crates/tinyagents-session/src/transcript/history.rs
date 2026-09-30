@@ -663,8 +663,8 @@ fn begin_file_generation_with_baseline(
         successor.generation
     );
     let stem = session_stem(&successor);
-    let path = resolve_keyed_transcript_path(&workspace_dir, &stem)?;
-    let parent_path = resolve_keyed_transcript_path(&workspace_dir, &session_stem(session))?;
+    let path = resolve_keyed_transcript_path(workspace_dir, &stem)?;
+    let parent_path = resolve_keyed_transcript_path(workspace_dir, &session_stem(session))?;
     let mut lock_paths = vec![parent_path.clone(), path.clone()];
     lock_paths.dedup();
     let mut locks = Vec::with_capacity(lock_paths.len());
@@ -708,7 +708,7 @@ fn begin_file_generation_with_baseline(
         successor.generation,
         path.display()
     );
-    let mut history = FileTranscriptHistory::new(&workspace_dir, &stem, meta)?;
+    let mut history = FileTranscriptHistory::new(workspace_dir, &stem, meta)?;
     // The parent is protected while the successor slot is selected and
     // reserved. Later parent writers take the parent lock first, then fail
     // promptly on the still-absent, reserved successor slot.
