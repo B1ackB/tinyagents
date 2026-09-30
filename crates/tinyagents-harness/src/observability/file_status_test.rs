@@ -57,7 +57,6 @@ async fn on_disk_record_matches_literal_fixture() {
 
     let raw = std::fs::read(root.join("run_status").join("run.fixture.json")).unwrap();
     let on_disk: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    eprintln!("RAWFIX {}", serde_json::to_string(&on_disk).unwrap());
     let expected: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
     assert_eq!(on_disk, expected);
 
@@ -68,7 +67,7 @@ async fn on_disk_record_matches_literal_fixture() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-const FIXTURE: &str = r#"__FIXTURE__"#;
+const FIXTURE: &str = r#"{"active_tool_calls":[],"component":"mock-model","cost":{"cache_cost":0.0,"input_cost":0.0,"output_cost":0.0,"reasoning_cost":0.0,"total_cost":0.0},"current_phase":"idle","metadata":null,"model_calls":0,"root_run_id":"run.fixture","run_id":"run.fixture","started_at":100,"status":"pending","thread_id":"thread-1","tool_calls":0,"updated_at":100,"usage":{"calls":0,"usage":{"cache_creation_tokens":0,"cache_read_tokens":0,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"total_tokens":0}}}"#;
 
 #[tokio::test]
 async fn status_store_round_trips_and_answers_queries() {
@@ -204,5 +203,8 @@ async fn journal_sink_handles_multibyte_utf8_spanning_window_boundary() {
         }
         let _ = std::fs::remove_dir_all(&root);
     }
-    assert!(!torn.is_empty(), "no pad induced a torn multi-byte boundary");
+    assert!(
+        !torn.is_empty(),
+        "no pad induced a torn multi-byte boundary"
+    );
 }
