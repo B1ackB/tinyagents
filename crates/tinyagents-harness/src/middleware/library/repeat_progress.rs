@@ -3,7 +3,7 @@
 //! make no progress (#4088 / #4095), including loops whose repeats are not
 //! back to back (#6275).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -58,7 +58,7 @@ struct PendingCallBatch {
     exempt: bool,
     /// `call_id` → per-call `(tool, argument fingerprint)` signature for the
     /// recurrence ledger. Polling/wait calls are left out.
-    call_sigs: HashMap<String, String>,
+    call_sigs: HashMap<String, VecDeque<String>>,
     /// `true` once a result in this batch has already halted the run, so the
     /// batch does not pause it a second time.
     halted: bool,
@@ -296,7 +296,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     ),
                 )
             })
-            .collect();
+            .fold(HashMap::<String, VecDeque<String>>::new(), |mut calls, (id, sig)| {
+                calls.entry(id).or_default().push_back(sig);
+                calls
+            });
 
         // Stage output with the crate tracker. Its halt verdict is intentionally
         // deferred until the matching tool batch is confirmed successful.
@@ -347,12 +350,16 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             let mut recurrence = SuccessfulRepeat::Continue;
             if result.is_error {
                 batch.all_ok = false;
-            } else if let Some(sig) = batch.call_sigs.get(&call_id) {
+            } else if let Some(sig) = batch
+                .call_sigs
+                .get_mut(&call_id)
+                .and_then(VecDeque::pop_front)
+            {
                 if let Ok(mut trackers) = self.state.tracker.lock() {
                     recurrence = trackers
                         .entry(ctx.instance_id())
                         .or_default()
-                        .record_call_outcome(sig, &result.output());
+                        .record_call_outcome(&sig, &result.output());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded

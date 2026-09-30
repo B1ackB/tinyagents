@@ -7,6 +7,7 @@
 pub mod deferred;
 pub mod discover;
 pub mod effects;
+pub mod packs;
 mod prompt;
 mod schema;
 mod schema_compact;
