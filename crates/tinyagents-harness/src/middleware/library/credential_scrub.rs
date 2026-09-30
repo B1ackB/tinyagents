@@ -127,8 +127,17 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             other => return Ok(other),
         };
 
+        // Scrub both renderings independently. `output()` only describes the
+        // canonical content; callers may prefer the alternate Markdown form.
         let content = result.output();
-        if let Some((annotated, redactions)) = (self.scrubber)(&tool_name, &content) {
+        let scrubbed_content = (self.scrubber)(&tool_name, &content);
+        let scrubbed_markdown = result
+            .markdown_formatted
+            .as_deref()
+            .and_then(|markdown| (self.scrubber)(&tool_name, markdown));
+        if scrubbed_content.is_some() || scrubbed_markdown.is_some() {
+            let redactions = scrubbed_content.as_ref().map_or(0, |(_, count)| *count)
+                + scrubbed_markdown.as_ref().map_or(0, |(_, count)| *count);
             tracing::warn!(
                 tool = %tool_name,
                 redactions,
@@ -136,8 +145,12 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             );
             // The notice goes to the model, in the result itself. The warning
             // above goes to the log, where no model will ever read it.
-            result.content = vec![tinytools::ToolContent::Text { text: annotated }];
-            result.markdown_formatted = None;
+            if let Some((annotated, _)) = scrubbed_content {
+                result.content = vec![tinytools::ToolContent::Text { text: annotated }];
+            }
+            result.markdown_formatted = scrubbed_markdown
+                .map(|(annotated, _)| annotated)
+                .or_else(|| result.markdown_formatted.take());
         }
 
         Ok(MiddlewareToolOutcome::Result(result))

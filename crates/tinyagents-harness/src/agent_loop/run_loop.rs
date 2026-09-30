@@ -889,7 +889,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                 // LangChain likewise binds a schema tool with a
                                 // forced `tool_choice` only in its terminal
                                 // wrapper, never in the tool-calling loop.
-                                if tool_schemas.is_empty() {
+                                // A final-call middleware can withdraw the
+                                // ordinary request tools before this planner
+                                // runs. In that case the synthetic schema tool
+                                // is the only remaining callable tool, even
+                                // though the run-level registry still contains
+                                // the withdrawn tools.
+                                if tool_schemas.is_empty()
+                                    || (tools_before_structured_plan == 0
+                                        && request.tool_choice == ToolChoice::None)
+                                {
                                     request.tool_choice = ToolChoice::Tool(name.clone());
                                 } else {
                                     tracing::debug!(

@@ -1,0 +1,622 @@
+use super::*;
+use crate::artifacts::policy::{ArtifactRedactor, Redacted};
+use serde_json::json;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Stand-in for a host's credential/PII pass: rewrites a GitHub token and
+/// phone numbers, and (like the real one) can grow a body.
+#[derive(Debug)]
+struct TestRedactor;
+
+impl ArtifactRedactor for TestRedactor {
+    fn redact(&self, content: &str) -> Redacted {
+        let mut out = content.replace("ghp_abcdefghijklmnopqrstuvwxyz123456", "[REDACTED_SECRET]");
+        out = out.replace("+1555", "[REDACTED_PII_PHONE]");
+        if out == content {
+            Redacted::unchanged(out)
+        } else {
+            Redacted::rewritten(out)
+        }
+    }
+}
+
+fn store(dir: &Path, session: &str) -> ToolResultArtifactStore {
+    ToolResultArtifactStore::new(
+        dir.to_path_buf(),
+        session,
+        Arc::new(TestRedactor),
+        "file_read",
+        10 * 1024 * 1024,
+    )
+}
+
+fn read_target(tool: &str, args: &serde_json::Value) -> Option<ArtifactRead> {
+    artifact_read_target(tool, args, "file_read", "use_skill")
+}
+
+#[tokio::test]
+async fn threshold_persists_redacted_preview_and_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session/one");
+    let raw = format!(
+        "{} {}",
+        "x".repeat(4096),
+        "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    );
+
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call-1"), 1024).await;
+
+    assert!(outcome.persisted);
+    assert!(out.contains("artifact_path: artifacts/tool-results/session_one/shell/call-1.txt"));
+    assert!(out.contains(
+        "read_with: file_read {\"path\":\"artifacts/tool-results/session_one/shell/call-1.txt\"}"
+    ));
+    assert!(out.contains("original_bytes:"));
+    assert!(out.contains("[preview]"));
+    assert!(out.contains("Credential/PII redaction was applied"));
+    assert!(!out.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+
+    let stored = std::fs::read_to_string(
+        tmp.path()
+            .join("artifacts/tool-results/session_one/shell/call-1.txt"),
+    )
+    .unwrap();
+    assert!(stored.contains("xxxx"));
+    assert!(!stored.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+}
+
+/// A call with no id still gets a unique, well-formed file name.
+#[tokio::test]
+async fn a_call_without_an_id_gets_a_random_hex_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "s");
+    let a = store.path_for_read_tool("shell", None);
+    let b = store.path_for_read_tool("shell", None);
+    assert_ne!(a, b);
+    let stem = a
+        .strip_prefix("artifacts/tool-results/s/shell/")
+        .and_then(|rest| rest.strip_suffix(".txt"))
+        .expect("path shape");
+    assert_eq!(stem.len(), 32);
+    assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[tokio::test]
+async fn fallback_truncates_when_store_missing() {
+    let raw = "z".repeat(4096);
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, None, "shell", Some("call"), 512).await;
+    assert!(!outcome.persisted);
+    assert!(out.contains("truncated by tool_result_budget"));
+    assert!(out.len() < 4096);
+}
+
+/// The truncation trailer must not tell the model to re-run the call (#6408).
+///
+/// The old wording ended "re-run with a narrower query to see the rest". A
+/// listing tool with no narrowing argument in reach leaves the model only the
+/// identical call, which returns the identical truncation, until the
+/// successful-repeat tracker halts the run. Assert the retry instruction is
+/// gone and the deterministic-truncation statement that replaces it is
+/// present, so a revert to the old trailer fails here.
+#[tokio::test]
+async fn truncation_trailer_does_not_instruct_a_retry() {
+    let raw = "z".repeat(4096);
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, None, "GITHUB_LIST_PULL_REQUESTS", None, 512).await;
+
+    assert!(
+        !outcome.persisted,
+        "fixture must truncate inline, not persist"
+    );
+    assert!(
+        !out.contains("re-run"),
+        "trailer must not instruct a re-run; got: {out}"
+    );
+    assert!(
+        out.contains("Repeating this call returns the same truncation"),
+        "trailer must say the truncation is deterministic; got: {out}"
+    );
+    // Both totals, so the model can judge whether the retained head suffices.
+    assert!(
+        out.contains("of 4096 bytes truncated by tool_result_budget"),
+        "trailer must report dropped-of-original bytes; got: {out}"
+    );
+}
+
+/// The sweep bounds growth without touching the live session (#6408).
+///
+/// Nothing else deletes these files, so an unbounded artifact directory would
+/// trade a token-burn bug for a disk-growth one. Asserts both halves: a stale
+/// OTHER session is removed, and the CURRENT session survives regardless of
+/// age — a sweep that collected the running session's own artifacts would
+/// delete the bodies the model is about to read back.
+#[tokio::test]
+async fn prune_removes_stale_sessions_but_never_the_current_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("artifacts/tool-results");
+    let current = root.join("live-session");
+    let stale = root.join("old-session");
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(current.join("a.txt"), "current").unwrap();
+    std::fs::write(stale.join("b.txt"), "stale").unwrap();
+
+    let store = store(tmp.path(), "live-session");
+
+    // Nothing is old enough yet: a generous window must collect nothing.
+    assert_eq!(
+        store
+            .prune_stale_sessions(Duration::from_secs(3600))
+            .unwrap(),
+        0
+    );
+    assert!(stale.exists(), "nothing is stale within the window");
+
+    // A zero window makes every directory stale, so only the current-session
+    // exemption can save `live-session`.
+    let removed = store.prune_stale_sessions(Duration::from_secs(0)).unwrap();
+    assert_eq!(
+        removed, 1,
+        "exactly the one other session should be collected"
+    );
+    assert!(!stale.exists(), "stale session dir must be removed");
+    assert!(
+        current.join("a.txt").exists(),
+        "the current session's artifacts must survive its own sweep"
+    );
+}
+
+/// A missing artifact root is the normal first-run case, not an error.
+#[tokio::test]
+async fn prune_is_a_noop_when_no_artifacts_exist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    assert_eq!(
+        store.prune_stale_sessions(Duration::from_secs(0)).unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn persisted_preview_is_bounded_for_small_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let raw = "x".repeat(800);
+
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call"), 320).await;
+
+    assert!(outcome.persisted);
+    assert!(outcome.final_bytes <= MIN_ENVELOPE_ALLOWANCE_BYTES);
+    assert_eq!(out.len(), outcome.final_bytes);
+    assert!(out.contains("[tool_result_preview]"));
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/shell/call.txt")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn tiny_per_result_budget_keeps_the_recovery_pointer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let (out, outcome) = apply_per_result_persistence(
+        "x".repeat(800),
+        None,
+        Some(&store),
+        "shell",
+        Some("call"),
+        8,
+    )
+    .await;
+    assert!(outcome.persisted);
+    assert!(out.contains("artifact_path: artifacts/tool-results/session/shell/call.txt"));
+    assert!(out.contains("read_with: file_read"));
+}
+
+#[tokio::test]
+async fn nested_artifact_activity_is_included_in_session_freshness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("artifacts/tool-results");
+    let old_session = root.join("old-session");
+    let tool_dir = old_session.join("shell");
+    std::fs::create_dir_all(&tool_dir).unwrap();
+    std::fs::write(tool_dir.join("recent.txt"), "recent").unwrap();
+    let file_time = std::fs::metadata(tool_dir.join("recent.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(newest_modified(&old_session).unwrap(), file_time);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persist_rejects_symlinked_parent_outside_action_dir() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let action = tmp.path().join("action");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(action.join("artifacts/tool-results/session")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(
+        &outside,
+        action.join("artifacts/tool-results/session/shell"),
+    )
+    .unwrap();
+    let store = store(&action, "session");
+    let result = store
+        .persist("shell", Some("call"), "x", None, 0, "test")
+        .await;
+    assert!(result.is_err());
+    assert!(!outside.join("call.txt").exists());
+}
+
+#[tokio::test]
+async fn aggregate_spills_largest_until_under_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let mut results = vec![
+        tinytools_agent::dialect::ToolOutcome {
+            name: "small".into(),
+            output: "a".repeat(100),
+            success: true,
+            tool_call_id: Some("small".into()),
+            trusted_verbatim: false,
+        },
+        tinytools_agent::dialect::ToolOutcome {
+            name: "largest".into(),
+            output: "b".repeat(2000),
+            success: true,
+            tool_call_id: Some("largest".into()),
+            trusted_verbatim: false,
+        },
+        tinytools_agent::dialect::ToolOutcome {
+            name: "medium".into(),
+            output: "c".repeat(900),
+            success: true,
+            tool_call_id: Some("medium".into()),
+            trusted_verbatim: false,
+        },
+    ];
+
+    spill_aggregate_tool_results(&mut results, Some(&store), 1800).await;
+
+    assert!(results[1].output.starts_with("[tool_result_preview]\n"));
+    let total: usize = results.iter().map(|result| result.output.len()).sum();
+    assert!(total <= 1800, "total={total}");
+    assert!(!results[0].output.starts_with("[tool_result_preview]\n"));
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/largest/largest.txt")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn aggregate_forces_budget_when_envelope_has_no_savings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let mut results = vec![
+        tinytools_agent::dialect::ToolOutcome {
+            name: "one".into(),
+            output: "a".repeat(350),
+            success: true,
+            tool_call_id: Some("one".into()),
+            trusted_verbatim: false,
+        },
+        tinytools_agent::dialect::ToolOutcome {
+            name: "two".into(),
+            output: "b".repeat(350),
+            success: true,
+            tool_call_id: Some("two".into()),
+            trusted_verbatim: false,
+        },
+        tinytools_agent::dialect::ToolOutcome {
+            name: "three".into(),
+            output: "c".repeat(350),
+            success: true,
+            tool_call_id: Some("three".into()),
+            trusted_verbatim: false,
+        },
+    ];
+
+    spill_aggregate_tool_results(&mut results, Some(&store), 500).await;
+
+    let total: usize = results.iter().map(|result| result.output.len()).sum();
+    // #4469 item 6: the aggregate spill now floors each persisted envelope at
+    // MIN_ENVELOPE_ALLOWANCE_BYTES so the `[tool_result_preview]` header +
+    // `artifact_path` pointer always survives (previously an exhausted budget
+    // could blank a result to ""). That is a documented trade — the total may
+    // slightly overshoot the raw aggregate budget — so the invariant is now:
+    // (a) no envelope is blanked, and (b) the total stays bounded by the
+    // per-result floor rather than the raw budget.
+    assert!(
+        results.iter().all(|result| !result.output.is_empty()),
+        "no persisted envelope may be blanked — the artifact pointer must survive"
+    );
+    assert!(
+        total <= results.len() * MIN_ENVELOPE_ALLOWANCE_BYTES,
+        "total={total} exceeds the per-result envelope floor bound"
+    );
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/one/one.txt")
+            .exists()
+    );
+}
+
+#[test]
+fn artifact_read_target_finds_a_path_nested_in_a_wrapper_call() {
+    let args = json!({
+        "skill": "files",
+        "tool": "file_read",
+        "args": {"path": "artifacts/tool-results/s/use_skill/c.txt", "offset": 42}
+    });
+    assert_eq!(
+        read_target("use_skill", &args),
+        Some(ArtifactRead {
+            path: "artifacts/tool-results/s/use_skill/c.txt".to_string(),
+            offset: 42,
+        })
+    );
+    assert_eq!(
+        read_target("file_read", &json!({"path": "src/main.rs"})),
+        None
+    );
+}
+
+#[tokio::test]
+async fn persisted_outcome_reports_the_size_of_the_stored_body() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let rewritten = "s".repeat(3_000);
+    let full = "r".repeat(8_000);
+
+    let (out, outcome) = apply_per_result_persistence(
+        rewritten,
+        Some(full),
+        Some(&store),
+        "shell",
+        Some("call"),
+        1_000,
+    )
+    .await;
+
+    assert!(outcome.persisted);
+    assert_eq!(
+        outcome.original_bytes, 8_000,
+        "the outcome feeds the artifact index, so it must report the stored body's size"
+    );
+    assert!(out.contains("original_bytes: 8000"), "{out}");
+}
+
+#[test]
+fn artifact_read_target_matches_only_file_read_under_the_artifact_directory() {
+    let path = "artifacts/tool-results/s/shell/c.txt";
+    assert!(read_target("file_read", &json!({"path": path})).is_some());
+    assert_eq!(
+        read_target("file_write", &json!({"path": path, "content": "x"})),
+        None,
+        "a write to an artifact path is not a read of its content"
+    );
+    assert_eq!(
+        read_target(
+            "use_skill",
+            &json!({"skill": "files", "tool": "glob", "args": {"path": path}})
+        ),
+        None,
+        "a wrapped non-read tool is not a read of its content"
+    );
+}
+
+#[test]
+fn artifact_read_target_matches_the_artifact_directory_as_a_path_component() {
+    assert!(
+        read_target(
+            "file_read",
+            &json!({"path": "./artifacts/tool-results/s/c.txt"})
+        )
+        .is_some()
+    );
+    assert_eq!(
+        read_target(
+            "file_read",
+            &json!({"path": "artifacts/tool-results-backup/report.txt"})
+        ),
+        None,
+        "a sibling directory sharing the prefix is not the artifact directory"
+    );
+}
+
+#[test]
+fn an_artifact_page_stays_within_the_budget_with_a_long_path() {
+    let read = ArtifactRead {
+        path: format!(
+            "artifacts/tool-results/{}/use_skill/call.txt",
+            "s".repeat(240)
+        ),
+        offset: 1_234_567,
+    };
+
+    let page = page_artifact_read("y".repeat(5_000), &read, 1_000, "file_read");
+    assert!(
+        page.len() <= 1_000,
+        "a page must fit the result budget, got {} bytes",
+        page.len()
+    );
+    let body = page
+        .find("\n\n[artifact page")
+        .expect("continuation marker");
+    assert!(
+        page.contains(&format!("\"offset\":{}", 1_234_567 + body)),
+        "the marker must name the offset right after this page: {page}"
+    );
+}
+
+#[test]
+fn a_page_never_exceeds_the_floored_budget_and_always_advances() {
+    // A path too long for its full trailer to leave body room under the floor.
+    let read = ArtifactRead {
+        path: format!("artifacts/tool-results/{}/c.txt", "p".repeat(600)),
+        offset: 7,
+    };
+    let content = "z".repeat(5_000);
+
+    for budget in [2, 100, MIN_ENVELOPE_ALLOWANCE_BYTES, 700] {
+        let page = page_artifact_read(content.clone(), &read, budget, "file_read");
+        let limit = budget.max(MIN_ENVELOPE_ALLOWANCE_BYTES);
+        assert!(
+            page.len() <= limit,
+            "budget {budget}: a page must fit max(budget, floor) = {limit}, got {} bytes",
+            page.len()
+        );
+        let body = page
+            .find("\n\n[artifact page")
+            .expect("continuation marker");
+        assert!(
+            body > 0,
+            "budget {budget}: every page must advance past its offset"
+        );
+        assert!(
+            page.contains(&format!("\"offset\":{}", 7 + body)),
+            "budget {budget}: the marker must name the offset right after this page: {page}"
+        );
+    }
+}
+
+#[test]
+fn a_body_redaction_grows_past_the_read_limit_falls_back_to_the_processed_copy() {
+    let raw = "call +15551234567 or +15557654321";
+    // The limit is the raw size: the raw body fits, its redacted form does not.
+    let (chosen, stored) = readable_body(
+        raw,
+        Some("processed copy"),
+        raw.len() as u64,
+        &TestRedactor,
+        "file_read",
+    )
+    .expect("the processed copy fits");
+    assert_eq!(
+        chosen, "processed copy",
+        "a body whose sanitized form exceeds the read limit must not be stored, got {:?}",
+        stored.text
+    );
+
+    let (kept, _) = readable_body(
+        raw,
+        Some("processed copy"),
+        10_000,
+        &TestRedactor,
+        "file_read",
+    )
+    .expect("fits");
+    assert_eq!(
+        kept, raw,
+        "a body that stays within the limit is stored as returned"
+    );
+}
+
+#[test]
+fn a_body_is_refused_when_neither_candidate_fits_the_read_limit() {
+    let raw = "call +15551234567 or +15557654321";
+    let fallback = "fallback +15550001111 +15550002222";
+    let limit = raw.len().min(fallback.len()) as u64;
+    assert!(
+        readable_body(raw, Some(fallback), limit, &TestRedactor, "file_read").is_err(),
+        "when neither the raw body nor the fallback fits once sanitized, nothing may be stored"
+    );
+    assert!(
+        readable_body(raw, None, limit, &TestRedactor, "file_read").is_err(),
+        "a body with no fallback that does not fit must not be stored either"
+    );
+}
+
+#[test]
+fn artifact_read_target_follows_only_use_skill_into_a_wrapped_tool() {
+    let nested = json!({"tool": "file_read", "args": {"path": "artifacts/tool-results/s/c.txt"}});
+    assert!(
+        read_target("use_skill", &nested).is_some(),
+        "use_skill forwards file_read's result, so its wrapped read counts"
+    );
+    for outer in ["glob", "file_write", "shell"] {
+        assert_eq!(
+            read_target(outer, &nested),
+            None,
+            "{outer} carrying tool/args fields is not a wrapper; its result is its own"
+        );
+    }
+}
+
+#[test]
+fn a_page_near_the_maximum_offset_neither_overflows_nor_advertises_a_stuck_continuation() {
+    let read = ArtifactRead {
+        path: "artifacts/tool-results/s/shell/c.txt".to_string(),
+        offset: usize::MAX - 10,
+    };
+    // The offset comes straight from the model's arguments, so the page
+    // arithmetic must not overflow on an absurd one.
+    let page = std::panic::catch_unwind(|| {
+        page_artifact_read("q".repeat(5_000), &read, 1_000, "file_read")
+    });
+    assert!(
+        page.is_ok(),
+        "an offset near usize::MAX must not overflow the page arithmetic"
+    );
+    let page = page.unwrap();
+    assert!(
+        page.len() <= 1_000,
+        "the result is still bounded, got {} bytes",
+        page.len()
+    );
+    assert!(
+        !page.contains("Continue with"),
+        "no continuation may be advertised when the next offset cannot advance"
+    );
+}
+
+#[test]
+fn artifact_read_target_rejects_an_explicit_invalid_offset() {
+    let path = "artifacts/tool-results/s/shell/c.txt";
+    for bad in [json!(-1), json!(1.5), json!("12")] {
+        assert_eq!(
+            read_target("file_read", &json!({"path": path, "offset": bad.clone()})),
+            None,
+            "offset {bad} is not a read file_read serves, so it must not become an artifact read at 0"
+        );
+    }
+    for absent in [json!({"path": path}), json!({"path": path, "offset": null})] {
+        assert_eq!(
+            read_target("file_read", &absent).map(|read| read.offset),
+            Some(0),
+            "an absent or null offset reads from the start"
+        );
+    }
+}
+
+/// Literal fixture: the envelope the model reads is a wire format hosts and
+/// runbooks match on, so pin it byte for byte.
+#[tokio::test]
+async fn envelope_text_is_byte_stable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "s");
+    let persisted = store
+        .persist("shell", Some("c"), "hello world", None, 1024, "r")
+        .await
+        .unwrap();
+    let expected = "[tool_result_preview]\n\
+tool: shell\n\
+reason: r\n\
+original_bytes: 11\n\
+stored_bytes: 11\n\
+artifact_path: artifacts/tool-results/s/shell/c.txt\n\
+read_with: file_read {\"path\":\"artifacts/tool-results/s/shell/c.txt\"} (a long read returns one page and names the \"offset\" to continue from)\n\
+notes: Full scrubbed output was persisted under the action workspace.\n\n\
+[preview]\nhello world";
+    assert_eq!(persisted.output, expected);
+    assert!(!persisted.redacted);
+}

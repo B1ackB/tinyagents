@@ -151,3 +151,14 @@ reconstructed from disk have had turn-usage fields hoisted and
 `failure`/`failure_detail` lifted out of `extra_metadata`, so feeding that
 back in as `prev` for an in-memory-tracked caller would mismatch at the
 first such message and force a full compaction record every turn.
+
+**File history mutations are coordinated across processes.** A persistent
+advisory lock under the workspace's `.transcript-locks/` directory serializes
+each file mutation. `begin_generation` keeps the successor's lock from its
+existence check through its first successful write, so a crash releases the
+reservation and leaves no phantom generation. Turn appends also compare the
+caller baseline with the current logical transcript while holding that lock;
+a stale session receives a persistence error instead of writing a compaction
+that hides another session's newer turns. Lock files are deliberately
+retained: removing a lock inode while another process waits could split future
+writers across different locks.
