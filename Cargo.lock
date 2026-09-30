@@ -1509,6 +1509,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinyagents-definition",
+ "tinyinference-core",
  "tinyinference-embeddings",
  "tinyinference-image",
  "tinyinference-llm",
