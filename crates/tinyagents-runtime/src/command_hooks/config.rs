@@ -95,8 +95,8 @@ pub struct HookDefinition {
     /// Follow-ups this hook may inject before the engine stops honouring them.
     /// `None` in the file means "engine default"; explicit JSON `null` means
     /// unlimited, matching Cursor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loop_limit: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_loop_limit")]
+    pub loop_limit: LoopLimit,
     /// Treat a crashed, missing, or timed-out hook as a denial rather than
     /// letting the action through. Off by default: a broken audit script must
     /// not brick the agent, but a security hook can opt into the other trade.
@@ -118,6 +118,31 @@ pub struct HookDefinition {
     pub source_dir: Option<PathBuf>,
 }
 
+/// Per-hook follow-up policy. Missing fields use the engine default; JSON
+/// `null` means unlimited, matching Cursor's configuration format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LoopLimit {
+    #[default]
+    Default,
+    Unlimited,
+    Limited(u32),
+}
+
+fn deserialize_loop_limit<'de, D>(deserializer: D) -> Result<LoopLimit, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => LoopLimit::Unlimited,
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .map(LoopLimit::Limited)
+            .ok_or_else(|| serde::de::Error::custom("loop_limit must be a u32 or null"))?,
+        _ => return Err(serde::de::Error::custom("loop_limit must be a u32 or null")),
+    })
+}
+
 fn default_true() -> bool {
     true
 }
@@ -128,6 +153,12 @@ impl HookDefinition {
         let layer = self.layer.map(HookLayer::as_str).unwrap_or("unknown");
         let head = self.command.split_whitespace().next().unwrap_or("<empty>");
         format!("{layer}:{head}")
+    }
+
+    /// Identity for per-hook accounting; unlike the short log label this
+    /// retains the complete command and matcher.
+    pub fn identity(&self) -> String {
+        format!("{}:{}:{:?}:{}", self.layer.map(HookLayer::as_str).unwrap_or("unknown"), self.command, self.matcher, self.kind as u8)
     }
 }
 

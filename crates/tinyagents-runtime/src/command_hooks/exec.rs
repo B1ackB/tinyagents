@@ -91,7 +91,11 @@ pub async fn run(
             finish(definition, label, started.elapsed(), result)
         }
         HookKind::Prompt => {
-            let result = run_prompt(definition, input, environment).await;
+            let timeout = definition.timeout.map(Duration::from_secs).unwrap_or(default_timeout);
+            let result = match tokio::time::timeout(timeout, run_prompt(definition, input, environment)).await {
+                Ok(result) => result,
+                Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
+            };
             finish(definition, label, started.elapsed(), result)
         }
     }
@@ -154,16 +158,15 @@ async fn run_command(
         .spawn()
         .map_err(|error| format!("spawning {:?}: {error}", definition.command))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        // A hook that ignores stdin closes the pipe early; that is a broken pipe
-        // on our side, not a hook failure, so the write error is only logged.
-        if let Err(error) = stdin.write_all(&payload).await {
-            tracing::debug!("[hooks] {} closed stdin early: {error}", definition.label());
+    let write_and_wait = async {
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(&payload).await {
+                tracing::debug!("[hooks] {} closed stdin early: {error}", definition.label());
+            }
         }
-        drop(stdin);
-    }
-
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        child.wait_with_output().await
+    };
+    let output = match tokio::time::timeout(timeout, write_and_wait).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => return Err(format!("waiting on hook: {error}")),
         Err(_) => return Err(format!("timed out after {}s", timeout.as_secs())),

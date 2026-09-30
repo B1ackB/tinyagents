@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 
-use super::config::{self, HookConfig, HookDefinition};
+use super::config::{self, HookConfig, HookDefinition, LoopLimit};
 use super::environment::HookEnvironment;
 use super::exec::{self, DEFAULT_TIMEOUT, HookRun};
 use super::matcher;
@@ -238,7 +238,11 @@ impl HookEngine {
         let environment = &self.environment;
         let mut outcome = HookOutcome::default();
         for definition in selected {
-            let run = exec::run(&definition, &input, &env, default_timeout, environment).await;
+            let mut hook_input = input.clone();
+            if let Some(updated) = outcome.output.updated_input.clone() {
+                hook_input.payload = updated;
+            }
+            let run = exec::run(&definition, &hook_input, &env, default_timeout, environment).await;
             tracing::debug!(
                 "[hooks] {event}: {} finished in {}ms (deny={}, error={:?})",
                 run.label,
@@ -249,7 +253,7 @@ impl HookEngine {
             let denied = run.output.is_deny();
             let followup = run.output.followup_message.clone();
             let mut run = run;
-            if followup.is_some() && !self.grant_followup(&input, &definition, &run.label).await {
+            if followup.is_some() && !self.grant_followup(&input, &definition).await {
                 tracing::debug!(
                     "[hooks] {event}: {} exhausted its follow-up budget; dropping the message",
                     run.label
@@ -262,7 +266,7 @@ impl HookEngine {
                 break;
             }
         }
-        if let Some(env) = outcome.output.env.clone() {
+        if event == HookEvent::SessionStart && let Some(env) = outcome.output.env.clone() {
             self.absorb_session_env(&input, env).await;
         }
         outcome
@@ -325,20 +329,15 @@ impl HookEngine {
         &self,
         input: &HookInput,
         definition: &HookDefinition,
-        label: &str,
     ) -> bool {
-        // Cursor's `loop_limit: null` means unlimited. serde cannot distinguish
-        // an explicit null from an absent key in an `Option<u32>`, so the file
-        // convention here is: absent → engine default, `0` → unlimited.
         let limit = match definition.loop_limit {
-            Some(0) => return true,
-            Some(limit) => limit,
-            None => DEFAULT_LOOP_LIMIT,
+            LoopLimit::Unlimited => return true,
+            LoopLimit::Limited(limit) if limit == 0 => return true,
+            LoopLimit::Limited(limit) => limit,
+            LoopLimit::Default => DEFAULT_LOOP_LIMIT,
         };
-        let Some(session) = input.session_id.clone() else {
-            return true;
-        };
-        let key = (session, label.to_string());
+        let session = input.session_id.as_deref().unwrap_or("<sessionless>");
+        let key = (session.to_string(), definition.identity());
         let mut counts = self.loop_counts.write().await;
         let count = counts.entry(key).or_insert(0);
         if *count >= limit {
