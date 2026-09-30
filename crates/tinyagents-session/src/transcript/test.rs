@@ -784,6 +784,55 @@ fn concurrent_handles_on_one_session_both_extend_it() {
     );
 }
 
+#[test]
+fn turn_write_rejects_a_stale_baseline_instead_of_compacting_over_newer_data() {
+    let dir = tempdir().unwrap();
+    let session = SessionRef::scoped("thread-stale", "orchestrator");
+    let locator = FileTranscriptLocator::new(dir.path());
+    let first = locator.open_session(&session, meta()).unwrap();
+    let old = vec![TranscriptMessage::new("user", "original")];
+    first
+        .append_turn(TranscriptTurn {
+            prev: &[],
+            next: &old,
+            meta: &meta(),
+            turn_usage: None,
+            request_id: None,
+            tools: None,
+        })
+        .unwrap();
+
+    let stale_handle = locator.open_session(&session, meta()).unwrap();
+    let newer = vec![
+        old[0].clone(),
+        TranscriptMessage::new("assistant", "new turn"),
+    ];
+    first
+        .append_turn(TranscriptTurn {
+            prev: &old,
+            next: &newer,
+            meta: &meta(),
+            turn_usage: None,
+            request_id: None,
+            tools: None,
+        })
+        .unwrap();
+
+    let stale_next = vec![TranscriptMessage::new("user", "replacement")];
+    let result = stale_handle.append_turn(TranscriptTurn {
+        prev: &old,
+        next: &stale_next,
+        meta: &meta(),
+        turn_usage: None,
+        request_id: None,
+        tools: None,
+    });
+    assert!(result.is_err(), "stale writers must report a conflict");
+    let actual = stale_handle.messages().unwrap();
+    assert_eq!(actual.len(), 2);
+    assert_eq!(actual[1].content, "new turn");
+}
+
 /// The model reads only the head generation, but a host rendering or
 /// exporting the conversation needs every segment, in order.
 #[test]
