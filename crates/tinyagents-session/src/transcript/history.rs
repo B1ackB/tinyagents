@@ -648,6 +648,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
         let parent_path =
             resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
+        let reservation = generation_reservation_lock(&path)?;
+        reservation.lock_exclusive()?;
         let mut lock_paths = vec![path.clone(), parent_path.clone()];
         lock_paths.sort();
         lock_paths.dedup();
@@ -696,6 +698,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
             _successor: successor_lock,
             _parent: parent_lock,
+            _reservation: reservation,
         });
         Ok((successor, Arc::new(history)))
     }
@@ -715,6 +718,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
         let parent_path =
             resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
+        let reservation = generation_reservation_lock(&path)?;
+        reservation.lock_exclusive()?;
         let mut paths = vec![path.clone(), parent_path.clone()];
         paths.sort();
         paths.dedup();
@@ -754,6 +759,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
             _successor: successor_lock,
             _parent: parent_lock,
+            _reservation: reservation,
         });
         Ok((successor, Arc::new(history)))
     }
@@ -835,10 +841,11 @@ pub struct FileTranscriptHistory {
 struct GenerationReservation {
     _successor: File,
     _parent: Option<File>,
+    _reservation: File,
 }
 
 impl FileTranscriptHistory {
-    fn acquire_write_lock(&self) -> anyhow::Result<Option<(File, File)>> {
+    fn acquire_write_lock(&self) -> anyhow::Result<Option<(File, File, Option<File>)>> {
         if self.generation_reservation.lock().unwrap().is_some() {
             return Ok(None);
         }
@@ -856,6 +863,18 @@ impl FileTranscriptHistory {
         let successor = self
             .path
             .with_file_name(format!("{parent_stem}.g{}.jsonl", generation + 1));
+        let reservation = if !path_entry_exists(&successor)? {
+            let reservation = generation_reservation_lock(&successor)?;
+            reservation.try_lock_shared().map_err(|error| {
+                anyhow::anyhow!(
+                    "successor generation is reserved for {}; retry after it commits: {error}",
+                    self.path.display()
+                )
+            })?;
+            Some(reservation)
+        } else {
+            None
+        };
         let mut paths = vec![self.path.clone(), successor.clone()];
         paths.sort();
         let mut locks = Vec::with_capacity(paths.len());
@@ -889,7 +908,7 @@ impl FileTranscriptHistory {
             .position(|(path, _)| path == &successor)
             .map(|index| locks.remove(index).1)
             .expect("successor path lock acquired");
-        Ok(Some((successor_lock, parent_lock)))
+        Ok(Some((successor_lock, parent_lock, reservation)))
     }
 
     fn finish_generation_reservation(&self, success: bool) -> anyhow::Result<()> {
@@ -993,6 +1012,24 @@ fn generation_lock(path: &Path) -> anyhow::Result<File> {
     fs::create_dir_all(&lock_dir)?;
     let lock_name = path.file_name().unwrap_or_default();
     let lock_path = lock_dir.join(lock_name);
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(Into::into)
+}
+
+/// The generation-only reservation lock is separate from writer locks, so
+/// ordinary concurrent appends can wait on one another without mistaking a
+/// short-lived writer lock for an unwritten successor reservation.
+fn generation_reservation_lock(path: &Path) -> anyhow::Result<File> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let lock_path = path.with_file_name(format!("{file_name}.reservation"));
     OpenOptions::new()
         .create(true)
         .truncate(false)
