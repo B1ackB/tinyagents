@@ -23,6 +23,7 @@ use super::convert::{
     JournalProjector, build_descriptor, effective_thread_id, journal_messages, parent_session_key,
     stream_name,
 };
+use super::live::LIVE_REWRITE_LOCK;
 use super::scan::{SourceItem, discover_sources};
 use super::types::{
     DescriptorSource, IMPORT_VERSION, ImportOptions, ImportSummary, ItemAction, ItemLedgerRecord,
@@ -319,6 +320,8 @@ async fn process_item(
         report.action = ItemAction::WouldImport;
         return report;
     }
+
+    let _rewrite_guard = LIVE_REWRITE_LOCK.lock().await;
 
     // Re-import overwrites: the append store has no truncate, so drop the
     // stream file (layout: `{journal_root}/{stream}.jsonl`) before writing.

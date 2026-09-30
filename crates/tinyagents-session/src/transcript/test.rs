@@ -673,24 +673,34 @@ fn opening_a_generation_that_already_exists_is_refused() {
     );
 }
 
-/// Two racing `begin_generation` calls for the same session — two cores
-/// compacting at once — must not both write their own first append into the
-/// generation's still-nonexistent file: `begin_generation` itself performs no
-/// I/O (`FileTranscriptHistory::new` only resolves a path), so without the
-/// `path_lock` both handles' first `append_turn_with_partial` would
-/// otherwise race on the writer's create-fresh branch and whichever `fs::write`
-/// lands last would silently discard the other's retained set.
-///
-/// The threads rendezvous twice, and the second rendezvous is load-bearing.
-/// `begin_generation` refuses to open a successor that already exists, so with
-/// only the pre-`begin_generation` barrier a thread that got all the way
-/// through its append before the other called `begin_generation` would make
-/// that call fail on the existence check — a race in the test itself rather
-/// than the contention it means to exercise. Holding both threads until each
-/// owns its handle puts the contention where this test is aiming it: on the
-/// two first appends.
 #[test]
-fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append() {
+fn clearing_an_absent_successor_releases_its_reservation() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let session = SessionRef::scoped("thread-clear-reservation", "orchestrator");
+    let (_, handle) = locator.begin_generation(&session, meta()).unwrap();
+
+    handle.clear().unwrap();
+    // Keep the original handle alive: clear must release its reservation itself.
+    assert!(locator.begin_generation(&session, meta()).is_ok());
+}
+
+#[test]
+fn non_file_entry_occupying_successor_is_rejected() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let session = SessionRef::scoped("thread-occupied-successor", "orchestrator");
+    let successor = session.next_generation();
+    let path = resolve_keyed_transcript_path(dir.path(), &session_stem(&successor)).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    assert!(locator.begin_generation(&session, meta()).is_err());
+}
+
+/// Concurrent generation selection must reserve the successor slot until
+/// its first write. Exactly one process may commit that generation.
+#[test]
+fn concurrent_begin_generation_allows_only_one_successor_writer() {
     let dir = tempdir().unwrap();
     let session = FileTranscriptLocator::new(dir.path());
     let root = SessionRef::scoped("thread-1", "orchestrator");
@@ -703,36 +713,24 @@ fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append(
         .unwrap();
 
     let locator = Arc::new(FileTranscriptLocator::new(dir.path()));
-    let barrier = Arc::new(Barrier::new(2));
-
     let left_locator = Arc::clone(&locator);
     let left_root = root.clone();
-    let left_barrier = Arc::clone(&barrier);
     let left = std::thread::spawn(move || {
-        left_barrier.wait();
-        let (_, handle) = left_locator.begin_generation(&left_root, meta()).unwrap();
-        // Both handles exist before either append starts.
-        left_barrier.wait();
-        handle
-            .append(TranscriptMessage::new("user", "from left"))
-            .unwrap();
+        let (_, handle) = left_locator.begin_generation(&left_root, meta())?;
+        handle.append(TranscriptMessage::new("user", "from left"))?;
+        anyhow::Ok(())
     });
 
     let right_locator = Arc::clone(&locator);
     let right_root = root.clone();
-    let right_barrier = Arc::clone(&barrier);
     let right = std::thread::spawn(move || {
-        right_barrier.wait();
-        let (_, handle) = right_locator.begin_generation(&right_root, meta()).unwrap();
-        // Both handles exist before either append starts.
-        right_barrier.wait();
-        handle
-            .append(TranscriptMessage::new("user", "from right"))
-            .unwrap();
+        let (_, handle) = right_locator.begin_generation(&right_root, meta())?;
+        handle.append(TranscriptMessage::new("user", "from right"))?;
+        anyhow::Ok(())
     });
 
-    left.join().unwrap();
-    right.join().unwrap();
+    let outcomes = [left.join().unwrap(), right.join().unwrap()];
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
 
     let successor = root.next_generation();
     let handle = locator.open_session(&successor, meta()).unwrap();
@@ -744,8 +742,77 @@ fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append(
         .collect();
     assert_eq!(
         contents.len(),
-        2,
-        "both racing compactions' appends must survive: {contents:?}"
+        1,
+        "only the winning generation is visible: {contents:?}"
+    );
+}
+
+#[test]
+fn cross_process_generation_worker_refuses_a_committed_slot() {
+    let Ok(workspace) = std::env::var("TINYAGENTS_GENERATION_WORKER_DIR") else {
+        return;
+    };
+    let marker = std::env::var("TINYAGENTS_GENERATION_WORKER_MARKER").unwrap();
+    std::fs::write(marker, "ready").unwrap();
+    let locator = FileTranscriptLocator::new(workspace);
+    let result = locator.begin_generation(
+        &SessionRef::scoped("thread-cross-process", "orchestrator"),
+        meta(),
+    );
+    assert!(
+        result.is_err(),
+        "the committed generation slot must be occupied"
+    );
+}
+
+#[test]
+fn generation_reservation_coordinates_separate_processes() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let root = SessionRef::scoped("thread-cross-process", "orchestrator");
+    locator
+        .open_session(&root, meta())
+        .unwrap()
+        .append(TranscriptMessage::new("user", "sealed"))
+        .unwrap();
+    let (_, winner) = locator.begin_generation(&root, meta()).unwrap();
+
+    let marker = dir.path().join("worker-ready");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "transcript::test::cross_process_generation_worker_refuses_a_committed_slot",
+        ])
+        .env("TINYAGENTS_GENERATION_WORKER_DIR", dir.path())
+        .env("TINYAGENTS_GENERATION_WORKER_MARKER", &marker)
+        .spawn()
+        .unwrap();
+    for _ in 0..500 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "worker did not start in time");
+
+    winner
+        .append(TranscriptMessage::new("user", "winner"))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "worker failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        locator
+            .open_session(&root.next_generation(), meta())
+            .unwrap()
+            .messages()
+            .unwrap()
+            .len(),
+        1,
+        "the committed generation contains only the winning writer's payload"
     );
 }
 
@@ -808,6 +875,74 @@ fn concurrent_handles_on_one_session_both_extend_it() {
         ["from left", "from right"],
         "an overlapping append from either handle must not be lost"
     );
+}
+
+#[test]
+fn turn_write_rejects_a_stale_baseline_instead_of_compacting_over_newer_data() {
+    let dir = tempdir().unwrap();
+    let session = SessionRef::scoped("thread-stale", "orchestrator");
+    let locator = FileTranscriptLocator::new(dir.path());
+    let first = locator.open_session(&session, meta()).unwrap();
+    let old = vec![TranscriptMessage::new("user", "original")];
+    first
+        .append_turn(TranscriptTurn {
+            prev: &[],
+            next: &old,
+            meta: &meta(),
+            turn_usage: None,
+            request_id: None,
+            tools: None,
+        })
+        .unwrap();
+
+    let stale_handle = locator.open_session(&session, meta()).unwrap();
+    let newer = vec![
+        old[0].clone(),
+        TranscriptMessage::new("assistant", "new turn"),
+    ];
+    first
+        .append_turn(TranscriptTurn {
+            prev: &old,
+            next: &newer,
+            meta: &meta(),
+            turn_usage: None,
+            request_id: None,
+            tools: None,
+        })
+        .unwrap();
+
+    let stale_next = vec![TranscriptMessage::new("user", "replacement")];
+    let result = stale_handle.append_turn(TranscriptTurn {
+        prev: &old,
+        next: &stale_next,
+        meta: &meta(),
+        turn_usage: None,
+        request_id: None,
+        tools: None,
+    });
+    assert!(result.is_err(), "stale writers must report a conflict");
+    let actual = stale_handle.messages().unwrap();
+    assert_eq!(actual.len(), 2);
+    assert_eq!(actual[1].content, "new turn");
+}
+
+#[test]
+fn bound_parent_rejects_appends_after_a_successor_is_committed() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let parent = SessionRef::scoped("thread-sealed-parent", "orchestrator");
+    let old_handle = locator.open_session(&parent, meta()).unwrap();
+    old_handle
+        .append(TranscriptMessage::new("user", "parent"))
+        .unwrap();
+    let (_, successor) = locator.begin_generation(&parent, meta()).unwrap();
+    successor
+        .append(TranscriptMessage::new("user", "successor"))
+        .unwrap();
+
+    let result = old_handle.append(TranscriptMessage::new("assistant", "late parent write"));
+    assert!(result.is_err(), "a committed successor seals its parent");
+    assert_eq!(old_handle.messages().unwrap().len(), 1);
 }
 
 /// The model reads only the head generation, but a host rendering or

@@ -16,24 +16,23 @@ pub fn parent_session_key(stem: &str) -> Option<String> {
     stem.rfind("__").map(|idx| stem[..idx].to_string())
 }
 
-/// Sanitize a string into the TinyAgents store-name alphabet (ASCII
-/// alphanumerics, `-`, `_`, `.`); anything else becomes `_`. Empty input
-/// becomes `"session"` to match the transcript layer's fallback.
+/// Encode a session key as a collision-free TinyAgents store name.
+/// Unsafe UTF-8 bytes use percent escapes, including `%` itself, so encoded
+/// bytes cannot collide with literal text. Safe existing names stay unchanged.
 pub fn sanitize_store_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() || cleaned.bytes().all(|b| b == b'.') {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "-{byte:02x}").expect("String writes cannot fail");
+        }
+    }
+    if encoded.is_empty() || encoded.bytes().all(|b| b == b'.') {
         "session".to_string()
     } else {
-        cleaned
+        encoded
     }
 }
 

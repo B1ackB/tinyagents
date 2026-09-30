@@ -377,7 +377,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             }
         }
         let target = self.target.as_ref().expect("target checked above");
-        self.transcript = Some(match target.session.as_ref() {
+        let handle = match target.session.as_ref() {
             Some(session) => target
                 .locator
                 .open_session(session, target.meta.clone())
@@ -386,7 +386,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 .locator
                 .open_stem(&target.stem, target.meta.clone())
                 .map_err(|error| RuntimeError::Persistence(error.to_string()))?,
-        });
+        };
         // For a session-bound target, `target.session`/`target.stem` always
         // name the same file (construction and `rebind_session` keep them in
         // lockstep) — the bind above is always that file, regardless of
@@ -411,10 +411,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             // `created`, provider/model, token/cost totals and (unless the
             // head changed) session identifiers — none of which describe
             // the file actually being appended to.
-            let destination = self
-                .transcript
-                .as_ref()
-                .expect("bound above")
+            let destination = handle
                 .read_session()
                 .map_err(|error| RuntimeError::Persistence(error.to_string()))?;
             match destination {
@@ -449,6 +446,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 }
             }
         }
+        // Publish the handle only after its destination baseline has been
+        // loaded successfully. Otherwise a failed read could leave this
+        // session bound with rows from the scanned transcript and cause later
+        // writes to fail baseline validation (or compare against the wrong file).
+        self.transcript = Some(handle);
         Ok(SessionResume {
             loaded: true,
             history,
@@ -783,7 +785,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     target.rebind_session(head);
                 }
             }
-            self.transcript = Some(match target.session.as_ref() {
+            let handle = match target.session.as_ref() {
                 Some(session) => target
                     .locator
                     .open_session(session, target.meta.clone())
@@ -792,7 +794,15 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     .locator
                     .open_stem(&target.stem, target.meta.clone())
                     .map_err(|error| RuntimeError::Persistence(error.to_string()))?,
-            });
+            };
+            // Binding can happen without resume (for example ResumeMode::Never).
+            // Keep the durable comparison baseline current without changing
+            // the visible in-memory history or invoking resume hooks.
+            let persisted = handle
+                .messages()
+                .map_err(|error| RuntimeError::Persistence(error.to_string()))?;
+            self.transcript = Some(handle);
+            self.persisted = persisted;
         }
 
         let previous_len = self.persisted.len();
@@ -821,7 +831,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         if !extends && let Some(session) = target.session.clone() {
             let (successor, handle) = target
                 .locator
-                .begin_generation(&session, target.meta.clone())
+                .begin_generation_from_baseline(&session, target.meta.clone(), &self.persisted)
                 .map_err(|error| RuntimeError::Persistence(error.to_string()))?;
             // The successor starts empty, so the retained set is written
             // through the ordinary turn path below and keeps its usage,

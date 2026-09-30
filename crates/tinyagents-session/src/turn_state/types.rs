@@ -105,7 +105,7 @@ pub struct ToolTimelineEntry {
     /// Per-turn monotonic ordering key stamped at the moment the row is first
     /// created, so a rehydrated timeline can order rows identically to the live
     /// stream (conversations-timeline-refactor, Phase 4 amendment). Shares the
-    /// per-turn ordering space with [`TranscriptItem::seq`]. `None` on snapshots
+    /// per-turn ordering space with [`TranscriptItem`]. `None` on snapshots
     /// written before this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
@@ -191,8 +191,8 @@ pub struct SubagentToolCall {
     /// verbatim when it fits the cap; an oversized payload degrades to a
     /// truncated string. Taken from the started event when it carries the
     /// arguments, otherwise backfilled from
-    /// [`AgentProgress::SubagentToolCallCompleted::arguments`] — the tinyagents
-    /// path emits `Value::Null` at start and only captures the input on
+    /// the harness's completed sub-agent tool-call event — the tinyagents path
+    /// emits `Value::Null` at start and only captures the input on
     /// completion. `None` when the harness captured no input at all
     /// (`PayloadCapture::tool_io` off) and on legacy snapshots.
     ///

@@ -221,6 +221,7 @@ impl Projector {
             self.last_request_id = Some(rid.to_string());
             self.step = 0;
             self.seen_call_ids.clear();
+            self.pending.clear();
         }
     }
 
@@ -266,6 +267,7 @@ impl Projector {
                 // count at its prompt.
                 self.step = 0;
                 self.seen_call_ids.clear();
+                self.pending.clear();
                 let raw = msg.message.content.clone();
                 let sanitized = sanitize_user_content(&raw);
                 if sanitized.is_some() {
@@ -447,10 +449,10 @@ impl Projector {
         ts: Option<String>,
     ) {
         // Pair by explicit call id first, else FIFO.
-        let idx = call_id
-            .as_deref()
-            .and_then(|id| take_pending_by_id(&mut self.pending, id))
-            .or_else(|| self.pending.pop_front().map(|(_, idx)| idx));
+        let idx = match call_id.as_deref() {
+            Some(id) => take_pending_by_id(&mut self.pending, id),
+            None => self.pending.pop_front().map(|(_, idx)| idx),
+        };
 
         if let Some(idx) = idx
             && let Some(DisplayItem::ToolCall {

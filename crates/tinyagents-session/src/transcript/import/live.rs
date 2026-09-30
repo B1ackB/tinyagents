@@ -12,6 +12,7 @@
 //! non-fatal (log + swallow).
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use tinyagents_harness::store::{AppendStore, Store};
@@ -24,6 +25,9 @@ use super::convert::{
 };
 use super::ops::{SessionStores, open_session_stores};
 use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
+
+pub(super) static LIVE_REWRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Mirror one completed turn's transcript into the TinyAgents store.
 ///
@@ -42,6 +46,7 @@ pub async fn write_live_turn(
     transcript: &SessionTranscript,
     project: JournalProjector,
 ) -> Result<()> {
+    let _rewrite_guard = LIVE_REWRITE_LOCK.lock().await;
     tracing::debug!(
         "[session-store] dual-write enter stem={session_key} workspace={} messages={}",
         workspace.display(),
