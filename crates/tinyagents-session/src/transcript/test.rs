@@ -673,24 +673,10 @@ fn opening_a_generation_that_already_exists_is_refused() {
     );
 }
 
-/// Two racing `begin_generation` calls for the same session — two cores
-/// compacting at once — must not both write their own first append into the
-/// generation's still-nonexistent file: `begin_generation` itself performs no
-/// I/O (`FileTranscriptHistory::new` only resolves a path), so without the
-/// `path_lock` both handles' first `append_turn_with_partial` would
-/// otherwise race on the writer's create-fresh branch and whichever `fs::write`
-/// lands last would silently discard the other's retained set.
-///
-/// The threads rendezvous twice, and the second rendezvous is load-bearing.
-/// `begin_generation` refuses to open a successor that already exists, so with
-/// only the pre-`begin_generation` barrier a thread that got all the way
-/// through its append before the other called `begin_generation` would make
-/// that call fail on the existence check — a race in the test itself rather
-/// than the contention it means to exercise. Holding both threads until each
-/// owns its handle puts the contention where this test is aiming it: on the
-/// two first appends.
+/// Concurrent generation selection must reserve the successor slot until
+/// its first write. Exactly one process may commit that generation.
 #[test]
-fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append() {
+fn concurrent_begin_generation_allows_only_one_successor_writer() {
     let dir = tempdir().unwrap();
     let session = FileTranscriptLocator::new(dir.path());
     let root = SessionRef::scoped("thread-1", "orchestrator");
@@ -703,36 +689,24 @@ fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append(
         .unwrap();
 
     let locator = Arc::new(FileTranscriptLocator::new(dir.path()));
-    let barrier = Arc::new(Barrier::new(2));
-
     let left_locator = Arc::clone(&locator);
     let left_root = root.clone();
-    let left_barrier = Arc::clone(&barrier);
     let left = std::thread::spawn(move || {
-        left_barrier.wait();
-        let (_, handle) = left_locator.begin_generation(&left_root, meta()).unwrap();
-        // Both handles exist before either append starts.
-        left_barrier.wait();
-        handle
-            .append(TranscriptMessage::new("user", "from left"))
-            .unwrap();
+        let (_, handle) = left_locator.begin_generation(&left_root, meta())?;
+        handle.append(TranscriptMessage::new("user", "from left"))?;
+        anyhow::Ok(())
     });
 
     let right_locator = Arc::clone(&locator);
     let right_root = root.clone();
-    let right_barrier = Arc::clone(&barrier);
     let right = std::thread::spawn(move || {
-        right_barrier.wait();
-        let (_, handle) = right_locator.begin_generation(&right_root, meta()).unwrap();
-        // Both handles exist before either append starts.
-        right_barrier.wait();
-        handle
-            .append(TranscriptMessage::new("user", "from right"))
-            .unwrap();
+        let (_, handle) = right_locator.begin_generation(&right_root, meta())?;
+        handle.append(TranscriptMessage::new("user", "from right"))?;
+        anyhow::Ok(())
     });
 
-    left.join().unwrap();
-    right.join().unwrap();
+    let outcomes = [left.join().unwrap(), right.join().unwrap()];
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
 
     let successor = root.next_generation();
     let handle = locator.open_session(&successor, meta()).unwrap();
@@ -744,8 +718,8 @@ fn concurrent_begin_generation_handles_for_one_session_never_lose_either_append(
         .collect();
     assert_eq!(
         contents.len(),
-        2,
-        "both racing compactions' appends must survive: {contents:?}"
+        1,
+        "only the winning generation is visible: {contents:?}"
     );
 }
 

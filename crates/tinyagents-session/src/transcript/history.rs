@@ -18,10 +18,12 @@
 //!
 
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::transcript::types::TranscriptMessage;
+use fs2::FileExt;
 
 use crate::transcript::{
     SessionAdoption, SessionRef, SessionTranscript, TranscriptMeta, TurnUsage,
@@ -625,8 +627,10 @@ impl TranscriptLocator for FileTranscriptLocator {
         );
         let stem = session_stem(&successor);
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
+        let lock_file = generation_lock(&path)?;
+        lock_file.lock_exclusive()?;
         anyhow::ensure!(
-            !path.exists(),
+            !path.is_file(),
             "session generation {stem} already exists; refusing to overwrite a sealed transcript"
         );
 
@@ -639,14 +643,9 @@ impl TranscriptLocator for FileTranscriptLocator {
             successor.generation,
             path.display()
         );
-        Ok((
-            successor,
-            Arc::new(FileTranscriptHistory::new(
-                &self.workspace_dir,
-                &stem,
-                meta,
-            )?),
-        ))
+        let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
+        *history.generation_reservation.get_mut().unwrap() = Some(lock_file);
+        Ok((successor, Arc::new(history)))
     }
 }
 
@@ -698,9 +697,28 @@ pub struct FileTranscriptHistory {
     path: PathBuf,
     /// `_meta` used for the very first write, before a file exists.
     seed_meta: TranscriptMeta,
+    /// Cross-process reservation held from generation selection through its
+    /// first successful write. A crash releases the advisory lock.
+    generation_reservation: Mutex<Option<File>>,
 }
 
 impl FileTranscriptHistory {
+    fn acquire_write_lock(&self) -> anyhow::Result<Option<File>> {
+        if self.generation_reservation.lock().unwrap().is_some() {
+            return Ok(None);
+        }
+        let lock = generation_lock(&self.path)?;
+        lock.lock_exclusive()?;
+        Ok(Some(lock))
+    }
+
+    fn finish_generation_reservation(&self, success: bool) -> anyhow::Result<()> {
+        if success && let Some(lock) = self.generation_reservation.lock().unwrap().take() {
+            lock.unlock()?;
+        }
+        Ok(())
+    }
+
     /// Binds a history handle to `{workspace_dir}/session_raw/{stem}.jsonl`.
     ///
     pub fn new(
@@ -713,7 +731,11 @@ impl FileTranscriptHistory {
             "[transcript-history] bound stem={stem} path={}",
             path.display()
         );
-        Ok(Self { path, seed_meta })
+        Ok(Self {
+            path,
+            seed_meta,
+            generation_reservation: Mutex::new(None),
+        })
     }
 
     /// Binds a handle to an **already-discovered** transcript file, verbatim.
@@ -773,6 +795,24 @@ impl FileTranscriptHistory {
             .map(|t| t.meta)
             .unwrap_or_else(|| self.seed_meta.clone()))
     }
+}
+
+/// Opens the stable advisory-lock file associated with a transcript path.
+/// The file is intentionally retained after unlock; deleting lock files can
+/// split waiters across different inodes and invalidate mutual exclusion.
+fn generation_lock(path: &Path) -> anyhow::Result<File> {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(Into::into)
 }
 
 /// A process-wide, per-path mutex serializing the read-modify-write sequence
@@ -847,6 +887,7 @@ impl FileTranscriptHistory {
     /// lock is taken exactly once per call, never nested (this crate's
     /// `Mutex` is not reentrant).
     fn append_turn_locked(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
+        self.validate_turn_baseline(turn.prev)?;
         tracing::debug!(
             "[transcript-history] append_turn prev={} next={} usage={} request_id={:?} path={}",
             turn.prev.len(),
@@ -877,6 +918,7 @@ impl FileTranscriptHistory {
         turn: TranscriptTurn<'_>,
         partial: Option<&TranscriptPartial>,
     ) -> anyhow::Result<()> {
+        self.validate_turn_baseline(turn.prev)?;
         tracing::debug!(
             "[transcript-history] append_turn_with_partial prev={} next={} partial={} path={}",
             turn.prev.len(),
@@ -896,6 +938,23 @@ impl FileTranscriptHistory {
                 tools: turn.tools,
             },
         )?;
+        Ok(())
+    }
+
+    fn validate_turn_baseline(&self, prev: &[TranscriptMessage]) -> anyhow::Result<()> {
+        if self.generation_reservation.lock().unwrap().is_some() || !self.path.is_file() {
+            return Ok(());
+        }
+        let disk = self.persisted()?;
+        let same = disk.len() == prev.len()
+            && disk.iter().zip(prev).all(|(left, right)| {
+                left.role == right.role && left.content == right.content && left.id == right.id
+            });
+        anyhow::ensure!(
+            same,
+            "transcript baseline is stale for {}; reload the session before persisting",
+            self.path.display()
+        );
         Ok(())
     }
 
@@ -948,7 +1007,11 @@ impl TranscriptHistory for FileTranscriptHistory {
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.append_turn_locked(turn)
+        let os_lock = self.acquire_write_lock()?;
+        let result = self.append_turn_locked(turn);
+        self.finish_generation_reservation(result.is_ok())?;
+        drop(os_lock);
+        result
     }
 
     fn append_turn_with_partial(
@@ -958,7 +1021,11 @@ impl TranscriptHistory for FileTranscriptHistory {
     ) -> anyhow::Result<()> {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.append_turn_with_partial_locked(turn, partial)
+        let os_lock = self.acquire_write_lock()?;
+        let result = self.append_turn_with_partial_locked(turn, partial);
+        self.finish_generation_reservation(result.is_ok())?;
+        drop(os_lock);
+        result
     }
 
     fn messages(&self) -> anyhow::Result<Vec<TranscriptMessage>> {
@@ -968,23 +1035,36 @@ impl TranscriptHistory for FileTranscriptHistory {
     fn append(&self, message: TranscriptMessage) -> anyhow::Result<()> {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let mut next = self.persisted()?;
         next.push(message);
-        self.write_logical_set_locked(&next)
+        let result = self.write_logical_set_locked(&next);
+        self.finish_generation_reservation(result.is_ok())?;
+        drop(os_lock);
+        result
     }
 
     fn replace(&self, messages: &[TranscriptMessage]) -> anyhow::Result<()> {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.write_logical_set_locked(messages)
+        let os_lock = self.acquire_write_lock()?;
+        let result = self.write_logical_set_locked(messages);
+        self.finish_generation_reservation(result.is_ok())?;
+        drop(os_lock);
+        result
     }
 
     fn clear(&self) -> anyhow::Result<()> {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         if !self.path.exists() {
+            drop(os_lock);
             return Ok(());
         }
-        self.write_logical_set_locked(&[])
+        let result = self.write_logical_set_locked(&[]);
+        self.finish_generation_reservation(result.is_ok())?;
+        drop(os_lock);
+        result
     }
 }
