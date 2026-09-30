@@ -118,6 +118,7 @@ mod migration;
 mod paths;
 mod reader;
 mod session;
+pub mod spend;
 mod thread_lookup;
 mod types;
 pub mod view;
