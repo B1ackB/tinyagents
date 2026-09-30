@@ -192,10 +192,11 @@ impl FinalCallWrapUpMiddleware {
             .map(estimate_message_tokens)
             .sum::<u64>()
             .saturating_add(estimate_text_tokens(instruction));
-        let restored = match self.outcomes.lock() {
-            Ok(outcomes) => {
+        let restored = {
+            {
                 let mut restored = 0usize;
                 let mut skipped = 0usize;
+                let mut unavailable = false;
                 for message in request.messages.iter_mut().rev() {
                     let TaMessage::Tool(tool) = message else {
                         continue;
@@ -215,11 +216,16 @@ impl FinalCallWrapUpMiddleware {
                             _ => None,
                         })
                         .collect();
-                    if body.trim() != CLEARED_PLACEHOLDER {
+                    if body.trim() != self.cleared_placeholder {
                         continue;
                     }
-                    let Some(outcome) = captured_outcome_for(&outcomes, &tool.tool_call_id) else {
-                        continue;
+                    let outcome = match self.outcomes.content_for(&tool.tool_call_id) {
+                        Ok(Some(outcome)) => outcome,
+                        Ok(None) => continue,
+                        Err(OutcomesUnavailable) => {
+                            unavailable = true;
+                            break;
+                        }
                     };
                     if outcome.trim().is_empty() {
                         continue;
@@ -227,7 +233,7 @@ impl FinalCallWrapUpMiddleware {
                     // What restoring this body would add, against what the
                     // placeholder already costs.
                     let added = estimate_text_tokens(&outcome)
-                        .saturating_sub(estimate_text_tokens(CLEARED_PLACEHOLDER));
+                        .saturating_sub(estimate_text_tokens(&self.cleared_placeholder));
                     if budget > 0 && used.saturating_add(added) > budget {
                         // Everything older is at least as likely to overflow, but
                         // keep counting so the log reports the true shortfall
@@ -238,6 +244,13 @@ impl FinalCallWrapUpMiddleware {
                     used = used.saturating_add(added);
                     tool.content = vec![ContentBlock::Text(outcome)];
                     restored += 1;
+                }
+                if unavailable {
+                    tracing::warn!(
+                        "[tinyagents::mw] tool-outcome sink poisoned; concluding without restoring \
+                         cleared tool results"
+                    );
+                    return 0;
                 }
                 if skipped > 0 {
                     tracing::info!(
@@ -252,13 +265,6 @@ impl FinalCallWrapUpMiddleware {
                 }
                 restored
             }
-            Err(_) => {
-                tracing::warn!(
-                    "[tinyagents::mw] tool-outcome sink poisoned; concluding without restoring \
-                     cleared tool results"
-                );
-                0
-            }
         };
         if restored > 0 {
             tracing::info!(
@@ -272,17 +278,17 @@ impl FinalCallWrapUpMiddleware {
 
 impl FinalCallWrapUpMiddleware {
     /// The call *before* the conclusion: narrow the belt to
-    /// [`DELIVERABLE_TOOLS`] so a turn that owes a file can still write it.
+    /// the deliverable tools so a turn that owes a file can still write it.
     ///
     /// Clearing the belt one call later makes the conclusion structural, which
     /// is right — but for a turn whose product is an artifact rather than
-    /// prose it makes *failure* structural too. See
-    /// [`FINAL_WRITE_INSTRUCTION`](crate::agent::session_host::turn_checkpoint::FINAL_WRITE_INSTRUCTION)
-    /// for the case that motivated this and the trade it accepts.
+    /// prose it makes *failure* structural too. The host's final-write
+    /// instruction documents the case that motivated this and the trade it
+    /// accepts.
     ///
     /// Returns `true` when the narrowing fired, so the caller can skip the
     /// instruction otherwise.
-    fn reserve_final_write(
+    fn reserve_final_write<C>(
         &self,
         ctx: &RunContext<C>,
         request: &mut ModelRequest,
@@ -297,11 +303,11 @@ impl FinalCallWrapUpMiddleware {
         // has no writer on its belt, and telling it "the only tools left are
         // the ones that write files" would be false — so leave the call as an
         // ordinary one and let the conclusion handle the cap.
-        if !request.tools.iter().any(|t| is_deliverable_tool(&t.name)) {
+        if !request.tools.iter().any(|t| self.is_deliverable_tool(&t.name)) {
             return false;
         }
         let before = request.tools.len();
-        request.tools.retain(|t| is_deliverable_tool(&t.name));
+        request.tools.retain(|t| self.is_deliverable_tool(&t.name));
         // `Auto`, never `Required`: a turn that has already written its file,
         // or was only ever asked for an answer, must be free to spend this call
         // on text instead. Forcing a call here would make it invent a write.
@@ -317,18 +323,16 @@ impl FinalCallWrapUpMiddleware {
         // The same restoration the conclusion gets, and for a sharper reason:
         // this call is being asked to write the findings into a file, so it
         // needs to be able to read them.
-        self.restore_cleared_outcomes(request, self.final_write_instruction);
+        self.restore_cleared_outcomes(request, &self.final_write_instruction);
         request
             .messages
-            .push(TaMessage::user(self.final_write_instruction.to_string()));
+            .push(TaMessage::user(self.final_write_instruction.clone()));
         true
     }
 }
 
 #[async_trait]
-impl Middleware<(), C>
-    for FinalCallWrapUpMiddleware
-{
+impl<C: Send + Sync> Middleware<(), C> for FinalCallWrapUpMiddleware {
     fn name(&self) -> &str {
         "final_call_wrap_up"
     }
@@ -414,27 +418,11 @@ impl Middleware<(), C>
         // results are the ones the model has not seen (the cap is checked
         // before the request is built), and the earliest ones are most likely
         // already reflected in the compression summary above.
-        self.restore_cleared_outcomes(request, self.instruction);
+        self.restore_cleared_outcomes(request, &self.instruction);
         request
             .messages
-            .push(TaMessage::user(self.instruction.to_string()));
+            .push(TaMessage::user(self.instruction.clone()));
         self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
-}
-
-/// The captured content for one tool call id, if the sink holds it.
-///
-/// A free function so the borrow of the locked sink stays scoped to the lookup
-/// rather than being held across the mutation of `request.messages`. Named
-/// without a `self_` prefix (tinysweeper on #6068): it takes no receiver, and
-/// the prefix read as a method on something.
-fn captured_outcome_for(
-    outcomes: &[crate::agent::tinyagents::ToolCallOutcome],
-    call_id: &str,
-) -> Option<String> {
-    outcomes
-        .iter()
-        .find(|outcome| outcome.call_id == call_id)
-        .map(|outcome| outcome.content.clone())
 }
