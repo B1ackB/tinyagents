@@ -152,7 +152,6 @@ const AGGREGATE_PREVIEW_BUDGET_BYTES: usize = 512;
 /// survives. Slightly overshooting the aggregate budget here is the correct
 /// trade — a valid pointer is worth a few hundred bytes.
 const MIN_ENVELOPE_ALLOWANCE_BYTES: usize = 512;
-pub const TINYAGENTS_TOOL_RESULT_ARTIFACT_STORE: &str = "openhuman_tool_result_artifacts";
 const TRAILER_RESERVED: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
