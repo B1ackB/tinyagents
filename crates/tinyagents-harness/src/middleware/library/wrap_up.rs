@@ -115,7 +115,7 @@ pub struct FinalCallWrapUpMiddleware {
     /// returns text and requests no tools, which is the loop's ordinary
     /// terminal condition — so the old `final_response.is_none()` tell no
     /// longer distinguishes a capped turn from a finished one.
-    fired: Arc<std::sync::atomic::AtomicBool>,
+    fired: std::sync::Mutex<std::collections::HashSet<u64>>,
 }
 
 impl FinalCallWrapUpMiddleware {
@@ -134,7 +134,7 @@ impl FinalCallWrapUpMiddleware {
             cleared_placeholder: DEFAULT_CLEARED_PLACEHOLDER.to_string(),
             outcomes,
             input_budget,
-            fired: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fired: std::sync::Mutex::default(),
         }
     }
 
@@ -159,9 +159,11 @@ impl FinalCallWrapUpMiddleware {
         self.deliverable_tools.iter().any(|tool| tool == name)
     }
 
-    /// The shared flag, for the run loop to read after the drive future returns.
-    pub fn fired(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        self.fired.clone()
+    /// Whether the wrap-up injection fired for this run context.
+    pub fn fired<C>(&self, ctx: &RunContext<C>) -> bool {
+        self.fired
+            .lock()
+            .is_ok_and(|fired| fired.contains(&ctx.instance_id()))
     }
 
     /// Give a concluding-or-persisting call back the tool results microcompact
@@ -420,7 +422,9 @@ impl<C: Send + Sync> Middleware<(), C> for FinalCallWrapUpMiddleware {
         request
             .messages
             .push(TaMessage::user(self.instruction.clone()));
-        self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut fired) = self.fired.lock() {
+            fired.insert(ctx.instance_id());
+        }
         Ok(())
     }
 }
