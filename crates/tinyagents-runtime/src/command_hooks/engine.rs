@@ -238,7 +238,7 @@ impl HookEngine {
         let environment = &self.environment;
         let mut outcome = HookOutcome::default();
         for definition in selected {
-            let run = exec::run(&definition, &input, &env, default_timeout, &environment).await;
+            let run = exec::run(&definition, &input, &env, default_timeout, environment).await;
             tracing::debug!(
                 "[hooks] {event}: {} finished in {}ms (deny={}, error={:?})",
                 run.label,
@@ -297,10 +297,10 @@ impl HookEngine {
     /// Ambient variables plus anything a `sessionStart` hook contributed.
     async fn env_for(&self, input: &HookInput) -> BTreeMap<String, String> {
         let mut env = exec::ambient_env(&self.environment, input);
-        if let Some(session) = &input.session_id {
-            if let Some(extra) = self.session_env.read().await.get(session) {
-                env.extend(extra.clone());
-            }
+        if let Some(session) = &input.session_id
+            && let Some(extra) = self.session_env.read().await.get(session)
+        {
+            env.extend(extra.clone());
         }
         env
     }

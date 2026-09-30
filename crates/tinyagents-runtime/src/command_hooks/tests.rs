@@ -625,7 +625,7 @@ fn hook_process_environment_is_named_after_the_product() {
         env.get("OPENHUMAN_AGENT_ID").map(String::as_str),
         Some("orchestrator")
     );
-    assert_eq!(env.len(), 8);
+    assert_eq!(env.len(), 7);
 }
 
 #[test]
@@ -637,10 +637,10 @@ fn a_literal_hooks_json_parses_to_the_documented_shape() {
             "version": 1,
             "hooks": {
                 "beforeShellExecution": [
-                    { "command": "./scripts/audit.sh", "matcher": "^rm ", "timeout": 10 }
+                    { "command": "audit --strict", "matcher": "^rm ", "timeout": 10 }
                 ],
                 "stop": [
-                    { "command": "./scripts/tests.sh", "loop_limit": 3, "failClosed": false }
+                    { "command": "run-tests", "loop_limit": 3, "failClosed": false }
                 ]
             }
         }"#,
@@ -648,7 +648,7 @@ fn a_literal_hooks_json_parses_to_the_documented_shape() {
     assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
     let shell = parsed.for_event(HookEvent::BeforeShellExecution);
     assert_eq!(shell.len(), 1);
-    assert_eq!(shell[0].command, "./scripts/audit.sh");
+    assert_eq!(shell[0].command, "audit --strict");
     assert_eq!(shell[0].matcher.as_deref(), Some("^rm "));
     assert_eq!(shell[0].timeout, Some(10));
     assert_eq!(shell[0].kind, HookKind::Command);
