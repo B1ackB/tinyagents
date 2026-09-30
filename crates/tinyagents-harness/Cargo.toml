@@ -31,6 +31,7 @@ tracing = { workspace = true }
 tinyagents-definition = { path = "../tinyagents-definition", version = "2.1.2" }
 tinytools-agent = { path = "../../vendor/tinytools/crates/tinytools-agent", version = "0.4.1", default-features = false }
 tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm", version = "0.3.0" }
+tinyinference-core = { path = "../../vendor/tinyinference/crates/tinyinference-core", version = "0.3.0" }
 tinyinference-embeddings = { path = "../../vendor/tinyinference/crates/tinyinference-embeddings", version = "0.3.0" }
 tinyinference-image = { path = "../../vendor/tinyinference/crates/tinyinference-image", version = "0.3.0", optional = true }
 tinyinference-video = { path = "../../vendor/tinyinference/crates/tinyinference-video", version = "0.3.0", optional = true }
