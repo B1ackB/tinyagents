@@ -9,6 +9,7 @@
 //! Shares the session database and connection helper with `super::store`, so
 //! a run and the session that produced it are queryable together.
 
+pub mod command_center;
 pub mod ops;
 pub mod store;
 pub mod tool_effects;
