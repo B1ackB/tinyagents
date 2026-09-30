@@ -11,10 +11,14 @@
 //!   [`DiscoveryRankMode`] that says how it is used.
 //! - [`bridge_schemas`] / [`answer_tool_search`] / [`unwrap_tool_call`] — the
 //!   two intrinsic bridge tools the agent loop advertises and answers.
+//! - [`EmbeddingToolRanker`] — a semantic [`tinytools::ToolRanker`] over any
+//!   [`tinyinference_embeddings::EmbeddingModel`], with an in-memory and
+//!   optional on-disk embedding cache.
 //! - [`render_manifest`] — the budgeted listing inside `tool_search`'s
 //!   description.
 
 mod bridge;
+mod embedding_ranker;
 mod manifest;
 mod types;
 
@@ -22,6 +26,7 @@ pub use bridge::{
     SearchAnswer, TOOL_CALL_NAME, TOOL_SEARCH_NAME, answer_tool_search, bridge_schemas,
     unwrap_tool_call,
 };
+pub use embedding_ranker::EmbeddingToolRanker;
 // The BM25 arithmetic lives in `tinytools::rank` now, so a host ranks with the
 // same index the bridge does; the old paths keep resolving.
 pub use manifest::{MANIFEST_DESCRIPTION_CHARS, first_sentence, render_manifest};

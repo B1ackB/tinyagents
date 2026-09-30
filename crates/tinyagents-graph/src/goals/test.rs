@@ -354,7 +354,10 @@ mod tool_tests {
 
         let get = GoalTool::new(GoalToolKind::Get, s.clone());
         let res = run(&get, context, json!({})).await;
-        let empty: serde_json::Value = serde_json::from_str(&res.output()).unwrap();
+        let empty = match &res.content[0] {
+            tinytools::ToolContent::Json { data } => data,
+            other => panic!("expected structured JSON content, got {other:?}"),
+        };
         assert!(empty["goal"].is_null());
         assert_eq!(empty["text"], "no goal set for this thread");
 
@@ -366,7 +369,10 @@ mod tool_tests {
         )
         .await;
         assert!(!res.is_error, "{res:?}");
-        let payload: serde_json::Value = serde_json::from_str(&res.output()).unwrap();
+        let payload = match &res.content[0] {
+            tinytools::ToolContent::Json { data } => data,
+            other => panic!("expected structured JSON content, got {other:?}"),
+        };
         assert_eq!(payload["goal"]["objective"], "land the PR");
         assert_eq!(payload["goal"]["status"], "active");
         assert_eq!(payload["goal"]["tokenBudget"], 5000);

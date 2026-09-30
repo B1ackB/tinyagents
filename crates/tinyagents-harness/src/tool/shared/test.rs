@@ -169,6 +169,94 @@ async fn canonical_adapter_fails_closed_when_the_registered_tool_is_gone() {
     assert_eq!(result.output(), "unknown tool 'missing'");
 }
 
+struct InjectedArgumentTool;
+
+#[async_trait]
+impl Tool for InjectedArgumentTool {
+    fn name(&self) -> &str {
+        "injected"
+    }
+
+    fn description(&self) -> &str {
+        "Declares a host-owned call identity."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    fn injected_arguments(&self) -> Vec<tinytools::ToolInjectedArgument> {
+        vec![tinytools::ToolInjectedArgument::tool_call_id("call_id")]
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::default())
+    }
+}
+
+#[test]
+fn canonical_adapter_forwards_injected_argument_declarations() {
+    let sets: Vec<Arc<Vec<Box<dyn Tool>>>> = vec![Arc::new(vec![Box::new(InjectedArgumentTool)])];
+    let adapter = CanonicalSharedToolAdapter::for_name(sets, "injected").expect("registered tool");
+
+    assert_eq!(
+        adapter.injected_arguments(),
+        vec![tinytools::ToolInjectedArgument::tool_call_id("call_id")]
+    );
+}
+
+struct BehaviorTool;
+
+#[async_trait]
+impl Tool for BehaviorTool {
+    fn name(&self) -> &str {
+        "behavior"
+    }
+
+    fn description(&self) -> &str {
+        "Declares host-visible behavior."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    fn supports_markdown(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self, args: &serde_json::Value) -> bool {
+        args["safe"].as_bool().unwrap_or(false)
+    }
+
+    fn timeout_policy(&self, _args: &serde_json::Value) -> tinytools::ToolTimeout {
+        tinytools::ToolTimeout::Unbounded
+    }
+
+    fn return_direct(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::default())
+    }
+}
+
+#[test]
+fn canonical_adapter_forwards_behavior_bearing_tool_methods() {
+    let sets: Vec<Arc<Vec<Box<dyn Tool>>>> = vec![Arc::new(vec![Box::new(BehaviorTool)])];
+    let adapter = CanonicalSharedToolAdapter::for_name(sets, "behavior").expect("registered tool");
+
+    assert!(adapter.supports_markdown());
+    assert!(adapter.is_concurrency_safe(&serde_json::json!({"safe": true})));
+    assert!(!adapter.is_concurrency_safe(&serde_json::json!({"safe": false})));
+    assert_eq!(
+        adapter.timeout_policy(&serde_json::json!({})),
+        tinytools::ToolTimeout::Unbounded
+    );
+    assert!(adapter.return_direct());
+}
+
 #[tokio::test]
 async fn early_exit_only_fires_after_a_successful_canonical_result() {
     let sets: Vec<Arc<Vec<Box<dyn Tool>>>> = vec![Arc::new(vec![Box::new(RecordingTool {

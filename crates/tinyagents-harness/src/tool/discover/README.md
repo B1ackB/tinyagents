@@ -9,6 +9,7 @@ this file is the map of the module.
 | `types.rs`    | `ToolDiscoveryPolicy` (the knobs, the host `ranker` and `DiscoveryRankMode`), `DeferredCatalog` (a run's deferred schemas, BM25-indexed, name-sorted, ranked through the policy), `DeferredTool`, `RankedSearch` |
 | `manifest.rs` | `render_manifest` — the budgeted listing inside `tool_search`'s description: full → names → count |
 | `bridge.rs`   | The two intrinsic tools: `bridge_schemas`, `answer_tool_search` (async; returns a `SearchAnswer`), `unwrap_tool_call` |
+| `embedding_ranker.rs` | `EmbeddingToolRanker` — a semantic `tinytools::ToolRanker` over any `EmbeddingModel`, cached in memory and optionally on disk by embedding-space signature |
 | `test.rs`     | Unit tests for all of the above                                      |
 
 The agent loop (`agent_loop/run_loop.rs`, `agent_loop/tools.rs`) is the only
