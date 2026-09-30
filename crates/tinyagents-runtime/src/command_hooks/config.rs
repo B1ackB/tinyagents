@@ -95,7 +95,11 @@ pub struct HookDefinition {
     /// Follow-ups this hook may inject before the engine stops honouring them.
     /// `None` in the file means "engine default"; explicit JSON `null` means
     /// unlimited, matching Cursor.
-    #[serde(default, deserialize_with = "deserialize_loop_limit")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_loop_limit",
+        skip_serializing_if = "LoopLimit::is_default"
+    )]
     pub loop_limit: LoopLimit,
     /// Treat a crashed, missing, or timed-out hook as a denial rather than
     /// letting the action through. Off by default: a broken audit script must
@@ -126,6 +130,24 @@ pub enum LoopLimit {
     Default,
     Unlimited,
     Limited(u32),
+}
+
+impl LoopLimit {
+    fn is_default(&self) -> bool {
+        matches!(self, LoopLimit::Default)
+    }
+}
+
+impl Serialize for LoopLimit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            LoopLimit::Default | LoopLimit::Unlimited => serializer.serialize_none(),
+            LoopLimit::Limited(limit) => serializer.serialize_u32(*limit),
+        }
+    }
 }
 
 fn deserialize_loop_limit<'de, D>(deserializer: D) -> Result<LoopLimit, D::Error>
