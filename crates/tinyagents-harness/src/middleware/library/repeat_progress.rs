@@ -359,13 +359,13 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if already_halted {
             // An earlier result in this batch paused the run; keep the streak
             // accounting current without pausing again.
-            if let Some(batch) = completed {
-                if let Ok(mut trackers) = self.state.trackers.lock() {
-                    let _ = trackers
-                        .entry(run_id.clone())
-                        .or_default()
-                        .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
-                }
+            if let Some(batch) = completed
+                && let Ok(mut trackers) = self.state.trackers.lock()
+            {
+                let _ = trackers
+                    .entry(run_id.clone())
+                    .or_default()
+                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
             }
             return Ok(());
         }
