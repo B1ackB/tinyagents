@@ -78,7 +78,8 @@ pub fn get_page_scoped(
     let offset = parse_cursor(cursor);
 
     let projected = if let Some(agent_id) = agent_id {
-        project::project_thread_scoped(workspace_dir, thread_id, Some(agent_id)).map(std::sync::Arc::new)
+        project::project_thread_scoped(workspace_dir, thread_id, Some(agent_id))
+            .map(std::sync::Arc::new)
     } else {
         cache::global().get_or_project(workspace_dir, thread_id)
     };

@@ -76,7 +76,12 @@ pub(super) fn resolve_files_scoped(
 ) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut found = transcript::find_root_transcripts_for_thread(workspace_dir, thread_id);
     if let Some(agent_id) = agent_id {
-        found.retain(|path| read_head_meta(path).and_then(|meta| meta.agent_id).as_deref() == Some(agent_id));
+        found.retain(|path| {
+            read_head_meta(path)
+                .and_then(|meta| meta.agent_id)
+                .as_deref()
+                == Some(agent_id)
+        });
     }
     if found.is_empty() {
         return None;
