@@ -212,18 +212,20 @@ fn find_exact_spawning_call(
         .ok()
         .flatten()?;
     let parent_call_id = run.metadata.get("parentCallId")?.as_str()?;
-    items
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index >= start && *index < end)
-        .find_map(|(index, item)| match item {
-            DisplayItem::ToolCall { call_id, .. }
-                if !claimed[index] && call_id == parent_call_id =>
-            {
-                Some(index)
-            }
-            _ => None,
-        })
+    let matching = |index: usize| matches!(&items[index], DisplayItem::ToolCall { call_id, .. } if call_id == parent_call_id);
+    let end = end.min(items.len());
+    let start = start.min(end);
+    // Providers may reuse call ids across turns, so prefer the anchored turn.
+    if let Some(index) = (start..end).find(|&index| !claimed[index] && matching(index)) {
+        return Some(index);
+    }
+    // Only look outside the anchored turn when that turn has no call with
+    // this id at all (an imprecise spawn anchor); a claimed in-range match
+    // means the id repeats, and another turn's call would be the wrong one.
+    if (start..end).any(matching) {
+        return None;
+    }
+    (0..items.len()).find(|&index| !claimed[index] && matching(index))
 }
 
 /// What the child's own transcript says about how it ended.

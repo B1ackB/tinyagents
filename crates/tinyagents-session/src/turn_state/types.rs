@@ -105,7 +105,7 @@ pub struct ToolTimelineEntry {
     /// Per-turn monotonic ordering key stamped at the moment the row is first
     /// created, so a rehydrated timeline can order rows identically to the live
     /// stream (conversations-timeline-refactor, Phase 4 amendment). Shares the
-    /// per-turn ordering space with [`TranscriptItem`]. `None` on snapshots
+    /// per-turn ordering space with each [`TranscriptItem`]'s `seq`. `None` on snapshots
     /// written before this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,

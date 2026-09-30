@@ -94,7 +94,7 @@ async fn wrap_up_withdraws_tools_and_appends_the_instruction_on_the_last_call() 
         Some("CONCLUDE NOW".to_string()),
         "the instruction must be the final turn of the request"
     );
-    assert!(mw.fired().load(std::sync::atomic::Ordering::SeqCst));
+    assert!(mw.fired(&ctx));
 }
 
 /// The concluding call gets back the results microcompact blanked — otherwise
@@ -219,7 +219,7 @@ async fn penultimate_call_keeps_the_writers_and_drops_the_gatherers() {
         "the write instruction must be the final turn of the request"
     );
     assert!(
-        !mw.fired().load(std::sync::atomic::Ordering::SeqCst),
+        !mw.fired(&ctx),
         "this is not the conclusion: the turn has one more call and must not \
          be reported as capped yet"
     );
@@ -364,7 +364,7 @@ async fn the_conclusion_still_withdraws_everything() {
         request.messages.last().map(|m| m.text()),
         Some("CONCLUDE NOW".to_string())
     );
-    assert!(mw.fired().load(std::sync::atomic::Ordering::SeqCst));
+    assert!(mw.fired(&ctx));
 }
 
 // ── the bounds CodeRabbit asked for on #6068 ────────────────────────────────

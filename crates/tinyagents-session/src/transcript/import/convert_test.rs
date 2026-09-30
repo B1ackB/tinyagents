@@ -19,8 +19,10 @@ fn sanitize_maps_unsafe_bytes_and_guards_dots() {
     assert_eq!(sanitize_store_name("1719_agent"), "1719_agent");
     assert_eq!(sanitize_store_name("a/b:c d"), "a-2fb-3ac-20d");
     assert_eq!(sanitize_store_name(""), "session");
-    assert_eq!(sanitize_store_name(".."), "session");
+    assert_eq!(sanitize_store_name(".."), "-2e-2e");
+    assert_ne!(sanitize_store_name(".."), sanitize_store_name("..."));
     assert_ne!(sanitize_store_name("a+b"), sanitize_store_name("a_b"));
+    assert_ne!(sanitize_store_name("a-b"), sanitize_store_name("a_b"));
 }
 
 #[test]
