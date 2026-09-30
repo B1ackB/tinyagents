@@ -1193,9 +1193,9 @@ impl TranscriptHistory for FileTranscriptHistory {
     /// silently discard the other's retained set.
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
         let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let result = self.append_turn_locked(turn);
         self.finish_generation_reservation(result.is_ok())?;
         drop(os_lock);
@@ -1208,9 +1208,9 @@ impl TranscriptHistory for FileTranscriptHistory {
         partial: Option<&TranscriptPartial>,
     ) -> anyhow::Result<()> {
         let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let result = self.append_turn_with_partial_locked(turn, partial);
         self.finish_generation_reservation(result.is_ok())?;
         drop(os_lock);
@@ -1223,9 +1223,9 @@ impl TranscriptHistory for FileTranscriptHistory {
 
     fn append(&self, message: TranscriptMessage) -> anyhow::Result<()> {
         let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let mut next = self.persisted()?;
         next.push(message);
         let result = self.write_logical_set_locked(&next);
@@ -1236,9 +1236,9 @@ impl TranscriptHistory for FileTranscriptHistory {
 
     fn replace(&self, messages: &[TranscriptMessage]) -> anyhow::Result<()> {
         let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let result = self.write_logical_set_locked(messages);
         self.finish_generation_reservation(result.is_ok())?;
         drop(os_lock);
@@ -1247,9 +1247,9 @@ impl TranscriptHistory for FileTranscriptHistory {
 
     fn clear(&self) -> anyhow::Result<()> {
         let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         if !self.path.exists() {
             self.finish_generation_reservation(true)?;
             drop(os_lock);
