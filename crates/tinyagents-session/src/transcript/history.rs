@@ -360,7 +360,6 @@ pub trait TranscriptLocator: Send + Sync {
         session: &SessionRef,
         seed: TranscriptMeta,
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        let baseline: Option<&[TranscriptMessage]> = None;
         let successor = session.next_generation();
         anyhow::ensure!(
             successor.generation <= MAX_GENERATIONS,
@@ -683,8 +682,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         );
         let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
-            successor: successor_lock,
-            parent: parent_lock,
+            _successor: successor_lock,
+            _parent: parent_lock,
         });
         Ok((successor, Arc::new(history)))
     }
@@ -696,10 +695,14 @@ impl TranscriptLocator for FileTranscriptLocator {
         baseline: &[TranscriptMessage],
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
         let successor = session.next_generation();
-        anyhow::ensure!(successor.generation <= MAX_GENERATIONS, "session generation limit reached");
+        anyhow::ensure!(
+            successor.generation <= MAX_GENERATIONS,
+            "session generation limit reached"
+        );
         let stem = session_stem(&successor);
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
-        let parent_path = resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
+        let parent_path =
+            resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
         let mut paths = vec![path.clone(), parent_path.clone()];
         paths.sort();
         paths.dedup();
@@ -709,16 +712,37 @@ impl TranscriptLocator for FileTranscriptLocator {
             lock.lock_exclusive()?;
             locks.push((lock_path.clone(), lock));
         }
-        let parent_lock = locks.iter().position(|(p, _)| p == &parent_path).map(|i| locks.remove(i).1);
-        let successor_lock = locks.iter().position(|(p, _)| p == &path).map(|i| locks.remove(i).1).unwrap();
-        let current = if parent_path.is_file() { read_transcript(&parent_path)?.messages } else { Vec::new() };
-        anyhow::ensure!(same_transcript_messages(&current, baseline), "transcript baseline is stale for {}; reload the session before persisting", parent_path.display());
-        anyhow::ensure!(!path.is_file(), "session generation {stem} already exists; refusing to overwrite a sealed transcript");
+        let parent_lock = locks
+            .iter()
+            .position(|(p, _)| p == &parent_path)
+            .map(|i| locks.remove(i).1);
+        let successor_lock = locks
+            .iter()
+            .position(|(p, _)| p == &path)
+            .map(|i| locks.remove(i).1)
+            .unwrap();
+        let current = if parent_path.is_file() {
+            read_transcript(&parent_path)?.messages
+        } else {
+            Vec::new()
+        };
+        anyhow::ensure!(
+            same_transcript_messages(&current, baseline),
+            "transcript baseline is stale for {}; reload the session before persisting",
+            parent_path.display()
+        );
+        anyhow::ensure!(
+            !path.is_file(),
+            "session generation {stem} already exists; refusing to overwrite a sealed transcript"
+        );
         let mut meta = seed;
         meta.session_id = Some(successor.session_id());
         meta.parent_session_id = successor.parent_session_id();
         let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
-        *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation { successor: successor_lock, parent: parent_lock });
+        *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
+            successor: successor_lock,
+            parent: parent_lock,
+        });
         Ok((successor, Arc::new(history)))
     }
 }
@@ -785,8 +809,8 @@ pub struct FileTranscriptHistory {
 }
 
 struct GenerationReservation {
-    successor: File,
-    parent: Option<File>,
+    _successor: File,
+    _parent: Option<File>,
 }
 
 impl FileTranscriptHistory {
