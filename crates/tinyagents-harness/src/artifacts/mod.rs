@@ -59,12 +59,16 @@
 //! and every path a handoff carries emits `[artifact] handoff carried an
 //! artifact path`, so a run journal shows both ends of a pointer.
 
+mod contract;
 mod ops;
 mod paths;
 pub mod policy;
 pub mod tool_results;
 mod types;
 
+pub use contract::{
+    ARTIFACT_OFFLOAD_HEADING, render_artifact_offload_contract, should_render_offload_contract,
+};
 pub use ops::{
     ArtifactOffload, HANDOFF_STAGE_CONSUMED, HANDOFF_STAGE_RECORDED, build_abstract,
     effective_offload_threshold, extract_artifact_paths, note_artifact_handoff,
