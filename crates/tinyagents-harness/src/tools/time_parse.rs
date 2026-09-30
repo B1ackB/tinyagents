@@ -264,7 +264,12 @@ pub(crate) fn resolve_expr_at(
     }
 
     // "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS" (no offset) → resolve in zone.
-    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"] {
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+    ] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, fmt) {
             return zone.naive_to_utc(naive);
         }

@@ -20,10 +20,13 @@ use async_trait::async_trait;
 use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ChatModel, ModelRequest};
 
+use super::types::ModelSummarizer;
 use super::{
-    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens,
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, SummaryRequest,
+    estimate_tokens, render_message_for_summary,
 };
 use crate::error::{Result, TinyAgentsError};
+use crate::token_estimation::estimate_slice_tokens;
 
 /// Default fraction of the model's context window at which summarization fires.
 pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.90;
@@ -32,29 +35,6 @@ pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.90;
 /// compaction. The older head is folded into the summary; this tail stays
 /// untouched so the model retains the live working context.
 pub const DEFAULT_SUMMARIZE_KEEP_LAST: usize = 8;
-
-/// An LLM-backed [`Summarizer`] that condenses a slice of harness [`Message`]s
-/// into a single system summary via a [`ChatModel`] call.
-///
-/// Wraps the **same** model the turn is already running on (its id/temperature
-/// baked in), so the summary is produced by the active model.
-pub struct ModelSummarizer {
-    model: Arc<dyn ChatModel<()>>,
-    /// Model id, kept for logging/provenance only (the id rides the wrapped
-    /// [`ChatModel`]).
-    model_id: String,
-    /// Threshold reported in provenance; the policy owns the actual trigger.
-    threshold_fraction: f64,
-}
-
-impl std::fmt::Debug for ModelSummarizer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ModelSummarizer")
-            .field("model_id", &self.model_id)
-            .field("threshold_fraction", &self.threshold_fraction)
-            .finish_non_exhaustive()
-    }
-}
 
 impl ModelSummarizer {
     /// Build a summarizer over `model` (its id/temperature pinned).
@@ -75,38 +55,44 @@ impl ModelSummarizer {
     }
 }
 
-/// Role label for a harness message, used to render the plain-text transcript
-/// the summarizer reads.
-pub(super) fn role_label(msg: &Message) -> &'static str {
-    match msg {
-        Message::System(_) => "system",
-        Message::User(_) => "user",
-        Message::Assistant(_) => "assistant",
-        Message::Tool(_) => "tool",
-        Message::Custom(_) => "custom",
-    }
-}
-
 #[async_trait]
 impl Summarizer for ModelSummarizer {
     async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
+        self.summarize_messages(messages, None).await
+    }
+
+    async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
+        self.summarize_messages(&request.messages, request.previous_summary.as_deref())
+            .await
+    }
+}
+
+impl ModelSummarizer {
+    async fn summarize_messages(
+        &self,
+        messages: &[Message],
+        previous_summary: Option<&str>,
+    ) -> Result<SummaryRecord> {
         if messages.is_empty() {
             return Err(TinyAgentsError::Validation(
                 "cannot summarize an empty message list".into(),
             ));
         }
 
-        let original_token_estimate: u64 =
-            messages.iter().map(|m| estimate_tokens(&m.text())).sum();
-        // `Message` carries no stable id, so assign synthetic positional ids
-        // (matching the crate's `ConcatSummarizer` provenance convention).
+        let original_token_estimate = estimate_slice_tokens(messages);
         let source_ids: Vec<String> = (0..messages.len()).map(|i| format!("msg-{i}")).collect();
 
         let transcript = messages
             .iter()
-            .map(|m| format!("{}: {}", role_label(m), m.text()))
+            .map(render_message_for_summary)
             .collect::<Vec<_>>()
             .join("\n");
+        let transcript = match previous_summary {
+            Some(previous) => format!(
+                "=== Previous Summary (background context) ===\n{previous}\n\n=== Messages to Summarize ===\n{transcript}"
+            ),
+            None => transcript,
+        };
 
         tracing::info!(
             model = %self.model_id,
