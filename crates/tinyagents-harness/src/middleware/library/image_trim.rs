@@ -68,32 +68,45 @@ pub fn estimate_text_tokens(text: &str) -> u64 {
         .saturating_add(images.saturating_mul(IMAGE_MARKER_TOKEN_COST))
 }
 
-/// Count native [`ContentBlock::Image`] blocks on a message. `Message::text()`
-/// concatenates only text blocks, so a native multimodal image would otherwise
-/// contribute zero tokens; we charge each one [`IMAGE_MARKER_TOKEN_COST`].
-fn count_native_image_blocks(msg: &TaMessage) -> u64 {
-    let content = match msg {
-        TaMessage::System(m) => &m.content,
-        TaMessage::User(m) => &m.content,
-        TaMessage::Assistant(m) => &m.content,
-        TaMessage::Tool(m) => &m.content,
-        // Out-of-band host record; carries no content blocks.
-        TaMessage::Custom(_) => return 0,
-    };
-    content
-        .iter()
-        .filter(|b| matches!(b, ContentBlock::Image(_)))
-        .count() as u64
-}
-
 /// Estimate the tokens of a crate [`TaMessage`]: image-aware text tokens, a flat
 /// [`IMAGE_MARKER_TOKEN_COST`] per native image block, and the assistant's
 /// tool-call name/arguments (which `Message::text()` drops). Mirrors the legacy
 /// `estimate_conversation_message_tokens` (issue #4462).
 pub fn estimate_message_tokens(msg: &TaMessage) -> u64 {
     let mut total = estimate_text_tokens(&msg.text());
-    total = total
-        .saturating_add(count_native_image_blocks(msg).saturating_mul(IMAGE_MARKER_TOKEN_COST));
+    let content = match msg {
+        TaMessage::System(m) => &m.content,
+        TaMessage::User(m) => &m.content,
+        TaMessage::Assistant(m) => &m.content,
+        TaMessage::Tool(m) => &m.content,
+        TaMessage::Custom(_) => return total,
+    };
+    // `Message::text()` omits structured JSON and provider-visible thinking /
+    // extension blocks. Charge their serialized representation so large
+    // structured tool results cannot bypass the prompt budget.
+    for block in content {
+        match block {
+            ContentBlock::Json(value) => {
+                total = total.saturating_add(estimate_text_tokens(&value.to_string()));
+            }
+            ContentBlock::Thinking { text, .. } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+            }
+            ContentBlock::RedactedThinking { data } => {
+                total = total.saturating_add(estimate_text_tokens(data));
+            }
+            ContentBlock::ProviderExtension(value) => {
+                total = total.saturating_add(estimate_text_tokens(&value.to_string()));
+            }
+            ContentBlock::Image(_)
+            | ContentBlock::Audio(_)
+            | ContentBlock::Video(_)
+            | ContentBlock::Document(_) => {
+                total = total.saturating_add(IMAGE_MARKER_TOKEN_COST);
+            }
+            ContentBlock::Text(_) => {}
+        }
+    }
     if let TaMessage::Assistant(m) = msg {
         for call in &m.tool_calls {
             total = total.saturating_add(estimate_text_tokens(&call.name));
@@ -174,22 +187,22 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
         // of every retained message (rebuilding as `system ++ other` would
         // reorder history when a system message appears after non-system ones —
         // exactly the crate-trim regression). System messages are NEVER dropped.
-        let mut removable_positions: Vec<usize> = messages
+        let removable_positions: Vec<usize> = messages
             .iter()
             .enumerate()
             .filter_map(|(idx, m)| (!matches!(m, TaMessage::System(_))).then_some(idx))
             .collect();
 
         let mut removed = 0usize;
-        while !removable_positions.is_empty() {
-            let total: u64 = messages.iter().map(estimate_message_tokens).sum();
+        let mut total = original_tokens;
+        for absolute_idx in removable_positions {
             if total <= self.budget {
                 break;
             }
-            let absolute_idx = removable_positions.remove(0);
             // Subsequent positions shift left by one for every prior removal.
             let remove_at = absolute_idx - removed;
-            messages.remove(remove_at);
+            let dropped = messages.remove(remove_at);
+            total = total.saturating_sub(estimate_message_tokens(&dropped));
             removed += 1;
         }
 

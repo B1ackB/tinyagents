@@ -16,7 +16,11 @@ use tinyinference_llm::tool::ToolCall as TaToolCall;
 use tinytools::ToolResult as TaToolResult;
 
 fn ctx() -> RunContext {
-    RunContext::new(RunConfig::new("mw-test"), ())
+    let mut ctx = RunContext::new(RunConfig::new("mw-test"), ());
+    // Hook-level fixtures create a fresh wrapper for each phase; model those
+    // phases as the same logical invocation, as the agent loop does in life.
+    ctx.instance_id = 1;
+    ctx
 }
 
 /// The polling tool the host exempts, as the OpenHuman host does.

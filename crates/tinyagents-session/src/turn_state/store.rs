@@ -43,6 +43,16 @@ const SNAPSHOT_EXTENSION: &str = "json";
 const COMPLETED_RETENTION: usize = 20;
 static TURN_STATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+fn compare_rfc3339(left: &str, right: &str) -> std::cmp::Ordering {
+    match (
+        chrono::DateTime::parse_from_rfc3339(left),
+        chrono::DateTime::parse_from_rfc3339(right),
+    ) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
+    }
+}
+
 /// Workspace-rooted handle that reads and writes per-thread turn snapshots.
 #[derive(Debug, Clone)]
 pub struct TurnStateStore {
@@ -191,9 +201,8 @@ impl TurnStateStore {
         self.migrate_thread_locked(thread_id);
         let mut turns = self.read_thread_turns(thread_id)?;
         turns.sort_by(|a, b| {
-            b.started_at
-                .cmp(&a.started_at)
-                .then_with(|| b.updated_at.cmp(&a.updated_at))
+            compare_rfc3339(&b.started_at, &a.started_at)
+                .then_with(|| compare_rfc3339(&b.updated_at, &a.updated_at))
         });
         Ok(turns)
     }
@@ -262,6 +271,8 @@ impl TurnStateStore {
         self.migrate_all_legacy_locked();
         let turns = self.all_turns_locked()?;
         let mut count = 0usize;
+        // The lock is held across the scan and the writes, so each snapshot
+        // read by `all_turns_locked` is current; no re-read is needed.
         for mut snapshot in turns {
             if matches!(
                 snapshot.lifecycle,
@@ -274,9 +285,6 @@ impl TurnStateStore {
             snapshot.active_tool = None;
             snapshot.active_subagent = None;
             self.write_turn_file(&snapshot)?;
-            if snapshot.lifecycle == TurnLifecycle::Completed {
-                self.prune_completed_locked(&snapshot.thread_id);
-            }
             count += 1;
         }
         if count > 0 {
@@ -325,7 +333,7 @@ impl TurnStateStore {
         snapshot.active_subagent = None;
         snapshot.updated_at = now_rfc3339.to_string();
         self.write_turn_file(&snapshot)?;
-        if snapshot.lifecycle == TurnLifecycle::Completed {
+        if lifecycle == TurnLifecycle::Completed {
             self.prune_completed_locked(thread_id);
         }
         debug!(
@@ -549,7 +557,7 @@ impl TurnStateStore {
             return;
         }
         // Newest first, then drop everything past the retention window.
-        completed.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        completed.sort_by(|a, b| compare_rfc3339(&b.updated_at, &a.updated_at));
         for stale in completed.into_iter().skip(COMPLETED_RETENTION) {
             let path = self.turn_path(&stale.thread_id, &stale.request_id);
             if let Err(err) = fs::remove_file(&path) {
@@ -645,9 +653,8 @@ fn persist_temp_file(tmp: NamedTempFile, path: &Path) -> Result<(), String> {
 /// Pick the latest turn (greatest `started_at`, ties broken by `updated_at`).
 fn latest_turn(turns: Vec<TurnState>) -> Option<TurnState> {
     turns.into_iter().max_by(|a, b| {
-        a.started_at
-            .cmp(&b.started_at)
-            .then_with(|| a.updated_at.cmp(&b.updated_at))
+        compare_rfc3339(&a.started_at, &b.started_at)
+            .then_with(|| compare_rfc3339(&a.updated_at, &b.updated_at))
     })
 }
 

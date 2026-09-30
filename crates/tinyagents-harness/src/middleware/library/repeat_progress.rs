@@ -67,20 +67,20 @@ struct PendingCallBatch {
 /// Tracker state shared between [`RepeatProgressMiddleware`] and its
 /// [`RepeatEvictionObserver`].
 struct RepeatState {
-    trackers: Mutex<HashMap<String, SuccessfulRepeatTracker>>,
+    tracker: Mutex<HashMap<u64, SuccessfulRepeatTracker>>,
     /// The body a cleared tool result carries.
     cleared_placeholder: String,
     /// `call_id`s of the results fed to the recurrence ledger since its last reset.
-    recorded: Mutex<HashMap<String, HashSet<String>>>,
+    recorded: Mutex<HashMap<u64, HashSet<String>>>,
     /// Recorded results still verbatim in the current request before any
     /// reduction step ran; compared against the final request by the observer.
-    visible_before_reduction: Mutex<HashMap<String, HashSet<String>>>,
+    visible_before_reduction: Mutex<HashMap<u64, HashSet<String>>>,
 }
 
 impl RepeatState {
     fn new(placeholder: impl Into<String>) -> Self {
         Self {
-            trackers: Mutex::default(),
+            tracker: Mutex::default(),
             cleared_placeholder: placeholder.into(),
             recorded: Mutex::default(),
             visible_before_reduction: Mutex::default(),
@@ -144,7 +144,7 @@ pub struct RepeatProgressMiddleware {
     exempt: RepeatExemption,
     state: Arc<RepeatState>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
-    pending: Mutex<HashMap<String, PendingCallBatch>>,
+    pending: Mutex<HashMap<u64, PendingCallBatch>>,
 }
 
 impl RepeatProgressMiddleware {
@@ -198,6 +198,28 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         "repeat_progress"
     }
 
+    async fn after_agent(
+        &self,
+        ctx: &mut RunContext<C>,
+        _state: &(),
+        _run: &mut crate::middleware::AgentRun,
+    ) -> TaResult<()> {
+        let run_id = ctx.instance_id();
+        if let Ok(mut trackers) = self.state.tracker.lock() {
+            trackers.remove(&run_id);
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&run_id);
+        }
+        if let Ok(mut recorded) = self.state.recorded.lock() {
+            recorded.remove(&run_id);
+        }
+        if let Ok(mut visible) = self.state.visible_before_reduction.lock() {
+            visible.remove(&run_id);
+        }
+        Ok(())
+    }
+
     async fn before_model(
         &self,
         ctx: &mut RunContext<C>,
@@ -206,16 +228,19 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
+        let run_id = ctx.instance_id();
         let visible = match self.state.recorded.lock() {
-            Ok(recorded) => recorded
-                .get(&ctx.run_id().as_str().to_string())
-                .filter(|ids| !ids.is_empty())
-                .map(|ids| visible_tool_results(request, ids, &self.state.cleared_placeholder))
-                .unwrap_or_default(),
+            Ok(recorded) if recorded.get(&run_id).is_some_and(|ids| !ids.is_empty()) => {
+                visible_tool_results(
+                    request,
+                    recorded.get(&run_id).expect("checked above"),
+                    &self.state.cleared_placeholder,
+                )
+            }
             _ => HashSet::new(),
         };
         if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
-            slot.insert(ctx.run_id().as_str().to_string(), visible);
+            slot.insert(run_id, visible);
         }
         Ok(())
     }
@@ -226,13 +251,12 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         _state: &(),
         response: &mut ModelResponse,
     ) -> TaResult<()> {
-        let run_id = ctx.run_id().as_str().to_string();
         let tool_calls = &response.message.tool_calls;
         if tool_calls.is_empty() {
             // A final answer (no tool calls) ends the loop; nothing to guard, and
             // there is no batch to track for the call guard.
             if let Ok(mut pending) = self.pending.lock() {
-                pending.remove(&run_id);
+                pending.remove(&ctx.instance_id());
             }
             return Ok(());
         }
@@ -282,9 +306,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
 
         // Stage output with the crate tracker. Its halt verdict is intentionally
         // deferred until the matching tool batch is confirmed successful.
-        if let Ok(mut trackers) = self.state.trackers.lock() {
+        if let Ok(mut trackers) = self.state.tracker.lock() {
             let _ = trackers
-                .entry(run_id.clone())
+                .entry(ctx.instance_id())
                 .or_default()
                 .record_output(&output_sig, all_exempt);
         }
@@ -293,7 +317,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // is back (gated on success) in `after_tool`.
         if let Ok(mut pending) = self.pending.lock() {
             pending.insert(
-                run_id,
+                ctx.instance_id(),
                 PendingCallBatch {
                     call_sig,
                     remaining: tool_calls.len(),
@@ -314,7 +338,6 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         invocation: &ToolInvocationIdentity,
         result: &mut TaToolResult,
     ) -> TaResult<()> {
-        let run_id = ctx.run_id().as_str().to_string();
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
         // Fold this result into the pending batch; the call guard only acts once
@@ -323,7 +346,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             let Ok(mut pending) = self.pending.lock() else {
                 return Ok(());
             };
-            let Some(batch) = pending.get_mut(&run_id) else {
+            let Some(batch) = pending.get_mut(&ctx.instance_id()) else {
                 return Ok(());
             };
             let already_halted = batch.halted;
@@ -335,14 +358,17 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                 .get_mut(&call_id)
                 .and_then(VecDeque::pop_front)
             {
-                if let Ok(mut trackers) = self.state.trackers.lock() {
+                if let Ok(mut trackers) = self.state.tracker.lock() {
                     recurrence = trackers
-                        .entry(run_id.clone())
+                        .entry(ctx.instance_id())
                         .or_default()
                         .record_call_outcome(&sig, &result.output());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
-                    recorded.entry(run_id.clone()).or_default().insert(call_id);
+                    recorded
+                        .entry(ctx.instance_id())
+                        .or_default()
+                        .insert(call_id);
                 }
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
@@ -350,7 +376,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             }
             batch.remaining = batch.remaining.saturating_sub(1);
             let completed = if batch.remaining == 0 {
-                pending.remove(&run_id)
+                pending.remove(&ctx.instance_id())
             } else {
                 None
             };
@@ -360,28 +386,23 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             // An earlier result in this batch paused the run; keep the streak
             // accounting current without pausing again.
             if let Some(batch) = completed
-                && let Ok(mut trackers) = self.state.trackers.lock()
+                && let Ok(mut trackers) = self.state.tracker.lock()
             {
                 let _ = trackers
-                    .entry(run_id.clone())
+                    .entry(ctx.instance_id())
                     .or_default()
                     .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
             }
             return Ok(());
         }
 
-        let batch_verdict = completed.map(|batch| {
-            self.state
-                .trackers
-                .lock()
-                .ok()
-                .map(|mut trackers| {
-                    trackers
-                        .entry(run_id.clone())
-                        .or_default()
-                        .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
-                })
-                .unwrap_or(SuccessfulRepeat::Continue)
+        let batch_verdict = completed.and_then(|batch| {
+            self.state.tracker.lock().ok().map(|mut trackers| {
+                trackers
+                    .entry(ctx.instance_id())
+                    .or_default()
+                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
+            })
         });
         // When both fire on the same result, the batch summary wins: it is the
         // more specific description of an adjacent repeat.
@@ -427,7 +448,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
         _state: &(),
         request: &mut ModelRequest,
     ) -> TaResult<()> {
-        let run_id = ctx.run_id().as_str().to_string();
+        let run_id = ctx.instance_id();
         let before = match self.state.visible_before_reduction.lock() {
             Ok(mut slot) => slot.remove(&run_id).unwrap_or_default(),
             Err(_) => return Ok(()),
@@ -444,11 +465,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
             evicted,
             "[tinyagents::mw] repeat-progress ledger reset: recorded tool results left the context"
         );
-        if let Ok(mut trackers) = self.state.trackers.lock() {
-            trackers
-                .entry(ctx.run_id().as_str().to_string())
-                .or_default()
-                .reset();
+        if let Ok(mut trackers) = self.state.tracker.lock()
+            && let Some(tracker) = trackers.get_mut(&run_id)
+        {
+            tracker.reset();
         }
         if let Ok(mut recorded) = self.state.recorded.lock() {
             recorded.remove(&run_id);

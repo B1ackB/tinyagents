@@ -127,17 +127,60 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             other => return Ok(other),
         };
 
-        // Scrub both renderings independently. `output()` only describes the
-        // canonical content; callers may prefer the alternate Markdown form.
-        let content = result.output();
-        let scrubbed_content = (self.scrubber)(&tool_name, &content);
-        let scrubbed_markdown = result
-            .markdown_formatted
-            .as_deref()
-            .and_then(|markdown| (self.scrubber)(&tool_name, markdown));
-        if scrubbed_content.is_some() || scrubbed_markdown.is_some() {
-            let redactions = scrubbed_content.as_ref().map_or(0, |(_, count)| *count)
-                + scrubbed_markdown.as_ref().map_or(0, |(_, count)| *count);
+        let mut redactions = 0usize;
+        for block in result.content.iter_mut().chain(result.follow_up.iter_mut()) {
+            if let tinytools::ToolContent::Image {
+                data: tinytools::ImageData::Url(url),
+                ..
+            } = block
+            {
+                if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, url) {
+                    // The default scrubber appends an explanatory notice for
+                    // text. Keep that notice out of the URL; it is added to
+                    // the result text below.
+                    *url = match scrubbed.split_once("\n\n[credential_scrub]") {
+                        Some((url, _)) => url.to_owned(),
+                        None => scrubbed,
+                    };
+                    redactions = redactions.saturating_add(count);
+                }
+                continue;
+            }
+            let (text, is_json) = match block {
+                tinytools::ToolContent::Text { text } => (text.clone(), false),
+                tinytools::ToolContent::Json { data } => (data.to_string(), true),
+                tinytools::ToolContent::Image { .. } | tinytools::ToolContent::File { .. } => {
+                    continue;
+                }
+            };
+            if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, &text) {
+                if is_json {
+                    // The default scrubber appends its model-facing notice after
+                    // the JSON. Parse only the scrubbed payload so structured
+                    // tool results remain structured.
+                    let json_payload = scrubbed
+                        .split_once("\n\n[credential_scrub]")
+                        .map_or(scrubbed.as_str(), |(payload, _)| payload);
+                    if let Ok(value) = serde_json::from_str(json_payload) {
+                        if let tinytools::ToolContent::Json { data } = block {
+                            *data = value;
+                        }
+                    } else if let tinytools::ToolContent::Json { data } = block {
+                        *data = serde_json::Value::String(scrubbed);
+                    }
+                } else if let tinytools::ToolContent::Text { text } = block {
+                    *text = scrubbed;
+                }
+                redactions = redactions.saturating_add(count);
+            }
+        }
+        if let Some(markdown) = &mut result.markdown_formatted
+            && let Some((scrubbed, count)) = (self.scrubber)(&tool_name, markdown)
+        {
+            *markdown = scrubbed;
+            redactions = redactions.saturating_add(count);
+        }
+        if redactions > 0 {
             tracing::warn!(
                 tool = %tool_name,
                 redactions,
@@ -145,12 +188,10 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             );
             // The notice goes to the model, in the result itself. The warning
             // above goes to the log, where no model will ever read it.
-            if let Some((annotated, _)) = scrubbed_content {
-                result.content = vec![tinytools::ToolContent::Text { text: annotated }];
-            }
-            result.markdown_formatted = scrubbed_markdown
-                .map(|(annotated, _)| annotated)
-                .or_else(|| result.markdown_formatted.take());
+            result.content.push(tinytools::ToolContent::Text {
+                text: redaction_notice(redactions),
+            });
+            result.markdown_formatted = None;
         }
 
         Ok(MiddlewareToolOutcome::Result(result))

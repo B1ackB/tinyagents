@@ -64,15 +64,14 @@ Source files are never mutated or deleted.
 | `scan.rs` | `discover_sources` walks `session_raw/` and `sessions/`, deduping by stem per the precedence order above. |
 | `convert.rs` | Pure helpers: `parent_session_key` stem lineage, `sanitize_store_name`, `stream_name`, `effective_thread_id` (synthesizes `imported-{stem}` when `_meta` has none), `build_descriptor`, `journal_messages`. |
 | `ops.rs` | `run_import` scans, reads all, plans/writes per item, then writes the marker; `open_session_stores` opens the shared KV/journal handles over `{workspace}/tinyagents_store/{kv,journal}`. |
-| `live.rs` | Live dual-write and store-backed shadow comparison; the host decides when to invoke either path. |
+| `live.rs` | Live dual-write (`write_live_turn`) and store-backed shadow comparison (`shadow_read_compare`); the host decides when to invoke either path. |
 | `*_test.rs` | Sibling test suites for `convert`, `live`, and `ops`. |
 
 ## RPC
 
 `session_import.run` accepts `dry_run`, `only` (glob over session stems),
 `force`, `verbose`, and an optional `workspace` override, and returns an
-`ImportSummary`. Registered via `all_session_import_registered_controllers`
-in `crates/openhuman-core/src/core/all.rs`.
+`ImportSummary`. The host registers the import controller separately.
 
 ## Used by
 

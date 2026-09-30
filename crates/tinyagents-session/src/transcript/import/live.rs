@@ -23,8 +23,8 @@ use super::convert::{
     JournalProjector, build_descriptor, effective_thread_id, journal_messages, sanitize_store_name,
     stream_name,
 };
-use super::ops::{SessionStores, open_session_stores};
-use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
+use super::ops::{SessionStores, open_session_stores, rewrite_journal_stream};
+use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS, SessionDescriptor};
 
 pub(super) static LIVE_REWRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -61,32 +61,24 @@ pub async fn write_live_turn(
 
     let stream = stream_name(session_key);
 
-    // Full-rewrite parity: drop the stream file, then re-append every message so
-    // the journal reflects the current transcript exactly (the importer resets
-    // the same way on re-import). Layout: `{journal_root}/{stream}.jsonl`.
-    let stream_file = journal_root.join(format!("{stream}.jsonl"));
-    if stream_file.exists() {
-        std::fs::remove_file(&stream_file)
-            .with_context(|| format!("reset journal stream {stream}"))?;
-    }
-
-    let records = journal_messages(transcript, project);
-    let message_count = records.len();
-    for (idx, record) in records.iter().enumerate() {
-        let value = serde_json::to_value(record)
-            .with_context(|| format!("serialize live message {idx}"))?;
-        journal
-            .append(&stream, value)
-            .await
-            .with_context(|| format!("journal append failed at message {idx}"))?;
-    }
+    let values = journal_messages(transcript, project)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, record)| {
+            serde_json::to_value(record).with_context(|| format!("serialize live message {idx}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let message_count = values.len();
+    rewrite_journal_stream(&journal, &journal_root, &stream, values)
+        .await
+        .with_context(|| format!("rewrite live journal stream {stream}"))?;
 
     // Descriptor: same projection the importer uses. No run-ledger join here
     // (live turns have no `agent_runs` link yet) and zero warnings; the source
     // pointer records the workspace-relative JSONL twin.
     let (thread_id, synthesized) =
         effective_thread_id(session_key, transcript.meta.thread_id.as_deref());
-    let descriptor = build_descriptor(
+    let mut descriptor = build_descriptor(
         session_key,
         transcript,
         thread_id,
@@ -100,6 +92,16 @@ pub async fn write_live_turn(
         0,
     );
     let descriptor_key = sanitize_store_name(session_key);
+    if let Ok(Some(existing)) = kv.get(NS_SESSIONS, &descriptor_key).await
+        && let Ok(existing) = serde_json::from_value::<SessionDescriptor>(existing)
+    {
+        if existing.source.jsonl.is_some() {
+            descriptor.source.jsonl = existing.source.jsonl;
+        }
+        if existing.source.md.is_some() {
+            descriptor.source.md = existing.source.md;
+        }
+    }
     let descriptor_value =
         serde_json::to_value(&descriptor).context("serialize live session descriptor")?;
     kv.put(NS_SESSIONS, &descriptor_key, descriptor_value)
@@ -148,6 +150,7 @@ pub enum ShadowReadOutcome {
 /// as normalized [`JournalMessage`]s — the same shape the importer and live
 /// dual-write write. A missing stream yields an empty vec (not an error).
 async fn read_shadow_messages(workspace: &Path, session_key: &str) -> Result<Vec<JournalMessage>> {
+    let _rewrite_guard = LIVE_REWRITE_LOCK.lock().await;
     let SessionStores { journal, .. } = open_session_stores(workspace);
     let stream = stream_name(session_key);
     let records = journal

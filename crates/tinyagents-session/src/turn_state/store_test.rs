@@ -501,6 +501,38 @@ fn settle_turn_marks_a_live_snapshot_terminal() {
     assert_eq!(loaded.updated_at, "2026-05-04T10:05:00Z");
 }
 
+#[test]
+fn settling_completed_turns_prunes_old_history() {
+    let dir = tempdir().expect("tempdir");
+    let store = TurnStateStore::new(dir.path().to_path_buf());
+    for index in 0..(COMPLETED_RETENTION + 2) {
+        let request_id = format!("req-{index}");
+        let mut state = turn(
+            "thread-retention",
+            &request_id,
+            &format!("2026-05-04T10:{index:02}:00Z"),
+        );
+        state.lifecycle = TurnLifecycle::Streaming;
+        store.put(&state).expect("put live turn");
+        store
+            .settle_turn(
+                "thread-retention",
+                &request_id,
+                TurnLifecycle::Completed,
+                &format!("2026-05-04T10:{index:02}:30Z"),
+            )
+            .expect("settle completed turn");
+    }
+
+    assert_eq!(
+        store
+            .list_thread("thread-retention")
+            .expect("list thread")
+            .len(),
+        COMPLETED_RETENTION
+    );
+}
+
 /// Settling is a floor, not an override: a bridge that already recorded the
 /// true outcome must win, so a failed turn can never downgrade a `Completed`
 /// snapshot to `Interrupted` and raise a spurious retry banner.
