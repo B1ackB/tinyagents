@@ -19,10 +19,10 @@ use tinyagents_harness::store::{AppendStore, Store};
 use crate::transcript::SessionTranscript;
 
 use super::convert::{
-    build_descriptor, effective_thread_id, journal_messages, sanitize_store_name, stream_name,
-    JournalProjector,
+    JournalProjector, build_descriptor, effective_thread_id, journal_messages, sanitize_store_name,
+    stream_name,
 };
-use super::ops::{open_session_stores, SessionStores};
+use super::ops::{SessionStores, open_session_stores};
 use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
 
 /// Mirror one completed turn's transcript into the TinyAgents store.

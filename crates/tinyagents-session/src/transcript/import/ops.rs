@@ -17,19 +17,17 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tinyagents_harness::store::{AppendStore, FileStore, JsonlAppendStore, Store};
 
-use crate::transcript::{
-    read_transcript, read_transcript_legacy_md, SessionTranscript,
-};
+use crate::transcript::{SessionTranscript, read_transcript, read_transcript_legacy_md};
 
 use super::convert::{
-    build_descriptor, effective_thread_id, journal_messages, parent_session_key, stream_name,
-    JournalProjector,
+    JournalProjector, build_descriptor, effective_thread_id, journal_messages, parent_session_key,
+    stream_name,
 };
-use super::scan::{discover_sources, SourceItem};
+use super::scan::{SourceItem, discover_sources};
 use super::types::{
-    DescriptorSource, ImportOptions, ImportSummary, ItemAction, ItemLedgerRecord, ItemReport,
-    SourceKind, IMPORT_VERSION, JOURNAL_SUBDIR, KV_SUBDIR, MARKER_KEY, NS_MIGRATIONS,
-    NS_MIGRATION_ITEMS, NS_SESSIONS,
+    DescriptorSource, IMPORT_VERSION, ImportOptions, ImportSummary, ItemAction, ItemLedgerRecord,
+    ItemReport, JOURNAL_SUBDIR, KV_SUBDIR, MARKER_KEY, NS_MIGRATION_ITEMS, NS_MIGRATIONS,
+    NS_SESSIONS, SourceKind,
 };
 
 /// Root of the TinyAgents store tree inside a workspace.
@@ -426,7 +424,7 @@ async fn process_item(
 }
 
 /// Item-ledger key: hex sha256 of the workspace-relative source path.
-fn ledger_key(relative: &str) -> String {
+pub(super) fn ledger_key(relative: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(relative.as_bytes());
     hasher

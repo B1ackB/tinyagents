@@ -4,8 +4,8 @@
 use crate::transcript::{SessionTranscript, TranscriptMessage};
 
 use super::types::{
-    DescriptorImport, DescriptorSource, DescriptorUsage, JournalMessage, SessionDescriptor,
-    IMPORT_VERSION,
+    DescriptorImport, DescriptorSource, DescriptorUsage, IMPORT_VERSION, JournalMessage,
+    SessionDescriptor,
 };
 
 /// Parent session key from the `__` stem chain.
@@ -128,10 +128,5 @@ pub fn journal_messages(
     transcript: &SessionTranscript,
     project: JournalProjector,
 ) -> Vec<JournalMessage> {
-    transcript
-        .messages
-        .iter()
-        .cloned()
-        .map(project)
-        .collect()
+    transcript.messages.iter().cloned().map(project).collect()
 }
