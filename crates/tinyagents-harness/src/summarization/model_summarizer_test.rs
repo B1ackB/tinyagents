@@ -28,9 +28,6 @@ fn policy_is_context_window_aware_at_the_default_threshold() {
 
 #[test]
 fn default_threshold_leaves_headroom_below_the_window() {
-    assert!(
-        DEFAULT_SUMMARIZE_THRESHOLD_FRACTION > 0.0 && DEFAULT_SUMMARIZE_THRESHOLD_FRACTION < 1.0
-    );
     let policy = summarization_policy(100_000);
     let effective = (policy.context_window.unwrap() as f64 * policy.threshold_fraction) as u64;
     assert_eq!(effective, 90_000);

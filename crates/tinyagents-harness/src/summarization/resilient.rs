@@ -178,18 +178,17 @@ impl Summarizer for FaultTolerantCachingSummarizer {
         let key = Self::slice_key(messages);
 
         // Cache hit: an identical slice was already summarized this turn.
-        if let Ok(guard) = self.cache.lock() {
-            if let Some(cached) = guard.as_ref() {
-                if cached.key == key {
-                    tracing::debug!(
-                        key,
-                        head_messages = messages.len(),
-                        "[tinyagents::summarize] reusing cached summary (identical input slice; \
-                         no summarizer LLM call)"
-                    );
-                    return Ok(cached.record.clone());
-                }
-            }
+        if let Ok(guard) = self.cache.lock()
+            && let Some(cached) = guard.as_ref()
+            && cached.key == key
+        {
+            tracing::debug!(
+                key,
+                head_messages = messages.len(),
+                "[tinyagents::summarize] reusing cached summary (identical input slice; \
+                 no summarizer LLM call)"
+            );
+            return Ok(cached.record.clone());
         }
 
         // Circuit open from an earlier failure this turn: skip the known-bad LLM
