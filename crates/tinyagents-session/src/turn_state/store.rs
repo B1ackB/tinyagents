@@ -267,24 +267,26 @@ impl TurnStateStore {
     /// left as-is (idempotent; completed turns are intentionally kept so the
     /// processing panel can replay a finished turn after a reboot).
     pub fn mark_all_interrupted(&self, now_rfc3339: &str) -> Result<usize, String> {
-        let turns = {
-            let _guard = TURN_STATE_LOCK.lock();
-            self.migrate_all_legacy_locked();
-            self.all_turns_locked()?
-        };
+        let _guard = TURN_STATE_LOCK.lock();
+        self.migrate_all_legacy_locked();
+        let turns = self.all_turns_locked()?;
         let mut count = 0usize;
-        for mut snapshot in turns {
+        for snapshot in turns {
+            let path = self.turn_path(&snapshot.thread_id, &snapshot.request_id);
+            let Ok(mut current) = read_snapshot(&path) else {
+                continue;
+            };
             if matches!(
-                snapshot.lifecycle,
+                current.lifecycle,
                 TurnLifecycle::Interrupted | TurnLifecycle::Completed
             ) {
                 continue;
             }
-            snapshot.lifecycle = TurnLifecycle::Interrupted;
-            snapshot.updated_at = now_rfc3339.to_string();
-            snapshot.active_tool = None;
-            snapshot.active_subagent = None;
-            self.put(&snapshot)?;
+            current.lifecycle = TurnLifecycle::Interrupted;
+            current.updated_at = now_rfc3339.to_string();
+            current.active_tool = None;
+            current.active_subagent = None;
+            self.write_turn_file(&current)?;
             count += 1;
         }
         if count > 0 {
@@ -314,9 +316,13 @@ impl TurnStateStore {
         lifecycle: TurnLifecycle,
         now_rfc3339: &str,
     ) -> Result<bool, String> {
-        let Some(mut snapshot) = self.get_turn(thread_id, request_id)? else {
+        let _guard = TURN_STATE_LOCK.lock();
+        self.migrate_thread_locked(thread_id);
+        let path = self.turn_path(thread_id, request_id);
+        if !path.exists() {
             return Ok(false);
-        };
+        }
+        let mut snapshot = read_snapshot(&path)?;
         if matches!(
             snapshot.lifecycle,
             TurnLifecycle::Interrupted | TurnLifecycle::Completed
@@ -328,7 +334,7 @@ impl TurnStateStore {
         snapshot.active_tool = None;
         snapshot.active_subagent = None;
         snapshot.updated_at = now_rfc3339.to_string();
-        self.put(&snapshot)?;
+        self.write_turn_file(&snapshot)?;
         debug!(
             "{LOG_PREFIX} settled non-terminal snapshot thread={thread_id} request={request_id} lifecycle={lifecycle:?}"
         );

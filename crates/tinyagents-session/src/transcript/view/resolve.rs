@@ -88,7 +88,7 @@ pub(super) fn resolve_files_scoped(
     }
     let raw_dir = found[0].parent()?.to_path_buf();
     let roots = order_root_files(workspace_dir, thread_id, found);
-    let subs = discover_subagent_files(&raw_dir, thread_id, &roots);
+    let subs = discover_subagent_files(&raw_dir, thread_id, &roots, agent_id.is_some());
     tracing::debug!(
         "{LOG_PREFIX} thread={thread_id} roots={} subagent_files={}",
         roots.len(),
@@ -176,7 +176,12 @@ fn order_root_files(workspace_dir: &Path, thread_id: &str, roots: Vec<PathBuf>) 
 /// Every sub-agent (`__`) transcript of this thread in `raw_dir`: those whose
 /// stem extends a root stem (legacy layout), plus those whose `_meta.thread_id`
 /// names the thread (session-identity layout). Sorted by path.
-fn discover_subagent_files(raw_dir: &Path, thread_id: &str, roots: &[PathBuf]) -> Vec<PathBuf> {
+fn discover_subagent_files(
+    raw_dir: &Path,
+    thread_id: &str,
+    roots: &[PathBuf],
+    scoped: bool,
+) -> Vec<PathBuf> {
     let prefixes: Vec<String> = roots
         .iter()
         .filter_map(|root| root.file_stem().and_then(|stem| stem.to_str()))
@@ -204,9 +209,10 @@ fn discover_subagent_files(raw_dir: &Path, thread_id: &str, roots: &[PathBuf]) -
                 return false;
             }
             prefixes.iter().any(|prefix| stem.starts_with(prefix))
-                || read_head_meta(path)
-                    .and_then(|meta| meta.thread_id)
-                    .is_some_and(|id| id == thread_id)
+                || (!scoped
+                    && read_head_meta(path)
+                        .and_then(|meta| meta.thread_id)
+                        .is_some_and(|id| id == thread_id))
         })
         .collect();
     paths.sort();
