@@ -44,11 +44,7 @@ fn read_target(tool: &str, args: &serde_json::Value) -> Option<ArtifactRead> {
 async fn threshold_persists_redacted_preview_and_file() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(tmp.path(), "session/one");
-    let raw = format!(
-        "{} {}",
-        "x".repeat(4096),
-        test_github_token()
-    );
+    let raw = format!("{} {}", "x".repeat(4096), test_github_token());
 
     let (out, outcome) =
         apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call-1"), 1024).await;
