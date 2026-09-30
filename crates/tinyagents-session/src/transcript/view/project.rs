@@ -36,7 +36,12 @@ type NativeToolEnvelope = (String, Vec<NativeToolCall>);
 /// project everything into display items. Returns `None` when the thread has
 /// no root transcript yet (brand-new thread / first turn not persisted).
 pub fn project_thread(workspace_dir: &Path, thread_id: &str) -> Option<ProjectedTranscript> {
-    let (root_paths, sub_paths) = resolve_files(workspace_dir, thread_id)?;
+    project_thread_scoped(workspace_dir, thread_id, None)
+}
+
+/// Project only the transcript roots owned by `agent_id` when supplied.
+pub fn project_thread_scoped(workspace_dir: &Path, thread_id: &str, agent_id: Option<&str>) -> Option<ProjectedTranscript> {
+    let (root_paths, sub_paths) = resolve::resolve_files_scoped(workspace_dir, thread_id, agent_id)?;
     Some(project_from_files(
         thread_id,
         &root_paths,
@@ -54,6 +59,11 @@ pub fn resolve_files(
     thread_id: &str,
 ) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
     resolve::resolve_files(workspace_dir, thread_id)
+}
+
+/// Resolve the files for one agent's transcript when `agent_id` is supplied.
+pub fn resolve_files_scoped(workspace_dir: &Path, thread_id: &str, agent_id: Option<&str>) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
+    resolve::resolve_files_scoped(workspace_dir, thread_id, agent_id)
 }
 
 /// Project a thread from an already-resolved file set (root generations +

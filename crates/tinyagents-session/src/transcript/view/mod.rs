@@ -62,10 +62,27 @@ pub fn get_page(
     cursor: Option<&str>,
     limit: Option<usize>,
 ) -> TranscriptPage {
+    get_page_scoped(workspace_dir, thread_id, None, cursor, limit)
+}
+
+/// Fetch a page scoped to an owning agent. Use this when thread IDs can be
+/// supplied by callers and shared by multiple agents.
+pub fn get_page_scoped(
+    workspace_dir: &Path,
+    thread_id: &str,
+    agent_id: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> TranscriptPage {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = parse_cursor(cursor);
 
-    let Some(projected) = cache::global().get_or_project(workspace_dir, thread_id) else {
+    let projected = if let Some(agent_id) = agent_id {
+        project::project_thread_scoped(workspace_dir, thread_id, Some(agent_id)).map(std::sync::Arc::new)
+    } else {
+        cache::global().get_or_project(workspace_dir, thread_id)
+    };
+    let Some(projected) = projected else {
         tracing::debug!("{LOG_PREFIX} get_page thread={thread_id}: no transcript");
         return TranscriptPage {
             thread_id: thread_id.to_string(),
