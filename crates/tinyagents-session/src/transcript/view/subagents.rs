@@ -88,6 +88,21 @@ fn build_children(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        // A compacted child transcript is a generation chain. The newest
+        // generation contains the retained prefix plus its subsequent rows;
+        // project that head once instead of rendering every generation as a
+        // separate child card.
+        if let Some((base, generation)) = child_generation(stem)
+            && sub_paths
+                .iter()
+                .filter_map(|candidate| candidate.file_stem().and_then(|name| name.to_str()))
+                .filter_map(|candidate| child_generation(candidate))
+                .any(|(candidate_base, candidate_generation)| {
+                    candidate_base == base && candidate_generation > generation
+                })
+        {
+            continue;
+        }
         let suffix = match parent_stem {
             Some(parent) => match stem.strip_prefix(parent).and_then(|r| r.strip_prefix("__")) {
                 Some(rest) if !rest.contains("__") => rest,
@@ -105,6 +120,11 @@ fn build_children(
     }
     children.sort_by_key(|child| child.spawn_unix);
     children
+}
+
+fn child_generation(stem: &str) -> Option<(&str, u32)> {
+    let (base, suffix) = stem.rsplit_once(".g")?;
+    Some((base, suffix.parse().ok()?))
 }
 
 fn build_child(
@@ -181,6 +201,8 @@ fn build_child(
 fn find_exact_spawning_call(
     items: &[DisplayItem],
     claimed: &[bool],
+    start: usize,
+    end: usize,
     task_id: Option<&str>,
     workspace_dir: Option<&Path>,
 ) -> Option<usize> {
@@ -193,6 +215,7 @@ fn find_exact_spawning_call(
     items
         .iter()
         .enumerate()
+        .filter(|(index, _)| *index >= start && *index < end)
         .find_map(|(index, item)| match item {
             DisplayItem::ToolCall { call_id, .. }
                 if !claimed[index] && call_id == parent_call_id =>
@@ -243,11 +266,15 @@ fn place(
     for (order, mut child) in children.into_iter().enumerate() {
         let request_id = anchor_request_id(child.spawn_unix, segments);
         let (start, end) = turn_range(items, request_id.as_deref());
-        let pick =
-            find_exact_spawning_call(items, &claimed, child.task_id.as_deref(), workspace_dir)
-                .or_else(|| {
-                    find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref())
-                });
+        let pick = find_exact_spawning_call(
+            items,
+            &claimed,
+            start,
+            end,
+            child.task_id.as_deref(),
+            workspace_dir,
+        )
+        .or_else(|| find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref()));
         let (position, call) = match pick {
             Some(index) => {
                 claimed[index] = true;
