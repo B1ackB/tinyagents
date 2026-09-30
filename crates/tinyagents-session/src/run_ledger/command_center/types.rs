@@ -13,7 +13,7 @@ use serde::Serialize;
 ///
 /// Collapses the ledger's eight `AgentRunStatus` values into the five groups
 /// the command center renders. The mapping lives in
-/// [`super::ops::bucket_for`]; the order of [`AgentWorkBucket::ALL`] is the
+/// [`super::view::bucket_for`]; the order of [`AgentWorkBucket::ALL`] is the
 /// display order (needs-input first so blocked work is most visible).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

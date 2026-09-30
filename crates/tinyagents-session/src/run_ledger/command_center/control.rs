@@ -22,7 +22,7 @@
 //! The allowed-transition matrix lives in the pure [`plan_transition`], which is
 //! unit-tested without a database, mirroring [`super::view::build_view`].
 //!
-//! //! [`transition_agent_run_status`]: crate::run_ledger::transition_agent_run_status
+//! [`transition_agent_run_status`]: crate::run_ledger::transition_agent_run_status
 
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -103,9 +103,9 @@ pub enum ControlError {
 
 /// Lets `?` carry a run-ledger failure straight into [`ControlError`].
 ///
-/// The ledger speaks `TinyAgentsError`, a distinct type from the `anyhow::Error`
-/// in the `Storage` variant, so without this every ledger call would need its
-/// own `map_err`.
+/// The ledger speaks `TinyAgentsError`, a distinct type from the
+/// `anyhow::Error` in the `Storage` variant, so without this every ledger call
+/// would need its own `map_err`.
 impl From<tinyagents_harness::TinyAgentsError> for ControlError {
     fn from(err: tinyagents_harness::TinyAgentsError) -> Self {
         Self::Storage(err.into())

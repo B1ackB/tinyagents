@@ -68,7 +68,7 @@ pub fn list_agent_work(
 
 /// Project + group a set of ledger runs into the command-center view.
 ///
-/// Pure (given `display_name`, which maps an agent id to a human-friendly name when
+/// Pure given `display_name` (maps an agent id to a human-friendly name when
 /// the host's registry knows it): input order is preserved within each bucket, so callers that pass
 /// runs already ordered most-recently-updated-first (as `list_agent_runs`
 /// does) get recent-first rows per group. All five buckets are always present.
