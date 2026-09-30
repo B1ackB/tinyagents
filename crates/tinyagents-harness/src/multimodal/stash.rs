@@ -80,10 +80,10 @@ impl AttachmentStash {
             if name.starts_with('.') {
                 continue; // skip `.<id>.<ext>.tmp` in-flight writes
             }
-            if let Some(stem) = name.split('.').next() {
-                if !stem.is_empty() {
-                    map.insert(stem.to_string(), entry.path());
-                }
+            if let Some(stem) = name.split('.').next()
+                && !stem.is_empty()
+            {
+                map.insert(stem.to_string(), entry.path());
             }
         }
         map
@@ -103,12 +103,12 @@ impl AttachmentStash {
             if entry.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
-            if let Ok(meta) = entry.metadata().await {
-                if meta.is_file() {
-                    let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                    total = total.saturating_add(meta.len());
-                    files.push((entry.path(), mtime, meta.len()));
-                }
+            if let Ok(meta) = entry.metadata().await
+                && meta.is_file()
+            {
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                total = total.saturating_add(meta.len());
+                files.push((entry.path(), mtime, meta.len()));
             }
         }
         if total <= self.max_bytes {

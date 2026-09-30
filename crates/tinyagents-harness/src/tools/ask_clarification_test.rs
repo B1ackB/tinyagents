@@ -26,9 +26,10 @@ fn permission_level_is_none() {
 }
 
 #[test]
+#[allow(clippy::default_constructed_unit_structs)]
 fn default_and_new_are_equivalent() {
     let a = AskClarificationTool::new();
-    let b = AskClarificationTool::default();
+    let b = AskClarificationTool;
     assert_eq!(a.name(), b.name());
 }
 
