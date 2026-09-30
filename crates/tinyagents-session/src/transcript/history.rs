@@ -740,8 +740,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         meta.parent_session_id = successor.parent_session_id();
         let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
-            successor: successor_lock,
-            parent: parent_lock,
+            _successor: successor_lock,
+            _parent: parent_lock,
         });
         Ok((successor, Arc::new(history)))
     }
