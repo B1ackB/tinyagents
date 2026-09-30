@@ -57,6 +57,7 @@ async fn on_disk_record_matches_literal_fixture() {
 
     let raw = std::fs::read(root.join("run_status").join("run.fixture.json")).unwrap();
     let on_disk: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    eprintln!("RAWFIX {}", serde_json::to_string(&on_disk).unwrap());
     let expected: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
     assert_eq!(on_disk, expected);
 
