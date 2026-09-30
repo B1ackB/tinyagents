@@ -902,6 +902,25 @@ fn turn_write_rejects_a_stale_baseline_instead_of_compacting_over_newer_data() {
     assert_eq!(actual[1].content, "new turn");
 }
 
+#[test]
+fn bound_parent_rejects_appends_after_a_successor_is_committed() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let parent = SessionRef::scoped("thread-sealed-parent", "orchestrator");
+    let old_handle = locator.open_session(&parent, meta()).unwrap();
+    old_handle
+        .append(TranscriptMessage::new("user", "parent"))
+        .unwrap();
+    let (_, successor) = locator.begin_generation(&parent, meta()).unwrap();
+    successor
+        .append(TranscriptMessage::new("user", "successor"))
+        .unwrap();
+
+    let result = old_handle.append(TranscriptMessage::new("assistant", "late parent write"));
+    assert!(result.is_err(), "a committed successor seals its parent");
+    assert_eq!(old_handle.messages().unwrap().len(), 1);
+}
+
 /// The model reads only the head generation, but a host rendering or
 /// exporting the conversation needs every segment, in order.
 #[test]
