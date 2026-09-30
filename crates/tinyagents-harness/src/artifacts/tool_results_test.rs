@@ -191,7 +191,7 @@ async fn persisted_preview_is_bounded_for_small_budget() {
         apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call"), 320).await;
 
     assert!(outcome.persisted);
-    assert!(outcome.final_bytes <= 320, "final={}", outcome.final_bytes);
+    assert!(outcome.final_bytes <= MIN_ENVELOPE_ALLOWANCE_BYTES);
     assert_eq!(out.len(), outcome.final_bytes);
     assert!(out.contains("[tool_result_preview]"));
     assert!(
@@ -199,6 +199,61 @@ async fn persisted_preview_is_bounded_for_small_budget() {
             .join("artifacts/tool-results/session/shell/call.txt")
             .exists()
     );
+}
+
+#[tokio::test]
+async fn tiny_per_result_budget_keeps_the_recovery_pointer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "session");
+    let (out, outcome) = apply_per_result_persistence(
+        "x".repeat(800),
+        None,
+        Some(&store),
+        "shell",
+        Some("call"),
+        8,
+    )
+    .await;
+    assert!(outcome.persisted);
+    assert!(out.contains("artifact_path: artifacts/tool-results/session/shell/call.txt"));
+    assert!(out.contains("read_with: file_read"));
+}
+
+#[tokio::test]
+async fn nested_artifact_activity_is_included_in_session_freshness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("artifacts/tool-results");
+    let old_session = root.join("old-session");
+    let tool_dir = old_session.join("shell");
+    std::fs::create_dir_all(&tool_dir).unwrap();
+    std::fs::write(tool_dir.join("recent.txt"), "recent").unwrap();
+    let file_time = std::fs::metadata(tool_dir.join("recent.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(newest_modified(&old_session).unwrap(), file_time);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persist_rejects_symlinked_parent_outside_action_dir() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let action = tmp.path().join("action");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(action.join("artifacts/tool-results/session")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(
+        &outside,
+        action.join("artifacts/tool-results/session/shell"),
+    )
+    .unwrap();
+    let store = store(&action, "session");
+    let result = store
+        .persist("shell", Some("call"), "x", None, 0, "test")
+        .await;
+    assert!(result.is_err());
+    assert!(!outside.join("call.txt").exists());
 }
 
 #[tokio::test]

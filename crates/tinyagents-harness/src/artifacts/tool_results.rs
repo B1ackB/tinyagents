@@ -340,9 +340,7 @@ impl ToolResultArtifactStore {
             if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let stale = entry
-                .metadata()
-                .and_then(|meta| meta.modified())
+            let stale = newest_modified(&entry.path())
                 .ok()
                 .and_then(|modified| now.duration_since(modified).ok())
                 .is_some_and(|age| age > max_age);
@@ -393,6 +391,14 @@ impl ToolResultArtifactStore {
         assert_within_action_dir(&self.action_dir, &absolute_path)?;
         if let Some(parent) = absolute_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
+            let canonical_root = tokio::fs::canonicalize(&self.action_dir).await?;
+            let canonical_parent = tokio::fs::canonicalize(parent).await?;
+            if !canonical_parent.starts_with(&canonical_root) {
+                anyhow::bail!(
+                    "tool-result artifact parent escaped action_dir: {}",
+                    parent.display()
+                );
+            }
         }
         tokio::fs::write(&absolute_path, sanitized.text.as_bytes()).await?;
 
@@ -500,7 +506,10 @@ pub async fn apply_per_result_persistence(
             .await
         {
             Ok(persisted) => {
-                let (output, final_bytes) = bound_text_to_budget(persisted.output, budget_bytes);
+                let (output, final_bytes) = bound_text_to_budget(
+                    persisted.output,
+                    budget_bytes.max(MIN_ENVELOPE_ALLOWANCE_BYTES),
+                );
                 if final_bytes >= original_bytes {
                     // #4469 item 9: this branch does NOT fall back to inline
                     // truncation — the envelope is returned regardless, because it
@@ -739,6 +748,25 @@ fn assert_within_action_dir(action_dir: &Path, path: &Path) -> anyhow::Result<()
         "tool-result artifact path escaped action_dir: {}",
         path.display()
     );
+}
+
+/// Return the newest modification time in a session tree without following
+/// symlinks. Nested tool writes must keep their containing session alive.
+fn newest_modified(path: &Path) -> std::io::Result<std::time::SystemTime> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    let mut newest = metadata.modified()?;
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_symlink() {
+                continue;
+            }
+            if let Ok(modified) = newest_modified(&entry.path()) {
+                newest = newest.max(modified);
+            }
+        }
+    }
+    Ok(newest)
 }
 
 #[cfg(test)]
