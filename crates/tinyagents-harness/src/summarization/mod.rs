@@ -34,8 +34,8 @@ pub use compaction::{
     OverflowProbe, find_cut_point, summarize_with_split,
 };
 pub use model_summarizer::{
-    DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION, ModelSummarizer,
-    summarization_policy, summarization_policy_with,
+    DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION, summarization_policy,
+    summarization_policy_with,
 };
 pub use pairing::{
     advance_past_orphan_tools, find_safe_cutoff_point, is_tool_calling_assistant,

@@ -6,6 +6,7 @@
 //! crate deliberately has no host configuration or product dependencies.
 
 mod builder;
+pub mod command_hooks;
 mod driver;
 mod error;
 mod hooks;
