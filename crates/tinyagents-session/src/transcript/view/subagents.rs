@@ -345,12 +345,11 @@ fn find_spawning_call(
             _ => None,
         })
     };
-    if let Some(agent_id) = agent_id {
-        if let Some((index, ..)) =
+    if let Some(agent_id) = agent_id
+        && let Some((index, ..)) =
             candidates().find(|(_, name, args)| call_targets_agent(name, *args, agent_id))
-        {
-            return Some(index);
-        }
+    {
+        return Some(index);
     }
     candidates()
         .find(|(_, name, _)| is_delegation_tool(name))

@@ -14,7 +14,7 @@ fn subagent_anchors_to_parent_turn_by_spawn_timestamp() {
     let t2 = chrono::DateTime::from_timestamp(2_000_000, 0)
         .unwrap()
         .to_rfc3339();
-    let root_body = vec![
+    let root_body = [
         r#"{"role":"user","content":"one","request_id":"req-1"}"#.to_string(),
         format!(
             r#"{{"role":"assistant","content":"a1","provider":"anthropic","model":"m","usage":{{"input":1,"output":1,"cached_input":0,"cost_usd":0.0}},"ts":"{t1}","iteration":1,"request_id":"req-1"}}"#

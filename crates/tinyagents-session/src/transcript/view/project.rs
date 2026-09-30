@@ -304,13 +304,13 @@ impl Projector {
         self.step = iteration;
 
         // Reasoning precedes the message it belongs to.
-        if let Some(reasoning) = msg.reasoning_content.as_deref() {
-            if !reasoning.trim().is_empty() {
-                self.items.push(DisplayItem::Reasoning {
-                    text: reasoning.to_string(),
-                    iteration: Some(iteration),
-                });
-            }
+        if let Some(reasoning) = msg.reasoning_content.as_deref()
+            && !reasoning.trim().is_empty()
+        {
+            self.items.push(DisplayItem::Reasoning {
+                text: reasoning.to_string(),
+                iteration: Some(iteration),
+            });
         }
 
         let native_envelope = parse_native_tool_envelope(&msg.message.content);
@@ -451,19 +451,18 @@ impl Projector {
             .and_then(|id| take_pending_by_id(&mut self.pending, id))
             .or_else(|| self.pending.pop_front().map(|(_, idx)| idx));
 
-        if let Some(idx) = idx {
-            if let Some(DisplayItem::ToolCall {
+        if let Some(idx) = idx
+            && let Some(DisplayItem::ToolCall {
                 result: slot,
                 status: status_slot,
                 failure: failure_slot,
                 ..
             }) = self.items.get_mut(idx)
-            {
-                *slot = Some(result);
-                *status_slot = status;
-                *failure_slot = failure;
-                return;
-            }
+        {
+            *slot = Some(result);
+            *status_slot = status;
+            *failure_slot = failure;
+            return;
         }
 
         // Orphan result (no matching assistant tool_call recorded) — surface it
@@ -581,19 +580,18 @@ fn project_text_tool_results(
         } else {
             (ToolCallStatus::Success, None)
         };
-        if let Some(idx) = take_pending_by_id(pending, &result.tool_call_id) {
-            if let Some(DisplayItem::ToolCall {
+        if let Some(idx) = take_pending_by_id(pending, &result.tool_call_id)
+            && let Some(DisplayItem::ToolCall {
                 result: slot,
                 status: status_slot,
                 failure: failure_slot,
                 ..
             }) = items.get_mut(idx)
-            {
-                *slot = Some(result.content);
-                *status_slot = status;
-                *failure_slot = failure;
-                continue;
-            }
+        {
+            *slot = Some(result.content);
+            *status_slot = status;
+            *failure_slot = failure;
+            continue;
         }
         items.push(DisplayItem::ToolCall {
             call_id: result.tool_call_id,

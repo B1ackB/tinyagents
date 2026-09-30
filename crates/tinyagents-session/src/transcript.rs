@@ -110,6 +110,7 @@
 
 mod adoption;
 mod history;
+pub mod import;
 mod jsonl;
 mod legacy_md;
 mod markdown;
@@ -119,9 +120,8 @@ mod reader;
 mod session;
 mod thread_lookup;
 mod types;
-mod writer;
-pub mod import;
 pub mod view;
+mod writer;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
 pub use history::{

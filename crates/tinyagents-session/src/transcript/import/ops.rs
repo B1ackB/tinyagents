@@ -92,14 +92,16 @@ pub async fn run_import(
     // Global marker fast path: a completed full import skips the scan
     // entirely, unless targeted (--only), forced, or a dry-run plan.
     let full_scan = opts.only.is_none();
-    if full_scan && !opts.force && !opts.dry_run {
-        if let Ok(Some(marker)) = kv.get(NS_MIGRATIONS, MARKER_KEY).await {
-            tracing::info!("[session-import] marker present, nothing to do: {marker}");
-            return Ok(ImportSummary {
-                already_done: true,
-                ..Default::default()
-            });
-        }
+    if full_scan
+        && !opts.force
+        && !opts.dry_run
+        && let Ok(Some(marker)) = kv.get(NS_MIGRATIONS, MARKER_KEY).await
+    {
+        tracing::info!("[session-import] marker present, nothing to do: {marker}");
+        return Ok(ImportSummary {
+            already_done: true,
+            ..Default::default()
+        });
     }
 
     let only_pattern = match opts.only.as_deref() {
@@ -285,37 +287,32 @@ async fn process_item(
 
     // Lineage cross-check: stem chain is the write-time truth; a
     // disagreeing run-ledger parent is only a warning.
-    if let Some(parent_stem) = parent_session_key(&item.stem) {
-        if let (Some(ledger_parent), Some(parent_transcript)) = (
+    if let Some(parent_stem) = parent_session_key(&item.stem)
+        && let (Some(ledger_parent), Some(parent_transcript)) = (
             links.parent_thread_by_worker.get(&thread_id),
             parsed.get(&parent_stem),
-        ) {
-            if let Some(parent_thread) = parent_transcript.meta.thread_id.as_deref() {
-                if ledger_parent != parent_thread {
-                    report.warnings.push(format!(
-                        "run-ledger parent thread {ledger_parent} disagrees with stem-chain \
+        )
+        && let Some(parent_thread) = parent_transcript.meta.thread_id.as_deref()
+        && ledger_parent != parent_thread
+    {
+        report.warnings.push(format!(
+            "run-ledger parent thread {ledger_parent} disagrees with stem-chain \
                          parent thread {parent_thread}; keeping the stem chain"
-                    ));
-                }
-            }
-        }
+        ));
     }
 
     // Idempotency: skip unchanged sources unless forced.
     let item_key = ledger_key(&item.relative);
     let (size, mtime_ms) = file_fingerprint(&item.path);
-    if !opts.force {
-        if let Ok(Some(prior)) = kv.get(NS_MIGRATION_ITEMS, &item_key).await {
-            if let Ok(prior) = serde_json::from_value::<ItemLedgerRecord>(prior) {
-                if prior.version == IMPORT_VERSION
-                    && prior.size == size
-                    && prior.mtime_ms == mtime_ms
-                {
-                    report.action = ItemAction::SkippedUnchanged;
-                    return report;
-                }
-            }
-        }
+    if !opts.force
+        && let Ok(Some(prior)) = kv.get(NS_MIGRATION_ITEMS, &item_key).await
+        && let Ok(prior) = serde_json::from_value::<ItemLedgerRecord>(prior)
+        && prior.version == IMPORT_VERSION
+        && prior.size == size
+        && prior.mtime_ms == mtime_ms
+    {
+        report.action = ItemAction::SkippedUnchanged;
+        return report;
     }
 
     if opts.dry_run {
@@ -326,13 +323,13 @@ async fn process_item(
     // Re-import overwrites: the append store has no truncate, so drop the
     // stream file (layout: `{journal_root}/{stream}.jsonl`) before writing.
     let stream_file = journal_root.join(format!("{stream}.jsonl"));
-    if stream_file.exists() {
-        if let Err(err) = std::fs::remove_file(&stream_file) {
-            report
-                .warnings
-                .push(format!("cannot reset journal stream {stream}: {err}"));
-            return report;
-        }
+    if stream_file.exists()
+        && let Err(err) = std::fs::remove_file(&stream_file)
+    {
+        report
+            .warnings
+            .push(format!("cannot reset journal stream {stream}: {err}"));
+        return report;
     }
 
     for (idx, record) in journal_messages(transcript, project).iter().enumerate() {

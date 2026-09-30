@@ -1,12 +1,13 @@
-# session_import
+# transcript::import
 
-One-time migration of legacy OpenHuman session transcripts into TinyAgents
-`Store`/`AppendStore` records, exposed as the explicit `session_import.run`
-controller (`openhuman-core session_import run`, JSON-RPC
-`openhuman.session_import_run`). It is never run from a boot hook. The same
-module also owns the live dual-write and shadow-read paths that keep new
-turns landing in the same store layout (`live.rs`), and `open_session_stores`,
-which every other TinyAgents-store consumer in the crate reuses.
+One-time migration of legacy session transcripts into TinyAgents
+`Store`/`AppendStore` records ([`ops::run_import`]). Hosts expose it as an
+explicit command, never a boot hook. The module also owns the live
+dual-write and shadow-read paths that keep new turns landing in the same
+store layout (`live.rs`), and [`ops::open_session_stores`], which every other
+TinyAgents-store consumer reuses. The host supplies a
+[`convert::JournalProjector`] so journal records carry its message metadata;
+whether the live paths run is the host's decision.
 
 > The migration was specified in a design doc for issue #4249 that is not
 > checked into this repository; `types.rs` still refers to it when explaining

@@ -28,7 +28,7 @@ fn write_raw_at(path: &Path, thread_id: &str, body: &[&str]) {
         buf.push_str(line);
         buf.push('\n');
     }
-    std::fs::write(&path, buf).expect("write raw transcript");
+    std::fs::write(path, buf).expect("write raw transcript");
 }
 
 /// A full turn: system scaffolding, a user prompt with the injected datetime

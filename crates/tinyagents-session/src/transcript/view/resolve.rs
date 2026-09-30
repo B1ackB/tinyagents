@@ -135,10 +135,10 @@ fn order_root_files(workspace_dir: &Path, thread_id: &str, roots: Vec<PathBuf>) 
             .unwrap_or_default();
         if chain.iter().any(|link| file_name(link) == Some(name)) {
             for link in chain {
-                if let Some(link_name) = file_name(&link) {
-                    if seen.insert(link_name.to_os_string()) {
-                        ordered.push(link);
-                    }
+                if let Some(link_name) = file_name(&link)
+                    && seen.insert(link_name.to_os_string())
+                {
+                    ordered.push(link);
                 }
             }
         } else {
@@ -234,14 +234,13 @@ pub(super) fn drop_retained_rows(
     let mut kept = Vec::with_capacity(records.len());
     let mut retained = Vec::new();
     for record in records {
-        if let DisplayRecord::Message(msg) = record {
-            if let Some(count) = predecessor.get_mut(&row_key(msg)) {
-                if *count > 0 {
-                    *count -= 1;
-                    retained.push((**msg).clone());
-                    continue;
-                }
-            }
+        if let DisplayRecord::Message(msg) = record
+            && let Some(count) = predecessor.get_mut(&row_key(msg))
+            && *count > 0
+        {
+            *count -= 1;
+            retained.push((**msg).clone());
+            continue;
         }
         kept.push(record.clone());
     }
