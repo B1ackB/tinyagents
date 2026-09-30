@@ -1,7 +1,7 @@
 //! Durable, file-backed [`HarnessStatusStore`] plus the run-id and redaction
 //! helpers a host needs to attach a durable journal to a run.
 //!
-//! The crate ships [`InMemoryStatusStore`], which does not survive a process
+//! The crate ships [`super::types::InMemoryStatusStore`], which does not survive a process
 //! restart. [`FileStatusStore`] overwrites one `run_status/<run_id>.json` file
 //! per run under a [`FileStore`] and answers the lineage and liveness queries
 //! by enumerating that namespace, which is what lets a supervisor reattach
