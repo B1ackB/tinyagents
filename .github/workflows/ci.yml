@@ -163,15 +163,38 @@ jobs:
 
   # Single required status check: branch protection can depend on this one job
   # instead of being updated every time the matrix gains or loses a leg.
+  # `#[cfg(windows)]` code is invisible to the Ubuntu jobs above, so a
+  # Windows-only compile or lint error (e.g. an `unsafe` block under the
+  # workspace's `unsafe_code = "deny"`) otherwise surfaces only when a
+  # downstream desktop release builds for Windows.
+  windows:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Check (workspace, all targets)
+        run: cargo check --workspace --all-targets --locked
+
   ci:
     name: CI
     runs-on: ubuntu-latest
     if: always()
-    needs: [lint, test, coverage]
+    needs: [lint, test, coverage, windows]
     steps:
       - name: Check results
         run: |
           echo "lint:     ${{ needs.lint.result }}"
           echo "test:     ${{ needs.test.result }}"
           echo "coverage: ${{ needs.coverage.result }}"
+          echo "windows:  ${{ needs.windows.result }}"
           [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "false" ]
