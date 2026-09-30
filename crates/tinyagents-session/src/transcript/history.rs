@@ -838,22 +838,41 @@ struct GenerationReservation {
 }
 
 impl FileTranscriptHistory {
-    fn acquire_write_lock(&self) -> anyhow::Result<Option<File>> {
+    fn acquire_write_lock(&self) -> anyhow::Result<Option<(File, File)>> {
         if self.generation_reservation.lock().unwrap().is_some() {
             return Ok(None);
         }
-        let lock = generation_lock(&self.path)?;
-        // A generation reservation may already hold this path's lock while
-        // waiting for the successor's first write. Do not block the parent
-        // writer behind a reservation owned by the same caller; return a
-        // conflict so it can reload or retry after the generation commits.
-        lock.try_lock_exclusive().map_err(|error| {
-            anyhow::anyhow!(
-                "transcript {} is reserved by another writer: {error}",
-                self.path.display()
-            )
-        })?;
-        Ok(Some(lock))
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let (parent_stem, generation) = match stem.rsplit_once(".g") {
+            Some((parent, suffix)) if suffix.parse::<u32>().is_ok() => {
+                (parent, suffix.parse::<u32>().unwrap())
+            }
+            _ => (stem, 0),
+        };
+        let successor = self
+            .path
+            .with_file_name(format!("{parent_stem}.g{}.jsonl", generation + 1));
+        let successor_lock = generation_lock(&successor)?;
+        // A not-yet-created successor with a held lock is a generation
+        // reservation. Fail promptly instead of waiting behind a reservation
+        // that is itself waiting for its first write.
+        if !successor.exists() {
+            successor_lock.try_lock_exclusive().map_err(|error| {
+                anyhow::anyhow!(
+                    "successor generation is reserved for {}; retry after it commits: {error}",
+                    self.path.display()
+                )
+            })?;
+        } else {
+            successor_lock.lock_exclusive()?;
+        }
+        let parent_lock = generation_lock(&self.path)?;
+        parent_lock.lock_exclusive()?;
+        Ok(Some((successor_lock, parent_lock)))
     }
 
     fn finish_generation_reservation(&self, success: bool) -> anyhow::Result<()> {
