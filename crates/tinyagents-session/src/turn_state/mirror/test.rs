@@ -128,7 +128,12 @@ fn subagent_prose_coalesces_per_kind_and_iteration() {
         display_name: None,
         detail: None,
         source_tool_name: None,
-        subagent: Some(SubagentActivity::default()),
+        subagent: Some(
+            serde_json::from_value::<SubagentActivity>(
+                serde_json::json!({"taskId": "t1", "agentId": "researcher"}),
+            )
+            .unwrap(),
+        ),
         failure: None,
         output: None,
         seq: Some(0),
