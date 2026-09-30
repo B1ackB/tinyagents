@@ -507,7 +507,11 @@ fn settling_completed_turns_prunes_old_history() {
     let store = TurnStateStore::new(dir.path().to_path_buf());
     for index in 0..(COMPLETED_RETENTION + 2) {
         let request_id = format!("req-{index}");
-        let mut state = turn("thread-retention", &request_id, &format!("2026-05-04T10:{index:02}:00Z"));
+        let mut state = turn(
+            "thread-retention",
+            &request_id,
+            &format!("2026-05-04T10:{index:02}:00Z"),
+        );
         state.lifecycle = TurnLifecycle::Streaming;
         store.put(&state).expect("put live turn");
         store
@@ -521,7 +525,10 @@ fn settling_completed_turns_prunes_old_history() {
     }
 
     assert_eq!(
-        store.list_thread("thread-retention").expect("list thread").len(),
+        store
+            .list_thread("thread-retention")
+            .expect("list thread")
+            .len(),
         COMPLETED_RETENTION
     );
 }
