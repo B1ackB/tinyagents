@@ -723,6 +723,75 @@ fn concurrent_begin_generation_allows_only_one_successor_writer() {
     );
 }
 
+#[test]
+fn cross_process_generation_worker_refuses_a_committed_slot() {
+    let Ok(workspace) = std::env::var("TINYAGENTS_GENERATION_WORKER_DIR") else {
+        return;
+    };
+    let marker = std::env::var("TINYAGENTS_GENERATION_WORKER_MARKER").unwrap();
+    std::fs::write(marker, "ready").unwrap();
+    let locator = FileTranscriptLocator::new(workspace);
+    let result = locator.begin_generation(
+        &SessionRef::scoped("thread-cross-process", "orchestrator"),
+        meta(),
+    );
+    assert!(
+        result.is_err(),
+        "the committed generation slot must be occupied"
+    );
+}
+
+#[test]
+fn generation_reservation_coordinates_separate_processes() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let root = SessionRef::scoped("thread-cross-process", "orchestrator");
+    locator
+        .open_session(&root, meta())
+        .unwrap()
+        .append(TranscriptMessage::new("user", "sealed"))
+        .unwrap();
+    let (_, winner) = locator.begin_generation(&root, meta()).unwrap();
+
+    let marker = dir.path().join("worker-ready");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "transcript::test::cross_process_generation_worker_refuses_a_committed_slot",
+        ])
+        .env("TINYAGENTS_GENERATION_WORKER_DIR", dir.path())
+        .env("TINYAGENTS_GENERATION_WORKER_MARKER", &marker)
+        .spawn()
+        .unwrap();
+    for _ in 0..500 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "worker did not start in time");
+
+    winner
+        .append(TranscriptMessage::new("user", "winner"))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "worker failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        locator
+            .open_session(&root.next_generation(), meta())
+            .unwrap()
+            .messages()
+            .unwrap()
+            .len(),
+        1,
+        "the committed generation contains only the winning writer's payload"
+    );
+}
+
 /// Two handles on one session — the shape two cores over one workspace
 /// produce — must both land in the same file, with neither losing the other's
 /// turns.
