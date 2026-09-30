@@ -127,9 +127,7 @@ impl NoSuchPackTool<'_> {
     pub fn render(&self) -> String {
         let mut out = format!(
             "{} There is no tool `{}` in skill `{}`.",
-            self.not_found_marker,
-            self.tool,
-            self.skill
+            self.not_found_marker, self.tool, self.skill
         );
         if !self.callable.is_empty() {
             let names = self
@@ -247,4 +245,3 @@ pub fn named_tool(args: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
 }
-

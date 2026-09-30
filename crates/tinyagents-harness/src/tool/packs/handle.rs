@@ -127,7 +127,8 @@ impl PackRegistryHandle {
         skill: &str,
         tool: &str,
     ) -> Option<Arc<Vec<Box<dyn Tool>>>> {
-        self.resolve(catalog, skill, tool).map(|(tools, _idx)| tools)
+        self.resolve(catalog, skill, tool)
+            .map(|(tools, _idx)| tools)
     }
 
     /// Locate `tool` in whichever registry holds it.
@@ -140,4 +141,3 @@ impl PackRegistryHandle {
         None
     }
 }
-
