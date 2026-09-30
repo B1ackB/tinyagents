@@ -14,9 +14,9 @@ use super::types::{HookEvent, HookInput, HookPayload};
 #[derive(Debug, Clone, Default)]
 pub struct HostContext {
     /// Filesystem roots the agent may act in. First entry is the primary root
-    /// and becomes `OPENHUMAN_PROJECT_DIR` for hook processes.
+    /// and becomes `<PRODUCT>_PROJECT_DIR` for hook processes.
     pub workspace_roots: Vec<PathBuf>,
-    /// Core version string.
+    /// Host version string, reported to hooks as `openhuman_version`.
     pub version: String,
 }
 
@@ -72,11 +72,7 @@ pub fn build_input(event: HookEvent, identity: TurnIdentity, payload: HookPayloa
         session_id: identity.session_id,
         model: identity.model,
         agent_id: identity.agent_id,
-        openhuman_version: if host.version.is_empty() {
-            env!("CARGO_PKG_VERSION").to_string()
-        } else {
-            host.version
-        },
+        openhuman_version: host.version,
         workspace_roots: host
             .workspace_roots
             .iter()
