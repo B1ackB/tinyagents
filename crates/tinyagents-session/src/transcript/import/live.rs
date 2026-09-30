@@ -24,7 +24,7 @@ use super::convert::{
     stream_name,
 };
 use super::ops::{SessionStores, open_session_stores};
-use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
+use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS, SessionDescriptor};
 
 static LIVE_REWRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
@@ -88,7 +88,7 @@ pub async fn write_live_turn(
     // pointer records the workspace-relative JSONL twin.
     let (thread_id, synthesized) =
         effective_thread_id(session_key, transcript.meta.thread_id.as_deref());
-    let descriptor = build_descriptor(
+    let mut descriptor = build_descriptor(
         session_key,
         transcript,
         thread_id,
@@ -102,6 +102,16 @@ pub async fn write_live_turn(
         0,
     );
     let descriptor_key = sanitize_store_name(session_key);
+    if let Ok(Some(existing)) = kv.get(NS_SESSIONS, &descriptor_key).await
+        && let Ok(existing) = serde_json::from_value::<SessionDescriptor>(existing)
+    {
+        if existing.source.jsonl.is_some() {
+            descriptor.source.jsonl = existing.source.jsonl;
+        }
+        if existing.source.md.is_some() {
+            descriptor.source.md = existing.source.md;
+        }
+    }
     let descriptor_value =
         serde_json::to_value(&descriptor).context("serialize live session descriptor")?;
     kv.put(NS_SESSIONS, &descriptor_key, descriptor_value)
