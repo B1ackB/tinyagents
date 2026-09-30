@@ -15,13 +15,17 @@
 //! - [`Summarizer`] — async trait for condensing messages into a [`SummaryRecord`].
 //! - [`ConcatSummarizer`] — deterministic concatenation stand-in (no LLM).
 //! - [`SummarizationPolicy`] — decides when to summarize and how to split the slice.
+//! - [`ModelSummarizer`] / [`FaultTolerantCachingSummarizer`] — LLM-backed summarization
+//!   that never aborts a turn on a summarizer outage.
 //!
 //! All policy decisions are explicit data types, never hidden behaviour. Callers
 //! choose when to call, what to pass, and how to handle the result.
 
 pub mod compaction;
+mod model_summarizer;
 pub mod pairing;
 mod render;
+mod resilient;
 mod trim;
 mod types;
 
@@ -29,11 +33,16 @@ pub use compaction::{
     CompactionContext, CompactionDecision, CutPoint, OverflowClassifier, OverflowInfo,
     OverflowProbe, find_cut_point, summarize_with_split,
 };
+pub use model_summarizer::{
+    DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION, summarization_policy,
+    summarization_policy_with,
+};
 pub use pairing::{
     advance_past_orphan_tools, find_safe_cutoff_point, is_tool_calling_assistant,
     retract_orphan_tool_calls, tool_pairing_is_intact,
 };
 pub use render::render_message_for_summary;
+pub use resilient::FaultTolerantCachingSummarizer;
 pub use trim::{trim_messages, trim_messages_to_token_budget_with, trim_messages_with};
 pub use types::*;
 
@@ -273,5 +282,7 @@ impl SummarizationPolicy {
     }
 }
 
+#[cfg(test)]
+mod model_summarizer_test;
 #[cfg(test)]
 mod test;
