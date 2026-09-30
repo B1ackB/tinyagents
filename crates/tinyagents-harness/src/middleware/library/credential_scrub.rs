@@ -136,12 +136,8 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             .as_deref()
             .and_then(|markdown| (self.scrubber)(&tool_name, markdown));
         if scrubbed_content.is_some() || scrubbed_markdown.is_some() {
-            let redactions = scrubbed_content
-                .as_ref()
-                .map_or(0, |(_, count)| *count)
-                + scrubbed_markdown
-                    .as_ref()
-                    .map_or(0, |(_, count)| *count);
+            let redactions = scrubbed_content.as_ref().map_or(0, |(_, count)| *count)
+                + scrubbed_markdown.as_ref().map_or(0, |(_, count)| *count);
             tracing::warn!(
                 tool = %tool_name,
                 redactions,
