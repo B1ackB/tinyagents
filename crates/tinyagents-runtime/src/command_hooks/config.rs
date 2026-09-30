@@ -181,12 +181,15 @@ impl HookDefinition {
     /// retains the complete command and matcher.
     pub fn identity(&self) -> String {
         format!(
-            "{}:{}:{:?}:{}",
+            "{}:{}:{:?}:{}:{}",
             self.layer.map(HookLayer::as_str).unwrap_or("unknown"),
             self.command,
             self.matcher,
             self.kind as u8,
-            self.source_dir.as_deref().unwrap_or(Path::new("" )).display()
+            self.source_dir
+                .as_deref()
+                .unwrap_or(Path::new(""))
+                .display()
         )
     }
 }
