@@ -165,10 +165,10 @@ async fn run_command(
         .map_err(|error| format!("spawning {:?}: {error}", definition.command))?;
 
     let write_and_wait = async {
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(error) = stdin.write_all(&payload).await {
-                tracing::debug!("[hooks] {} closed stdin early: {error}", definition.label());
-            }
+        if let Some(mut stdin) = child.stdin.take()
+            && let Err(error) = stdin.write_all(&payload).await
+        {
+            tracing::debug!("[hooks] {} closed stdin early: {error}", definition.label());
         }
         child.wait_with_output().await
     };

@@ -185,7 +185,8 @@ impl HookDefinition {
             self.layer.map(HookLayer::as_str).unwrap_or("unknown"),
             self.command,
             self.matcher,
-            self.kind as u8
+            self.kind as u8,
+            self.source_dir.as_deref().unwrap_or(Path::new("" )).display()
         )
     }
 }

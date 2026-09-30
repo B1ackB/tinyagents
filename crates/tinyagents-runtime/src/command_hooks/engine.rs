@@ -239,10 +239,10 @@ impl HookEngine {
         let mut outcome = HookOutcome::default();
         for definition in selected {
             let mut hook_input = input.clone();
-            if let Some(updated) = outcome.output.updated_input.clone() {
-                if let super::types::HookPayload::Tool(payload) = &mut hook_input.payload {
-                    payload.tool_input = updated;
-                }
+            if let Some(updated) = outcome.output.updated_input.clone()
+                && let super::types::HookPayload::Tool(payload) = &mut hook_input.payload
+            {
+                payload.tool_input = updated;
             }
             let run = exec::run(&definition, &hook_input, &env, default_timeout, environment).await;
             tracing::debug!(
@@ -332,7 +332,7 @@ impl HookEngine {
     async fn grant_followup(&self, input: &HookInput, definition: &HookDefinition) -> bool {
         let limit = match definition.loop_limit {
             LoopLimit::Unlimited => return true,
-            LoopLimit::Limited(limit) if limit == 0 => return true,
+            LoopLimit::Limited(0) => return true,
             LoopLimit::Limited(limit) => limit,
             LoopLimit::Default => DEFAULT_LOOP_LIMIT,
         };
