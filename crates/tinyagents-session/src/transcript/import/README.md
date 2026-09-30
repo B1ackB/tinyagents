@@ -65,15 +65,13 @@ Source files are never mutated or deleted.
 | `convert.rs` | Pure helpers: `parent_session_key` stem lineage, `sanitize_store_name`, `stream_name`, `effective_thread_id` (synthesizes `imported-{stem}` when `_meta` has none), `build_descriptor`, `journal_messages`. |
 | `ops.rs` | `run_import` scans, reads all, plans/writes per item, then writes the marker; `open_session_stores` opens the shared KV/journal handles over `{workspace}/tinyagents_store/{kv,journal}`. |
 | `live.rs` | Dual-write of each persisted turn into the same layout (`write_live_turn`), gated by `AgentConfig::session_dual_write` (default on) with the `OPENHUMAN_SESSION_DUAL_WRITE` env kill switch; store-backed shadow read of the same session (`shadow_read_compare`), gated by `AgentConfig::session_shadow_reads` (default on) with `OPENHUMAN_SESSION_SHADOW_READS`; `session_kv_store` exposes the KV store on `RunContext.stores` as `TINYAGENTS_SESSION_KV_STORE`. Env vars can only force off, never on. Errors are logged and swallowed by callers; the legacy transcript stays authoritative for both reads and writes. |
-| `schemas.rs` | `session_import.run` `ControllerSchema` and handler; resolves the workspace from config unless `workspace` is passed. |
-| `*_tests.rs` | Sibling test suites for `convert`, `live`, `ops`, `schemas`. |
+| `*_test.rs` | Module-local test suites for `convert`, `live`, and `ops`. |
 
 ## RPC
 
 `session_import.run` accepts `dry_run`, `only` (glob over session stems),
 `force`, `verbose`, and an optional `workspace` override, and returns an
-`ImportSummary`. Registered via `all_session_import_registered_controllers`
-in `crates/openhuman-core/src/core/all.rs`.
+`ImportSummary`. The host registers the import controller separately.
 
 ## Used by
 
