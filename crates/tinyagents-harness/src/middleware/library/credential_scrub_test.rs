@@ -183,8 +183,7 @@ async fn scrubs_markdown_and_follow_up_fields() {
         .unwrap()
         .into_result();
 
-    let markdown = result.markdown_formatted.unwrap();
-    assert!(!markdown.contains("aB3dE5fG7hJ9kL1mN3pQ"));
+    assert!(result.markdown_formatted.is_none());
     let follow_up = match &result.follow_up[0] {
         tinytools::ToolContent::Text { text } => text,
         _ => panic!("expected text follow-up"),
