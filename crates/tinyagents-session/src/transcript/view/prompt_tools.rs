@@ -89,7 +89,7 @@ fn attribute(attrs: &str, name: &str) -> Option<String> {
 /// turn's call ids in issue order (for id-less result blocks).
 #[derive(Debug, Default)]
 pub(super) struct CallRegistry {
-    by_id: HashMap<String, (String, String)>,
+    by_id: HashMap<(Option<String>, String), (String, String)>,
     by_turn: HashMap<Option<String>, Vec<String>>,
 }
 
@@ -109,12 +109,13 @@ impl CallRegistry {
                 continue;
             };
             for call in &usage.tool_calls {
-                if call.id.is_empty() || registry.by_id.contains_key(&call.id) {
+                let key = (msg.request_id.clone(), call.id.clone());
+                if call.id.is_empty() || registry.by_id.contains_key(&key) {
                     continue;
                 }
                 registry
                     .by_id
-                    .insert(call.id.clone(), (call.name.clone(), call.arguments.clone()));
+                    .insert(key, (call.name.clone(), call.arguments.clone()));
                 registry
                     .by_turn
                     .entry(msg.request_id.clone())
@@ -155,7 +156,7 @@ impl CallRegistry {
                 taken.push(id.clone());
                 let (name, arguments) = self
                     .by_id
-                    .get(&id)
+                    .get(&(request_id.clone(), id.clone()))
                     .cloned()
                     .unwrap_or_else(|| ("tool".to_string(), String::new()));
                 (id, name, arguments)

@@ -25,6 +25,7 @@ use super::convert::{
     JournalProjector, build_descriptor, effective_thread_id, journal_messages, parent_session_key,
     stream_name,
 };
+use super::live::LIVE_REWRITE_LOCK;
 use super::scan::{SourceItem, discover_sources};
 use super::types::{
     DescriptorSource, IMPORT_VERSION, ImportOptions, ImportSummary, ItemAction, ItemLedgerRecord,
@@ -376,6 +377,12 @@ async fn process_item(
         return report;
     }
 
+    // Serialize with live dual-writes and shadow reads of the same store so a
+    // re-import never interleaves with a concurrent stream rewrite.
+    let _rewrite_guard = LIVE_REWRITE_LOCK.lock().await;
+
+    // Re-import overwrites: the append store has no truncate, so stage the
+    // replacement stream and atomically swap it into place.
     let values: Vec<serde_json::Value> = match journal_messages(transcript, project)
         .into_iter()
         .enumerate()

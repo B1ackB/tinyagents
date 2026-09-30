@@ -271,22 +271,20 @@ impl TurnStateStore {
         self.migrate_all_legacy_locked();
         let turns = self.all_turns_locked()?;
         let mut count = 0usize;
-        for snapshot in turns {
-            let path = self.turn_path(&snapshot.thread_id, &snapshot.request_id);
-            let Ok(mut current) = read_snapshot(&path) else {
-                continue;
-            };
+        // The lock is held across the scan and the writes, so each snapshot
+        // read by `all_turns_locked` is current; no re-read is needed.
+        for mut snapshot in turns {
             if matches!(
-                current.lifecycle,
+                snapshot.lifecycle,
                 TurnLifecycle::Interrupted | TurnLifecycle::Completed
             ) {
                 continue;
             }
-            current.lifecycle = TurnLifecycle::Interrupted;
-            current.updated_at = now_rfc3339.to_string();
-            current.active_tool = None;
-            current.active_subagent = None;
-            self.write_turn_file(&current)?;
+            snapshot.lifecycle = TurnLifecycle::Interrupted;
+            snapshot.updated_at = now_rfc3339.to_string();
+            snapshot.active_tool = None;
+            snapshot.active_subagent = None;
+            self.write_turn_file(&snapshot)?;
             count += 1;
         }
         if count > 0 {

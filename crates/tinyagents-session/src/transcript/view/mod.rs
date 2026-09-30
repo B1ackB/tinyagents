@@ -123,7 +123,8 @@ pub fn get_page_scoped(
     }
 }
 
-/// Parse the opaque cursor into a numeric offset (0 on absent/invalid).
+/// Parse the opaque cursor into an exclusive chronological upper bound
+/// (`None` on absent/invalid, meaning "start from the newest item").
 fn parse_cursor(cursor: Option<&str>) -> Option<usize> {
     cursor
         .map(str::trim)

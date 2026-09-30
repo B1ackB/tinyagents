@@ -88,6 +88,21 @@ fn build_children(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        // A compacted child transcript is a generation chain. The newest
+        // generation contains the retained prefix plus its subsequent rows;
+        // project that head once instead of rendering every generation as a
+        // separate child card.
+        if let Some((base, generation)) = child_generation(stem)
+            && sub_paths
+                .iter()
+                .filter_map(|candidate| candidate.file_stem().and_then(|name| name.to_str()))
+                .filter_map(|candidate| child_generation(candidate))
+                .any(|(candidate_base, candidate_generation)| {
+                    candidate_base == base && candidate_generation > generation
+                })
+        {
+            continue;
+        }
         let suffix = match parent_stem {
             Some(parent) => match stem.strip_prefix(parent).and_then(|r| r.strip_prefix("__")) {
                 Some(rest) if !rest.contains("__") => rest,
@@ -105,6 +120,11 @@ fn build_children(
     }
     children.sort_by_key(|child| child.spawn_unix);
     children
+}
+
+fn child_generation(stem: &str) -> Option<(&str, u32)> {
+    let (base, suffix) = stem.rsplit_once(".g")?;
+    Some((base, suffix.parse().ok()?))
 }
 
 fn build_child(
@@ -192,32 +212,20 @@ fn find_exact_spawning_call(
         .ok()
         .flatten()?;
     let parent_call_id = run.metadata.get("parentCallId")?.as_str()?;
-    let in_range = items
-        .iter()
-        .enumerate()
-        .take(end)
-        .skip(start)
-        .find_map(|(index, item)| match item {
-            DisplayItem::ToolCall { call_id, .. }
-                if !claimed[index] && call_id == parent_call_id =>
-            {
-                Some(index)
-            }
-            _ => None,
-        });
-    in_range.or_else(|| {
-        items
-            .iter()
-            .enumerate()
-            .find_map(|(index, item)| match item {
-                DisplayItem::ToolCall { call_id, .. }
-                    if !claimed[index] && call_id == parent_call_id =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            })
-    })
+    let matching = |index: usize| matches!(&items[index], DisplayItem::ToolCall { call_id, .. } if call_id == parent_call_id);
+    let end = end.min(items.len());
+    let start = start.min(end);
+    // Providers may reuse call ids across turns, so prefer the anchored turn.
+    if let Some(index) = (start..end).find(|&index| !claimed[index] && matching(index)) {
+        return Some(index);
+    }
+    // Only look outside the anchored turn when that turn has no call with
+    // this id at all (an imprecise spawn anchor); a claimed in-range match
+    // means the id repeats, and another turn's call would be the wrong one.
+    if (start..end).any(matching) {
+        return None;
+    }
+    (0..items.len()).find(|&index| !claimed[index] && matching(index))
 }
 
 /// What the child's own transcript says about how it ended.
@@ -230,6 +238,10 @@ fn own_state(records: &[DisplayRecord]) -> OwnState {
         Some(msg) if msg.interrupted => OwnState::Interrupted,
         Some(msg)
             if msg.message.role == "assistant"
+                && msg
+                    .turn_usage
+                    .as_ref()
+                    .is_none_or(|usage| usage.tool_calls.is_empty())
                 && parse_native_tool_envelope(&msg.message.content)
                     .is_none_or(|(_, calls)| calls.is_empty()) =>
         {

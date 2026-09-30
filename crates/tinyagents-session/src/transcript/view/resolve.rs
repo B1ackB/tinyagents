@@ -87,8 +87,10 @@ pub(super) fn resolve_files_scoped(
         return None;
     }
     let raw_dir = found[0].parent()?.to_path_buf();
-    let roots = order_root_files(workspace_dir, thread_id, found);
-    let subs = discover_subagent_files(&raw_dir, thread_id, &roots, agent_id.is_some());
+    let roots = order_root_files(workspace_dir, thread_id, found.clone());
+    // Discover sub-agents from every matched root, including legacy roots the
+    // session-chain ordering drops, so their children still render.
+    let subs = discover_subagent_files(&raw_dir, thread_id, &found, agent_id.is_some());
     tracing::debug!(
         "{LOG_PREFIX} thread={thread_id} roots={} subagent_files={}",
         roots.len(),
@@ -255,10 +257,10 @@ pub(super) fn drop_retained_rows(
 ) -> (Vec<DisplayRecord>, Vec<DisplayMessage>) {
     let mut kept = Vec::with_capacity(records.len());
     let mut retained = Vec::new();
-    let mut matching_prefix = true;
+    let mut retained_prefix_open = true;
     for record in records {
-        if let DisplayRecord::Message(msg) = record
-            && matching_prefix
+        if retained_prefix_open
+            && let DisplayRecord::Message(msg) = record
             && let Some(count) = predecessor.get_mut(&row_key(msg))
             && *count > 0
         {
@@ -266,9 +268,7 @@ pub(super) fn drop_retained_rows(
             retained.push((**msg).clone());
             continue;
         }
-        if matches!(record, DisplayRecord::Message(_)) {
-            matching_prefix = false;
-        }
+        retained_prefix_open = false;
         kept.push(record.clone());
     }
     (kept, retained)
