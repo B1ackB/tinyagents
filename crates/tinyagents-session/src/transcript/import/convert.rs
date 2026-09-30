@@ -2,6 +2,7 @@
 //! assembly, and message-record projection.
 
 use crate::transcript::{SessionTranscript, TranscriptMessage};
+use sha2::{Digest, Sha256};
 
 use super::types::{
     DescriptorImport, DescriptorSource, DescriptorUsage, IMPORT_VERSION, JournalMessage,
@@ -32,6 +33,9 @@ pub fn sanitize_store_name(name: &str) -> String {
         .collect();
     if cleaned.is_empty() || cleaned.bytes().all(|b| b == b'.') {
         "session".to_string()
+    } else if cleaned != name {
+        let digest = Sha256::digest(name.as_bytes());
+        format!("{cleaned}_{}", hex::encode(&digest[..6]))
     } else {
         cleaned
     }

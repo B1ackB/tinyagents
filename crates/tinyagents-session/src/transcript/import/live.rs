@@ -12,6 +12,7 @@
 //! non-fatal (log + swallow).
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use tinyagents_harness::store::{AppendStore, Store};
@@ -24,6 +25,8 @@ use super::convert::{
 };
 use super::ops::{SessionStores, open_session_stores};
 use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
+
+static LIVE_REWRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Mirror one completed turn's transcript into the TinyAgents store.
 ///
@@ -42,6 +45,10 @@ pub async fn write_live_turn(
     transcript: &SessionTranscript,
     project: JournalProjector,
 ) -> Result<()> {
+    let _rewrite_guard = LIVE_REWRITE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     tracing::debug!(
         "[session-store] dual-write enter stem={session_key} workspace={} messages={}",
         workspace.display(),

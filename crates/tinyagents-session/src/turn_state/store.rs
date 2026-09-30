@@ -43,6 +43,16 @@ const SNAPSHOT_EXTENSION: &str = "json";
 const COMPLETED_RETENTION: usize = 20;
 static TURN_STATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+fn compare_rfc3339(left: &str, right: &str) -> std::cmp::Ordering {
+    match (
+        chrono::DateTime::parse_from_rfc3339(left),
+        chrono::DateTime::parse_from_rfc3339(right),
+    ) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
+    }
+}
+
 /// Workspace-rooted handle that reads and writes per-thread turn snapshots.
 #[derive(Debug, Clone)]
 pub struct TurnStateStore {
@@ -191,9 +201,8 @@ impl TurnStateStore {
         self.migrate_thread_locked(thread_id);
         let mut turns = self.read_thread_turns(thread_id)?;
         turns.sort_by(|a, b| {
-            b.started_at
-                .cmp(&a.started_at)
-                .then_with(|| b.updated_at.cmp(&a.updated_at))
+            compare_rfc3339(&b.started_at, &a.started_at)
+                .then_with(|| compare_rfc3339(&b.updated_at, &a.updated_at))
         });
         Ok(turns)
     }
@@ -541,7 +550,7 @@ impl TurnStateStore {
             return;
         }
         // Newest first, then drop everything past the retention window.
-        completed.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        completed.sort_by(|a, b| compare_rfc3339(&b.updated_at, &a.updated_at));
         for stale in completed.into_iter().skip(COMPLETED_RETENTION) {
             let path = self.turn_path(&stale.thread_id, &stale.request_id);
             if let Err(err) = fs::remove_file(&path) {
