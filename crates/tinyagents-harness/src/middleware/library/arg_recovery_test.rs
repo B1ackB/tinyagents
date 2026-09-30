@@ -8,7 +8,7 @@ use super::*;
 use crate::context::{RunConfig, RunContext};
 use crate::middleware::Middleware;
 use tinyinference_llm::tool::ToolCall;
-use tinytools::{Tool, ToolResult, ToolSpec};
+use tinytools::{Tool, ToolResult};
 
 struct Stub {
     name: &'static str,
@@ -21,17 +21,20 @@ impl Tool for Stub {
         self.name
     }
 
-    fn spec(&self) -> ToolSpec {
-        let parameters = if self.required {
+    fn description(&self) -> &str {
+        "stub"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        if self.required {
             json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]})
         } else {
             json!({"type": "object", "properties": {}})
-        };
-        ToolSpec::new(self.name, "stub", parameters)
+        }
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> ToolResult {
-        ToolResult::success("ok")
+    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::success("ok"))
     }
 }
 

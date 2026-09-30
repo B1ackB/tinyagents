@@ -13,7 +13,10 @@ use tinyinference_llm::tool::ToolSchema;
 struct Sink(Vec<(String, String)>);
 
 impl CapturedOutcomes for Sink {
-    fn content_for(&self, call_id: &str) -> Result<Option<String>, OutcomesUnavailable> {
+    fn content_for(
+        &self,
+        call_id: &str,
+    ) -> std::result::Result<Option<String>, OutcomesUnavailable> {
         Ok(self
             .0
             .iter()

@@ -7,13 +7,15 @@ use crate::context::{RunConfig, RunContext};
 use crate::middleware::Middleware;
 use tinyinference_llm::message::Message as TaMessage;
 use tinyinference_llm::model::ModelRequest;
-use tinyinference_llm::tool::ToolSchema;
 
 /// A fixed set of captured outcomes, in the shape the wrap-up reads them.
 struct Sink(Vec<(String, String)>);
 
 impl CapturedOutcomes for Sink {
-    fn content_for(&self, call_id: &str) -> Result<Option<String>, OutcomesUnavailable> {
+    fn content_for(
+        &self,
+        call_id: &str,
+    ) -> std::result::Result<Option<String>, OutcomesUnavailable> {
         Ok(self
             .0
             .iter()
@@ -250,7 +252,7 @@ async fn the_contents_list_stays_bounded_when_no_window_is_advertised() {
         .map(|(a, b, c, d)| (a.as_str(), b.as_str(), c.as_str(), *d))
         .collect();
     let mut ctx = ctx_with_artifacts(&borrowed).await;
-    let mw = ArtifactIndexTocMiddleware::new(split_input_allowance(0, STORE).0);
+    let mw = ArtifactIndexTocMiddleware::new(split_input_allowance(0).0, STORE);
     let mut request = ModelRequest {
         messages: vec![TaMessage::user("what did you find?")],
         ..Default::default()
