@@ -267,13 +267,6 @@ impl ToolResultArtifactOutcome {
 }
 
 impl ToolResultArtifactStore {
-    /// The root artifacts are written under. Test-only: production never needs
-    /// to ask, but a caller choosing the wrong root produces a pointer the model
-    /// cannot dereference, and that is only assertable from outside (#6483).
-    #[cfg(test)]
-    pub fn root(&self) -> &std::path::Path {
-        &self.action_dir
-    }
 
     /// `read_tool` is the host's file-reading tool and `max_readable_bytes` the
     /// largest body it will open; a body whose redacted form exceeds it is
