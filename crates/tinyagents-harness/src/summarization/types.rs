@@ -4,11 +4,35 @@
 //! to record — are expressed as data types so they can be inspected, tested,
 //! and audited without coupling to any particular LLM provider.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use tinyinference_llm::message::Message;
+use tinyinference_llm::model::ChatModel;
+
+/// An LLM-backed [`Summarizer`] that condenses messages with the active model.
+///
+/// The model id is retained for provenance, while the wrapped model carries
+/// the actual provider configuration.
+pub struct ModelSummarizer {
+    pub(super) model: Arc<dyn ChatModel<()>>,
+    /// Model id, kept for logging and provenance.
+    pub(super) model_id: String,
+    /// Threshold reported in summary provenance; the policy owns the trigger.
+    pub(super) threshold_fraction: f64,
+}
+
+impl std::fmt::Debug for ModelSummarizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelSummarizer")
+            .field("model_id", &self.model_id)
+            .field("threshold_fraction", &self.threshold_fraction)
+            .finish_non_exhaustive()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Token estimation

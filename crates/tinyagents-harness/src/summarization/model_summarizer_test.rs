@@ -5,15 +5,38 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use tinyinference_llm::message::Message;
+use serde_json::json;
+use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message, ToolMessage};
+use tinyinference_llm::tool::ToolCall;
 
 use super::{
     DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
     FaultTolerantCachingSummarizer, ModelSummarizer, SummarizationPolicy, Summarizer,
-    SummaryRecord, summarization_policy, summarization_policy_with,
+    SummaryRecord, SummaryRequest, summarization_policy, summarization_policy_with,
 };
 use crate::error::{Result, TinyAgentsError};
 use crate::testkit::ScriptedModel;
+
+fn tool_call_messages(arguments: serde_json::Value) -> Vec<Message> {
+    vec![
+        Message::Assistant(AssistantMessage {
+            id: None,
+            content: vec![ContentBlock::Thinking {
+                text: "I should inspect the matching records.".into(),
+                signature: None,
+            }],
+            tool_calls: vec![ToolCall::new("lookup-1", "lookup", arguments)],
+            usage: None,
+            origin: None,
+        }),
+        Message::Tool(ToolMessage {
+            tool_call_id: "lookup-1".into(),
+            content: vec![ContentBlock::Json(json!({"matches": 2}))],
+            trusted_verbatim: false,
+            artifact: None,
+        }),
+    ]
+}
 
 #[test]
 fn policy_is_context_window_aware_at_the_default_threshold() {
@@ -73,6 +96,26 @@ async fn model_summarizer_rejects_empty_input_and_empty_replies() {
     assert!(err.to_string().contains("empty response"));
 }
 
+#[tokio::test]
+async fn model_summarizer_renders_structured_messages_and_prior_summary() {
+    let model = Arc::new(ScriptedModel::replies(vec!["combined context"]));
+    let summarizer = ModelSummarizer::new(model.clone(), "m");
+    let messages = tool_call_messages(json!({"query": "open issues"}));
+    let request =
+        SummaryRequest::new(messages.clone()).with_previous_summary("Earlier result: 4 issues");
+
+    let record = summarizer.summarize_request(&request).await.unwrap();
+    let transcript = model.requests()[0].messages[1].text();
+    assert!(transcript.contains("Earlier result: 4 issues"));
+    assert!(transcript.contains("<reasoning>I should inspect the matching records.</reasoning>"));
+    assert!(transcript.contains("<tool_call id=\"lookup-1\" name=\"lookup\">"));
+    assert!(transcript.contains("<json>{\"matches\":2}</json>"));
+    assert_eq!(
+        record.provenance.original_token_estimate,
+        crate::token_estimation::estimate_slice_tokens(&messages)
+    );
+}
+
 struct CountingFailing(Arc<AtomicUsize>);
 
 #[async_trait]
@@ -124,6 +167,37 @@ async fn an_identical_slice_is_served_from_the_cache() {
         1,
         "second call must not reach the model"
     );
+}
+
+#[tokio::test]
+async fn cache_key_includes_structured_messages_and_previous_summary() {
+    let model = Arc::new(ScriptedModel::replies(vec!["first", "second", "third"]));
+    let policy = SummarizationPolicy::default().with_context_window(1_000);
+    let guarded = FaultTolerantCachingSummarizer::new(
+        Box::new(ModelSummarizer::new(model.clone(), "m")),
+        &policy,
+    );
+    let first_messages = tool_call_messages(json!({"query": "one"}));
+    let second_messages = tool_call_messages(json!({"query": "two"}));
+
+    guarded
+        .summarize_request(&SummaryRequest::new(first_messages.clone()))
+        .await
+        .unwrap();
+    guarded
+        .summarize_request(&SummaryRequest::new(second_messages))
+        .await
+        .unwrap();
+    guarded
+        .summarize_request(
+            &SummaryRequest::new(first_messages).with_previous_summary("prior checkpoint"),
+        )
+        .await
+        .unwrap();
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].messages[1].text().contains("prior checkpoint"));
 }
 
 #[tokio::test]
