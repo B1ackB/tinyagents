@@ -15,7 +15,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-pub use project::{project_records, project_thread};
+pub use project::{project_records, project_thread, project_thread_scoped, resolve_files_scoped};
 pub use types::{DisplayItem, ProjectedTranscript, SubagentStatus, ToolCallStatus};
 
 /// Key under which the writer stamps per-result tool failures into a
