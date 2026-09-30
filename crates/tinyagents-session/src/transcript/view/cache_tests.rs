@@ -1,9 +1,9 @@
 //! Cache hit/miss + invalidation tests for the transcript view cache.
 
 use super::TranscriptViewCache;
+use crate::transcript;
 use std::path::Path;
 use tempfile::TempDir;
-use crate::transcript;
 
 fn meta_line(thread_id: &str) -> String {
     format!(

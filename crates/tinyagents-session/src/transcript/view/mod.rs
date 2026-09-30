@@ -15,7 +15,15 @@ use std::path::Path;
 
 use serde::Serialize;
 
+pub use project::{project_records, project_thread};
 pub use types::{DisplayItem, ProjectedTranscript, SubagentStatus, ToolCallStatus};
+
+/// Key under which the writer stamps per-result tool failures into a
+/// transcript message's extra metadata (`{call_id: {detail}}`); the
+/// projection reads it back to mark a tool row as failed. The writer side
+/// lives in the host's transcript codec and imports this constant, so the two
+/// halves cannot drift.
+pub const TOOL_RESULT_FAILURES_METADATA_KEY: &str = "openhuman_tool_failures";
 
 const LOG_PREFIX: &str = "[threads][transcript]";
 
@@ -109,9 +117,6 @@ mod subagent_anchor_tests;
 #[cfg(test)]
 #[path = "transcript_view_tests.rs"]
 mod tests;
-#[cfg(test)]
-#[path = "transcript_view_tool_round_tests.rs"]
-mod tool_round_tests;
 
 #[cfg(test)]
 #[path = "prompt_tools_tests.rs"]

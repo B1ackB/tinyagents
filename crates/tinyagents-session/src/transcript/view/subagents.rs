@@ -186,7 +186,7 @@ fn find_exact_spawning_call(
 ) -> Option<usize> {
     let workspace_dir = workspace_dir?;
     let task_id = task_id?;
-    let run = tinyagents_session::run_ledger::get_agent_run(workspace_dir, task_id)
+    let run = crate::run_ledger::get_agent_run(workspace_dir, task_id)
         .ok()
         .flatten()?;
     let parent_call_id = run.metadata.get("parentCallId")?.as_str()?;

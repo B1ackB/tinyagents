@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::transcript::{self, CompactionMarker, DisplayMessage, DisplayRecord};
-use tinytools_agent::dialect::{parse_replayed_results, ToolResultEntry};
+use tinytools_agent::dialect::{ToolResultEntry, parse_replayed_results};
 
 use super::TOOL_RESULT_FAILURES_METADATA_KEY;
 
@@ -282,7 +282,9 @@ impl Projector {
             "assistant" => self.assistant(msg),
             "tool" => self.tool_result(msg),
             other => {
-                tracing::debug!("{LOG_PREFIX} projecting unknown role {other:?} as assistant message");
+                tracing::debug!(
+                    "{LOG_PREFIX} projecting unknown role {other:?} as assistant message"
+                );
                 self.items.push(DisplayItem::AssistantMessage {
                     content: msg.message.content.clone(),
                     interim: false,

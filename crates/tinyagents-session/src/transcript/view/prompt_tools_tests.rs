@@ -3,9 +3,9 @@
 
 use super::project::project_records;
 use super::types::DisplayItem;
+use crate::transcript::{self, read_transcript_display};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-use crate::transcript::{self, read_transcript_display};
 
 fn write_raw(workspace: &Path, stem: &str, thread_id: &str, body: &[&str]) -> PathBuf {
     let path = transcript::resolve_keyed_transcript_path(workspace, stem).expect("resolve");

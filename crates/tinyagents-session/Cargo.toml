@@ -16,6 +16,7 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.2", default-features = false, features = ["sqlite"] }
+tinytools-agent = { path = "../../vendor/tinytools/crates/tinytools-agent", version = "0.4.1", default-features = false }
 tracing = { workspace = true }
 
 [features]

@@ -103,15 +103,15 @@ fn subagent_correlates_by_ledger_parent_call_id_over_the_heuristic() {
     )
     .unwrap();
 
-    tinyagents_session::run_ledger::upsert_agent_run(
+    crate::run_ledger::upsert_agent_run(
         dir.path(),
-        tinyagents_session::run_ledger::AgentRunUpsert {
+        crate::run_ledger::AgentRunUpsert {
             id: "sub-exact-1".to_string(),
-            kind: tinyagents_session::run_ledger::AgentRunKind::Subagent,
+            kind: crate::run_ledger::AgentRunKind::Subagent,
             parent_run_id: None,
             parent_thread_id: Some(thread_id.to_string()),
             agent_id: Some("researcher".to_string()),
-            status: tinyagents_session::run_ledger::AgentRunStatus::Completed,
+            status: crate::run_ledger::AgentRunStatus::Completed,
             prompt_ref: None,
             worker_thread_id: None,
             checkpoint_path: None,

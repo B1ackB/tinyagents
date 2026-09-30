@@ -120,6 +120,7 @@ mod session;
 mod thread_lookup;
 mod types;
 mod writer;
+pub mod view;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
 pub use history::{
