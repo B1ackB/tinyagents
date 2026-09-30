@@ -143,10 +143,7 @@ async fn a_skill_alone_renders_guide_and_the_schema_of_a_present_tool() {
     let rendered = result.text();
     assert!(rendered.starts_with("# Skill `alpha`\n\nAlpha things.\n\nUse alpha carefully.\n\n"));
     assert!(rendered.contains("## `a_one`\n\nfake\n\n```json\n"));
-    assert!(
-        rendered.contains(r#"{"properties":{"marker":{"type":"string"}},"type":"object"}"#)
-            || rendered.contains(r#""marker""#)
-    );
+    assert!(rendered.contains(r#"{"properties":{"marker":{"type":"string"}},"type":"object"}"#));
     // A pack tool this session lacks is skipped, not fatal.
     assert!(!rendered.contains("a_two"));
 }
@@ -172,10 +169,7 @@ async fn dispatch_forwards_args_to_the_packed_tool() {
         .await
         .unwrap();
     assert!(!result.is_error);
-    assert!(
-        text(&result).contains(r#"a_one:{"marker":"x"}"#.replace('"', "\\\"").as_str())
-            || text(&result).contains("marker")
-    );
+    assert_eq!(result.text(), r#"a_one:{"marker":"x"}"#);
 }
 
 #[tokio::test]
