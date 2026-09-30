@@ -12,7 +12,7 @@ mod early_exit;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tinytools::{Tool, ToolCallOptions, ToolResult, ToolRunContext};
+use tinytools::{Tool, ToolCallOptions, ToolResult, ToolRunContext, ToolTimeout};
 
 pub use early_exit::{EarlyExit, EarlyExitHook};
 
@@ -117,6 +117,25 @@ impl Tool for CanonicalSharedToolAdapter {
         self.resolved_tool()
             .map(Tool::injected_arguments)
             .unwrap_or_default()
+    }
+
+    fn supports_markdown(&self) -> bool {
+        self.resolved_tool().is_some_and(Tool::supports_markdown)
+    }
+
+    fn is_concurrency_safe(&self, args: &serde_json::Value) -> bool {
+        self.resolved_tool()
+            .is_some_and(|tool| tool.is_concurrency_safe(args))
+    }
+
+    fn timeout_policy(&self, args: &serde_json::Value) -> ToolTimeout {
+        self.resolved_tool()
+            .map(|tool| tool.timeout_policy(args))
+            .unwrap_or(ToolTimeout::Inherit)
+    }
+
+    fn return_direct(&self) -> bool {
+        self.resolved_tool().is_some_and(Tool::return_direct)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
