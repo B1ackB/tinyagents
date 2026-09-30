@@ -295,6 +295,13 @@ impl ToolResultArtifactStore {
         }
     }
 
+    /// The root artifacts are written under. A caller choosing the wrong root
+    /// produces a pointer the model cannot dereference, and that is only
+    /// assertable from outside (#6483).
+    pub fn root(&self) -> &Path {
+        &self.action_dir
+    }
+
     /// The host's file-reading tool, as quoted in every envelope.
     pub fn read_tool(&self) -> &str {
         &self.read_tool
