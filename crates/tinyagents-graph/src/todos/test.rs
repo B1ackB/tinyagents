@@ -384,6 +384,10 @@ mod tool_tests {
             description.contains("next turn"),
             "sequential providers may advance on their next turn: {description}"
         );
+        assert!(
+            description.contains("at most once per assistant response"),
+            "replacement calls are bounded per assistant response: {description}"
+        );
     }
 
     #[test]
