@@ -375,13 +375,13 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if already_halted {
             // An earlier result in this batch paused the run; keep the streak
             // accounting current without pausing again.
-            if let Some(batch) = completed {
-                if let Ok(mut trackers) = self.state.tracker.lock() {
-                    let _ = trackers
-                        .entry(ctx.instance_id())
-                        .or_default()
-                        .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
-                }
+            if let Some(batch) = completed
+                && let Ok(mut trackers) = self.state.tracker.lock()
+            {
+                let _ = trackers
+                    .entry(ctx.instance_id())
+                    .or_default()
+                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
             }
             return Ok(());
         }
@@ -455,10 +455,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
             evicted,
             "[tinyagents::mw] repeat-progress ledger reset: recorded tool results left the context"
         );
-        if let Ok(mut trackers) = self.state.tracker.lock() {
-            if let Some(tracker) = trackers.get_mut(&run_id) {
-                tracker.reset();
-            }
+        if let Ok(mut trackers) = self.state.tracker.lock()
+            && let Some(tracker) = trackers.get_mut(&run_id)
+        {
+            tracker.reset();
         }
         if let Ok(mut recorded) = self.state.recorded.lock() {
             recorded.remove(&run_id);
