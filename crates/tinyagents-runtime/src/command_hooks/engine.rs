@@ -240,7 +240,9 @@ impl HookEngine {
         for definition in selected {
             let mut hook_input = input.clone();
             if let Some(updated) = outcome.output.updated_input.clone() {
-                hook_input.payload = updated;
+                if let super::types::HookPayload::Tool(payload) = &mut hook_input.payload {
+                    payload.tool_input = updated;
+                }
             }
             let run = exec::run(&definition, &hook_input, &env, default_timeout, environment).await;
             tracing::debug!(
@@ -266,7 +268,9 @@ impl HookEngine {
                 break;
             }
         }
-        if event == HookEvent::SessionStart && let Some(env) = outcome.output.env.clone() {
+        if event == HookEvent::SessionStart
+            && let Some(env) = outcome.output.env.clone()
+        {
             self.absorb_session_env(&input, env).await;
         }
         outcome
@@ -325,11 +329,7 @@ impl HookEngine {
     /// Charge one follow-up against a hook's budget, returning whether it may
     /// be honoured. A hook with no session id gets exactly one, since there is
     /// nowhere to keep a counter and an unbounded loop is the worse failure.
-    async fn grant_followup(
-        &self,
-        input: &HookInput,
-        definition: &HookDefinition,
-    ) -> bool {
+    async fn grant_followup(&self, input: &HookInput, definition: &HookDefinition) -> bool {
         let limit = match definition.loop_limit {
             LoopLimit::Unlimited => return true,
             LoopLimit::Limited(limit) if limit == 0 => return true,

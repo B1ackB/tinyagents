@@ -69,7 +69,7 @@ fn definition(command: &str, dir: &std::path::Path) -> HookDefinition {
         kind: HookKind::Command,
         timeout: Some(20),
         matcher: None,
-        loop_limit: None,
+        loop_limit: super::config::LoopLimit::Default,
         fail_closed: false,
         model: None,
         enabled: true,
@@ -654,5 +654,5 @@ fn a_literal_hooks_json_parses_to_the_documented_shape() {
     assert_eq!(shell[0].kind, HookKind::Command);
     let stop = parsed.for_event(HookEvent::Stop);
     assert_eq!(stop.len(), 1);
-    assert_eq!(stop[0].loop_limit, Some(3));
+    assert_eq!(stop[0].loop_limit, super::config::LoopLimit::Limited(3));
 }

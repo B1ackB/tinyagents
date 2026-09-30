@@ -27,6 +27,9 @@
 //! **Gating costs a turn's latency; observing does not.**
 //! [`types::HookEvent::is_gating`] decides between running hooks sequentially
 //! in the turn's path and spawning them onto a background task.
+//!
+//! See [`README.md`](https://github.com/tinyhumansai/tinyagents/tree/main/crates/tinyagents-runtime/src/command_hooks)
+//! for configuration, ordering, timeout, and host integration details.
 
 pub mod config;
 pub mod context;
