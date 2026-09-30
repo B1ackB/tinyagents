@@ -235,7 +235,7 @@ pub fn scope_use_skill_spec(
 ///
 /// An absent (or empty) `tool` is not a malformed call: it is the disclosure
 /// half of this tool, and the distinction decides both which branch
-/// [`super::UseSkillTool::execute_with_context`] takes and what permission level the
+/// `UseSkillTool::execute_with_context` takes and what permission level the
 /// call is gated at. Public because the policy middleware has to draw the same
 /// line — it intercepts the disclosure half to scope the listing to the session
 /// and lets the execution half through to its gate — and two spellings of "did
