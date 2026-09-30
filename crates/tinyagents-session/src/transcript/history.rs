@@ -806,7 +806,8 @@ impl FileTranscriptHistory {
 /// split waiters across different inodes and invalidate mutual exclusion.
 fn generation_lock(path: &Path) -> anyhow::Result<File> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let lock_dir = parent.join(".locks");
+    let lock_root = parent.parent().unwrap_or(parent).join(".transcript-locks");
+    let lock_dir = lock_root.join(parent.file_name().unwrap_or_default());
     fs::create_dir_all(&lock_dir)?;
     let lock_name = path.file_name().unwrap_or_default();
     let lock_path = lock_dir.join(lock_name);
