@@ -233,8 +233,9 @@ pub(super) fn drop_retained_rows(
 ) -> (Vec<DisplayRecord>, Vec<DisplayMessage>) {
     let mut kept = Vec::with_capacity(records.len());
     let mut retained = Vec::new();
+    let mut retained_prefix_open = true;
     for record in records {
-        if let DisplayRecord::Message(msg) = record
+        if retained_prefix_open && let DisplayRecord::Message(msg) = record
             && let Some(count) = predecessor.get_mut(&row_key(msg))
             && *count > 0
         {
@@ -242,6 +243,7 @@ pub(super) fn drop_retained_rows(
             retained.push((**msg).clone());
             continue;
         }
+        retained_prefix_open = false;
         kept.push(record.clone());
     }
     (kept, retained)
