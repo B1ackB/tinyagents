@@ -299,9 +299,10 @@ async fn malformed_sources_fail_without_aborting_batch() {
     let truncated = journal_readback(ws.path(), "session.1715000003_truncated.messages").await;
     assert_eq!(truncated.len(), 1, "malformed trailing line skipped");
 
-    // The batch still completed and the marker landed.
+    // Partial failure must not mark the full import complete: a later run
+    // needs to retry the sources that could not be imported.
     let kv = FileStore::new(store_root(ws.path()).join("kv"));
-    assert!(kv.get(NS_MIGRATIONS, MARKER_KEY).await.unwrap().is_some());
+    assert!(kv.get(NS_MIGRATIONS, MARKER_KEY).await.unwrap().is_none());
 }
 
 // Fixture 9: `_meta` without thread_id → synthesized stable id + warning.
