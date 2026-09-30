@@ -90,3 +90,8 @@ Unit tests in `crates/tinyagents-graph/src/goals/test.rs` (types, store, tools, 
 budget enforcement on `InMemoryStore`); an end-to-end self-driving loop in
 `tests/e2e_graph_goals.rs`; feature coverage for budget accounting and the
 mid-turn guard in `tests/feature_graph_goal_budget.rs`.
+
+Every control answers with `{ "goal": <ThreadGoal|null>, "text": <rendered block> }`
+(`text` is also the markdown form). A host that must react to a write registers
+`GoalTool::with_update_hook` (a `GoalUpdateHook`), which runs after each
+successful set / complete / pause / resume with the persisted goal.

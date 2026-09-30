@@ -191,3 +191,74 @@ async fn resolve_time_accepts_conversational_phrases() {
     let payload: serde_json::Value = serde_json::from_str(&result.output()).unwrap();
     assert!(payload["unix_s"].is_i64());
 }
+
+#[test]
+fn time_tools_are_read_only_and_support_markdown() {
+    use tinytools::PermissionLevel;
+
+    for tool in time_tools() {
+        assert!(tool.supports_markdown(), "{}", tool.name());
+        assert_eq!(tool.permission_level(), PermissionLevel::ReadOnly);
+    }
+}
+
+#[tokio::test]
+async fn current_time_markdown_only_when_preferred() {
+    use tinytools::ToolCallOptions;
+
+    let tool = CurrentTimeTool::new();
+    let args = json!({ "timezone": "Asia/Kolkata" });
+    let plain = tool.execute(args.clone()).await.unwrap();
+    assert!(plain.markdown_formatted.is_none());
+
+    let result = tool
+        .execute_with_options(args, ToolCallOptions::prefer_markdown())
+        .await
+        .unwrap();
+    let md = result.markdown_formatted.expect("markdown rendering");
+    assert!(md.contains("- **utc**: "), "{md}");
+    assert!(md.contains("- **Asia/Kolkata**: "), "{md}");
+
+    let bad = tool
+        .execute_with_options(
+            json!({ "timezone": "Not/AZone" }),
+            ToolCallOptions::prefer_markdown(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        bad.markdown_formatted
+            .unwrap()
+            .contains("- **timezone error**: ")
+    );
+}
+
+#[tokio::test]
+async fn resolve_time_markdown_lists_every_representation() {
+    use tinytools::ToolCallOptions;
+
+    let tool = ResolveTimeTool::new();
+    let args = json!({ "expr": "2026-06-09T19:12:00Z", "format": "slack_ts" });
+    assert!(
+        tool.execute(args.clone())
+            .await
+            .unwrap()
+            .markdown_formatted
+            .is_none()
+    );
+
+    let md = tool
+        .execute_with_options(args, ToolCallOptions::prefer_markdown())
+        .await
+        .unwrap()
+        .markdown_formatted
+        .expect("markdown rendering");
+    assert!(
+        md.contains("- **interpreted**: 2026-06-09T19:12:00Z\n"),
+        "{md}"
+    );
+    assert!(md.contains("- **value**: 1781032320.000000\n"), "{md}");
+    assert!(md.contains("- **unix_s**: 1781032320\n"), "{md}");
+    assert!(md.contains("- **unix_ms**: 1781032320000\n"), "{md}");
+    assert!(md.contains("- **rfc3339**: 2026-06-09T19:12:00Z\n"), "{md}");
+}
