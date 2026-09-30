@@ -176,6 +176,13 @@ impl EmbeddingToolRanker {
             }
             let tmp = path.with_extension("json.tmp");
             std::fs::write(&tmp, serde_json::to_vec(&disk)?)?;
+            #[cfg(windows)]
+            if path.exists() {
+                // Windows rename does not replace an existing destination.
+                // This cache is recoverable, so remove the stale copy before
+                // installing the newly written file.
+                std::fs::remove_file(path)?;
+            }
             std::fs::rename(&tmp, path)
         };
         if let Err(error) = write() {

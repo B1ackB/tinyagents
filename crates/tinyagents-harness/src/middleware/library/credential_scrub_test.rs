@@ -158,9 +158,17 @@ impl ToolBaseCall<(), ()> for FieldsBase {
         Box::pin(async move {
             Ok(ToolResult {
                 markdown_formatted: Some("api_key=aB3dE5fG7hJ9kL1mN3pQ".into()),
-                follow_up: vec![tinytools::ToolContent::Text {
-                    text: "token=zX9yW8vU7tS6rQ5pO4nM".into(),
-                }],
+                follow_up: vec![
+                    tinytools::ToolContent::Text {
+                        text: "token=zX9yW8vU7tS6rQ5pO4nM".into(),
+                    },
+                    tinytools::ToolContent::Image {
+                        media_type: "image/png".into(),
+                        data: tinytools::ImageData::Url(
+                            "https://example.test/image?token=aB3dE5fG7hJ9kL1mN3pQ".into(),
+                        ),
+                    },
+                ],
                 ..ToolResult::default()
             })
         })
@@ -189,6 +197,13 @@ async fn scrubs_markdown_and_follow_up_fields() {
         _ => panic!("expected text follow-up"),
     };
     assert!(!follow_up.contains("zX9yW8vU7tS6rQ5pO4nM"));
+    match &result.follow_up[1] {
+        tinytools::ToolContent::Image {
+            data: tinytools::ImageData::Url(url),
+            ..
+        } => assert!(!url.contains("aB3dE5fG7hJ9kL1mN3pQ")),
+        _ => panic!("expected URL-backed image follow-up"),
+    }
 }
 
 async fn run(mw: CredentialScrubMiddleware, tool: &str, body: &'static str) -> String {

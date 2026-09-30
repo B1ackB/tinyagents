@@ -129,6 +129,23 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
 
         let mut redactions = 0usize;
         for block in result.content.iter_mut().chain(result.follow_up.iter_mut()) {
+            if let tinytools::ToolContent::Image {
+                data: tinytools::ImageData::Url(url),
+                ..
+            } = block
+            {
+                if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, url) {
+                    // The default scrubber appends an explanatory notice for
+                    // text. Keep that notice out of the URL; it is added to
+                    // the result text below.
+                    *url = match scrubbed.split_once("\n\n[credential_scrub]") {
+                        Some((url, _)) => url.to_owned(),
+                        None => scrubbed,
+                    };
+                    redactions = redactions.saturating_add(count);
+                }
+                continue;
+            }
             let (text, is_json) = match block {
                 tinytools::ToolContent::Text { text } => (text.clone(), false),
                 tinytools::ToolContent::Json { data } => (data.to_string(), true),
