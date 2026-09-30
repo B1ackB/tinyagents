@@ -638,7 +638,6 @@ impl TranscriptLocator for FileTranscriptLocator {
         begin_file_generation_with_baseline(&self.workspace_dir, session, seed, None)
     }
 
-
     fn begin_generation_from_baseline(
         &self,
         session: &SessionRef,
@@ -654,7 +653,7 @@ fn begin_file_generation_with_baseline(
     session: &SessionRef,
     seed: TranscriptMeta,
     baseline: Option<&[TranscriptMessage]>,
-    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
     let successor = session.next_generation();
     anyhow::ensure!(
         successor.generation <= MAX_GENERATIONS,
@@ -665,8 +664,7 @@ fn begin_file_generation_with_baseline(
     );
     let stem = session_stem(&successor);
     let path = resolve_keyed_transcript_path(&workspace_dir, &stem)?;
-    let parent_path =
-        resolve_keyed_transcript_path(&workspace_dir, &session_stem(session))?;
+    let parent_path = resolve_keyed_transcript_path(&workspace_dir, &session_stem(session))?;
     let mut lock_paths = vec![parent_path.clone(), path.clone()];
     lock_paths.dedup();
     let mut locks = Vec::with_capacity(lock_paths.len());
@@ -719,7 +717,7 @@ fn begin_file_generation_with_baseline(
         _successor: successor_lock,
     });
     Ok((successor, Arc::new(history)))
-    }
+}
 
 fn path_entry_exists(path: &Path) -> anyhow::Result<bool> {
     match std::fs::symlink_metadata(path) {
