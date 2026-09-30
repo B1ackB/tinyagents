@@ -63,7 +63,6 @@ async fn ctx_with_artifacts_and_config(
     RunContext::new(config, ()).with_stores(registry)
 }
 
-use super::*;
 #[tokio::test]
 async fn toc_is_absent_when_no_result_was_offloaded() {
     let mw = ArtifactIndexTocMiddleware::new(0, STORE);
