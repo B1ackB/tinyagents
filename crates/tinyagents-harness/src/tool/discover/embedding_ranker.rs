@@ -247,3 +247,7 @@ impl ToolRanker for EmbeddingToolRanker {
         Ok(scored)
     }
 }
+
+#[cfg(test)]
+#[path = "embedding_ranker_test.rs"]
+mod test;

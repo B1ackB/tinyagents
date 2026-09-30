@@ -36,6 +36,4 @@ pub use types::{
 };
 
 #[cfg(test)]
-mod embedding_ranker_test;
-#[cfg(test)]
 mod test;

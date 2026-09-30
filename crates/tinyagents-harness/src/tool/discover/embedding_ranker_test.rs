@@ -20,6 +20,9 @@ impl EmbeddingModel for BagEmbedder {
     fn model_id(&self) -> &str {
         "bag-v1"
     }
+    fn dimensions(&self) -> usize {
+        3
+    }
     async fn embed(&self, texts: &[String]) -> EmbedResult<Vec<Vec<f32>>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(texts
