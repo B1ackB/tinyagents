@@ -174,8 +174,17 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
 
         let mut rows: Vec<String> = Vec::new();
         for key in &keys {
-            let Ok(Some(entry)) = store.get(&self.namespace, key).await else {
-                continue;
+            let entry = match store.get(&self.namespace, key).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        key = %key,
+                        error = %err,
+                        "[tinyagents::mw] could not read a persisted-artifact index entry"
+                    );
+                    continue;
+                }
             };
             let tool = entry.get("tool").and_then(|v| v.as_str()).unwrap_or("tool");
             let Some(path) = entry.get("artifact_path").and_then(|v| v.as_str()) else {
