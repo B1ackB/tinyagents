@@ -23,13 +23,20 @@
 //! and are separable so a caller can override one turn's limits without
 //! rebuilding the session.
 //!
-//! Everything here is inert — `serde` + `std` only, see `types`. Capabilities
+//! The types are inert — `serde` + `std` only, see `types`; `required_output`
+//! adds pure validate/repair functions over [`RequiredOutput`]. Capabilities
 //! (memory, security, budget, progress) are trait objects supplied separately;
 //! nothing in this module is a behaviour seam.
 
+mod required_output;
 mod types;
 
+pub use required_output::{
+    find_required_block, output_satisfies_contract, repair_instruction, synthesize_block,
+};
 pub use types::*;
 
+#[cfg(test)]
+mod required_output_test;
 #[cfg(test)]
 mod test;

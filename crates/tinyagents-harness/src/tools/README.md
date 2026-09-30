@@ -27,8 +27,9 @@ other canonical tool.
 | File | Role |
 | --- | --- |
 | `mod.rs` | Feature gate, submodule wiring, and the `time` re-exports. |
-| `time.rs` | `CurrentTimeTool`, `ResolveTimeTool`, and the expression parser (`resolve_expr`, `parse_relative_duration`, `ResolveZone`) backing them. |
-| `time_test.rs` | Unit tests for both tools and the underlying expression parser. |
+| `time.rs` | `CurrentTimeTool`, `ResolveTimeTool` and their JSON payloads. |
+| `time_parse.rs` | The expression parser: durations (incl. compound `2h30m`), calendar phrases (`tomorrow at 9am`, `since Monday`), clock times, ISO forms; `resolve_expr[_at]`, `ResolveZone`. |
+| `time_test.rs`, `time_parse_test.rs` | Unit tests for the tools and for the expression parser. |
 
 ## Operational notes
 

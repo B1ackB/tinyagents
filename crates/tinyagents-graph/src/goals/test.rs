@@ -325,7 +325,7 @@ mod tool_tests {
         // Bare call (no context) errors.
         let res = set.execute(json!({ "objective": "x" })).await.unwrap();
         assert!(res.is_error);
-        assert!(res.output().contains("active thread"));
+        assert!(res.output().contains("active chat thread"));
         // Context with no thread id also errors.
         let set = GoalTool::new(GoalToolKind::Set, store());
         let res = run(&set, None, json!({ "objective": "x" })).await;
@@ -340,10 +340,92 @@ mod tool_tests {
     }
 
     #[tokio::test]
-    async fn set_missing_objective_is_a_soft_error() {
+    async fn set_missing_objective_is_an_error_result() {
         let set = GoalTool::new(GoalToolKind::Set, store());
         let res = run(&set, Some("t"), json!({})).await;
-        assert!(res.output().contains("missing 'objective'"));
+        assert!(res.is_error);
+        assert!(res.output().contains("Missing 'objective'"));
+    }
+
+    #[tokio::test]
+    async fn tools_answer_with_goal_and_text_payload() {
+        let s = store();
+        let context = Some("thread-payload");
+
+        let get = GoalTool::new(GoalToolKind::Get, s.clone());
+        let res = run(&get, context, json!({})).await;
+        let empty = match &res.content[0] {
+            tinytools::ToolContent::Json { data } => data,
+            other => panic!("expected structured JSON content, got {other:?}"),
+        };
+        assert!(empty["goal"].is_null());
+        assert_eq!(empty["text"], "no goal set for this thread");
+
+        let set = GoalTool::new(GoalToolKind::Set, s.clone());
+        let res = run(
+            &set,
+            context,
+            json!({ "objective": "land the PR", "token_budget": 5000 }),
+        )
+        .await;
+        assert!(!res.is_error, "{res:?}");
+        let payload = match &res.content[0] {
+            tinytools::ToolContent::Json { data } => data,
+            other => panic!("expected structured JSON content, got {other:?}"),
+        };
+        assert_eq!(payload["goal"]["objective"], "land the PR");
+        assert_eq!(payload["goal"]["status"], "active");
+        assert_eq!(payload["goal"]["tokenBudget"], 5000);
+        assert_eq!(payload["goal"]["tokensUsed"], 0);
+        let text = payload["text"].as_str().unwrap();
+        assert!(text.starts_with("Goal set."), "{text}");
+        assert!(text.contains("objective: land the PR"), "{text}");
+        assert_eq!(res.markdown_formatted.as_deref(), Some(text));
+    }
+
+    #[tokio::test]
+    async fn update_hook_fires_on_writes_only() {
+        use std::sync::Mutex;
+
+        let s = store();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let hook: super::super::tool::GoalUpdateHook = {
+            let seen = seen.clone();
+            Arc::new(move |goal| seen.lock().unwrap().push(goal.status.as_str().to_string()))
+        };
+        let tool = |kind| GoalTool::new(kind, s.clone()).with_update_hook(hook.clone());
+
+        run(&tool(GoalToolKind::Get), Some("t"), json!({})).await;
+        assert!(seen.lock().unwrap().is_empty());
+
+        run(
+            &tool(GoalToolKind::Set),
+            Some("t"),
+            json!({ "objective": "ship" }),
+        )
+        .await;
+        run(&tool(GoalToolKind::Get), Some("t"), json!({})).await;
+        run(&tool(GoalToolKind::Complete), Some("t"), json!({})).await;
+        assert_eq!(*seen.lock().unwrap(), vec!["active", "complete"]);
+
+        // A failed write (no goal to complete on another thread) does not fire.
+        run(&tool(GoalToolKind::Complete), Some("other"), json!({})).await;
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn permission_levels_follow_read_only() {
+        use tinytools::PermissionLevel;
+
+        for kind in GoalToolKind::ALL {
+            let tool = GoalTool::new(kind, store());
+            let expected = if kind == GoalToolKind::Get {
+                PermissionLevel::ReadOnly
+            } else {
+                PermissionLevel::Write
+            };
+            assert_eq!(tool.permission_level(), expected, "{}", kind.name());
+        }
     }
 }
 

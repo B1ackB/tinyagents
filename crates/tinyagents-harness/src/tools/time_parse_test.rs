@@ -1,0 +1,180 @@
+//! Tests for time-expression parsing.
+
+use chrono::{DateTime, SecondsFormat, Utc};
+use chrono_tz::Tz;
+
+use super::time_parse::{ResolveZone, parse_relative_duration, resolve_expr, resolve_expr_at};
+
+#[test]
+fn past_variants_resolve_to_a_negative_offset() {
+    // Past phrasing (and bare durations, which default to the past) yield a
+    // NEGATIVE offset so `now + dur` looks backward.
+    for s in [
+        "24h ago",
+        "last 24 hours",
+        "past 24 hours",
+        "-24h",
+        "24 hours ago",
+        "24h",
+    ] {
+        let d = parse_relative_duration(s).unwrap_or_else(|| panic!("failed: {s}"));
+        assert_eq!(d.num_seconds(), -86_400, "{s}");
+    }
+    assert_eq!(
+        parse_relative_duration("7d").unwrap().num_seconds(),
+        -604_800
+    );
+    assert_eq!(
+        parse_relative_duration("2 weeks").unwrap().num_seconds(),
+        -1_209_600
+    );
+    assert_eq!(parse_relative_duration("15m").unwrap().num_seconds(), -900);
+    assert_eq!(
+        parse_relative_duration("30 days").unwrap().num_seconds(),
+        -2_592_000
+    );
+}
+
+#[test]
+fn future_variants_resolve_to_a_positive_offset() {
+    // Regression for the CodeRabbit catch: future phrasing must look
+    // FORWARD (positive offset), not backward — scheduler_agent relies on
+    // "in 10 minutes" / "30m from now".
+    assert_eq!(
+        parse_relative_duration("in 10 minutes")
+            .unwrap()
+            .num_seconds(),
+        600
+    );
+    assert_eq!(
+        parse_relative_duration("30m from now")
+            .unwrap()
+            .num_seconds(),
+        1_800
+    );
+    assert_eq!(parse_relative_duration("+2h").unwrap().num_seconds(), 7_200);
+    assert_eq!(
+        parse_relative_duration("next 7d").unwrap().num_seconds(),
+        604_800
+    );
+}
+
+#[test]
+fn combined_durations_are_accepted() {
+    assert_eq!(
+        parse_relative_duration("1 hour and 30 minutes ago")
+            .unwrap()
+            .num_seconds(),
+        -5_400
+    );
+    assert_eq!(
+        parse_relative_duration("in 2h30m").unwrap().num_seconds(),
+        9_000
+    );
+    assert!(parse_relative_duration("in 2 hours and nonsense").is_none());
+}
+
+#[test]
+fn conversational_dates_resolve_in_the_requested_timezone() {
+    let zone: Tz = "Asia/Kolkata".parse().unwrap();
+    let now = DateTime::parse_from_rfc3339("2026-01-07T12:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for (expr, expected) in [
+        ("tomorrow 9am", "2026-01-08T03:30:00Z"),
+        ("next Friday at 3:30 pm", "2026-01-09T10:00:00Z"),
+        ("since Monday", "2026-01-04T18:30:00Z"),
+        ("last Wednesday", "2025-12-30T18:30:00Z"),
+        ("2026-01-09 at 9am", "2026-01-09T03:30:00Z"),
+        ("2026-01-09T09:00", "2026-01-09T03:30:00Z"),
+        ("11 PM tonight", "2026-01-07T17:30:00Z"),
+        ("tonight at midnight", "2026-01-07T18:30:00Z"),
+        ("9am next Friday", "2026-01-09T03:30:00Z"),
+        ("tomorrow at noon", "2026-01-08T06:30:00Z"),
+    ] {
+        let actual = resolve_expr_at(expr, ResolveZone::Iana(zone), now).unwrap();
+        assert_eq!(
+            actual.to_rfc3339_opts(SecondsFormat::Secs, true),
+            expected,
+            "{expr}"
+        );
+    }
+    assert!(resolve_expr_at("tonight", ResolveZone::Iana(zone), now).is_err());
+}
+
+#[test]
+fn rejects_non_durations() {
+    assert!(parse_relative_duration("now").is_none());
+    assert!(parse_relative_duration("2026-06-09").is_none());
+    assert!(parse_relative_duration("h").is_none());
+    assert!(parse_relative_duration("24 lightyears").is_none());
+}
+
+#[test]
+fn resolves_rfc3339_to_exact_utc() {
+    let dt = resolve_expr("2026-06-09T19:12:00Z", ResolveZone::Local).unwrap();
+    // The exact epoch the real incident's agent miscomputed as 1752189120.
+    assert_eq!(dt.timestamp(), 1_781_032_320);
+}
+
+#[test]
+fn relative_is_close_to_now_minus_offset() {
+    let before = Utc::now().timestamp();
+    let dt = resolve_expr("24h ago", ResolveZone::Local).unwrap();
+    let after = Utc::now().timestamp();
+    let expected_lo = before - 86_400 - 2;
+    let expected_hi = after - 86_400 + 2;
+    assert!(
+        dt.timestamp() >= expected_lo && dt.timestamp() <= expected_hi,
+        "got {}, expected ~[{expected_lo},{expected_hi}]",
+        dt.timestamp()
+    );
+}
+
+#[test]
+fn future_relative_resolves_forward() {
+    // "in 10 minutes" must land ~600s in the FUTURE (the bug fix).
+    let before = Utc::now().timestamp();
+    let dt = resolve_expr("in 10 minutes", ResolveZone::Local).unwrap();
+    let after = Utc::now().timestamp();
+    assert!(
+        dt.timestamp() >= before + 600 - 2 && dt.timestamp() <= after + 600 + 2,
+        "got {}, expected ~now+600",
+        dt.timestamp()
+    );
+}
+
+#[test]
+fn tomorrow_is_after_today_after_yesterday() {
+    let tz: Tz = "Asia/Kolkata".parse().unwrap();
+    let y = resolve_expr("yesterday", ResolveZone::Iana(tz)).unwrap();
+    let t = resolve_expr("today", ResolveZone::Iana(tz)).unwrap();
+    let m = resolve_expr("tomorrow", ResolveZone::Iana(tz)).unwrap();
+    assert!(y < t && t < m, "ordering broken: {y} {t} {m}");
+    // Consecutive civil days are exactly 24h apart.
+    assert_eq!((t - y).num_seconds(), 86_400);
+    assert_eq!((m - t).num_seconds(), 86_400);
+}
+
+#[test]
+fn now_resolves() {
+    let dt = resolve_expr("now", ResolveZone::Local).unwrap();
+    assert!((dt.timestamp() - Utc::now().timestamp()).abs() <= 2);
+}
+
+#[test]
+fn bare_date_in_explicit_zone() {
+    // 2026-06-09 00:00 in Asia/Kolkata (UTC+5:30) == 2026-06-08T18:30:00Z.
+    let tz: Tz = "Asia/Kolkata".parse().unwrap();
+    let dt = resolve_expr("2026-06-09", ResolveZone::Iana(tz)).unwrap();
+    assert_eq!(
+        dt.to_rfc3339_opts(SecondsFormat::Secs, true),
+        "2026-06-08T18:30:00Z"
+    );
+}
+
+#[test]
+fn unparseable_expr_errors() {
+    assert!(resolve_expr("sometime next quarter", ResolveZone::Local).is_err());
+    assert!(resolve_expr("", ResolveZone::Local).is_err());
+}

@@ -11,7 +11,9 @@ mod prompt;
 mod schema;
 mod schema_compact;
 mod schema_prepare;
+mod schema_walk;
 pub mod select;
+pub mod shared;
 mod signature;
 mod timeout;
 pub mod toolset;
@@ -32,7 +34,9 @@ pub use prompt::*;
 pub use schema::*;
 pub use schema_compact::*;
 pub use schema_prepare::*;
+pub use schema_walk::*;
 pub use select::*;
+pub use shared::{CanonicalSharedToolAdapter, EarlyExit, EarlyExitHook};
 pub use signature::*;
 pub use timeout::*;
 pub use toolset::{ToolExposureExplanation, ToolSet};
@@ -404,5 +408,7 @@ pub(crate) fn provider_schema(tool: &dyn tinytools::Tool) -> tinyinference_llm::
 mod canonical_test;
 #[cfg(test)]
 mod context_test;
+#[cfg(test)]
+mod schema_walk_test;
 #[cfg(test)]
 mod timeout_test;

@@ -1,6 +1,6 @@
 //! Tests for builtin time/date tools.
 
-use super::time;
+use super::time_parse;
 use super::*;
 use chrono::{SecondsFormat, Utc};
 use chrono_tz::Tz;
@@ -33,6 +33,10 @@ async fn current_time_returns_utc_local_and_unix_seconds() {
     assert!(payload["local"].is_string());
     assert!(payload["local_timezone"].is_string());
     assert!(payload["unix_seconds"].is_number());
+    assert!(matches!(
+        result.content.as_slice(),
+        [tinytools::ToolContent::Json { .. }]
+    ));
 }
 
 #[tokio::test]
@@ -70,11 +74,11 @@ fn relative_past_variants_are_negative_offsets() {
         "24 hours ago",
         "24h",
     ] {
-        let duration = time::parse_relative_duration(expr).unwrap();
+        let duration = time_parse::parse_relative_duration(expr).unwrap();
         assert_eq!(duration.num_seconds(), -86_400, "{expr}");
     }
     assert_eq!(
-        time::parse_relative_duration("2 weeks")
+        time_parse::parse_relative_duration("2 weeks")
             .unwrap()
             .num_seconds(),
         -1_209_600
@@ -84,23 +88,25 @@ fn relative_past_variants_are_negative_offsets() {
 #[test]
 fn relative_future_variants_are_positive_offsets() {
     assert_eq!(
-        time::parse_relative_duration("in 10 minutes")
+        time_parse::parse_relative_duration("in 10 minutes")
             .unwrap()
             .num_seconds(),
         600
     );
     assert_eq!(
-        time::parse_relative_duration("30m from now")
+        time_parse::parse_relative_duration("30m from now")
             .unwrap()
             .num_seconds(),
         1_800
     );
     assert_eq!(
-        time::parse_relative_duration("+2h").unwrap().num_seconds(),
+        time_parse::parse_relative_duration("+2h")
+            .unwrap()
+            .num_seconds(),
         7_200
     );
     assert_eq!(
-        time::parse_relative_duration("next 7d")
+        time_parse::parse_relative_duration("next 7d")
             .unwrap()
             .num_seconds(),
         604_800
@@ -109,11 +115,12 @@ fn relative_future_variants_are_positive_offsets() {
 
 #[test]
 fn resolve_expr_handles_exact_rfc3339_and_explicit_zone_dates() {
-    let dt = time::resolve_expr("2026-06-09T19:12:00Z", time::ResolveZone::Local).unwrap();
+    let dt =
+        time_parse::resolve_expr("2026-06-09T19:12:00Z", time_parse::ResolveZone::Local).unwrap();
     assert_eq!(dt.timestamp(), 1_781_032_320);
 
     let tz: Tz = "Asia/Kolkata".parse().unwrap();
-    let dt = time::resolve_expr("2026-06-09", time::ResolveZone::Iana(tz)).unwrap();
+    let dt = time_parse::resolve_expr("2026-06-09", time_parse::ResolveZone::Iana(tz)).unwrap();
     assert_eq!(
         dt.to_rfc3339_opts(SecondsFormat::Secs, true),
         "2026-06-08T18:30:00Z"
@@ -123,8 +130,8 @@ fn resolve_expr_handles_exact_rfc3339_and_explicit_zone_dates() {
 #[test]
 fn relative_resolution_tracks_now_with_expected_sign() {
     let before = Utc::now().timestamp();
-    let past = time::resolve_expr("24h ago", time::ResolveZone::Local).unwrap();
-    let future = time::resolve_expr("in 10 minutes", time::ResolveZone::Local).unwrap();
+    let past = time_parse::resolve_expr("24h ago", time_parse::ResolveZone::Local).unwrap();
+    let future = time_parse::resolve_expr("in 10 minutes", time_parse::ResolveZone::Local).unwrap();
     let after = Utc::now().timestamp();
 
     assert!(past.timestamp() >= before - 86_400 - 2);
@@ -150,6 +157,10 @@ async fn resolve_time_returns_all_formats_and_selected_value() {
     assert_eq!(payload["unix_ms"], 1_781_032_320_000_i64);
     assert_eq!(payload["slack_ts"], "1781032320.000000");
     assert_eq!(payload["value"], "1781032320.000000");
+    assert!(matches!(
+        result.content.as_slice(),
+        [tinytools::ToolContent::Json { .. }]
+    ));
 }
 
 #[tokio::test]
@@ -166,4 +177,96 @@ async fn resolve_time_errors_for_missing_expr_and_bad_timezone() {
         .unwrap();
     assert!(bad_zone.is_error);
     assert!(bad_zone.output().contains("unknown IANA timezone"));
+}
+
+#[tokio::test]
+async fn resolve_time_rejects_out_of_range_duration_without_panicking() {
+    let result = ResolveTimeTool::new()
+        .execute(json!({ "expr": "in 9223372036854776s" }))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert!(result.output().contains("could not parse"));
+}
+
+#[tokio::test]
+async fn resolve_time_accepts_conversational_phrases() {
+    let result = ResolveTimeTool::new()
+        .execute(json!({ "expr": "tomorrow at 9am", "timezone": "Asia/Kolkata" }))
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{}", result.output());
+    let payload: serde_json::Value = serde_json::from_str(&result.output()).unwrap();
+    assert!(payload["unix_s"].is_i64());
+}
+
+#[test]
+fn time_tools_are_read_only_and_support_markdown() {
+    use tinytools::PermissionLevel;
+
+    for tool in time_tools() {
+        assert!(tool.supports_markdown(), "{}", tool.name());
+        assert_eq!(tool.permission_level(), PermissionLevel::ReadOnly);
+    }
+}
+
+#[tokio::test]
+async fn current_time_markdown_only_when_preferred() {
+    use tinytools::ToolCallOptions;
+
+    let tool = CurrentTimeTool::new();
+    let args = json!({ "timezone": "Asia/Kolkata" });
+    let plain = tool.execute(args.clone()).await.unwrap();
+    assert!(plain.markdown_formatted.is_none());
+
+    let result = tool
+        .execute_with_options(args, ToolCallOptions::prefer_markdown())
+        .await
+        .unwrap();
+    let md = result.markdown_formatted.expect("markdown rendering");
+    assert!(md.contains("- **utc**: "), "{md}");
+    assert!(md.contains("- **Asia/Kolkata**: "), "{md}");
+
+    let bad = tool
+        .execute_with_options(
+            json!({ "timezone": "Not/AZone" }),
+            ToolCallOptions::prefer_markdown(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        bad.markdown_formatted
+            .unwrap()
+            .contains("- **timezone error**: ")
+    );
+}
+
+#[tokio::test]
+async fn resolve_time_markdown_lists_every_representation() {
+    use tinytools::ToolCallOptions;
+
+    let tool = ResolveTimeTool::new();
+    let args = json!({ "expr": "2026-06-09T19:12:00Z", "format": "slack_ts" });
+    assert!(
+        tool.execute(args.clone())
+            .await
+            .unwrap()
+            .markdown_formatted
+            .is_none()
+    );
+
+    let md = tool
+        .execute_with_options(args, ToolCallOptions::prefer_markdown())
+        .await
+        .unwrap()
+        .markdown_formatted
+        .expect("markdown rendering");
+    assert!(
+        md.contains("- **interpreted**: 2026-06-09T19:12:00Z\n"),
+        "{md}"
+    );
+    assert!(md.contains("- **value**: 1781032320.000000\n"), "{md}");
+    assert!(md.contains("- **unix_s**: 1781032320\n"), "{md}");
+    assert!(md.contains("- **unix_ms**: 1781032320000\n"), "{md}");
+    assert!(md.contains("- **rfc3339**: 2026-06-09T19:12:00Z\n"), "{md}");
 }

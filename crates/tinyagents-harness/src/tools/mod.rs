@@ -5,8 +5,11 @@
 //! in extra dependencies by default.
 
 mod time;
+mod time_parse;
 
 pub use time::{CurrentTimeTool, ResolveTimeTool, register_time_tools, time_tools};
 
+#[cfg(test)]
+mod time_parse_test;
 #[cfg(test)]
 mod time_test;

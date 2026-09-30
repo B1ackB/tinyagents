@@ -5,18 +5,19 @@
 //! They exist so a model can ground relative expressions ("in 10 minutes",
 //! "tomorrow") in an exact timestamp instead of hand-computing one, which
 //! models are unreliable at. Parsing (`resolve_expr`, `parse_relative_duration`)
-//! and timezone handling (`ResolveZone`) are kept free of any `Tool` plumbing
-//! so they are unit-testable on their own.
+//! and timezone handling (`ResolveZone`) live in `time_parse.rs`, free of any
+//! `Tool` plumbing so they are unit-testable on their own.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use serde_json::json;
 
+use super::time_parse::{ResolveZone, resolve_expr};
 use crate::tool::ToolRegistry;
-use tinytools::{Tool, ToolPolicy, ToolResult};
+use tinytools::{Tool, ToolCallOptions, ToolPolicy, ToolResult};
 
 /// Declared name of [`CurrentTimeTool`].
 const CURRENT_TIME_NAME: &str = "current_time";
@@ -70,9 +71,60 @@ impl Tool for CurrentTimeTool {
         ToolPolicy::read_only()
     }
 
-    async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
-        Ok(ToolResult::json(current_time_payload(&arguments)))
+    fn supports_markdown(&self) -> bool {
+        true
     }
+
+    async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_options(arguments, ToolCallOptions::default())
+            .await
+    }
+
+    async fn execute_with_options(
+        &self,
+        arguments: serde_json::Value,
+        options: ToolCallOptions,
+    ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(args = %arguments, "[current_time] execute start");
+        let payload = current_time_payload(&arguments);
+        let mut result = ToolResult::json(payload.clone());
+        if options.prefer_markdown {
+            result = result.with_markdown(current_time_markdown(&payload));
+        }
+        Ok(result)
+    }
+}
+
+/// Renders the [`CurrentTimeTool`] payload as a compact markdown list.
+fn current_time_markdown(payload: &serde_json::Value) -> String {
+    let text = |value: &serde_json::Value| value.as_str().unwrap_or("").to_string();
+    let mut md = String::new();
+    md.push_str(&format!("- **utc**: {}\n", text(&payload["utc"])));
+    md.push_str(&format!(
+        "- **local**: {} ({})\n",
+        text(&payload["local"]),
+        text(&payload["local_timezone"])
+    ));
+    md.push_str(&format!("- **weekday**: {}\n", text(&payload["weekday"])));
+    md.push_str(&format!(
+        "- **unix_seconds**: {}\n",
+        payload["unix_seconds"].as_i64().unwrap_or(0)
+    ));
+    if let Some(requested) = payload.get("requested_timezone") {
+        md.push_str(&format!(
+            "- **{}**: {} ({})\n",
+            text(&requested["name"]),
+            text(&requested["time"]),
+            text(&requested["weekday"])
+        ));
+    }
+    if let Some(error) = payload
+        .get("requested_timezone_error")
+        .and_then(|value| value.as_str())
+    {
+        md.push_str(&format!("- **timezone error**: {error}\n"));
+    }
+    md
 }
 
 /// Builds the JSON payload for [`CurrentTimeTool`]: always UTC + local time,
@@ -142,8 +194,9 @@ impl Tool for ResolveTimeTool {
          Use this to produce date/time arguments for other tools instead of \
          hand-computing Unix seconds. Accepted expressions include 'now', \
          '24h ago', '7d', '2 weeks ago', 'in 10 minutes', '30m from now', \
-         'today', 'yesterday', 'tomorrow', RFC-3339 timestamps, bare dates, and \
-         'YYYY-MM-DD HH:MM:SS'."
+         'today', 'yesterday', 'tomorrow', 'tomorrow at 9am', 'since Monday', \
+         'next Friday at 3:30 pm', '11pm tonight', RFC-3339 timestamps, bare dates, \
+         and 'YYYY-MM-DD HH:MM:SS'."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -172,11 +225,28 @@ impl Tool for ResolveTimeTool {
         ToolPolicy::read_only()
     }
 
+    fn supports_markdown(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.execute_with_options(arguments, ToolCallOptions::default())
+            .await
+    }
+
+    async fn execute_with_options(
+        &self,
+        arguments: serde_json::Value,
+        options: ToolCallOptions,
+    ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(args = %arguments, "[resolve_time] execute start");
         let expr = match arguments.get("expr").and_then(|value| value.as_str()) {
             Some(expr) => expr,
             None => {
-                return Ok(ToolResult::error("resolve_time: `expr` is required"));
+                return Ok(ToolResult::error(
+                    "resolve_time: `expr` is required (e.g. \"24h ago\", \
+                     \"2026-06-09T19:12:00Z\", \"now\").",
+                ));
             }
         };
 
@@ -196,12 +266,41 @@ impl Tool for ResolveTimeTool {
         let dt = match resolve_expr(expr, zone) {
             Ok(dt) => dt,
             Err(error) => {
+                tracing::debug!(expr = expr, error = %error, "[resolve_time] parse failed");
                 return Ok(ToolResult::error(format!("resolve_time: {error}")));
             }
         };
 
-        Ok(ToolResult::json(resolve_time_payload(expr, &arguments, dt)))
+        let payload = resolve_time_payload(expr, &arguments, dt);
+        tracing::debug!(
+            "[resolve_time] resolved {expr:?} -> {} (unix_s={})",
+            payload["rfc3339"],
+            payload["unix_s"]
+        );
+        let mut result = ToolResult::json(payload.clone());
+        if options.prefer_markdown {
+            result = result.with_markdown(resolve_time_markdown(&payload));
+        }
+        Ok(result)
     }
+}
+
+/// Renders the [`ResolveTimeTool`] payload as a compact markdown list.
+fn resolve_time_markdown(payload: &serde_json::Value) -> String {
+    let text = |key: &str| match &payload[key] {
+        serde_json::Value::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+    format!(
+        "- **interpreted**: {}\n- **value**: {}\n- **unix_s**: {}\n- **unix_ms**: {}\n\
+         - **slack_ts**: {}\n- **rfc3339**: {}\n",
+        text("interpreted"),
+        text("value"),
+        text("unix_s"),
+        text("unix_ms"),
+        text("slack_ts"),
+        text("rfc3339"),
+    )
 }
 
 /// Builds the JSON payload for [`ResolveTimeTool`]: the resolved instant
@@ -239,162 +338,6 @@ fn resolve_time_payload(
         "slack_ts": slack_ts,
         "rfc3339": rfc3339,
     })
-}
-
-/// Parses a relative-time expression (`"24h ago"`, `"in 10 minutes"`,
-/// `"next 2 weeks"`, `"-30m"`, ...) into a signed [`Duration`] to add to now.
-/// Returns `None` when `raw` is not a recognised relative form (e.g. `"now"`,
-/// an absolute date, or garbage), leaving [`resolve_expr`] to try the other
-/// parse strategies.
-pub(crate) fn parse_relative_duration(raw: &str) -> Option<Duration> {
-    let mut text = raw.trim().to_ascii_lowercase();
-    let mut future = false;
-
-    if let Some(rest) = text.strip_suffix(" ago") {
-        text = rest.trim().to_string();
-    } else if let Some(rest) = text.strip_suffix(" from now") {
-        future = true;
-        text = rest.trim().to_string();
-    }
-
-    for (prefix, is_future) in [
-        ("in ", true),
-        ("next ", true),
-        ("last ", false),
-        ("past ", false),
-    ] {
-        if let Some(rest) = text.strip_prefix(prefix) {
-            future = is_future;
-            text = rest.trim().to_string();
-            break;
-        }
-    }
-
-    if let Some(rest) = text.strip_prefix('+') {
-        future = true;
-        text = rest.trim().to_string();
-    } else if let Some(rest) = text.strip_prefix('-') {
-        text = rest.trim().to_string();
-    }
-
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let split_at = text.find(|ch: char| !ch.is_ascii_digit())?;
-    if split_at == 0 {
-        return None;
-    }
-
-    let (num_str, unit_str) = text.split_at(split_at);
-    let n: i64 = num_str.trim().parse().ok()?;
-    let seconds_per = match unit_str.trim() {
-        "s" | "sec" | "secs" | "second" | "seconds" => 1,
-        "m" | "min" | "mins" | "minute" | "minutes" => 60,
-        "h" | "hr" | "hrs" | "hour" | "hours" => 3_600,
-        "d" | "day" | "days" => 86_400,
-        "w" | "wk" | "wks" | "week" | "weeks" => 604_800,
-        _ => return None,
-    };
-
-    let magnitude = Duration::seconds(n.saturating_mul(seconds_per));
-    Some(if future { magnitude } else { -magnitude })
-}
-
-/// Resolves a free-form time expression to a UTC instant, trying each
-/// recognised form in order: `"now"`, a relative duration
-/// ([`parse_relative_duration`]), `"today"`/`"yesterday"`/`"tomorrow"`
-/// (civil midnight in `zone`), RFC-3339, a handful of naive datetime formats,
-/// then a bare `YYYY-MM-DD` date. Returns an error string (not
-/// `TinyAgentsError`) so `ResolveTimeTool::execute` can surface it directly
-/// as a tool-error result without wrapping.
-pub(crate) fn resolve_expr(
-    expr: &str,
-    zone: ResolveZone,
-) -> std::result::Result<DateTime<Utc>, String> {
-    let trimmed = expr.trim();
-    if trimmed.is_empty() {
-        return Err("`expr` is required".to_string());
-    }
-    let lower = trimmed.to_ascii_lowercase();
-
-    if lower == "now" {
-        return Ok(Utc::now());
-    }
-
-    if let Some(duration) = parse_relative_duration(trimmed) {
-        return Ok(Utc::now() + duration);
-    }
-
-    if lower == "today" || lower == "yesterday" || lower == "tomorrow" {
-        let offset_days = match lower.as_str() {
-            "yesterday" => -1,
-            "tomorrow" => 1,
-            _ => 0,
-        };
-        return zone.civil_midnight_to_utc(zone.now_civil_date() + Duration::days(offset_days));
-    }
-
-    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-
-    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"] {
-        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
-            return zone.naive_to_utc(naive);
-        }
-    }
-
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        return zone.civil_midnight_to_utc(date);
-    }
-
-    Err(format!("could not parse time expression {trimmed:?}"))
-}
-
-/// Timezone an offset-less expression (`"today"`, a naive datetime, a bare
-/// date) is interpreted in, when [`ResolveTimeTool`]'s optional `timezone`
-/// argument was not given or was invalid.
-#[derive(Clone, Copy)]
-pub(crate) enum ResolveZone {
-    /// The machine's local timezone.
-    Local,
-    /// An explicit IANA timezone.
-    Iana(Tz),
-}
-
-impl ResolveZone {
-    /// Today's civil (wall-clock) date in this zone.
-    fn now_civil_date(&self) -> NaiveDate {
-        match self {
-            ResolveZone::Local => Local::now().date_naive(),
-            ResolveZone::Iana(tz) => Utc::now().with_timezone(tz).date_naive(),
-        }
-    }
-
-    /// Converts a civil date's midnight in this zone to a UTC instant.
-    fn civil_midnight_to_utc(&self, date: NaiveDate) -> std::result::Result<DateTime<Utc>, String> {
-        let naive = date
-            .and_hms_opt(0, 0, 0)
-            .ok_or_else(|| "invalid civil midnight".to_string())?;
-        self.naive_to_utc(naive)
-    }
-
-    /// Converts a naive (offset-less) datetime, interpreted in this zone, to
-    /// a UTC instant. Errors on an ambiguous or nonexistent local time (a DST
-    /// fold or gap), where a single unambiguous mapping does not exist.
-    fn naive_to_utc(&self, naive: NaiveDateTime) -> std::result::Result<DateTime<Utc>, String> {
-        use chrono::TimeZone;
-        match self {
-            ResolveZone::Local => Local
-                .from_local_datetime(&naive)
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok_or_else(|| format!("ambiguous or invalid local time {naive}")),
-            ResolveZone::Iana(tz) => tz
-                .from_local_datetime(&naive)
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .ok_or_else(|| format!("ambiguous or invalid time {naive} in {tz:?}")),
-        }
-    }
 }
 
 /// Returns the builtin time tool set.
