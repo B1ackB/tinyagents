@@ -32,8 +32,8 @@ mod worker;
 
 pub mod file_status;
 pub mod reaper;
-pub mod trace_export;
 pub mod replay;
+pub mod trace_export;
 
 #[doc(hidden)]
 pub use worker::{AppendWorker, DEFAULT_DRAIN_CAPACITY};
@@ -45,12 +45,12 @@ pub use langfuse::{
 pub use profile::{ProcessProfile, ProcessProfiler, ProcessSnapshot};
 // Shared Langfuse payload helpers reused by the graph observability exporter so
 // ISO-8601 timestamp formatting and null-field pruning live in one place.
-#[cfg(feature = "langfuse")]
-#[doc(hidden)]
-pub use langfuse::{clean_nulls, iso_ms};
 pub use file_status::{
     FileStatusStore, STATUS_NS, is_active, mint_run_id, process_env_secrets, secrets_from_vars,
 };
+#[cfg(feature = "langfuse")]
+#[doc(hidden)]
+pub use langfuse::{clean_nulls, iso_ms};
 pub use reaper::{ORPHAN_REAP_REASON, reap_orphaned_runs};
 pub use types::*;
 

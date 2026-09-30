@@ -81,15 +81,15 @@ pub use credential_scrub::{
     CredentialScrubMiddleware, REDACTION_PLACEHOLDER, ToolScrubber, redaction_notice,
     scrub_with_notice,
 };
+pub use image_trim::{
+    IMAGE_MARKER_TOKEN_COST, ImageAwareMessageTrimMiddleware, estimate_message_tokens,
+    estimate_text_tokens, legacy_max_input_tokens,
+};
 pub use memory_protocol::{
     MEMORY_PROTOCOL_MARKER, MemoryOp, MemoryProtocolObservation, MemoryProtocolSpec,
     MemoryProtocolTracker, ModeTool,
 };
 pub use memory_protocol_middleware::MemoryProtocolMiddleware;
-pub use image_trim::{
-    IMAGE_MARKER_TOKEN_COST, ImageAwareMessageTrimMiddleware, estimate_message_tokens,
-    estimate_text_tokens, legacy_max_input_tokens,
-};
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
 };
