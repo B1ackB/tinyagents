@@ -296,10 +296,13 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     ),
                 )
             })
-            .fold(HashMap::<String, VecDeque<String>>::new(), |mut calls, (id, sig)| {
-                calls.entry(id).or_default().push_back(sig);
-                calls
-            });
+            .fold(
+                HashMap::<String, VecDeque<String>>::new(),
+                |mut calls, (id, sig)| {
+                    calls.entry(id).or_default().push_back(sig);
+                    calls
+                },
+            );
 
         // Stage output with the crate tracker. Its halt verdict is intentionally
         // deferred until the matching tool batch is confirmed successful.
