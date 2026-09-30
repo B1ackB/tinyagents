@@ -71,8 +71,8 @@ pub fn resolve_files(
         return None;
     }
     let raw_dir = found[0].parent()?.to_path_buf();
-    let roots = order_root_files(workspace_dir, thread_id, found);
-    let subs = discover_subagent_files(&raw_dir, thread_id, &roots);
+    let roots = order_root_files(workspace_dir, thread_id, found.clone());
+    let subs = discover_subagent_files(&raw_dir, thread_id, &found);
     tracing::debug!(
         "{LOG_PREFIX} thread={thread_id} roots={} subagent_files={}",
         roots.len(),

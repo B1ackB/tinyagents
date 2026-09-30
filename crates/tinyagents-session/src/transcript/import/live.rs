@@ -26,7 +26,7 @@ use super::convert::{
 use super::ops::{SessionStores, open_session_stores};
 use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS};
 
-static LIVE_REWRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+pub(super) static LIVE_REWRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Mirror one completed turn's transcript into the TinyAgents store.

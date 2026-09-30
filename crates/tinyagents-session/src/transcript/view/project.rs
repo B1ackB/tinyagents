@@ -221,6 +221,7 @@ impl Projector {
             self.last_request_id = Some(rid.to_string());
             self.step = 0;
             self.seen_call_ids.clear();
+            self.pending.clear();
         }
     }
 
@@ -266,6 +267,7 @@ impl Projector {
                 // count at its prompt.
                 self.step = 0;
                 self.seen_call_ids.clear();
+                self.pending.clear();
                 let raw = msg.message.content.clone();
                 let sanitized = sanitize_user_content(&raw);
                 if sanitized.is_some() {
