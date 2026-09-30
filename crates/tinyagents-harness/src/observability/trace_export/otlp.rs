@@ -85,35 +85,35 @@ fn message_content(payload: &Value) -> String {
 
 fn normalize_message(role: &str, payload: &Value) -> Value {
     let mut message = json!({ "role": role, "content": message_content(payload) });
-    if role == "tool" {
-        if let Some(id) = payload.get("tool_call_id") {
-            message["tool_call_id"] = id.clone();
-        }
+    if role == "tool"
+        && let Some(id) = payload.get("tool_call_id")
+    {
+        message["tool_call_id"] = id.clone();
     }
     if role == "assistant" {
-        if let Some(calls) = payload.get("tool_calls").and_then(Value::as_array) {
-            if !calls.is_empty() {
-                message["tool_calls"] = Value::Array(
-                    calls
-                        .iter()
-                        .map(|call| {
-                            let arguments = call.get("arguments").cloned().unwrap_or(Value::Null);
-                            json!({
-                                "id": call.get("id").cloned().unwrap_or(Value::Null),
-                                "type": "function",
-                                "function": {
-                                    "name": call.get("name").cloned().unwrap_or(Value::Null),
-                                    "arguments": if let Some(raw) = arguments.as_str() {
-                                        raw.to_string()
-                                    } else {
-                                        arguments.to_string()
-                                    },
+        if let Some(calls) = payload.get("tool_calls").and_then(Value::as_array)
+            && !calls.is_empty()
+        {
+            message["tool_calls"] = Value::Array(
+                calls
+                    .iter()
+                    .map(|call| {
+                        let arguments = call.get("arguments").cloned().unwrap_or(Value::Null);
+                        json!({
+                            "id": call.get("id").cloned().unwrap_or(Value::Null),
+                            "type": "function",
+                            "function": {
+                                "name": call.get("name").cloned().unwrap_or(Value::Null),
+                                "arguments": if let Some(raw) = arguments.as_str() {
+                                    raw.to_string()
+                                } else {
+                                    arguments.to_string()
                                 },
-                            })
+                            },
                         })
-                        .collect(),
-                );
-            }
+                    })
+                    .collect(),
+            );
         }
         let reasoning = payload
             .get("content")

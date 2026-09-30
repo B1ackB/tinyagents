@@ -108,10 +108,10 @@ pub async fn list_active_runs(
     };
 
     let mut runs: Vec<HarnessRunStatus> = base.into_iter().filter(is_active).collect();
-    if thread_id.is_some() {
-        if let Some(root) = root_run_id {
-            runs.retain(|s| s.root_run_id.as_str() == root);
-        }
+    if thread_id.is_some()
+        && let Some(root) = root_run_id
+    {
+        runs.retain(|s| s.root_run_id.as_str() == root);
     }
 
     tracing::debug!("[agent] replay list_active_runs returned={}", runs.len());

@@ -15,11 +15,10 @@ impl TurnStateMirror {
     pub fn push_transcript_narration(&mut self, round: u32, delta: &str) {
         if let Some(TranscriptItem::Narration { round: r, text, .. }) =
             self.state.transcript.last_mut()
+            && *r == round
         {
-            if *r == round {
-                append_capped_transcript_text(text, delta);
-                return;
-            }
+            append_capped_transcript_text(text, delta);
+            return;
         }
         let seq = self.next_seq();
         let mut text = String::new();
@@ -42,12 +41,11 @@ impl TurnStateMirror {
             ended_at,
             ..
         }) = self.state.transcript.last_mut()
+            && *r == round
         {
-            if *r == round {
-                append_capped_transcript_text(text, delta);
-                *ended_at = Some(now);
-                return;
-            }
+            append_capped_transcript_text(text, delta);
+            *ended_at = Some(now);
+            return;
         }
         let seq = self.next_seq();
         let mut text = String::new();

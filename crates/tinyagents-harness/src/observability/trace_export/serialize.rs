@@ -31,19 +31,19 @@ pub fn capture_model_content(value: &serde_json::Value) -> serde_json::Value {
         for message in messages.iter().rev() {
             let mut message = message.clone();
             let size = message.to_string().chars().count();
-            if size > MAX_MODEL_CONTENT_CHARS / 2 {
-                if let Some(content) = message.get_mut("content") {
-                    *content = serde_json::Value::String(format!(
-                        "{}…[message content truncated]",
-                        truncate_chars(
-                            &content
-                                .as_str()
-                                .map(str::to_owned)
-                                .unwrap_or_else(|| content.to_string()),
-                            MAX_MODEL_CONTENT_CHARS / 2
-                        )
-                    ));
-                }
+            if size > MAX_MODEL_CONTENT_CHARS / 2
+                && let Some(content) = message.get_mut("content")
+            {
+                *content = serde_json::Value::String(format!(
+                    "{}…[message content truncated]",
+                    truncate_chars(
+                        &content
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| content.to_string()),
+                        MAX_MODEL_CONTENT_CHARS / 2
+                    )
+                ));
             }
             let size = message.to_string().chars().count();
             if used + size > MAX_MODEL_CONTENT_CHARS.saturating_sub(128) {

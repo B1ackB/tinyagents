@@ -148,12 +148,7 @@ impl HarnessStatusStore for FileStatusStore {
     }
 
     async fn list_active(&self) -> Result<Vec<HarnessRunStatus>> {
-        Ok(self
-            .all()
-            .await?
-            .into_iter()
-            .filter(|s| is_active(s))
-            .collect())
+        Ok(self.all().await?.into_iter().filter(is_active).collect())
     }
 }
 

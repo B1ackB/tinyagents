@@ -74,10 +74,10 @@ impl<C: Send + Sync> Middleware<(), C> for MemoryProtocolMiddleware {
         // stash the op keyed by call id. Only memory-relevant ops are stored, so
         // the map stays empty on turns that never touch memory.
         let op = self.spec.classify(&call.name, &call.arguments);
-        if op != MemoryOp::Other {
-            if let Ok(mut ops) = self.pending_ops.lock() {
-                ops.insert(call.id.clone(), op);
-            }
+        if op != MemoryOp::Other
+            && let Ok(mut ops) = self.pending_ops.lock()
+        {
+            ops.insert(call.id.clone(), op);
         }
         Ok(())
     }

@@ -83,13 +83,13 @@ impl MemoryProtocolSpec {
         if self.write_tools.iter().any(|t| t == tool_name) {
             return MemoryOp::Write;
         }
-        if let Some(mode_tool) = &self.mode_tool {
-            if tool_name == mode_tool.name {
-                return match arg_str(&mode_tool.mode_arg) {
-                    Some(mode) if mode == mode_tool.write_mode => MemoryOp::Write,
-                    _ => MemoryOp::IndexRead,
-                };
-            }
+        if let Some(mode_tool) = &self.mode_tool
+            && tool_name == mode_tool.name
+        {
+            return match arg_str(&mode_tool.mode_arg) {
+                Some(mode) if mode == mode_tool.write_mode => MemoryOp::Write,
+                _ => MemoryOp::IndexRead,
+            };
         }
         if self.read_tools.iter().any(|t| t == tool_name) {
             return MemoryOp::IndexRead;
