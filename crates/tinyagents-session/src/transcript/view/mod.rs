@@ -79,7 +79,7 @@ pub fn get_page(
 
     let total = projected.items.len();
     let start = offset.min(total);
-    let end = (offset + limit).min(total);
+    let end = offset.saturating_add(limit).min(total);
     // Newest-first: item `offset` is the newest, walking backwards from the end.
     let items: Vec<DisplayItem> = (start..end)
         .map(|i| projected.items[total - 1 - i].clone())

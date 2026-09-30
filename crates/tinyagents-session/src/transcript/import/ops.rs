@@ -96,6 +96,7 @@ pub async fn run_import(
         && !opts.force
         && !opts.dry_run
         && let Ok(Some(marker)) = kv.get(NS_MIGRATIONS, MARKER_KEY).await
+        && marker.get("version").and_then(serde_json::Value::as_u64) == Some(u64::from(IMPORT_VERSION))
     {
         tracing::info!("[session-import] marker present, nothing to do: {marker}");
         return Ok(ImportSummary {

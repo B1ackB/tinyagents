@@ -221,6 +221,7 @@ impl Projector {
             self.last_request_id = Some(rid.to_string());
             self.step = 0;
             self.seen_call_ids.clear();
+            self.pending.clear();
         }
     }
 
