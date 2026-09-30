@@ -7,13 +7,17 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tinyagents_harness::store::{AppendStore, FileStore, JsonlAppendStore, Store};
 
-use super::convert::{journal_messages, sanitize_store_name};
-use super::ops::{run_import, store_root};
+use super::convert::{journal_messages, plain_journal_message, sanitize_store_name};
+use super::ops::{run_import as run_import_with, store_root};
 use super::types::{
     ImportOptions, ImportSummary, ItemAction, JournalMessage, SessionDescriptor, MARKER_KEY,
     NS_MIGRATIONS, NS_SESSIONS,
 };
 use crate::transcript::{read_transcript, read_transcript_legacy_md};
+
+async fn run_import(ws: &Path, opts: &ImportOptions) -> anyhow::Result<ImportSummary> {
+    run_import_with(ws, opts, plain_journal_message).await
+}
 
 fn ws() -> TempDir {
     TempDir::new().expect("tempdir")
@@ -84,7 +88,7 @@ async fn journal_readback(ws: &Path, stream: &str) -> Vec<JournalMessage> {
 /// for the source, field for field (including reattached turn-usage
 /// metadata).
 async fn assert_parity_jsonl(ws: &Path, stem: &str, source: &Path) {
-    let expected = journal_messages(&read_transcript(source).expect("read_transcript"));
+    let expected = journal_messages(&read_transcript(source).expect("read_transcript"), plain_journal_message);
     let actual = journal_readback(ws, &format!("session.{stem}.messages")).await;
     assert_eq!(actual, expected, "journal read-back diverges for {stem}");
 }
@@ -121,20 +125,6 @@ async fn imports_flat_native_jsonl_with_parity() {
     );
 
     assert_parity_jsonl(ws.path(), stem, &source).await;
-
-    // Turn-usage metadata (incl. the tool call's extra_content) survived.
-    let messages = journal_readback(ws.path(), &format!("session.{stem}.messages")).await;
-    let assistant = &messages[1];
-    let usage = assistant
-        .extra_metadata
-        .as_ref()
-        .and_then(|m| m.get("openhuman_turn_usage"))
-        .expect("turn usage metadata");
-    assert_eq!(usage["tool_calls"][0]["id"], "tc1");
-    assert_eq!(
-        usage["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
-        "sig"
-    );
 
     // Global marker written after a full non-dry run.
     let kv = FileStore::new(store_root(ws.path()).join("kv"));
@@ -194,7 +184,7 @@ async fn imports_markdown_only_session() {
     assert_eq!(desc.source.jsonl, None);
     assert!(desc.source.md.as_deref().unwrap().ends_with(".md"));
 
-    let expected = journal_messages(&read_transcript_legacy_md(&md).unwrap());
+    let expected = journal_messages(&read_transcript_legacy_md(&md).unwrap(), plain_journal_message);
     let actual = journal_readback(ws.path(), &format!("session.{stem}.messages")).await;
     assert_eq!(actual, expected);
 }

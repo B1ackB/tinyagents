@@ -159,6 +159,7 @@ pub async fn run_import(
             &journal_root,
             &imported_at,
             opts,
+            project,
         )
         .await;
 
@@ -428,7 +429,11 @@ async fn process_item(
 fn ledger_key(relative: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(relative.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// `(size, mtime_ms)` fingerprint; `(0, 0)` when unreadable.

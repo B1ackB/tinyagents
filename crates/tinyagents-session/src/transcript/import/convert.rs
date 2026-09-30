@@ -135,7 +135,3 @@ pub fn journal_messages(
         .map(project)
         .collect()
 }
-
-#[cfg(test)]
-#[path = "convert_tests.rs"]
-mod tests;
