@@ -76,7 +76,6 @@ async fn toc_is_absent_when_no_result_was_offloaded() {
     assert_eq!(request.messages.len(), 1, "no artifacts, no contents list");
 }
 
-
 /// The paths reach the model even though nothing in the transcript carries
 /// them — which is the whole point: the pointer's old home (the tool body) is
 /// what the reduction steps act on.
@@ -118,7 +117,6 @@ async fn toc_lists_every_persisted_artifact_as_a_system_message() {
     assert!(text.contains("fetch_issues"), "missing tool name: {text}");
 }
 
-
 /// Rendered fresh per request, so repeated passes cannot stack stale lists.
 #[tokio::test]
 async fn toc_does_not_accumulate_across_calls() {
@@ -146,7 +144,6 @@ async fn toc_does_not_accumulate_across_calls() {
         "exactly one contents list per request"
     );
 }
-
 
 /// The contents list is capped, and says how many it left out.
 ///
@@ -194,7 +191,6 @@ async fn toc_is_capped_and_reports_what_it_omitted() {
     );
 }
 
-
 /// Neither share may ever be `0`, because `0` is the sentinel both middlewares
 /// read as "unbounded" — so the allowances that round down into it are the ones
 /// to pin (CodeRabbit on #6068, twice). A model advertising no window is the
@@ -235,7 +231,6 @@ fn neither_share_is_ever_the_unbounded_sentinel() {
     assert_eq!(split_input_allowance(100_000), (10_000, 90_000));
 }
 
-
 /// The end of the same argument: with no window, a run holding far more
 /// artifacts than any list should carry still produces a bounded message.
 #[tokio::test]
@@ -274,7 +269,6 @@ async fn the_contents_list_stays_bounded_when_no_window_is_advertised() {
         estimate_text_tokens(&text)
     );
 }
-
 
 /// The two consumers share one allowance, so the bound that matters is the one
 /// on the request they *both* wrote to (CodeRabbit on #6068). Runs them in
@@ -355,7 +349,6 @@ async fn both_middlewares_together_stay_inside_the_no_window_allowance() {
         "the contents list is absent, so the bound proves nothing"
     );
 }
-
 
 /// A share smaller than the fixed text renders no rows at all. Forcing one
 /// would push a message nothing downstream can shrink over its bound, and the

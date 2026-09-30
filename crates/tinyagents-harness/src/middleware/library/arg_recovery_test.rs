@@ -58,7 +58,10 @@ async fn recover(name: &str, arguments: serde_json::Value) -> serde_json::Value 
 
 #[tokio::test]
 async fn an_object_is_left_alone() {
-    assert_eq!(recover("strict", json!({"q": "x"})).await, json!({"q": "x"}));
+    assert_eq!(
+        recover("strict", json!({"q": "x"})).await,
+        json!({"q": "x"})
+    );
 }
 
 #[tokio::test]

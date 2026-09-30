@@ -70,8 +70,6 @@ async fn run_successful_repeat_cycle(
         .unwrap();
 }
 
-
-
 // ── #6275: repeats that are not back to back ────────────────────────────
 
 /// One A, B round of two different successful calls, each returning the given

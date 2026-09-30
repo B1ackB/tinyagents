@@ -83,4 +83,16 @@ pub use wrap_up::{
 };
 
 #[cfg(test)]
+mod arg_recovery_test;
+#[cfg(test)]
+mod artifact_toc_test;
+#[cfg(test)]
+mod credential_scrub_test;
+#[cfg(test)]
+mod image_trim_test;
+#[cfg(test)]
+mod repeat_progress_test;
+#[cfg(test)]
 mod test;
+#[cfg(test)]
+mod wrap_up_test;

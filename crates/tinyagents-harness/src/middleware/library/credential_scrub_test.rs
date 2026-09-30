@@ -12,7 +12,9 @@
 
 use super::*;
 use crate::context::{RunConfig, RunContext};
-use crate::middleware::{MiddlewareToolOutcome, ToolMiddleware};
+use std::sync::Arc;
+
+use crate::middleware::{BoxToolFuture, MiddlewareStack, ToolBaseCall};
 use tinyinference_core::sanitize::scrub_credentials;
 use tinyinference_llm::tool::ToolCall;
 use tinytools::ToolResult;
@@ -131,10 +133,77 @@ fn an_unscrubbed_result_is_not_annotated_at_all() {
     );
 }
 
-/// A run through the middleware: the model-visible result carries the notice,
-/// and a host-supplied scrubber is consulted with the tool name.
+struct FixedBase(&'static str);
+
+impl ToolBaseCall<(), ()> for FixedBase {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a mut RunContext,
+        _state: &'a (),
+        _call: ToolCall,
+    ) -> BoxToolFuture<'a> {
+        Box::pin(async move { Ok(ToolResult::success(self.0)) })
+    }
+}
+
+async fn run(mw: CredentialScrubMiddleware, tool: &str, body: &'static str) -> String {
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push_tool_middleware(Arc::new(mw));
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("mw-test"), ());
+    stack
+        .run_wrapped_tool(
+            &mut ctx,
+            &(),
+            ToolCall::new("c1", tool, serde_json::json!({})),
+            &FixedBase(body),
+        )
+        .await
+        .unwrap()
+        .into_result()
+        .output()
+}
+
+/// The model-visible result carries the notice, and nothing else changes.
 #[tokio::test]
-async fn the_middleware_annotates_a_scrubbed_result_and_leaves_a_clean_one() {
-    use crate::middleware::{MiddlewareStack, ToolHandler};
-    let _ = (MiddlewareStack::<(), ()>::new, std::marker::PhantomData::<ToolHandler<'static, (), ()>>);
+async fn the_middleware_annotates_a_scrubbed_result() {
+    let out = run(
+        CredentialScrubMiddleware::new(),
+        "fetch",
+        "Click https://acme.example/verify?token=aB3dE5fG7hJ9kL1mN3pQ to sign in.",
+    )
+    .await;
+    assert!(!out.contains("aB3dE5fG7hJ9kL1mN3pQ"), "{out}");
+    assert!(out.contains("[credential_scrub] 1 value(s)"), "{out}");
+}
+
+#[tokio::test]
+async fn the_middleware_leaves_a_clean_result_exactly_alone() {
+    let out = run(
+        CredentialScrubMiddleware::new(),
+        "fetch",
+        "Lunch at 12:30 tomorrow?",
+    )
+    .await;
+    assert_eq!(out, "Lunch at 12:30 tomorrow?");
+}
+
+/// A host scrubber is handed the tool name and its verdict is what lands.
+#[tokio::test]
+async fn a_host_scrubber_sees_the_tool_name() {
+    let scrubber: ToolScrubber =
+        Arc::new(|tool, content| (tool == "special").then(|| (format!("{content} [handled]"), 0)));
+    let handled = run(
+        CredentialScrubMiddleware::with_scrubber(scrubber.clone()),
+        "special",
+        "body",
+    )
+    .await;
+    assert_eq!(handled, "body [handled]");
+    let untouched = run(
+        CredentialScrubMiddleware::with_scrubber(scrubber),
+        "other",
+        "body",
+    )
+    .await;
+    assert_eq!(untouched, "body");
 }

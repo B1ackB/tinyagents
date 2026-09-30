@@ -88,7 +88,11 @@ async fn one_large_image_does_not_evict_the_transcript() {
         TaMessage::user(image),
     ];
     let kept = trim(32_000, messages).await;
-    assert_eq!(kept.len(), 3, "the image is priced flat, so nothing is evicted");
+    assert_eq!(
+        kept.len(),
+        3,
+        "the image is priced flat, so nothing is evicted"
+    );
 }
 
 #[tokio::test]

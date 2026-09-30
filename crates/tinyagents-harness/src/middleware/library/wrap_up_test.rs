@@ -36,15 +36,11 @@ fn deliverables() -> [&'static str; 2] {
     ["file_write", "apply_patch"]
 }
 
-
 /// A run with calls left is untouched: no instruction, and the tool belt intact.
 #[tokio::test]
 async fn wrap_up_leaves_a_call_with_budget_remaining_alone() {
     let mw = FinalCallWrapUpMiddleware::new("CONCLUDE NOW", "WRITE NOW", sink_with(&[]), 0);
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(5),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(5), ());
     ctx.limits.record_model_call().unwrap();
     let mut request = ModelRequest {
         messages: vec![TaMessage::user("hi")],
@@ -62,16 +58,12 @@ async fn wrap_up_leaves_a_call_with_budget_remaining_alone() {
     assert_eq!(request.tools.len(), 1, "the belt must stay intact mid-turn");
 }
 
-
 /// On the last permitted call the tools are withdrawn — structurally, not by
 /// asking — and the wrap-up instruction is appended as the final turn.
 #[tokio::test]
 async fn wrap_up_withdraws_tools_and_appends_the_instruction_on_the_last_call() {
     let mw = FinalCallWrapUpMiddleware::new("CONCLUDE NOW", "WRITE NOW", sink_with(&[]), 0);
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(2),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(2), ());
     ctx.limits.record_model_call().unwrap();
     ctx.limits.record_model_call().unwrap(); // now the final call
     let mut request = ModelRequest {
@@ -102,7 +94,6 @@ async fn wrap_up_withdraws_tools_and_appends_the_instruction_on_the_last_call() 
     assert!(mw.fired().load(std::sync::atomic::Ordering::SeqCst));
 }
 
-
 /// The concluding call gets back the results microcompact blanked — otherwise
 /// it is asked to report findings it cannot read, which is the same
 /// empty-handed answer the whole mechanism exists to prevent.
@@ -119,10 +110,7 @@ async fn wrap_up_restores_tool_results_microcompact_cleared() {
         // the budget that stops it (covered by its own test below).
         0,
     );
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(2),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(2), ());
     ctx.limits.record_model_call().unwrap();
     ctx.limits.record_model_call().unwrap();
     let mut request = ModelRequest {
@@ -143,11 +131,12 @@ async fn wrap_up_restores_tool_results_microcompact_cleared() {
         "the cleared result should be restored from the capture sink: {bodies:?}"
     );
     assert!(
-        !bodies.iter().any(|b| b.trim() == DEFAULT_CLEARED_PLACEHOLDER),
+        !bodies
+            .iter()
+            .any(|b| b.trim() == DEFAULT_CLEARED_PLACEHOLDER),
         "no placeholder should survive into the concluding call: {bodies:?}"
     );
 }
-
 
 /// A result the model legitimately saw in full is never rewritten, even when
 /// the sink holds a different (e.g. later-truncated) copy for that id.
@@ -159,10 +148,7 @@ async fn wrap_up_does_not_rewrite_a_result_that_was_never_cleared() {
         sink_with(&[("call-1", "FROM SINK")]),
         0,
     );
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(2),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(2), ());
     ctx.limits.record_model_call().unwrap();
     ctx.limits.record_model_call().unwrap();
     let mut request = ModelRequest {
@@ -184,22 +170,14 @@ fn mw(sink: Arc<dyn CapturedOutcomes>) -> FinalCallWrapUpMiddleware {
         .with_deliverable_tools(deliverables())
 }
 
-
 /// A context sitting on the Nth call of an N-call budget, minus `back`.
-fn ctx_at(
-    max: usize,
-    back: usize,
-) -> RunContext {
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(max),
-        (),
-    );
+fn ctx_at(max: usize, back: usize) -> RunContext {
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(max), ());
     for _ in 0..(max - back) {
         ctx.limits.record_model_call().unwrap();
     }
     ctx
 }
-
 
 /// A mixed belt: two gatherers and the two writers.
 fn mixed_belt() -> Vec<ToolSchema> {
@@ -209,11 +187,9 @@ fn mixed_belt() -> Vec<ToolSchema> {
         .collect()
 }
 
-
 fn names(request: &ModelRequest) -> Vec<String> {
     request.tools.iter().map(|t| t.name.clone()).collect()
 }
-
 
 /// The defect this exists for: on the call before the conclusion the writers
 /// survive, so a turn that owes a file can still write it.
@@ -246,7 +222,6 @@ async fn penultimate_call_keeps_the_writers_and_drops_the_gatherers() {
     );
 }
 
-
 /// `Auto`, never `Required`. A turn that has already written its file, or was
 /// only ever asked for an answer, must be free to spend this call on text —
 /// forcing a call would make it invent a write.
@@ -268,7 +243,6 @@ async fn penultimate_call_leaves_the_model_free_not_to_write() {
         tinyinference_llm::model::ToolChoice::Auto
     ));
 }
-
 
 /// Asked to write its findings into a file, this call has to be able to read
 /// them — so it gets the same restoration the conclusion does.
@@ -293,7 +267,6 @@ async fn penultimate_call_restores_what_microcompact_cleared() {
         "a call asked to write findings down must be able to read them: {bodies:?}"
     );
 }
-
 
 /// A belt with no writer on it gets no narrowing and no instruction: telling a
 /// read-only agent that "the only tools left are the ones that write files"
@@ -320,7 +293,6 @@ async fn a_belt_without_a_writer_is_left_alone() {
         "no instruction should be appended"
     );
 }
-
 
 /// Reserving out of a two-call budget would leave no round in which anything
 /// could be gathered to write, so it is skipped: one tool round, then the
@@ -349,7 +321,6 @@ async fn a_two_call_budget_keeps_its_one_gathering_round() {
     );
 }
 
-
 /// Two calls earlier nothing has happened yet — the reservation is for the
 /// penultimate call alone, not for the tail of the turn.
 #[tokio::test]
@@ -367,7 +338,6 @@ async fn the_call_before_the_penultimate_one_is_untouched() {
     assert_eq!(request.tools.len(), 4, "the belt must stay intact mid-turn");
     assert_eq!(request.messages.len(), 1);
 }
-
 
 /// And the call after it still clears the belt outright: narrowing buys the
 /// artifact, the conclusion still has to be text.
@@ -394,7 +364,6 @@ async fn the_conclusion_still_withdraws_everything() {
     assert!(mw.fired().load(std::sync::atomic::Ordering::SeqCst));
 }
 
-
 // ── the bounds CodeRabbit asked for on #6068 ────────────────────────────────
 
 /// Restoration stops at the input allowance instead of overflowing it.
@@ -413,10 +382,7 @@ async fn wrap_up_stops_restoring_at_the_input_budget() {
         // Room for roughly one of them, not three.
         1_200,
     );
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(2),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(2), ());
     ctx.limits.record_model_call().unwrap();
     ctx.limits.record_model_call().unwrap();
     let mut request = ModelRequest {
@@ -456,7 +422,6 @@ async fn wrap_up_stops_restoring_at_the_input_budget() {
     );
 }
 
-
 /// The other half of the no-window split: restoration must stop too. Without a
 /// window there is no trim middleware behind it, so an unbounded wrap-up would
 /// hand the provider a request it rejects — losing the in-loop conclusion the
@@ -474,10 +439,7 @@ async fn wrap_up_restoration_stays_bounded_when_no_window_is_advertised() {
     let (_toc, restore) = split_input_allowance(0);
     let mw =
         FinalCallWrapUpMiddleware::new("CONCLUDE NOW", "WRITE NOW", sink_with(&borrowed), restore);
-    let mut ctx = RunContext::new(
-        RunConfig::new("mw-test").with_max_model_calls(2),
-        (),
-    );
+    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(2), ());
     ctx.limits.record_model_call().unwrap();
     ctx.limits.record_model_call().unwrap();
     let mut request = ModelRequest {
