@@ -382,7 +382,16 @@ pub trait TranscriptLocator: Send + Sync {
         seed: TranscriptMeta,
         baseline: &[TranscriptMessage],
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        let _ = baseline;
+        if let Some(transcript) = self.read_session_transcript(session)
+            && let Some(transcript) = transcript.read_session()?
+        {
+            anyhow::ensure!(
+                same_transcript_messages(&transcript.messages, baseline),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        } else {
+            anyhow::ensure!(baseline.is_empty(), "transcript baseline is stale; reload the session before creating a generation");
+        }
         self.begin_generation(session, seed)
     }
 
@@ -806,6 +815,10 @@ pub struct FileTranscriptHistory {
     /// Cross-process reservation held from generation selection through its
     /// first successful write. A crash releases the advisory lock.
     generation_reservation: Mutex<Option<GenerationReservation>>,
+    /// Serializes callers sharing this handle while its first-write reservation
+    /// is being consumed. The process-wide path lock alone is acquired too late
+    /// to prevent two callers from both observing the reservation.
+    write_serial: Mutex<()>,
 }
 
 struct GenerationReservation {
@@ -846,6 +859,7 @@ impl FileTranscriptHistory {
             path,
             seed_meta,
             generation_reservation: Mutex::new(None),
+            write_serial: Mutex::new(()),
         })
     }
 
@@ -870,6 +884,7 @@ impl FileTranscriptHistory {
             path,
             seed_meta,
             generation_reservation: Mutex::new(None),
+            write_serial: Mutex::new(()),
         }
     }
 
@@ -1061,6 +1076,17 @@ impl FileTranscriptHistory {
         if self.generation_reservation.lock().unwrap().is_some() || !self.path.is_file() {
             return Ok(());
         }
+        let stem = self.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let (parent_stem, generation) = match stem.rsplit_once(".g") {
+            Some((parent, suffix)) if suffix.parse::<u32>().is_ok() => (parent, suffix.parse::<u32>().unwrap()),
+            _ => (stem, 0),
+        };
+        let successor_stem = format!("{parent_stem}.g{}", generation + 1);
+        let successor_path = self.path.with_file_name(format!("{successor_stem}.jsonl"));
+        anyhow::ensure!(
+            !successor_path.is_file(),
+            "session generation {successor_stem} already exists; reload the session before persisting"
+        );
         let disk = self.persisted()?;
         let same = disk.len() == prev.len()
             && disk.iter().zip(prev).all(|(left, right)| {
@@ -1121,6 +1147,7 @@ impl TranscriptHistory for FileTranscriptHistory {
     /// create-fresh path, and whichever `fs::write` lands last would
     /// silently discard the other's retained set.
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
         let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1135,6 +1162,7 @@ impl TranscriptHistory for FileTranscriptHistory {
         turn: TranscriptTurn<'_>,
         partial: Option<&TranscriptPartial>,
     ) -> anyhow::Result<()> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
         let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1149,6 +1177,7 @@ impl TranscriptHistory for FileTranscriptHistory {
     }
 
     fn append(&self, message: TranscriptMessage) -> anyhow::Result<()> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
         let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1161,6 +1190,7 @@ impl TranscriptHistory for FileTranscriptHistory {
     }
 
     fn replace(&self, messages: &[TranscriptMessage]) -> anyhow::Result<()> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
         let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1171,9 +1201,10 @@ impl TranscriptHistory for FileTranscriptHistory {
     }
 
     fn clear(&self) -> anyhow::Result<()> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
+        let os_lock = self.acquire_write_lock()?;
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let os_lock = self.acquire_write_lock()?;
         if !self.path.exists() {
             drop(os_lock);
             return Ok(());
