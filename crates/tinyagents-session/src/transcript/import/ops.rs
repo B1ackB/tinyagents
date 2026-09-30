@@ -29,6 +29,7 @@ use super::types::{
     ItemReport, JOURNAL_SUBDIR, KV_SUBDIR, MARKER_KEY, NS_MIGRATION_ITEMS, NS_MIGRATIONS,
     NS_SESSIONS, SourceKind,
 };
+use super::live::LIVE_REWRITE_LOCK;
 
 /// Root of the TinyAgents store tree inside a workspace.
 pub fn store_root(workspace: &Path) -> PathBuf {
@@ -319,6 +320,8 @@ async fn process_item(
         report.action = ItemAction::WouldImport;
         return report;
     }
+
+    let _rewrite_guard = LIVE_REWRITE_LOCK.lock().await;
 
     // Re-import overwrites: the append store has no truncate, so drop the
     // stream file (layout: `{journal_root}/{stream}.jsonl`) before writing.

@@ -213,6 +213,7 @@ fn own_state(records: &[DisplayRecord]) -> OwnState {
         Some(msg) if msg.interrupted => OwnState::Interrupted,
         Some(msg)
             if msg.message.role == "assistant"
+                && msg.turn_usage.as_ref().is_none_or(|usage| usage.tool_calls.is_empty())
                 && parse_native_tool_envelope(&msg.message.content)
                     .is_none_or(|(_, calls)| calls.is_empty()) =>
         {

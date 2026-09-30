@@ -23,10 +23,10 @@ pub fn sanitize_store_name(name: &str) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(name.len());
     for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.') {
             encoded.push(char::from(byte));
         } else {
-            write!(&mut encoded, "%{byte:02x}").expect("String writes cannot fail");
+            write!(&mut encoded, "-{byte:02x}").expect("String writes cannot fail");
         }
     }
     if encoded.is_empty() || encoded.bytes().all(|b| b == b'.') {
