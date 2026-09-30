@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use super::config::{self, HookConfig, HookDefinition};
+use super::environment::HookEnvironment;
 use super::exec::{self, HookRun, DEFAULT_TIMEOUT};
 use super::matcher;
 use super::types::{HookEvent, HookInput, HookOutput};
@@ -80,24 +81,32 @@ pub struct HookEngine {
     /// Follow-ups already granted, keyed by session and hook label.
     loop_counts: RwLock<HashMap<(String, String), u32>>,
     default_timeout: RwLock<Duration>,
+    environment: HookEnvironment,
 }
 
 impl Default for HookEngine {
     fn default() -> Self {
+        Self::new(HookEnvironment::default())
+    }
+}
+
+impl HookEngine {
+    /// An engine with no hooks installed, using the host's [`HookEnvironment`]
+    /// for file discovery, hook process environment, shell and prompt hooks.
+    pub fn new(environment: HookEnvironment) -> Self {
         Self {
+            environment,
             config: RwLock::new(Arc::new(HookConfig::default())),
             session_env: RwLock::new(HashMap::new()),
             loop_counts: RwLock::new(HashMap::new()),
             default_timeout: RwLock::new(DEFAULT_TIMEOUT),
         }
     }
-}
 
-static ENGINE: std::sync::LazyLock<HookEngine> = std::sync::LazyLock::new(HookEngine::default);
-
-/// The process-global engine.
-pub fn global() -> &'static HookEngine {
-    &ENGINE
+    /// The host seams this engine was built with.
+    pub fn environment(&self) -> &HookEnvironment {
+        &self.environment
+    }
 }
 
 impl HookEngine {
@@ -110,8 +119,9 @@ impl HookEngine {
         project_dir: Option<PathBuf>,
         workspace_dir: Option<PathBuf>,
     ) -> Arc<HookConfig> {
+        let environment = self.environment.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            config::load(project_dir.as_deref(), workspace_dir.as_deref())
+            config::load(&environment, project_dir.as_deref(), workspace_dir.as_deref())
         })
         .await
         .unwrap_or_default();
@@ -223,7 +233,7 @@ impl HookEngine {
         let default_timeout = *self.default_timeout.read().await;
         let mut outcome = HookOutcome::default();
         for definition in selected {
-            let run = exec::run(&definition, &input, &env, default_timeout).await;
+            let run = exec::run(&definition, &input, &env, default_timeout, &environment).await;
             tracing::debug!(
                 "[hooks] {event}: {} finished in {}ms (deny={}, error={:?})",
                 run.label,
@@ -264,7 +274,7 @@ impl HookEngine {
         let default_timeout = *self.default_timeout.read().await;
         tokio::spawn(async move {
             for definition in selected {
-                let run = exec::run(&definition, &input, &env, default_timeout).await;
+                let run = exec::run(&definition, &input, &env, default_timeout, &environment).await;
                 if let Some(error) = &run.error {
                     tracing::warn!("[hooks] {event}: {} failed: {error}", run.label);
                 } else {
@@ -280,7 +290,7 @@ impl HookEngine {
 
     /// Ambient variables plus anything a `sessionStart` hook contributed.
     async fn env_for(&self, input: &HookInput) -> BTreeMap<String, String> {
-        let mut env = exec::ambient_env(input);
+        let mut env = exec::ambient_env(&self.environment, input);
         if let Some(session) = &input.session_id {
             if let Some(extra) = self.session_env.read().await.get(session) {
                 env.extend(extra.clone());

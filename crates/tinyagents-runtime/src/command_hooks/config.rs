@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use super::environment::HookEnvironment;
 use super::types::{normalize_key, HookEvent};
 
 /// The only schema version this loader accepts.
@@ -284,18 +285,17 @@ fn known_events_hint(key: &str) -> String {
 /// internal state directory. Both are passed in rather than resolved here so
 /// the loader stays testable without touching process globals.
 pub fn layer_paths(
+    environment: &HookEnvironment,
     project_dir: Option<&Path>,
     workspace_dir: Option<&Path>,
 ) -> Vec<(HookLayer, PathBuf)> {
     let mut paths = Vec::new();
-    if let Some(system) = system_hooks_dir() {
+    if let Some(system) = system_hooks_dir(&environment.product) {
         paths.push((HookLayer::System, system.join(HOOKS_FILE_NAME)));
     }
-    if let Some(home) = dirs::home_dir() {
-        paths.push((
-            HookLayer::User,
-            home.join(".openhuman").join(HOOKS_FILE_NAME),
-        ));
+    let dot_dir = environment.dot_dir();
+    if let Some(home) = environment.home_dir.as_deref() {
+        paths.push((HookLayer::User, home.join(&dot_dir).join(HOOKS_FILE_NAME)));
     }
     if let Some(workspace) = workspace_dir {
         paths.push((HookLayer::Workspace, workspace.join(HOOKS_FILE_NAME)));
@@ -303,34 +303,38 @@ pub fn layer_paths(
     if let Some(project) = project_dir {
         paths.push((
             HookLayer::Project,
-            project.join(".openhuman").join(HOOKS_FILE_NAME),
+            project.join(&dot_dir).join(HOOKS_FILE_NAME),
         ));
     }
     paths
 }
 
 #[cfg(target_os = "windows")]
-fn system_hooks_dir() -> Option<PathBuf> {
-    std::env::var_os("ProgramData").map(|dir| PathBuf::from(dir).join("OpenHuman"))
+fn system_hooks_dir(product: &str) -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|dir| PathBuf::from(dir).join(product))
 }
 
 #[cfg(target_os = "macos")]
-fn system_hooks_dir() -> Option<PathBuf> {
-    Some(PathBuf::from("/Library/Application Support/OpenHuman"))
+fn system_hooks_dir(product: &str) -> Option<PathBuf> {
+    Some(PathBuf::from("/Library/Application Support").join(product))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn system_hooks_dir() -> Option<PathBuf> {
-    Some(PathBuf::from("/etc/openhuman"))
+fn system_hooks_dir(product: &str) -> Option<PathBuf> {
+    Some(PathBuf::from("/etc").join(product.to_lowercase()))
 }
 
 /// Read every layer and merge it into one config.
 ///
 /// A missing file is not a warning — most hosts have none. An unreadable or
 /// malformed one is, because that is a hook the author believes is running.
-pub fn load(project_dir: Option<&Path>, workspace_dir: Option<&Path>) -> HookConfig {
+pub fn load(
+    environment: &HookEnvironment,
+    project_dir: Option<&Path>,
+    workspace_dir: Option<&Path>,
+) -> HookConfig {
     let mut config = HookConfig::default();
-    for (layer, path) in layer_paths(project_dir, workspace_dir) {
+    for (layer, path) in layer_paths(environment, project_dir, workspace_dir) {
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 tracing::debug!(

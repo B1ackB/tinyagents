@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
 use super::config::{HookDefinition, HookKind};
+use super::environment::HookEnvironment;
 use super::types::{HookInput, HookOutput, HookPermission};
 
 /// Exit code a hook uses to refuse an action.
@@ -76,6 +77,7 @@ pub async fn run(
     input: &HookInput,
     env: &BTreeMap<String, String>,
     default_timeout: Duration,
+    environment: &HookEnvironment,
 ) -> HookRun {
     let label = definition.label();
     let started = Instant::now();
@@ -85,11 +87,11 @@ pub async fn run(
                 .timeout
                 .map(Duration::from_secs)
                 .unwrap_or(default_timeout);
-            let result = run_command(definition, input, env, timeout).await;
+            let result = run_command(definition, input, env, timeout, environment).await;
             finish(definition, label, started.elapsed(), result)
         }
         HookKind::Prompt => {
-            let result = run_prompt(definition, input).await;
+            let result = run_prompt(definition, input, environment).await;
             finish(definition, label, started.elapsed(), result)
         }
     }
@@ -130,11 +132,12 @@ async fn run_command(
     input: &HookInput,
     env: &BTreeMap<String, String>,
     timeout: Duration,
+    environment: &HookEnvironment,
 ) -> Result<HookOutput, String> {
     let payload =
         serde_json::to_vec(input).map_err(|error| format!("serializing input: {error}"))?;
 
-    let mut command = crate::agent::platform_shell::build_tokio_command(&definition.command);
+    let mut command = (environment.shell)(&definition.command);
     if let Some(dir) = definition.source_dir.as_deref().filter(|dir| dir.is_dir()) {
         command.current_dir(dir);
     }
@@ -222,7 +225,11 @@ struct PromptVerdict {
 ///
 /// The prompt text may contain `$ARGUMENTS`, replaced by the event JSON — the
 /// same placeholder Cursor uses, so a prompt hook ports across unchanged.
-async fn run_prompt(definition: &HookDefinition, input: &HookInput) -> Result<HookOutput, String> {
+async fn run_prompt(
+    definition: &HookDefinition,
+    input: &HookInput,
+    environment: &HookEnvironment,
+) -> Result<HookOutput, String> {
     let arguments =
         serde_json::to_string(input).map_err(|error| format!("serializing input: {error}"))?;
     let prompt = if definition.command.contains("$ARGUMENTS") {
@@ -235,7 +242,13 @@ async fn run_prompt(definition: &HookDefinition, input: &HookInput) -> Result<Ho
          {{\"ok\": false, \"reason\": \"...\"}} to deny."
     );
 
-    let answer = super::prompt_eval::evaluate(&instruction, definition.model.as_deref()).await?;
+    let evaluator = environment
+        .prompt_evaluator
+        .as_ref()
+        .ok_or_else(|| "no prompt evaluator is configured for this host".to_string())?;
+    let answer = evaluator
+        .evaluate(&instruction, definition.model.as_deref())
+        .await?;
     let verdict: PromptVerdict = serde_json::from_str(answer.trim())
         .or_else(|_| {
             answer
@@ -282,20 +295,21 @@ fn truncate(text: &str, max_chars: usize) -> String {
 /// `CLAUDE_PROJECT_DIR` and `CURSOR_PROJECT_DIR` are set alongside the
 /// OpenHuman names so a script written for either host finds its project root
 /// without an OpenHuman-specific branch.
-pub fn ambient_env(input: &HookInput) -> BTreeMap<String, String> {
+pub fn ambient_env(environment: &HookEnvironment, input: &HookInput) -> BTreeMap<String, String> {
+    let prefix = environment.env_prefix();
     let mut env = BTreeMap::new();
     if let Some(root) = input.workspace_roots.first() {
-        env.insert("OPENHUMAN_PROJECT_DIR".into(), root.clone());
+        env.insert(format!("{prefix}_PROJECT_DIR"), root.clone());
         env.insert("CLAUDE_PROJECT_DIR".into(), root.clone());
         env.insert("CURSOR_PROJECT_DIR".into(), root.clone());
     }
-    env.insert("OPENHUMAN_VERSION".into(), input.openhuman_version.clone());
-    env.insert("OPENHUMAN_HOOK_EVENT".into(), input.hook_event_name.clone());
+    env.insert(format!("{prefix}_VERSION"), input.openhuman_version.clone());
+    env.insert(format!("{prefix}_HOOK_EVENT"), input.hook_event_name.clone());
     if let Some(session) = &input.session_id {
-        env.insert("OPENHUMAN_SESSION_ID".into(), session.clone());
+        env.insert(format!("{prefix}_SESSION_ID"), session.clone());
     }
     if let Some(agent) = &input.agent_id {
-        env.insert("OPENHUMAN_AGENT_ID".into(), agent.clone());
+        env.insert(format!("{prefix}_AGENT_ID"), agent.clone());
     }
     env
 }
