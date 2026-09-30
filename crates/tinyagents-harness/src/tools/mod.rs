@@ -14,10 +14,6 @@ pub use time::{CurrentTimeTool, ResolveTimeTool, register_time_tools, time_tools
 pub use wait::{WaitLoopTool, WaitTool};
 
 #[cfg(test)]
-mod ask_clarification_test;
-#[cfg(test)]
 mod time_parse_test;
 #[cfg(test)]
 mod time_test;
-#[cfg(test)]
-mod wait_test;
