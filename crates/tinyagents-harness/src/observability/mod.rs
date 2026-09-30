@@ -32,6 +32,7 @@ mod worker;
 
 pub mod file_status;
 pub mod reaper;
+pub mod trace_export;
 pub mod replay;
 
 #[doc(hidden)]
