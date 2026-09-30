@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::environment::HookEnvironment;
-use super::types::{normalize_key, HookEvent};
+use super::types::{HookEvent, normalize_key};
 
 /// The only schema version this loader accepts.
 pub const HOOKS_SCHEMA_VERSION: u32 = 1;

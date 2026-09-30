@@ -10,10 +10,17 @@ use std::time::Duration;
 
 use super::config::{self, HookDefinition, HookKind, HookLayer};
 use super::engine::HookEngine;
+use super::environment::HookEnvironment;
 use super::exec;
 use super::types::{
     HookEvent, HookInput, HookOutput, HookPayload, HookPermission, ShellPayload, ToolPayload,
 };
+
+/// The host seams as OpenHuman supplies them, with no home directory so tests
+/// never read the developer's real `~/.openhuman/hooks.json`.
+fn host() -> HookEnvironment {
+    HookEnvironment::new("OpenHuman", None)
+}
 
 fn input(event: HookEvent, payload: HookPayload) -> HookInput {
     HookInput {
@@ -184,6 +191,7 @@ async fn a_hook_that_prints_a_decision_is_honoured() {
         &input(HookEvent::PreToolUse, tool_payload("shell")),
         &BTreeMap::new(),
         Duration::from_secs(10),
+        &host(),
     )
     .await;
     assert!(run.error.is_none(), "{:?}", run.error);
@@ -206,6 +214,7 @@ async fn exit_code_two_denies_with_stderr_as_the_reason() {
         &input(HookEvent::PreToolUse, tool_payload("shell")),
         &BTreeMap::new(),
         Duration::from_secs(10),
+        &host(),
     )
     .await;
     assert!(run.output.is_deny());
@@ -224,6 +233,7 @@ async fn a_crashing_hook_fails_open_by_default_and_closed_on_request() {
         &input(HookEvent::PreToolUse, tool_payload("shell")),
         &BTreeMap::new(),
         Duration::from_secs(10),
+        &host(),
     )
     .await;
     assert!(!open.output.is_deny());
@@ -236,6 +246,7 @@ async fn a_crashing_hook_fails_open_by_default_and_closed_on_request() {
         &input(HookEvent::PreToolUse, tool_payload("shell")),
         &BTreeMap::new(),
         Duration::from_secs(10),
+        &host(),
     )
     .await;
     assert!(closed.output.is_deny());
@@ -252,13 +263,15 @@ async fn a_hook_that_hangs_times_out_rather_than_stalling_the_turn() {
         &input(HookEvent::PreToolUse, tool_payload("shell")),
         &BTreeMap::new(),
         Duration::from_secs(1),
+        &host(),
     )
     .await;
-    assert!(run
-        .error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("timed out"));
+    assert!(
+        run.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("timed out")
+    );
     assert!(
         !run.output.is_deny(),
         "a timeout fails open unless asked otherwise"
@@ -289,6 +302,7 @@ async fn the_event_reaches_the_hook_on_stdin() {
         ),
         &BTreeMap::new(),
         Duration::from_secs(10),
+        &host(),
     )
     .await;
     assert_eq!(run.output.agent_message.as_deref(), Some("saw the event"));
@@ -304,7 +318,7 @@ async fn matchers_decide_which_hook_runs() {
            ]}}"#,
         Some(("deny.sh", "#!/bin/sh\necho '{\"permission\":\"deny\"}'\n")),
     );
-    let loaded = config::load(None, Some(dir.path()));
+    let loaded = config::load(&host(), None, Some(dir.path()));
     // The workspace layer reads `<dir>/hooks.json` directly.
     assert_eq!(loaded.len(), 1, "{:?}", loaded.warnings);
     engine.install(loaded).await;
@@ -354,7 +368,9 @@ async fn a_denial_short_circuits_the_remaining_hooks() {
         )
         .unwrap();
     }
-    engine.install(config::load(None, Some(dir.path()))).await;
+    engine
+        .install(config::load(&host(), None, Some(dir.path())))
+        .await;
 
     let outcome = engine
         .dispatch(
@@ -380,7 +396,9 @@ async fn followups_stop_once_a_hook_exhausts_its_budget() {
             "#!/bin/sh\necho '{\"followup_message\":\"keep going\"}'\n",
         )),
     );
-    engine.install(config::load(None, Some(dir.path()))).await;
+    engine
+        .install(config::load(&host(), None, Some(dir.path())))
+        .await;
 
     let mut granted = 0;
     for _ in 0..4 {
@@ -471,7 +489,7 @@ fn a_relative_script_that_is_missing_is_reported_at_load_time() {
         r#"{"version": 1, "hooks": {"preToolUse": [{"command": "./nope.sh"}]}}"#,
     )
     .unwrap();
-    let loaded = config::load(None, Some(dir.path()));
+    let loaded = config::load(&host(), None, Some(dir.path()));
     assert!(
         loaded.warnings.iter().any(|w| w.contains("missing script")),
         "{:?}",
@@ -487,7 +505,7 @@ fn a_bare_command_name_is_not_second_guessed() {
         r#"{"version": 1, "hooks": {"preToolUse": [{"command": "audit-tool --strict"}]}}"#,
     )
     .unwrap();
-    let loaded = config::load(None, Some(dir.path()));
+    let loaded = config::load(&host(), None, Some(dir.path()));
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
 }
 
@@ -517,4 +535,124 @@ fn subagent_stop_is_reported_as_not_yet_fired() {
         "{:?}",
         parsed.warnings
     );
+}
+
+#[test]
+fn discovery_paths_use_the_injected_product_and_home() {
+    let environment = HookEnvironment::new("OpenHuman", Some(PathBuf::from("/home/ada")));
+    let paths = config::layer_paths(
+        &environment,
+        Some(std::path::Path::new("/work/proj")),
+        Some(std::path::Path::new("/state/ws")),
+    );
+    let rendered: Vec<(String, String)> = paths
+        .iter()
+        .map(|(layer, path)| (layer.as_str().to_string(), path.display().to_string()))
+        .collect();
+    #[cfg(target_os = "linux")]
+    let system = ("system", "/etc/openhuman/hooks.json");
+    #[cfg(target_os = "macos")]
+    let system = (
+        "system",
+        "/Library/Application Support/OpenHuman/hooks.json",
+    );
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let system = ("", "");
+    let mut expected = Vec::new();
+    if !system.0.is_empty() {
+        expected.push((system.0.to_string(), system.1.to_string()));
+    }
+    expected.extend([
+        (
+            "user".to_string(),
+            "/home/ada/.openhuman/hooks.json".to_string(),
+        ),
+        ("workspace".to_string(), "/state/ws/hooks.json".to_string()),
+        (
+            "project".to_string(),
+            "/work/proj/.openhuman/hooks.json".to_string(),
+        ),
+    ]);
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        assert_eq!(rendered, expected);
+    }
+
+    // Another product renames every location and never reads the OpenHuman ones.
+    let other = HookEnvironment::new("Acme", Some(PathBuf::from("/home/ada")));
+    let other_paths = config::layer_paths(&other, Some(std::path::Path::new("/p")), None);
+    assert!(
+        other_paths
+            .iter()
+            .any(|(_, path)| path == std::path::Path::new("/home/ada/.acme/hooks.json"))
+    );
+    assert!(
+        other_paths
+            .iter()
+            .all(|(_, path)| !path.to_string_lossy().to_lowercase().contains("openhuman"))
+    );
+}
+
+#[test]
+fn hook_process_environment_is_named_after_the_product() {
+    let mut envelope = input(HookEvent::PreToolUse, tool_payload("shell"));
+    envelope.agent_id = Some("orchestrator".into());
+    let env = exec::ambient_env(&host(), &envelope);
+    assert_eq!(
+        env.get("OPENHUMAN_PROJECT_DIR").map(String::as_str),
+        Some("/tmp")
+    );
+    assert_eq!(
+        env.get("CLAUDE_PROJECT_DIR").map(String::as_str),
+        Some("/tmp")
+    );
+    assert_eq!(
+        env.get("CURSOR_PROJECT_DIR").map(String::as_str),
+        Some("/tmp")
+    );
+    assert_eq!(
+        env.get("OPENHUMAN_VERSION").map(String::as_str),
+        Some("test")
+    );
+    assert_eq!(
+        env.get("OPENHUMAN_HOOK_EVENT").map(String::as_str),
+        Some("preToolUse")
+    );
+    assert_eq!(
+        env.get("OPENHUMAN_SESSION_ID").map(String::as_str),
+        Some("sess-test")
+    );
+    assert_eq!(
+        env.get("OPENHUMAN_AGENT_ID").map(String::as_str),
+        Some("orchestrator")
+    );
+    assert_eq!(env.len(), 8);
+}
+
+#[test]
+fn a_literal_hooks_json_parses_to_the_documented_shape() {
+    let parsed = config::parse_one(
+        std::path::Path::new("/repo/.openhuman/hooks.json"),
+        HookLayer::Project,
+        r#"{
+            "version": 1,
+            "hooks": {
+                "beforeShellExecution": [
+                    { "command": "./scripts/audit.sh", "matcher": "^rm ", "timeout": 10 }
+                ],
+                "stop": [
+                    { "command": "./scripts/tests.sh", "loop_limit": 3, "failClosed": false }
+                ]
+            }
+        }"#,
+    );
+    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    let shell = parsed.for_event(HookEvent::BeforeShellExecution);
+    assert_eq!(shell.len(), 1);
+    assert_eq!(shell[0].command, "./scripts/audit.sh");
+    assert_eq!(shell[0].matcher.as_deref(), Some("^rm "));
+    assert_eq!(shell[0].timeout, Some(10));
+    assert_eq!(shell[0].kind, HookKind::Command);
+    let stop = parsed.for_event(HookEvent::Stop);
+    assert_eq!(stop.len(), 1);
+    assert_eq!(stop[0].loop_limit, Some(3));
 }

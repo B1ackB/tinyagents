@@ -29,7 +29,7 @@ use tokio::sync::RwLock;
 
 use super::config::{self, HookConfig, HookDefinition};
 use super::environment::HookEnvironment;
-use super::exec::{self, HookRun, DEFAULT_TIMEOUT};
+use super::exec::{self, DEFAULT_TIMEOUT, HookRun};
 use super::matcher;
 use super::types::{HookEvent, HookInput, HookOutput};
 
@@ -121,7 +121,11 @@ impl HookEngine {
     ) -> Arc<HookConfig> {
         let environment = self.environment.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            config::load(&environment, project_dir.as_deref(), workspace_dir.as_deref())
+            config::load(
+                &environment,
+                project_dir.as_deref(),
+                workspace_dir.as_deref(),
+            )
         })
         .await
         .unwrap_or_default();

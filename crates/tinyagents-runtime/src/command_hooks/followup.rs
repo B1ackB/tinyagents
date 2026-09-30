@@ -17,7 +17,7 @@
 //! cannot spin: a hook that keeps asking runs out of budget.
 
 use std::collections::HashMap;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 /// A queued follow-up.
 #[derive(Debug, Clone)]
