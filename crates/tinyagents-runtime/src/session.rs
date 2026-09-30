@@ -821,7 +821,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         if !extends && let Some(session) = target.session.clone() {
             let (successor, handle) = target
                 .locator
-                .begin_generation(&session, target.meta.clone())
+                .begin_generation_from_baseline(&session, target.meta.clone(), &self.persisted)
                 .map_err(|error| RuntimeError::Persistence(error.to_string()))?;
             // The successor starts empty, so the retained set is written
             // through the ordinary turn path below and keeps its usage,
