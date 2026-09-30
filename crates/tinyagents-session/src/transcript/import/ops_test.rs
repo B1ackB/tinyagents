@@ -34,7 +34,10 @@ async fn empty_journal_rewrite_installs_an_empty_stream() {
         .await
         .unwrap();
 
-    assert_eq!(fs::read(stores.journal_root.join("empty.jsonl")).unwrap(), b"");
+    assert_eq!(
+        fs::read(stores.journal_root.join("empty.jsonl")).unwrap(),
+        b""
+    );
 }
 
 fn write_file(path: &Path, contents: &str) {
