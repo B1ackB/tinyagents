@@ -360,40 +360,16 @@ pub trait TranscriptLocator: Send + Sync {
         session: &SessionRef,
         seed: TranscriptMeta,
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        self.begin_generation_inner(session, seed, None)
-    }
-
-    fn begin_generation_from_baseline(
-        &self,
-        session: &SessionRef,
-        seed: TranscriptMeta,
-        baseline: &[TranscriptMessage],
-    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        self.begin_generation_inner(session, seed, Some(baseline))
-    }
-}
-
-impl FileTranscriptLocator {
-    fn begin_generation_inner(
-        &self,
-        session: &SessionRef,
-        seed: TranscriptMeta,
-        baseline: Option<&[TranscriptMessage]>,
-    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let baseline: Option<&[TranscriptMessage]> = None;
         let successor = session.next_generation();
         anyhow::ensure!(
             successor.generation <= MAX_GENERATIONS,
-            "session {} has reached the {MAX_GENERATIONS}-generation compaction limit; \
-             refusing to create generation {}",
-            session.session_id(),
-            successor.generation
+            "session generation limit reached"
         );
         anyhow::ensure!(
             !self.session_exists(&successor),
-            "session generation {} already exists; refusing to overwrite a sealed transcript",
-            successor.session_id()
+            "session generation already exists"
         );
-
         let mut meta = seed;
         meta.session_id = Some(successor.session_id());
         meta.parent_session_id = successor.parent_session_id();
@@ -401,8 +377,6 @@ impl FileTranscriptLocator {
         Ok((successor, handle))
     }
 
-    /// Like [`Self::begin_generation`], while checking the caller's cached
-    /// parent view atomically with the successor's first write when supported.
     fn begin_generation_from_baseline(
         &self,
         session: &SessionRef,
@@ -470,7 +444,8 @@ impl FileTranscriptLocator {
         let keep = cut.resolve(&transcript.messages)?;
         let truncated = transcript.messages[..keep].to_vec();
 
-        let (successor, handle) = self.begin_generation_from_baseline(&head, seed, &transcript.messages)?;
+        let (successor, handle) =
+            self.begin_generation_from_baseline(&head, seed, &transcript.messages)?;
         // Same call a compaction makes to persist its own replacement set —
         // see `a_compaction_seals_a_generation_and_leaves_it_untouched`.
         handle.replace(&truncated)?;
@@ -649,6 +624,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         session: &SessionRef,
         seed: TranscriptMeta,
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let baseline: Option<&[TranscriptMessage]> = None;
         let successor = session.next_generation();
         anyhow::ensure!(
             successor.generation <= MAX_GENERATIONS,
@@ -659,7 +635,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         );
         let stem = session_stem(&successor);
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
-        let parent_path = resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
+        let parent_path =
+            resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
         let mut lock_paths = vec![path.clone(), parent_path.clone()];
         lock_paths.sort();
         lock_paths.dedup();
@@ -669,15 +646,26 @@ impl TranscriptLocator for FileTranscriptLocator {
             lock.lock_exclusive()?;
             locks.push((lock_path.clone(), lock));
         }
-        let parent_lock = locks.iter().position(|(locked_path, _)| locked_path == &parent_path)
+        let parent_lock = locks
+            .iter()
+            .position(|(locked_path, _)| locked_path == &parent_path)
             .map(|index| locks.remove(index).1);
-        let successor_lock = locks.iter().position(|(locked_path, _)| locked_path == &path)
+        let successor_lock = locks
+            .iter()
+            .position(|(locked_path, _)| locked_path == &path)
             .map(|index| locks.remove(index).1)
             .expect("successor path lock acquired");
         if let Some(baseline) = baseline {
-            let current = if parent_path.is_file() { read_transcript(&parent_path)?.messages } else { Vec::new() };
-            anyhow::ensure!(same_transcript_messages(&current, baseline),
-                "transcript baseline is stale for {}; reload the session before persisting", parent_path.display());
+            let current = if parent_path.is_file() {
+                read_transcript(&parent_path)?.messages
+            } else {
+                Vec::new()
+            };
+            anyhow::ensure!(
+                same_transcript_messages(&current, baseline),
+                "transcript baseline is stale for {}; reload the session before persisting",
+                parent_path.display()
+            );
         }
         anyhow::ensure!(
             !path.is_file(),
@@ -703,8 +691,11 @@ impl TranscriptLocator for FileTranscriptLocator {
 }
 
 fn same_transcript_messages(left: &[TranscriptMessage], right: &[TranscriptMessage]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(a, b)|
-        a.role == b.role && a.content == b.content && a.id == b.id)
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a.role == b.role && a.content == b.content && a.id == b.id)
 }
 
 /// A placeholder `_meta` for a handle bound to an already-existing transcript.
