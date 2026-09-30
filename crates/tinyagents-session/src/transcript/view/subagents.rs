@@ -181,6 +181,8 @@ fn build_child(
 fn find_exact_spawning_call(
     items: &[DisplayItem],
     claimed: &[bool],
+    start: usize,
+    end: usize,
     task_id: Option<&str>,
     workspace_dir: Option<&Path>,
 ) -> Option<usize> {
@@ -190,9 +192,11 @@ fn find_exact_spawning_call(
         .ok()
         .flatten()?;
     let parent_call_id = run.metadata.get("parentCallId")?.as_str()?;
-    items
+    let in_range = items
         .iter()
         .enumerate()
+        .take(end)
+        .skip(start)
         .find_map(|(index, item)| match item {
             DisplayItem::ToolCall { call_id, .. }
                 if !claimed[index] && call_id == parent_call_id =>
@@ -200,7 +204,20 @@ fn find_exact_spawning_call(
                 Some(index)
             }
             _ => None,
-        })
+        });
+    in_range.or_else(|| {
+        items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                DisplayItem::ToolCall { call_id, .. }
+                    if !claimed[index] && call_id == parent_call_id =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+    })
 }
 
 /// What the child's own transcript says about how it ended.
@@ -239,11 +256,15 @@ fn place(
     for (order, mut child) in children.into_iter().enumerate() {
         let request_id = anchor_request_id(child.spawn_unix, segments);
         let (start, end) = turn_range(items, request_id.as_deref());
-        let pick =
-            find_exact_spawning_call(items, &claimed, child.task_id.as_deref(), workspace_dir)
-                .or_else(|| {
-                    find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref())
-                });
+        let pick = find_exact_spawning_call(
+            items,
+            &claimed,
+            start,
+            end,
+            child.task_id.as_deref(),
+            workspace_dir,
+        )
+        .or_else(|| find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref()));
         let (position, call) = match pick {
             Some(index) => {
                 claimed[index] = true;

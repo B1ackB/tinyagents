@@ -1641,6 +1641,7 @@ dependencies = [
  "tinytools-agent 0.4.1",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@
 //! resolution lives in [`super::resolve`]; sub-agent trails are placed by
 //! [`super::subagents`].
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::transcript::{self, CompactionMarker, DisplayMessage, DisplayRecord};
@@ -582,14 +582,31 @@ fn project_text_tool_results(
     items: &mut Vec<DisplayItem>,
     pending: &mut VecDeque<(String, usize)>,
 ) {
-    let failed: Vec<&str> = msg
+    let raw_failures = msg
         .message
         .extra_metadata
         .as_ref()
-        .and_then(|meta| meta.get(TOOL_RESULT_FAILURES_METADATA_KEY))
-        .and_then(serde_json::Value::as_array)
-        .map(|ids| ids.iter().filter_map(serde_json::Value::as_str).collect())
-        .unwrap_or_default();
+        .and_then(|meta| meta.get(TOOL_RESULT_FAILURES_METADATA_KEY));
+    let failed: HashMap<String, Option<String>> = match raw_failures {
+        Some(serde_json::Value::Array(ids)) => ids
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(|id| (id.to_string(), None))
+            .collect(),
+        Some(serde_json::Value::Object(entries)) => entries
+            .iter()
+            .map(|(id, value)| {
+                (
+                    id.clone(),
+                    value
+                        .get("detail")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                )
+            })
+            .collect(),
+        _ => HashMap::new(),
+    };
     tracing::debug!(
         "{LOG_PREFIX} text-dialect results row results={} failed={} pending={}",
         results.len(),
@@ -597,13 +614,15 @@ fn project_text_tool_results(
         pending.len()
     );
     for result in results {
-        let (status, failure) = if failed.contains(&result.tool_call_id.as_str()) {
-            (
-                ToolCallStatus::Error,
-                Some(ToolCallFailure { detail: None }),
-            )
+        let failure = failed
+            .get(&result.tool_call_id)
+            .map(|detail| ToolCallFailure {
+                detail: detail.clone(),
+            });
+        let status = if failure.is_some() {
+            ToolCallStatus::Error
         } else {
-            (ToolCallStatus::Success, None)
+            ToolCallStatus::Success
         };
         if let Some(idx) = take_pending_by_id(pending, &result.tool_call_id)
             && let Some(DisplayItem::ToolCall {

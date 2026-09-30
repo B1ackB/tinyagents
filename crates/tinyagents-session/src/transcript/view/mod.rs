@@ -75,7 +75,7 @@ pub fn get_page_scoped(
     limit: Option<usize>,
 ) -> TranscriptPage {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let offset = parse_cursor(cursor);
+    let upper_cursor = parse_cursor(cursor);
 
     let projected = if let Some(agent_id) = agent_id {
         project::project_thread_scoped(workspace_dir, thread_id, Some(agent_id))
@@ -96,17 +96,20 @@ pub fn get_page_scoped(
     };
 
     let total = projected.items.len();
-    let start = offset.min(total);
-    let end = offset.saturating_add(limit).min(total);
-    // Newest-first: item `offset` is the newest, walking backwards from the end.
-    let items: Vec<DisplayItem> = (start..end)
-        .map(|i| projected.items[total - 1 - i].clone())
+    // Cursor is an exclusive chronological upper bound, so appending at the
+    // end does not move the boundary for the next older page.
+    let upper = upper_cursor.map_or(total, |cursor| cursor.min(total));
+    let lower = upper.saturating_sub(limit);
+    let items: Vec<DisplayItem> = projected.items[lower..upper]
+        .iter()
+        .rev()
+        .cloned()
         .collect();
-    let has_more = end < total;
-    let next_cursor = has_more.then(|| end.to_string());
+    let has_more = lower > 0;
+    let next_cursor = has_more.then(|| lower.to_string());
 
     tracing::debug!(
-        "{LOG_PREFIX} get_page thread={thread_id} total={total} offset={offset} returned={} has_more={has_more}",
+        "{LOG_PREFIX} get_page thread={thread_id} total={total} upper={upper} returned={} has_more={has_more}",
         items.len()
     );
 
@@ -121,12 +124,11 @@ pub fn get_page_scoped(
 }
 
 /// Parse the opaque cursor into a numeric offset (0 on absent/invalid).
-fn parse_cursor(cursor: Option<&str>) -> usize {
+fn parse_cursor(cursor: Option<&str>) -> Option<usize> {
     cursor
         .map(str::trim)
         .filter(|c| !c.is_empty())
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
