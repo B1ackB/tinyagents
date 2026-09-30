@@ -255,6 +255,17 @@ pub fn unsupported_arg_names(schema: Option<&Value>, args: &Value) -> Option<Vec
         return None;
     }
     let properties = schema_obj.get("properties")?.as_object()?;
+    let patterns = match schema_obj
+        .get("patternProperties")
+        .and_then(Value::as_object)
+    {
+        Some(patterns) => patterns
+            .keys()
+            .map(|pattern| regex::Regex::new(pattern))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?,
+        None => Vec::new(),
+    };
     let Some(args_obj) = args.as_object() else {
         return Some(Vec::new());
     };
@@ -264,14 +275,7 @@ pub fn unsupported_arg_names(schema: Option<&Value>, args: &Value) -> Option<Vec
             if properties.contains_key(key.as_str()) {
                 return false;
             }
-            let matches_pattern = schema_obj
-                .get("patternProperties")
-                .and_then(Value::as_object)
-                .is_some_and(|patterns| {
-                    patterns.keys().any(|pattern| {
-                        regex::Regex::new(pattern).is_ok_and(|compiled| compiled.is_match(key))
-                    })
-                });
+            let matches_pattern = patterns.iter().any(|compiled| compiled.is_match(key));
             !matches_pattern
         })
         .cloned()

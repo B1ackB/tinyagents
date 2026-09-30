@@ -85,4 +85,15 @@ fn unsupported_arguments_follow_pattern_and_schema_additional_properties() {
         unsupported_arg_names(Some(&schema_additional), &json!({"extra": "ok"})),
         None
     );
+
+    let unsupported_pattern = json!({
+        "properties": {},
+        "patternProperties": {"^(?!reserved$)[a-z]+$": {}},
+        "additionalProperties": false
+    });
+    assert_eq!(
+        unsupported_arg_names(Some(&unsupported_pattern), &json!({"custom": 1})),
+        None,
+        "patterns the regex crate cannot evaluate must disable name validation"
+    );
 }
