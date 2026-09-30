@@ -861,11 +861,22 @@ impl FileTranscriptHistory {
         let mut locks = Vec::with_capacity(paths.len());
         for lock_path in paths {
             let lock = generation_lock(&lock_path)?;
-            // Wait in the same globally sorted order as generation creation.
-            // Advisory locks are acquired before the per-path mutex, so waiting
-            // on an unwritten generation reservation cannot block its owner
-            // from publishing the first write that releases the reservation.
-            lock.lock_exclusive()?;
+            if lock_path == successor && !path_entry_exists(&successor)? {
+                // An absent successor with a held lock is reserved by a
+                // generation creator, which needs its first write to release
+                // that reservation. Do not wait here: this parent write would
+                // otherwise deadlock the creator permanently.
+                lock.try_lock_exclusive().map_err(|error| {
+                    anyhow::anyhow!(
+                        "successor generation is reserved for {}; retry after it commits: {error}",
+                        self.path.display()
+                    )
+                })?;
+            } else {
+                // Use the same sorted acquisition order as generation creation
+                // for locks that are not an unwritten successor reservation.
+                lock.lock_exclusive()?;
+            }
             locks.push((lock_path, lock));
         }
         let parent_lock = locks
