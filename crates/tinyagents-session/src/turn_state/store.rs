@@ -646,9 +646,8 @@ fn persist_temp_file(tmp: NamedTempFile, path: &Path) -> Result<(), String> {
 /// Pick the latest turn (greatest `started_at`, ties broken by `updated_at`).
 fn latest_turn(turns: Vec<TurnState>) -> Option<TurnState> {
     turns.into_iter().max_by(|a, b| {
-        a.started_at
-            .cmp(&b.started_at)
-            .then_with(|| a.updated_at.cmp(&b.updated_at))
+        compare_rfc3339(&a.started_at, &b.started_at)
+            .then_with(|| compare_rfc3339(&a.updated_at, &b.updated_at))
     })
 }
 

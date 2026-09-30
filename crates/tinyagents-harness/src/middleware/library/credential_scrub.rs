@@ -138,7 +138,13 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             };
             if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, &text) {
                 if is_json {
-                    if let Ok(value) = serde_json::from_str(&scrubbed) {
+                    // The default scrubber appends its model-facing notice after
+                    // the JSON. Parse only the scrubbed payload so structured
+                    // tool results remain structured.
+                    let json_payload = scrubbed
+                        .split_once("\n\n[credential_scrub]")
+                        .map_or(scrubbed.as_str(), |(payload, _)| payload);
+                    if let Ok(value) = serde_json::from_str(json_payload) {
                         if let tinytools::ToolContent::Json { data } = block {
                             *data = value;
                         }

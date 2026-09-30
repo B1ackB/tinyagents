@@ -68,32 +68,12 @@ pub fn estimate_text_tokens(text: &str) -> u64 {
         .saturating_add(images.saturating_mul(IMAGE_MARKER_TOKEN_COST))
 }
 
-/// Count native [`ContentBlock::Image`] blocks on a message. `Message::text()`
-/// concatenates only text blocks, so a native multimodal image would otherwise
-/// contribute zero tokens; we charge each one [`IMAGE_MARKER_TOKEN_COST`].
-fn count_native_image_blocks(msg: &TaMessage) -> u64 {
-    let content = match msg {
-        TaMessage::System(m) => &m.content,
-        TaMessage::User(m) => &m.content,
-        TaMessage::Assistant(m) => &m.content,
-        TaMessage::Tool(m) => &m.content,
-        // Out-of-band host record; carries no content blocks.
-        TaMessage::Custom(_) => return 0,
-    };
-    content
-        .iter()
-        .filter(|b| matches!(b, ContentBlock::Image(_)))
-        .count() as u64
-}
-
 /// Estimate the tokens of a crate [`TaMessage`]: image-aware text tokens, a flat
 /// [`IMAGE_MARKER_TOKEN_COST`] per native image block, and the assistant's
 /// tool-call name/arguments (which `Message::text()` drops). Mirrors the legacy
 /// `estimate_conversation_message_tokens` (issue #4462).
 pub fn estimate_message_tokens(msg: &TaMessage) -> u64 {
     let mut total = estimate_text_tokens(&msg.text());
-    total = total
-        .saturating_add(count_native_image_blocks(msg).saturating_mul(IMAGE_MARKER_TOKEN_COST));
     let content = match msg {
         TaMessage::System(m) => &m.content,
         TaMessage::User(m) => &m.content,
