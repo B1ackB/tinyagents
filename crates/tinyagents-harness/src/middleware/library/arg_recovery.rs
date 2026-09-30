@@ -157,6 +157,7 @@ fn strip_code_fence(raw: &str) -> &str {
     let body = match after_open.find('\n') {
         Some(newline)
             if after_open[..newline]
+                .trim()
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric()) =>
         {

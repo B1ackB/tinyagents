@@ -83,6 +83,7 @@ pub mod run_ledger;
 mod store;
 pub mod testkit;
 pub mod transcript;
+pub mod turn_state;
 pub mod types;
 
 pub use tinyagents_harness::error::{Result, TinyAgentsError};

@@ -166,9 +166,11 @@ impl EmbeddingToolRanker {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&disk)?)?;
-            std::fs::rename(&tmp, path)
+            let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            serde_json::to_writer(&mut tmp, &disk)?;
+            tmp.as_file().sync_all()?;
+            tmp.persist(path).map(|_| ()).map_err(|error| error.error)
         };
         if let Err(error) = write() {
             tracing::warn!(
