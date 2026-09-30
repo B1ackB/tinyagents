@@ -543,3 +543,26 @@ fn artifact_read_target_rejects_an_explicit_invalid_offset() {
         );
     }
 }
+
+/// Literal fixture: the envelope the model reads is a wire format hosts and
+/// runbooks match on, so pin it byte for byte.
+#[tokio::test]
+async fn envelope_text_is_byte_stable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "s");
+    let persisted = store
+        .persist("shell", Some("c"), "hello world", None, 1024, "r")
+        .await
+        .unwrap();
+    let expected = "[tool_result_preview]\n\
+tool: shell\n\
+reason: r\n\
+original_bytes: 11\n\
+stored_bytes: 11\n\
+artifact_path: artifacts/tool-results/s/shell/c.txt\n\
+read_with: file_read {\"path\":\"artifacts/tool-results/s/shell/c.txt\"} (a long read returns one page and names the \"offset\" to continue from)\n\
+notes: Full scrubbed output was persisted under the action workspace.\n\n\
+[preview]\nhello world";
+    assert_eq!(persisted.output, expected);
+    assert!(!persisted.redacted);
+}
