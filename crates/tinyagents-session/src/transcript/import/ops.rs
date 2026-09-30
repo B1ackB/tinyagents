@@ -23,13 +23,13 @@ use super::convert::{
     JournalProjector, build_descriptor, effective_thread_id, journal_messages, parent_session_key,
     stream_name,
 };
+use super::live::LIVE_REWRITE_LOCK;
 use super::scan::{SourceItem, discover_sources};
 use super::types::{
     DescriptorSource, IMPORT_VERSION, ImportOptions, ImportSummary, ItemAction, ItemLedgerRecord,
     ItemReport, JOURNAL_SUBDIR, KV_SUBDIR, MARKER_KEY, NS_MIGRATION_ITEMS, NS_MIGRATIONS,
     NS_SESSIONS, SourceKind,
 };
-use super::live::LIVE_REWRITE_LOCK;
 
 /// Root of the TinyAgents store tree inside a workspace.
 pub fn store_root(workspace: &Path) -> PathBuf {
