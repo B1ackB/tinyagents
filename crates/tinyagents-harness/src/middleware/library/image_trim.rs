@@ -194,15 +194,15 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             .collect();
 
         let mut removed = 0usize;
-        while !removable_positions.is_empty() {
-            let total: u64 = messages.iter().map(estimate_message_tokens).sum();
+        let mut total = original_tokens;
+        for absolute_idx in removable_positions {
             if total <= self.budget {
                 break;
             }
-            let absolute_idx = removable_positions.remove(0);
             // Subsequent positions shift left by one for every prior removal.
             let remove_at = absolute_idx - removed;
-            messages.remove(remove_at);
+            let dropped = messages.remove(remove_at);
+            total = total.saturating_sub(estimate_message_tokens(&dropped));
             removed += 1;
         }
 
