@@ -21,6 +21,10 @@ use tinytools::ToolResult as TaToolResult;
 
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 
+/// Shared slot a guard writes its root-cause halt summary into when it trips, so
+/// the turn can surface the cause instead of an empty or last-model reply.
+pub type HaltSummarySlot = Arc<Mutex<Option<String>>>;
+
 /// Whether a tool is contractually re-invoked with identical arguments (a
 /// polling/wait tool), so an identical repeat is progress rather than a loop.
 pub type RepeatExemption = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -75,6 +79,17 @@ struct RepeatState {
     visible_before_reduction: Mutex<HashSet<String>>,
 }
 
+impl RepeatState {
+    fn new(placeholder: impl Into<String>) -> Self {
+        Self {
+            tracker: SuccessfulRepeatTracker::default(),
+            cleared_placeholder: placeholder.into(),
+            recorded: Mutex::default(),
+            visible_before_reduction: Mutex::default(),
+        }
+    }
+}
+
 /// The `ids` whose tool result is still in `request` with its body intact.
 fn visible_tool_results(
     request: &ModelRequest,
@@ -97,8 +112,8 @@ fn visible_tool_results(
 
 /// Host adapter for the crate's successful-repeat tracker (#4088 / #4095).
 /// [`SuccessfulRepeatTracker`] owns the generic streak accounting; this adapter
-/// builds canonical OpenHuman tool signatures, applies the product polling-tool
-/// exemption, and maps a crate halt verdict into the shared halt summary and
+/// builds canonical tool signatures, applies the host's polling-tool
+/// exemption ([`RepeatExemption`]), and maps a crate halt verdict into the shared halt summary and
 /// steering pause:
 ///
 /// - **Repeat-output** (`after_model`, checked before the tools run): halts when
@@ -116,7 +131,7 @@ fn visible_tool_results(
 ///   re-read whose output changed does not count. A result that compaction
 ///   later evicts stops counting; see [`RepeatEvictionObserver`].
 ///
-/// Polling/wait tools ([`is_repeat_call_exempt`]) are exempt from all three:
+/// Polling/wait tools (per the [`RepeatExemption`]) are exempt from all three:
 /// their contract is to be re-invoked identically, so an all-poll batch resets
 /// the streaks instead of recording. On a trip it writes the legacy root-cause
 /// summary into the shared [`HaltSummarySlot`] and pauses
@@ -143,12 +158,7 @@ impl RepeatProgressMiddleware {
             handle,
             halt_summary,
             exempt,
-            state: Arc::new(RepeatState {
-                tracker: SuccessfulRepeatTracker::default(),
-                cleared_placeholder: DEFAULT_CLEARED_PLACEHOLDER.to_string(),
-                recorded: Mutex::default(),
-                visible_before_reduction: Mutex::default(),
-            }),
+            state: Arc::new(RepeatState::new(DEFAULT_CLEARED_PLACEHOLDER)),
             pending: Mutex::new(None),
         }
     }
@@ -156,14 +166,7 @@ impl RepeatProgressMiddleware {
     /// Override the placeholder body treated as an evicted tool result. Must be
     /// called before [`eviction_observer`](Self::eviction_observer).
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        let placeholder = placeholder.into();
-        let state = Arc::new(RepeatState {
-            tracker: SuccessfulRepeatTracker::default(),
-            cleared_placeholder: placeholder,
-            recorded: Mutex::default(),
-            visible_before_reduction: Mutex::default(),
-        });
-        self.state = state;
+        self.state = Arc::new(RepeatState::new(placeholder));
         self
     }
 
