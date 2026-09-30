@@ -193,76 +193,76 @@ impl FinalCallWrapUpMiddleware {
             .sum::<u64>()
             .saturating_add(estimate_text_tokens(instruction));
         let restored = {
-                let mut restored = 0usize;
-                let mut skipped = 0usize;
-                let mut unavailable = false;
-                for message in request.messages.iter_mut().rev() {
-                    let TaMessage::Tool(tool) = message else {
-                        continue;
-                    };
-                    if tool
-                        .content
-                        .iter()
-                        .any(|block| !matches!(block, ContentBlock::Text(_)))
-                    {
-                        continue;
-                    }
-                    let body: String = tool
-                        .content
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text(text) => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    if body.trim() != self.cleared_placeholder {
-                        continue;
-                    }
-                    let outcome = match self.outcomes.content_for(&tool.tool_call_id) {
-                        Ok(Some(outcome)) => outcome,
-                        Ok(None) => continue,
-                        Err(OutcomesUnavailable) => {
-                            unavailable = true;
-                            break;
-                        }
-                    };
-                    if outcome.trim().is_empty() {
-                        continue;
-                    }
-                    // What restoring this body would add, against what the
-                    // placeholder already costs.
-                    let added = estimate_text_tokens(&outcome)
-                        .saturating_sub(estimate_text_tokens(&self.cleared_placeholder));
-                    if budget > 0 && used.saturating_add(added) > budget {
-                        // Everything older is at least as likely to overflow, but
-                        // keep counting so the log reports the true shortfall
-                        // rather than stopping at the first one that did not fit.
-                        skipped += 1;
-                        continue;
-                    }
-                    used = used.saturating_add(added);
-                    tool.content = vec![ContentBlock::Text(outcome)];
-                    restored += 1;
+            let mut restored = 0usize;
+            let mut skipped = 0usize;
+            let mut unavailable = false;
+            for message in request.messages.iter_mut().rev() {
+                let TaMessage::Tool(tool) = message else {
+                    continue;
+                };
+                if tool
+                    .content
+                    .iter()
+                    .any(|block| !matches!(block, ContentBlock::Text(_)))
+                {
+                    continue;
                 }
-                if unavailable {
-                    tracing::warn!(
-                        "[tinyagents::mw] tool-outcome sink poisoned; concluding without restoring \
+                let body: String = tool
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if body.trim() != self.cleared_placeholder {
+                    continue;
+                }
+                let outcome = match self.outcomes.content_for(&tool.tool_call_id) {
+                    Ok(Some(outcome)) => outcome,
+                    Ok(None) => continue,
+                    Err(OutcomesUnavailable) => {
+                        unavailable = true;
+                        break;
+                    }
+                };
+                if outcome.trim().is_empty() {
+                    continue;
+                }
+                // What restoring this body would add, against what the
+                // placeholder already costs.
+                let added = estimate_text_tokens(&outcome)
+                    .saturating_sub(estimate_text_tokens(&self.cleared_placeholder));
+                if budget > 0 && used.saturating_add(added) > budget {
+                    // Everything older is at least as likely to overflow, but
+                    // keep counting so the log reports the true shortfall
+                    // rather than stopping at the first one that did not fit.
+                    skipped += 1;
+                    continue;
+                }
+                used = used.saturating_add(added);
+                tool.content = vec![ContentBlock::Text(outcome)];
+                restored += 1;
+            }
+            if unavailable {
+                tracing::warn!(
+                    "[tinyagents::mw] tool-outcome sink poisoned; concluding without restoring \
                          cleared tool results"
-                    );
-                    return 0;
-                }
-                if skipped > 0 {
-                    tracing::info!(
-                        skipped,
-                        restored,
-                        budget,
-                        used,
-                        "[tinyagents::mw] left some cleared tool results cleared: restoring them \
+                );
+                return 0;
+            }
+            if skipped > 0 {
+                tracing::info!(
+                    skipped,
+                    restored,
+                    budget,
+                    used,
+                    "[tinyagents::mw] left some cleared tool results cleared: restoring them \
                          would have pushed the concluding call past its input budget, and an \
                          eviction there costs whole messages rather than one body"
-                    );
-                }
-                restored
+                );
+            }
+            restored
         };
         if restored > 0 {
             tracing::info!(
@@ -286,11 +286,7 @@ impl FinalCallWrapUpMiddleware {
     ///
     /// Returns `true` when the narrowing fired, so the caller can skip the
     /// instruction otherwise.
-    fn reserve_final_write<C>(
-        &self,
-        ctx: &RunContext<C>,
-        request: &mut ModelRequest,
-    ) -> bool {
+    fn reserve_final_write<C>(&self, ctx: &RunContext<C>, request: &mut ModelRequest) -> bool {
         // Below three, reserving would eat the turn rather than shape its end:
         // a two-call budget would be one write-only call plus the conclusion,
         // leaving no round in which anything could be gathered to write.
@@ -301,7 +297,11 @@ impl FinalCallWrapUpMiddleware {
         // has no writer on its belt, and telling it "the only tools left are
         // the ones that write files" would be false — so leave the call as an
         // ordinary one and let the conclusion handle the cap.
-        if !request.tools.iter().any(|t| self.is_deliverable_tool(&t.name)) {
+        if !request
+            .tools
+            .iter()
+            .any(|t| self.is_deliverable_tool(&t.name))
+        {
             return false;
         }
         let before = request.tools.len();

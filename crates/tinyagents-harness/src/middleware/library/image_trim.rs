@@ -152,8 +152,7 @@ impl ImageAwareMessageTrimMiddleware {
 }
 
 #[async_trait]
-impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware
-{
+impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
     fn name(&self) -> &str {
         "image_aware_message_trim"
     }

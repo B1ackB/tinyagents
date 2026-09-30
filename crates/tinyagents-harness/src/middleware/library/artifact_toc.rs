@@ -135,8 +135,7 @@ impl ArtifactIndexTocMiddleware {
 }
 
 #[async_trait]
-impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware
-{
+impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
     fn name(&self) -> &str {
         "artifact_index_toc"
     }

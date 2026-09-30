@@ -11,9 +11,7 @@ use async_trait::async_trait;
 use crate::context::RunContext;
 use crate::error::Result as TaResult;
 use crate::middleware::{Middleware, ToolInvocationIdentity};
-use crate::no_progress::{
-    fingerprint_arguments, SuccessfulRepeat, SuccessfulRepeatTracker,
-};
+use crate::no_progress::{SuccessfulRepeat, SuccessfulRepeatTracker, fingerprint_arguments};
 use crate::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
@@ -153,7 +151,11 @@ impl RepeatProgressMiddleware {
     /// Build the guard. `exempt` names the polling/wait tools that are exempt
     /// from all three checks; the cleared-result placeholder defaults to
     /// [`DEFAULT_CLEARED_PLACEHOLDER`].
-    pub fn new(handle: SteeringHandle, halt_summary: HaltSummarySlot, exempt: RepeatExemption) -> Self {
+    pub fn new(
+        handle: SteeringHandle,
+        halt_summary: HaltSummarySlot,
+        exempt: RepeatExemption,
+    ) -> Self {
         Self {
             handle,
             halt_summary,
@@ -205,7 +207,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
         let visible = match self.state.recorded.lock() {
-            Ok(recorded) if !recorded.is_empty() => visible_tool_results(request, &recorded, &self.state.cleared_placeholder),
+            Ok(recorded) if !recorded.is_empty() => {
+                visible_tool_results(request, &recorded, &self.state.cleared_placeholder)
+            }
             _ => HashSet::new(),
         };
         if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
@@ -309,10 +313,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             if result.is_error {
                 batch.all_ok = false;
             } else if let Some(sig) = batch.call_sigs.get(&call_id) {
-                recurrence = self.state.tracker.record_call_outcome(
-                    sig,
-                    &result.output(),
-                );
+                recurrence = self
+                    .state
+                    .tracker
+                    .record_call_outcome(sig, &result.output());
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded.insert(call_id);
                 }
@@ -397,7 +401,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
         if before.is_empty() {
             return Ok(());
         }
-        let evicted = before.len() - visible_tool_results(request, &before, &self.state.cleared_placeholder).len();
+        let evicted = before.len()
+            - visible_tool_results(request, &before, &self.state.cleared_placeholder).len();
         if evicted == 0 {
             return Ok(());
         }
