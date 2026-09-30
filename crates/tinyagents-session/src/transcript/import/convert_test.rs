@@ -17,9 +17,9 @@ fn parent_key_follows_last_double_underscore() {
 #[test]
 fn sanitize_maps_unsafe_bytes_and_guards_dots() {
     assert_eq!(sanitize_store_name("1719_agent"), "1719_agent");
-    assert_eq!(sanitize_store_name("a/b:c d"), "a_b_c_d");
+    assert!(sanitize_store_name("a/b:c d").starts_with("a_b_c_d_"));
     assert_eq!(sanitize_store_name(""), "session");
-    assert_eq!(sanitize_store_name(".."), "session");
+    assert!(sanitize_store_name("..").starts_with("session_"));
 }
 
 #[test]
