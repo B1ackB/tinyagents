@@ -23,7 +23,7 @@ use super::convert::{
     JournalProjector, build_descriptor, effective_thread_id, journal_messages, sanitize_store_name,
     stream_name,
 };
-use super::ops::{SessionStores, open_session_stores};
+use super::ops::{SessionStores, open_session_stores, rewrite_journal_stream};
 use super::types::{DescriptorSource, JournalMessage, NS_SESSIONS, SessionDescriptor};
 
 static LIVE_REWRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -63,25 +63,17 @@ pub async fn write_live_turn(
 
     let stream = stream_name(session_key);
 
-    // Full-rewrite parity: drop the stream file, then re-append every message so
-    // the journal reflects the current transcript exactly (the importer resets
-    // the same way on re-import). Layout: `{journal_root}/{stream}.jsonl`.
-    let stream_file = journal_root.join(format!("{stream}.jsonl"));
-    if stream_file.exists() {
-        std::fs::remove_file(&stream_file)
-            .with_context(|| format!("reset journal stream {stream}"))?;
-    }
-
-    let records = journal_messages(transcript, project);
-    let message_count = records.len();
-    for (idx, record) in records.iter().enumerate() {
-        let value = serde_json::to_value(record)
-            .with_context(|| format!("serialize live message {idx}"))?;
-        journal
-            .append(&stream, value)
-            .await
-            .with_context(|| format!("journal append failed at message {idx}"))?;
-    }
+    let values = journal_messages(transcript, project)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, record)| {
+            serde_json::to_value(record).with_context(|| format!("serialize live message {idx}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let message_count = values.len();
+    rewrite_journal_stream(&journal, &journal_root, &stream, values)
+        .await
+        .with_context(|| format!("rewrite live journal stream {stream}"))?;
 
     // Descriptor: same projection the importer uses. No run-ledger join here
     // (live turns have no `agent_runs` link yet) and zero warnings; the source

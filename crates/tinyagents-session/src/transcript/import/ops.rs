@@ -10,7 +10,9 @@
 //!   (`StoreRecord` per line via TinyAgents `JsonlAppendStore`).
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -42,6 +44,52 @@ pub struct SessionStores {
     pub kv: FileStore,
     pub journal: JsonlAppendStore,
     pub journal_root: PathBuf,
+}
+
+static REWRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Build a replacement stream beside the current one, then swap it into place
+/// only after every serialized record has been appended successfully.
+pub(super) async fn rewrite_journal_stream(
+    journal: &impl AppendStore,
+    journal_root: &Path,
+    stream: &str,
+    records: Vec<serde_json::Value>,
+) -> Result<()> {
+    let sequence = REWRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let suffix = format!("rewrite-{}-{sequence}", std::process::id());
+    let staged_stream = format!("{stream}.{suffix}");
+    for (index, record) in records.into_iter().enumerate() {
+        if let Err(error) = journal.append(&staged_stream, record).await {
+            let _ = fs::remove_file(journal_root.join(format!("{staged_stream}.jsonl")));
+            return Err(error).with_context(|| format!("staged journal append {index}"));
+        }
+    }
+
+    let destination = journal_root.join(format!("{stream}.jsonl"));
+    let staged = journal_root.join(format!("{staged_stream}.jsonl"));
+    let backup = journal_root.join(format!("{stream}.{suffix}.backup.jsonl"));
+    let had_destination = destination.exists();
+    if had_destination {
+        fs::rename(&destination, &backup).with_context(|| {
+            format!(
+                "move existing journal stream {} to backup",
+                destination.display()
+            )
+        })?;
+    }
+    if let Err(error) = fs::rename(&staged, &destination) {
+        if had_destination {
+            let _ = fs::rename(&backup, &destination);
+        }
+        let _ = fs::remove_file(&staged);
+        return Err(error)
+            .with_context(|| format!("install staged journal stream {}", destination.display()));
+    }
+    if had_destination {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
 }
 
 /// Open the KV + journal stores under `{workspace}/tinyagents_store/{kv,journal}`.
@@ -322,34 +370,26 @@ async fn process_item(
         return report;
     }
 
-    // Re-import overwrites: the append store has no truncate, so drop the
-    // stream file (layout: `{journal_root}/{stream}.jsonl`) before writing.
-    let stream_file = journal_root.join(format!("{stream}.jsonl"));
-    if stream_file.exists()
-        && let Err(err) = std::fs::remove_file(&stream_file)
+    let values: Vec<serde_json::Value> = match journal_messages(transcript, project)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, record)| {
+            serde_json::to_value(record)
+                .map_err(|err| format!("message {idx} not serializable: {err}"))
+        })
+        .collect()
     {
-        report
-            .warnings
-            .push(format!("cannot reset journal stream {stream}: {err}"));
-        return report;
-    }
-
-    for (idx, record) in journal_messages(transcript, project).iter().enumerate() {
-        let value = match serde_json::to_value(record) {
-            Ok(v) => v,
-            Err(err) => {
-                report
-                    .warnings
-                    .push(format!("message {idx} not serializable: {err}"));
-                return report;
-            }
-        };
-        if let Err(err) = journal.append(&stream, value).await {
-            report
-                .warnings
-                .push(format!("journal append failed at message {idx}: {err}"));
+        Ok(values) => values,
+        Err(err) => {
+            report.warnings.push(err);
             return report;
         }
+    };
+    if let Err(err) = rewrite_journal_stream(journal, journal_root, &stream, values).await {
+        report
+            .warnings
+            .push(format!("journal rewrite failed: {err:#}"));
+        return report;
     }
 
     let run_ids = links
