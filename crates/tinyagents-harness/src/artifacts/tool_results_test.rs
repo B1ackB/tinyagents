@@ -57,7 +57,7 @@ async fn threshold_persists_redacted_preview_and_file() {
     assert!(out.contains("original_bytes:"));
     assert!(out.contains("[preview]"));
     assert!(out.contains("Credential/PII redaction was applied"));
-    assert!(!out.contains(test_github_token()));
+    assert!(!out.contains(&test_github_token()));
 
     let stored = std::fs::read_to_string(
         tmp.path()
@@ -65,7 +65,7 @@ async fn threshold_persists_redacted_preview_and_file() {
     )
     .unwrap();
     assert!(stored.contains("xxxx"));
-    assert!(!stored.contains(test_github_token()));
+    assert!(!stored.contains(&test_github_token()));
 }
 
 /// A call with no id still gets a unique, well-formed file name.
