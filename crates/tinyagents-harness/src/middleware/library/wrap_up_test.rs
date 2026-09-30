@@ -95,6 +95,7 @@ async fn wrap_up_withdraws_tools_and_appends_the_instruction_on_the_last_call() 
         "the instruction must be the final turn of the request"
     );
     assert!(mw.fired(&ctx));
+    assert!(mw.fired_for(ctx.instance_id()));
 }
 
 /// The concluding call gets back the results microcompact blanked — otherwise
