@@ -322,10 +322,7 @@ impl ToolResultArtifactStore {
     /// Best-effort by design: a failure here must not fail a turn. The caller
     /// logs and carries on, because the worst case is disk left uncollected,
     /// which the next session retries.
-    pub fn prune_stale_sessions(
-        &self,
-        max_age: std::time::Duration,
-    ) -> std::io::Result<u32> {
+    pub fn prune_stale_sessions(&self, max_age: std::time::Duration) -> std::io::Result<u32> {
         let root = self.action_dir.join(ARTIFACT_ROOT);
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
@@ -526,7 +523,7 @@ pub async fn apply_per_result_persistence(
                     persisted.original_bytes,
                     persisted.stored_bytes,
                     persisted.path,
-                    persisted.redactions.changed()
+                    persisted.redacted
                 );
                 return (
                     output,
@@ -710,7 +707,7 @@ fn random_call_id() -> String {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let salt = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut half = |extra: u64| {
+    let half = |extra: u64| {
         let mut hasher = RandomState::new().build_hasher();
         hasher.write_u64(nanos);
         hasher.write_u64(salt);
@@ -746,3 +743,6 @@ fn assert_within_action_dir(action_dir: &Path, path: &Path) -> anyhow::Result<()
     );
 }
 
+#[cfg(test)]
+#[path = "tool_results_test.rs"]
+mod test;

@@ -1,5 +1,5 @@
-use super::tool_results::*;
-use crate::artifacts::{ArtifactRedactor, Redacted};
+use super::*;
+use crate::artifacts::policy::{ArtifactRedactor, Redacted};
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
@@ -34,10 +34,8 @@ fn store(dir: &Path, session: &str) -> ToolResultArtifactStore {
 }
 
 fn read_target(tool: &str, args: &serde_json::Value) -> Option<ArtifactRead> {
-    read_target(tool, args, "file_read", "use_skill")
+    artifact_read_target(tool, args, "file_read", "use_skill")
 }
-
-const MIN_ENVELOPE_ALLOWANCE_BYTES: usize = 512;
 
 #[tokio::test]
 async fn threshold_persists_redacted_preview_and_file() {
@@ -54,15 +52,19 @@ async fn threshold_persists_redacted_preview_and_file() {
 
     assert!(outcome.persisted);
     assert!(out.contains("artifact_path: artifacts/tool-results/session_one/shell/call-1.txt"));
-    assert!(out.contains("read_with: file_read {\"path\":\"artifacts/tool-results/session_one/shell/call-1.txt\"}"));
+    assert!(out.contains(
+        "read_with: file_read {\"path\":\"artifacts/tool-results/session_one/shell/call-1.txt\"}"
+    ));
     assert!(out.contains("original_bytes:"));
     assert!(out.contains("[preview]"));
     assert!(out.contains("Credential/PII redaction was applied"));
     assert!(!out.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
 
-    let stored =
-        std::fs::read_to_string(tmp.path().join("artifacts/tool-results/session_one/shell/call-1.txt"))
-            .unwrap();
+    let stored = std::fs::read_to_string(
+        tmp.path()
+            .join("artifacts/tool-results/session_one/shell/call-1.txt"),
+    )
+    .unwrap();
     assert!(stored.contains("xxxx"));
     assert!(!stored.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
 }
@@ -193,10 +195,11 @@ async fn persisted_preview_is_bounded_for_small_budget() {
     assert!(outcome.final_bytes <= 320, "final={}", outcome.final_bytes);
     assert_eq!(out.len(), outcome.final_bytes);
     assert!(out.contains("[tool_result_preview]"));
-    assert!(tmp
-        .path()
-        .join("artifacts/tool-results/session/shell/call.txt")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/shell/call.txt")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -233,10 +236,11 @@ async fn aggregate_spills_largest_until_under_budget() {
     let total: usize = results.iter().map(|result| result.output.len()).sum();
     assert!(total <= 1800, "total={total}");
     assert!(!results[0].output.starts_with("[tool_result_preview]\n"));
-    assert!(tmp
-        .path()
-        .join("artifacts/tool-results/session/largest/largest.txt")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/largest/largest.txt")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -285,10 +289,11 @@ async fn aggregate_forces_budget_when_envelope_has_no_savings() {
         total <= results.len() * MIN_ENVELOPE_ALLOWANCE_BYTES,
         "total={total} exceeds the per-result envelope floor bound"
     );
-    assert!(tmp
-        .path()
-        .join("artifacts/tool-results/session/one/one.txt")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("artifacts/tool-results/session/one/one.txt")
+            .exists()
+    );
 }
 
 #[test]
@@ -357,11 +362,13 @@ fn artifact_read_target_matches_only_file_read_under_the_artifact_directory() {
 
 #[test]
 fn artifact_read_target_matches_the_artifact_directory_as_a_path_component() {
-    assert!(read_target(
-        "file_read",
-        &json!({"path": "./artifacts/tool-results/s/c.txt"})
-    )
-    .is_some());
+    assert!(
+        read_target(
+            "file_read",
+            &json!({"path": "./artifacts/tool-results/s/c.txt"})
+        )
+        .is_some()
+    );
     assert_eq!(
         read_target(
             "file_read",
@@ -432,15 +439,28 @@ fn a_page_never_exceeds_the_floored_budget_and_always_advances() {
 fn a_body_redaction_grows_past_the_read_limit_falls_back_to_the_processed_copy() {
     let raw = "call +15551234567 or +15557654321";
     // The limit is the raw size: the raw body fits, its redacted form does not.
-    let (chosen, stored) = readable_body(raw, Some("processed copy"), raw.len() as u64, &TestRedactor, "file_read")
-        .expect("the processed copy fits");
+    let (chosen, stored) = readable_body(
+        raw,
+        Some("processed copy"),
+        raw.len() as u64,
+        &TestRedactor,
+        "file_read",
+    )
+    .expect("the processed copy fits");
     assert_eq!(
         chosen, "processed copy",
         "a body whose sanitized form exceeds the read limit must not be stored, got {:?}",
         stored.text
     );
 
-    let (kept, _) = readable_body(raw, Some("processed copy"), 10_000, &TestRedactor, "file_read").expect("fits");
+    let (kept, _) = readable_body(
+        raw,
+        Some("processed copy"),
+        10_000,
+        &TestRedactor,
+        "file_read",
+    )
+    .expect("fits");
     assert_eq!(
         kept, raw,
         "a body that stays within the limit is stored as returned"
@@ -486,7 +506,9 @@ fn a_page_near_the_maximum_offset_neither_overflows_nor_advertises_a_stuck_conti
     };
     // The offset comes straight from the model's arguments, so the page
     // arithmetic must not overflow on an absurd one.
-    let page = std::panic::catch_unwind(|| page_artifact_read("q".repeat(5_000), &read, 1_000, "file_read"));
+    let page = std::panic::catch_unwind(|| {
+        page_artifact_read("q".repeat(5_000), &read, 1_000, "file_read")
+    });
     assert!(
         page.is_ok(),
         "an offset near usize::MAX must not overflow the page arithmetic"
