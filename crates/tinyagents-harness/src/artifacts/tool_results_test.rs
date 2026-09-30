@@ -23,7 +23,7 @@ impl ArtifactRedactor for TestRedactor {
 }
 
 fn test_github_token() -> String {
-    ["ghp", "_abcdefghijklmnopqrstuvwxyz123456"].concat()
+    "TEST_GITHUB_TOKEN_DO_NOT_USE".to_owned()
 }
 
 fn store(dir: &Path, session: &str) -> ToolResultArtifactStore {
