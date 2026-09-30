@@ -38,7 +38,7 @@
 //! | --- | --- |
 //! | The `reqwest::Client` | proxy configuration and timeouts are host policy; this module borrows one |
 //! | [`TextExtractor`] | which document parser (if any) a host carries, and how long it may run |
-//! | The attachment stash | where bytes live between ingress and dispatch, and their lifetime |
+//! | The stash policy | which directory holds bytes between ingress and dispatch, how large it may grow, how long files live ([`stash::AttachmentStash`] is the mechanism) |
 //! | Message-level counting | only the host knows what its message type is |
 //!
 //! The stash deserves a note, because the split is not obvious. A host that
@@ -71,6 +71,7 @@ pub mod markers;
 pub mod mime;
 pub mod payload;
 pub mod resolve;
+pub mod stash;
 
 #[cfg(test)]
 mod test;
@@ -85,3 +86,4 @@ pub use markers::{
 };
 pub use payload::{FilePayload, compose_multimodal_message, sha256_prefix, truncate_chars};
 pub use resolve::{NoTextExtractor, TextExtractor, resolve_file, resolve_image};
+pub use stash::AttachmentStash;

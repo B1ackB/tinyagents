@@ -25,7 +25,11 @@ impl AttachmentStash {
     /// mtime) are evicted until the total is back under `max_bytes`;
     /// [`Self::sweep_stale`] removes files older than `ttl`.
     pub fn new(dir: PathBuf, max_bytes: u64, ttl: Duration) -> Self {
-        Self { dir, max_bytes, ttl }
+        Self {
+            dir,
+            max_bytes,
+            ttl,
+        }
     }
 
     /// The stash directory.

@@ -59,7 +59,9 @@ async fn cap_evicts_oldest_first() {
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(old_time))
         .unwrap();
-    stash(&dir, 150, Duration::from_secs(3600)).enforce_cap().await;
+    stash(&dir, 150, Duration::from_secs(3600))
+        .enforce_cap()
+        .await;
     assert!(!old.exists());
     assert!(new.exists());
     let _ = std::fs::remove_dir_all(&dir);
@@ -118,8 +120,12 @@ async fn managed_path_only_accepts_files_inside_the_stash() {
     );
     assert!(s.managed_path(outside.to_str().unwrap()).is_none());
     // `..` spelling that escapes the stash is rejected.
-    let escape = format!("{}/../{}", dir.display(), outside.file_name().unwrap().to_string_lossy());
-    assert!(s.managed_path(&escape).is_none() || !escape.starts_with(dir.to_str().unwrap()) || true);
+    let escape = format!(
+        "{}/../{}",
+        dir.display(),
+        outside.file_name().unwrap().to_string_lossy()
+    );
+    assert!(s.managed_path(&escape).is_none());
     assert!(s.managed_path("/definitely/not/there").is_none());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&outside);
