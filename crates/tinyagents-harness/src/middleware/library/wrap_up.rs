@@ -161,9 +161,16 @@ impl FinalCallWrapUpMiddleware {
 
     /// Whether the wrap-up injection fired for this run context.
     pub fn fired<C>(&self, ctx: &RunContext<C>) -> bool {
+        self.fired_for(ctx.instance_id())
+    }
+
+    /// Whether the wrap-up injection fired for the run whose context had this
+    /// [`RunContext::instance_id`]. For callers that hand the context to the
+    /// run (it is not `Clone`) and read the outcome afterwards.
+    pub fn fired_for(&self, instance_id: u64) -> bool {
         self.fired
             .lock()
-            .is_ok_and(|fired| fired.contains(&ctx.instance_id()))
+            .is_ok_and(|fired| fired.contains(&instance_id))
     }
 
     /// Give a concluding-or-persisting call back the tool results microcompact
