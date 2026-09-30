@@ -94,6 +94,33 @@ pub fn estimate_message_tokens(msg: &TaMessage) -> u64 {
     let mut total = estimate_text_tokens(&msg.text());
     total = total
         .saturating_add(count_native_image_blocks(msg).saturating_mul(IMAGE_MARKER_TOKEN_COST));
+    let content = match msg {
+        TaMessage::System(m) => &m.content,
+        TaMessage::User(m) => &m.content,
+        TaMessage::Assistant(m) => &m.content,
+        TaMessage::Tool(m) => &m.content,
+        TaMessage::Custom(_) => return total,
+    };
+    // `Message::text()` omits structured JSON and provider-visible thinking /
+    // extension blocks. Charge their serialized representation so large
+    // structured tool results cannot bypass the prompt budget.
+    for block in content {
+        match block {
+            ContentBlock::Json(value) => {
+                total = total.saturating_add(estimate_text_tokens(&value.to_string()));
+            }
+            ContentBlock::Thinking { text, .. } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+            }
+            ContentBlock::RedactedThinking { data } => {
+                total = total.saturating_add(estimate_text_tokens(data));
+            }
+            ContentBlock::ProviderExtension(value) => {
+                total = total.saturating_add(estimate_text_tokens(&value.to_string()));
+            }
+            ContentBlock::Text(_) | ContentBlock::Image(_) => {}
+        }
+    }
     if let TaMessage::Assistant(m) = msg {
         for call in &m.tool_calls {
             total = total.saturating_add(estimate_text_tokens(&call.name));

@@ -127,8 +127,28 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             other => return Ok(other),
         };
 
-        let content = result.output();
-        if let Some((annotated, redactions)) = (self.scrubber)(&tool_name, &content) {
+        let mut redactions = 0usize;
+        for block in &mut result.content {
+            let (text, is_json) = match block {
+                tinytools::ToolContent::Text { text } => (text.clone(), false),
+                tinytools::ToolContent::Json { data } => (data.to_string(), true),
+            };
+            if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, &text) {
+                if is_json {
+                    if let Ok(value) = serde_json::from_str(&scrubbed) {
+                        if let tinytools::ToolContent::Json { data } = block {
+                            *data = value;
+                        }
+                    } else if let tinytools::ToolContent::Json { data } = block {
+                        *data = serde_json::Value::String(scrubbed);
+                    }
+                } else if let tinytools::ToolContent::Text { text } = block {
+                    *text = scrubbed;
+                }
+                redactions = redactions.saturating_add(count);
+            }
+        }
+        if redactions > 0 {
             tracing::warn!(
                 tool = %tool_name,
                 redactions,
@@ -136,7 +156,9 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             );
             // The notice goes to the model, in the result itself. The warning
             // above goes to the log, where no model will ever read it.
-            result.content = vec![tinytools::ToolContent::Text { text: annotated }];
+            result.content.push(tinytools::ToolContent::Text {
+                text: redaction_notice(redactions),
+            });
             result.markdown_formatted = None;
         }
 
