@@ -3,3 +3,5 @@
    Compiling tinyagents-registry v2.1.2 (/home/enamakel/work/libraries/tinyagents/worktrees/pr-238/crates/tinyagents-registry)
    Compiling tinyagents-graph v2.1.2 (/home/enamakel/work/libraries/tinyagents/worktrees/pr-238/crates/tinyagents-graph)
    Compiling tinyagents-runtime v2.1.2 (/home/enamakel/work/libraries/tinyagents/worktrees/pr-238/crates/tinyagents-runtime)
+   Compiling tinyagents-orchestration v2.1.2 (/home/enamakel/work/libraries/tinyagents/worktrees/pr-238/crates/tinyagents-orchestration)
+   Compiling tinyagents-integration-tests v2.1.2 (/home/enamakel/work/libraries/tinyagents/worktrees/pr-238/crates/tinyagents-integration-tests)
