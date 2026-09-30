@@ -385,6 +385,18 @@ impl HarnessRunStatus {
         self.updated_at = now;
     }
 
+    /// Advances the run to [`ExecutionStatus::Cancelled`], records the reason,
+    /// and records the end time. Mirrors the field writes of
+    /// [`Self::mark_failed`] so a cancelled run is terminal in every listing.
+    pub fn mark_cancelled(&mut self, reason: impl Into<String>) {
+        self.status = ExecutionStatus::Cancelled;
+        self.current_phase = HarnessPhase::Done;
+        self.error = Some(reason.into());
+        let now = SystemTime::now();
+        self.ended_at = Some(now);
+        self.updated_at = now;
+    }
+
     /// Marks the run as interrupted (waiting for external input).
     pub fn mark_interrupted(&mut self) {
         self.status = ExecutionStatus::Interrupted;
