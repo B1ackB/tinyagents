@@ -10,7 +10,6 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::transcript::{self, CompactionMarker, DisplayMessage, DisplayRecord};
-use tinytools_agent::dialect::{ToolResultEntry, parse_replayed_results};
 
 use super::TOOL_RESULT_FAILURES_METADATA_KEY;
 
@@ -244,7 +243,9 @@ impl Projector {
                 // The strict dialect replay shape also starts with
                 // `[Tool results]`. Handle it first so its persisted failure
                 // IDs are applied rather than treating every block as success.
-                if let Some(results) = parse_replayed_results(&msg.message.content) {
+                if let Some(results) =
+                    tinytools_agent::dialect::parse_replayed_results(&msg.message.content)
+                {
                     self.text_tool_results(msg, results);
                     return;
                 }
@@ -546,14 +547,18 @@ fn unwrap_tool_result(raw: &str) -> (String, Option<String>) {
 /// row ([`TOOL_RESULT_FAILURES_METADATA_KEY`]); a result with no pending call
 /// surfaces as an orphan row, as for a native `tool` line.
 impl Projector {
-    fn text_tool_results(&mut self, msg: &DisplayMessage, results: Vec<ToolResultEntry>) {
+    fn text_tool_results(
+        &mut self,
+        msg: &DisplayMessage,
+        results: Vec<tinytools_agent::dialect::ToolResultEntry>,
+    ) {
         project_text_tool_results(msg, results, &mut self.items, &mut self.pending);
     }
 }
 
 fn project_text_tool_results(
     msg: &DisplayMessage,
-    results: Vec<ToolResultEntry>,
+    results: Vec<tinytools_agent::dialect::ToolResultEntry>,
     items: &mut Vec<DisplayItem>,
     pending: &mut VecDeque<(String, usize)>,
 ) {
