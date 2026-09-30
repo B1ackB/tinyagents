@@ -195,7 +195,7 @@ pub async fn run_import(
     }
 
     // Global marker only after a full, non-dry scan.
-    if full_scan && !opts.dry_run {
+    if full_scan && !opts.dry_run && summary.failed == 0 {
         let marker = json!({
             "version": IMPORT_VERSION,
             "imported_at": imported_at,

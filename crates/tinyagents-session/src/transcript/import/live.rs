@@ -150,6 +150,10 @@ pub enum ShadowReadOutcome {
 /// as normalized [`JournalMessage`]s — the same shape the importer and live
 /// dual-write write. A missing stream yields an empty vec (not an error).
 async fn read_shadow_messages(workspace: &Path, session_key: &str) -> Result<Vec<JournalMessage>> {
+    let _rewrite_guard = LIVE_REWRITE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     let SessionStores { journal, .. } = open_session_stores(workspace);
     let stream = stream_name(session_key);
     let records = journal

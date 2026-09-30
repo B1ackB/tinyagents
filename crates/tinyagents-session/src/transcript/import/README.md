@@ -59,7 +59,7 @@ Source files are never mutated or deleted.
 
 | File | Role |
 | --- | --- |
-| `mod.rs` | Module docs and re-exports (`ImportOptions`, `ImportSummary`, controller registration). |
+| `mod.rs` | Module docs and re-exports (`ImportOptions`, `ImportSummary`). |
 | `types.rs` | Serde types: `ImportOptions`, `ImportSummary`, `ItemReport`, `SessionDescriptor`, `JournalMessage`, `ItemLedgerRecord`, and the store-layout constants (`KV_SUBDIR`, `JOURNAL_SUBDIR`, `NS_*`, `MARKER_KEY`, `IMPORT_VERSION`). |
 | `scan.rs` | `discover_sources` walks `session_raw/` and `sessions/`, deduping by stem per the precedence order above. |
 | `convert.rs` | Pure helpers: `parent_session_key` stem lineage, `sanitize_store_name`, `stream_name`, `effective_thread_id` (synthesizes `imported-{stem}` when `_meta` has none), `build_descriptor`, `journal_messages`. |
