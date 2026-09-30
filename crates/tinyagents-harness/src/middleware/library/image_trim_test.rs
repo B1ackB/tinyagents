@@ -13,7 +13,7 @@ use tinyinference_llm::model::ModelRequest;
 
 #[test]
 fn estimate_text_tokens_markerless_is_chars_over_four() {
-    assert_eq!(estimate_text_tokens(&"a".repeat(40)), (40 + 3) / 4);
+    assert_eq!(estimate_text_tokens(&"a".repeat(40)), 40_u64.div_ceil(4));
     assert_eq!(estimate_text_tokens(""), 0);
 }
 
@@ -49,7 +49,7 @@ fn estimate_text_tokens_charges_each_image_marker_once() {
 #[test]
 fn an_unterminated_marker_is_counted_as_text() {
     let text = format!("[IMAGE:{}", "y".repeat(400));
-    assert_eq!(estimate_text_tokens(&text), (text.len() as u64 + 3) / 4);
+    assert_eq!(estimate_text_tokens(&text), (text.len() as u64).div_ceil(4));
 }
 
 #[test]

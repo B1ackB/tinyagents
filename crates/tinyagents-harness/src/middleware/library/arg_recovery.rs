@@ -67,15 +67,15 @@ impl<C: Send + Sync> Middleware<(), C> for ArgRecoveryMiddleware {
 
         // (2) JSON-encoded-string arguments (optionally markdown-fenced): decode
         // and adopt the inner object.
-        if let Some(raw) = call.arguments.as_str() {
-            if let Some(obj) = recover_object_from_json_string(raw) {
-                tracing::debug!(
-                    tool = call.name.as_str(),
-                    "[tinyagents::mw] arg_recovery: decoded JSON-encoded-string tool arguments to object"
-                );
-                call.arguments = obj;
-                return Ok(());
-            }
+        if let Some(raw) = call.arguments.as_str()
+            && let Some(obj) = recover_object_from_json_string(raw)
+        {
+            tracing::debug!(
+                tool = call.name.as_str(),
+                "[tinyagents::mw] arg_recovery: decoded JSON-encoded-string tool arguments to object"
+            );
+            call.arguments = obj;
+            return Ok(());
         }
 
         // (3) Non-object with a permissive schema (no required fields): coerce to

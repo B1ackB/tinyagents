@@ -405,7 +405,7 @@ async fn wrap_up_stops_restoring_at_the_input_budget() {
         .filter(|m| m.text().starts_with("xxx"))
         .count();
     assert!(
-        restored >= 1 && restored < 3,
+        (1..3).contains(&restored),
         "some restored, not all — budget 1200 cannot hold three 4k bodies, got {restored}"
     );
     // Newest-first: the last tool result is the one the model never saw (the
@@ -466,7 +466,7 @@ async fn wrap_up_restoration_stays_bounded_when_no_window_is_advertised() {
         .filter(|m| m.text().starts_with("xxx"))
         .count();
     assert!(
-        restored >= 1 && restored < 40,
+        (1..40).contains(&restored),
         "some restored, not all 40 — got {restored}"
     );
 }

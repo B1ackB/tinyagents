@@ -13,6 +13,14 @@
 //!   [`DynamicPromptMiddleware`], [`RedactionMiddleware`], and
 //!   [`TracingMiddleware`] implement the lifecycle [`Middleware`] trait.
 //!
+//! - **Context ladder and loop guards** — [`ImageAwareMessageTrimMiddleware`],
+//!   [`ArtifactIndexTocMiddleware`], [`FinalCallWrapUpMiddleware`],
+//!   [`RepeatProgressMiddleware`] / [`RepeatEvictionObserver`],
+//!   [`ArgRecoveryMiddleware`] and [`CredentialScrubMiddleware`]. All are
+//!   generic over the run-context payload; host policy (tool names, the
+//!   cleared-result placeholder, exemptions, per-tool scrubbing) is injected
+//!   through constructor arguments.
+//!
 //! Type definitions live in `types`; this file holds the constructors and
 //! trait impls. Tests live in `test.rs`.
 //!
