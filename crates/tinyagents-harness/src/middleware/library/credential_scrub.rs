@@ -157,11 +157,11 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
                 redactions = redactions.saturating_add(count);
             }
         }
-        if let Some(markdown) = &mut result.markdown_formatted {
-            if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, markdown) {
-                *markdown = scrubbed;
-                redactions = redactions.saturating_add(count);
-            }
+        if let Some(markdown) = &mut result.markdown_formatted
+            && let Some((scrubbed, count)) = (self.scrubber)(&tool_name, markdown)
+        {
+            *markdown = scrubbed;
+            redactions = redactions.saturating_add(count);
         }
         if redactions > 0 {
             tracing::warn!(
