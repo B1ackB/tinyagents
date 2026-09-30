@@ -61,7 +61,7 @@ impl TurnStateMirror {
     }
 
     /// Record a tool call in the transcript at the point it occurred, as a
-    /// pointer into [`TurnState::tool_timeline`] (the row's status/label live
+    /// pointer into [`crate::turn_state::types::TurnState::tool_timeline`] (the row's status/label live
     /// there). Skips a duplicate if the same `call_id` was already recorded
     /// (e.g. a start event after an args-delta placeholder).
     pub fn push_transcript_tool(&mut self, round: u32, call_id: &str) {
