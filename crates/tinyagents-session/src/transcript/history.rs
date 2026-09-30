@@ -805,12 +805,11 @@ impl FileTranscriptHistory {
 /// The file is intentionally retained after unlock; deleting lock files can
 /// split waiters across different inodes and invalidate mutual exclusion.
 fn generation_lock(path: &Path) -> anyhow::Result<File> {
-    let mut lock_path = path.as_os_str().to_os_string();
-    lock_path.push(".lock");
-    let lock_path = PathBuf::from(lock_path);
-    if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let lock_dir = parent.join(".locks");
+    fs::create_dir_all(&lock_dir)?;
+    let lock_name = path.file_name().unwrap_or_default();
+    let lock_path = lock_dir.join(lock_name);
     OpenOptions::new()
         .create(true)
         .truncate(false)
