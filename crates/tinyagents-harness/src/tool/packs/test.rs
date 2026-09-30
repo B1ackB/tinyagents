@@ -98,10 +98,6 @@ fn find<'a>(tools: &'a [Box<dyn Tool>], name: &str) -> &'a dyn Tool {
         .unwrap_or_else(|| panic!("{name} missing"))
 }
 
-fn text(result: &ToolResult) -> String {
-    format!("{:?}", result.content)
-}
-
 #[test]
 fn the_use_skill_declaration_is_byte_stable() {
     let tools = bound(vec![]);
