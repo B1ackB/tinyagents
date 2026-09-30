@@ -36,7 +36,13 @@ pub fn compute_primary_array_path(schema: Option<&Value>) -> Option<String> {
         // Check every property at THIS level for an array before descending
         // to the next level — guarantees the shallowest match wins.
         for (key, prop_schema) in props {
-            if prop_schema.get("type").and_then(Value::as_str) == Some("array") {
+            let is_array = prop_schema.get("type").is_some_and(|kind| {
+                kind.as_str() == Some("array")
+                    || kind.as_array().is_some_and(|types| {
+                        types.iter().any(|value| value.as_str() == Some("array"))
+                    })
+            });
+            if is_array {
                 let prop_path = if path.is_empty() {
                     key.clone()
                 } else {
@@ -118,8 +124,9 @@ pub fn compute_primary_array_path_from_value(
 ///
 /// Reads `.properties`' keys for a standard object schema
 /// (`{"type": "object", "properties": {…}}`), and falls back to the schema's own
-/// top-level keys minus common JSON-Schema keywords for a looser or legacy
-/// shape. Empty when the schema is absent or unrecognized — never fails.
+/// top-level keys only when no standard JSON-Schema keywords identify the
+/// input as a schema. Empty when the schema is absent or a recognized schema
+/// declares no properties — never fails.
 #[must_use]
 pub fn response_fields_from_schema(schema: Option<&Value>) -> Vec<String> {
     const SCHEMA_KEYWORDS: &[&str] = &[
@@ -130,6 +137,58 @@ pub fn response_fields_from_schema(schema: Option<&Value>) -> Vec<String> {
         "description",
         "title",
         "examples",
+        "$id",
+        "$anchor",
+        "$ref",
+        "$defs",
+        "definitions",
+        "properties",
+        "patternProperties",
+        "propertyNames",
+        "minProperties",
+        "maxProperties",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "unevaluatedProperties",
+        "contentEncoding",
+        "contentMediaType",
+        "contentSchema",
+        "default",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "const",
+        "enum",
+        "format",
+        "$comment",
+        "$vocabulary",
+        "$dynamicRef",
+        "$dynamicAnchor",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "contains",
+        "minContains",
+        "maxContains",
+        "items",
+        "prefixItems",
+        "unevaluatedItems",
     ];
 
     let Some(obj) = schema.and_then(Value::as_object) else {
@@ -176,8 +235,10 @@ pub fn missing_required_args(required: &[String], args: &Value) -> Vec<String> {
 /// - `schema` is `None` (the input schema is unknown for this slug), or
 /// - `schema` is not a JSON object, or names no object `properties` map (an
 ///   unrecognized/legacy shape — nothing to check names against), or
-/// - `schema` declares `additionalProperties: true` (the provider explicitly
-///   telling us to accept arbitrary keys beyond the declared ones).
+/// - `schema` declares `additionalProperties: true` or a schema (the provider
+///   explicitly allows arbitrary keys beyond the declared ones).
+///
+/// Names matching `patternProperties` are accepted as declared names.
 ///
 /// `Some(vec![])` means the schema WAS usable and every arg name in `args`
 /// is a real declared property. `args` must be a JSON object to check
@@ -189,8 +250,7 @@ pub fn unsupported_arg_names(schema: Option<&Value>, args: &Value) -> Option<Vec
     let schema_obj = schema?.as_object()?;
     if schema_obj
         .get("additionalProperties")
-        .and_then(Value::as_bool)
-        == Some(true)
+        .is_some_and(|value| value.as_bool() == Some(true) || value.is_object())
     {
         return None;
     }
@@ -200,7 +260,20 @@ pub fn unsupported_arg_names(schema: Option<&Value>, args: &Value) -> Option<Vec
     };
     let mut unsupported: Vec<String> = args_obj
         .keys()
-        .filter(|k| !properties.contains_key(k.as_str()))
+        .filter(|key| {
+            if properties.contains_key(key.as_str()) {
+                return false;
+            }
+            let matches_pattern = schema_obj
+                .get("patternProperties")
+                .and_then(Value::as_object)
+                .is_some_and(|patterns| {
+                    patterns.keys().any(|pattern| {
+                        regex::Regex::new(pattern).is_ok_and(|compiled| compiled.is_match(key))
+                    })
+                });
+            !matches_pattern
+        })
         .cloned()
         .collect();
     unsupported.sort();

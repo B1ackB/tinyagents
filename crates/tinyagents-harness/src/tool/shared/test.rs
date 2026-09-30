@@ -169,6 +169,42 @@ async fn canonical_adapter_fails_closed_when_the_registered_tool_is_gone() {
     assert_eq!(result.output(), "unknown tool 'missing'");
 }
 
+struct InjectedArgumentTool;
+
+#[async_trait]
+impl Tool for InjectedArgumentTool {
+    fn name(&self) -> &str {
+        "injected"
+    }
+
+    fn description(&self) -> &str {
+        "Declares a host-owned call identity."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    fn injected_arguments(&self) -> Vec<tinytools::ToolInjectedArgument> {
+        vec![tinytools::ToolInjectedArgument::tool_call_id("call_id")]
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::default())
+    }
+}
+
+#[test]
+fn canonical_adapter_forwards_injected_argument_declarations() {
+    let sets: Vec<Arc<Vec<Box<dyn Tool>>>> = vec![Arc::new(vec![Box::new(InjectedArgumentTool)])];
+    let adapter = CanonicalSharedToolAdapter::for_name(sets, "injected").expect("registered tool");
+
+    assert_eq!(
+        adapter.injected_arguments(),
+        vec![tinytools::ToolInjectedArgument::tool_call_id("call_id")]
+    );
+}
+
 #[tokio::test]
 async fn early_exit_only_fires_after_a_successful_canonical_result() {
     let sets: Vec<Arc<Vec<Box<dyn Tool>>>> = vec![Arc::new(vec![Box::new(RecordingTool {

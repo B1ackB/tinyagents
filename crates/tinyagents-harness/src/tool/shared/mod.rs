@@ -113,6 +113,12 @@ impl Tool for CanonicalSharedToolAdapter {
         self.resolved_tool().and_then(Tool::family)
     }
 
+    fn injected_arguments(&self) -> Vec<tinytools::ToolInjectedArgument> {
+        self.resolved_tool()
+            .map(Tool::injected_arguments)
+            .unwrap_or_default()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.execute_with_context(
             args,
