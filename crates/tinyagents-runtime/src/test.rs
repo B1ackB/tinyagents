@@ -2624,6 +2624,11 @@ async fn a_restart_after_a_compaction_resumes_the_head_generation() {
     let directory = tempfile::tempdir().unwrap();
     let session_ref = SessionRef::scoped("thread-1", "agent-id");
     let locator = Arc::new(FileTranscriptLocator::new(directory.path()));
+    locator
+        .open_session(&session_ref, meta())
+        .unwrap()
+        .append(TranscriptMessage::new("user", "sealed"))
+        .unwrap();
     let (_, handle) = locator.begin_generation(&session_ref, meta()).unwrap();
     let parent_write = locator
         .open_session(&session_ref, meta())
