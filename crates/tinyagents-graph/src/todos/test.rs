@@ -365,7 +365,7 @@ mod tool_tests {
         let tool = TodoTool::new(store());
         let description = Tool::description(&tool);
         assert!(
-            description.contains("only after its work has actually run"),
+            description.contains("only after its work has run"),
             "an item is completed after its result exists: {description}"
         );
         assert!(
@@ -373,16 +373,20 @@ mod tool_tests {
             "writing the list is not the work: {description}"
         );
         assert!(
-            description.contains("immediately carry out the next step"),
+            description.contains("do the next step"),
             "the model advances after bookkeeping: {description}"
         );
         assert!(
-            description.contains("unless this update completes the final item"),
+            description.contains("unless the list is finished"),
             "a terminal completion does not require a nonexistent next step: {description}"
         );
         assert!(
-            description.contains("next model turn"),
+            description.contains("next turn"),
             "sequential providers may advance on their next turn: {description}"
+        );
+        assert!(
+            description.contains("at most once per assistant response"),
+            "replacement calls are bounded per assistant response: {description}"
         );
     }
 

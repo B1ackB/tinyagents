@@ -84,10 +84,10 @@ pub use export::{
 };
 pub use goals::store as goal_store;
 pub use goals::{
-    BudgetVerdict, GoalBudgetGuard, GoalProgress, GoalTool, GoalToolKind, ThreadGoal,
-    ThreadGoalStatus, TurnOutcome, account_turn, accrues_usage, active_goal_context_block,
-    goal_gate_node, goal_tools, note_user_turn, register_goal_tools, run_continuation_tick,
-    turn_tokens,
+    BudgetVerdict, GoalBudgetGuard, GoalProgress, GoalTool, GoalToolKind, GoalUpdateHook,
+    ThreadGoal, ThreadGoalStatus, TurnOutcome, account_turn, accrues_usage,
+    active_goal_context_block, goal_gate_node, goal_tools, note_user_turn, register_goal_tools,
+    run_continuation_tick, turn_tokens,
 };
 pub use observability::{
     GraphEventJournal, GraphHealthSummary, GraphLangfuseExporter, GraphLatencyMetrics,

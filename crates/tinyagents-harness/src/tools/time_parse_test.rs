@@ -86,6 +86,7 @@ fn conversational_dates_resolve_in_the_requested_timezone() {
         ("since Monday", "2026-01-04T18:30:00Z"),
         ("last Wednesday", "2025-12-30T18:30:00Z"),
         ("2026-01-09 at 9am", "2026-01-09T03:30:00Z"),
+        ("2026-01-09T09:00", "2026-01-09T03:30:00Z"),
         ("11 PM tonight", "2026-01-07T17:30:00Z"),
         ("tonight at midnight", "2026-01-07T18:30:00Z"),
         ("9am next Friday", "2026-01-09T03:30:00Z"),

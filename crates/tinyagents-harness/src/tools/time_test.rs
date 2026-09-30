@@ -33,6 +33,10 @@ async fn current_time_returns_utc_local_and_unix_seconds() {
     assert!(payload["local"].is_string());
     assert!(payload["local_timezone"].is_string());
     assert!(payload["unix_seconds"].is_number());
+    assert!(matches!(
+        result.content.as_slice(),
+        [tinytools::ToolContent::Json { .. }]
+    ));
 }
 
 #[tokio::test]
@@ -153,6 +157,10 @@ async fn resolve_time_returns_all_formats_and_selected_value() {
     assert_eq!(payload["unix_ms"], 1_781_032_320_000_i64);
     assert_eq!(payload["slack_ts"], "1781032320.000000");
     assert_eq!(payload["value"], "1781032320.000000");
+    assert!(matches!(
+        result.content.as_slice(),
+        [tinytools::ToolContent::Json { .. }]
+    ));
 }
 
 #[tokio::test]
