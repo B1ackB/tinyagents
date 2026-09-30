@@ -335,6 +335,9 @@ impl TurnStateStore {
         snapshot.active_subagent = None;
         snapshot.updated_at = now_rfc3339.to_string();
         self.write_turn_file(&snapshot)?;
+        if lifecycle == TurnLifecycle::Completed {
+            self.prune_completed_locked(thread_id);
+        }
         debug!(
             "{LOG_PREFIX} settled non-terminal snapshot thread={thread_id} request={request_id} lifecycle={lifecycle:?}"
         );
