@@ -118,16 +118,16 @@ impl From<tinyagents_harness::TinyAgentsError> for ControlError {
 /// [`apply_control`]; only the status move + event name are decided here so the
 /// transition legality stays purely testable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ControlPlan {
-    target_status: AgentRunStatus,
-    event_type: &'static str,
+pub(super) struct ControlPlan {
+    pub(super) target_status: AgentRunStatus,
+    pub(super) event_type: &'static str,
 }
 
 /// Decide whether `verb` is legal from `current` and, if so, where it lands.
 ///
 /// Pure: no I/O. The matrix is exhaustive on the verb so a new verb fails to
 /// compile until its transition rule is decided.
-fn plan_transition(
+pub(super) fn plan_transition(
     current: AgentRunStatus,
     verb: ControlVerb,
 ) -> Result<ControlPlan, ControlError> {
@@ -268,7 +268,3 @@ pub fn apply_control(
     );
     Ok(project_row(updated, display_name))
 }
-
-#[cfg(test)]
-#[path = "control_tests.rs"]
-mod tests;

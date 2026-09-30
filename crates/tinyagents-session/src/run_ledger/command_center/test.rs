@@ -15,7 +15,6 @@ fn no_names(_: &str) -> Option<String> {
     None
 }
 
-
 fn run_with(id: &str, status: AgentRunStatus, updated_secs: i64) -> AgentRun {
     AgentRun {
         id: id.to_string(),
@@ -74,10 +73,11 @@ fn build_view_always_emits_five_buckets_in_display_order() {
     assert_eq!(view.total, 0);
     let order: Vec<AgentWorkBucket> = view.groups.iter().map(|g| g.bucket).collect();
     assert_eq!(order, AgentWorkBucket::ALL.to_vec());
-    assert!(view
-        .groups
-        .iter()
-        .all(|g| g.rows.is_empty() && g.count == 0));
+    assert!(
+        view.groups
+            .iter()
+            .all(|g| g.rows.is_empty() && g.count == 0)
+    );
 }
 
 #[test]
@@ -141,7 +141,6 @@ fn project_row_defaults_telemetry_to_zero_when_absent() {
     assert_eq!(row.status, "completed");
     assert_eq!(row.kind, "subagent");
 }
-
 
 fn seed_run(workspace_dir: &Path, id: &str, status: AgentRunStatus) {
     upsert_agent_run(
@@ -289,7 +288,15 @@ fn stop_cancels_a_running_run_and_records_an_event() {
     let config = dir.path().to_path_buf();
     seed_run(&config, "run-1", AgentRunStatus::Running);
 
-    let row = apply_control(&config, "run-1", ControlVerb::Stop, None, Some("manual", &no_names)).unwrap();
+    let row = apply_control(
+        &config,
+        "run-1",
+        ControlVerb::Stop,
+        None,
+        Some("manual"),
+        &no_names,
+    )
+    .unwrap();
     assert_eq!(row.status, "cancelled");
     assert_eq!(row.bucket.as_str(), "stopped");
     assert_eq!(row.error.as_deref(), Some("manual"));
@@ -327,7 +334,14 @@ fn continue_resumes_an_awaiting_user_run() {
     let config = dir.path().to_path_buf();
     seed_run(&config, "run-1", AgentRunStatus::AwaitingUser);
 
-    let row = apply_control(&config, "run-1", ControlVerb::Continue, Some("use the staging bucket"), None,, &no_names)
+    let row = apply_control(
+        &config,
+        "run-1",
+        ControlVerb::Continue,
+        Some("use the staging bucket"),
+        None,
+        &no_names,
+    )
     .unwrap();
     assert_eq!(row.status, "running");
     assert_eq!(row.bucket.as_str(), "working");
@@ -339,13 +353,18 @@ fn continue_without_message_is_rejected_before_touching_the_ledger() {
     let config = dir.path().to_path_buf();
     seed_run(&config, "run-1", AgentRunStatus::AwaitingUser);
 
-    let err =
-        apply_control(&config, "run-1", ControlVerb::Continue, Some("   "), None, &no_names).unwrap_err();
+    let err = apply_control(
+        &config,
+        "run-1",
+        ControlVerb::Continue,
+        Some("   "),
+        None,
+        &no_names,
+    )
+    .unwrap_err();
     assert!(matches!(err, ControlError::MessageRequired("continue")));
     // Status untouched.
-    let run = get_agent_run(&config, "run-1")
-        .unwrap()
-        .unwrap();
+    let run = get_agent_run(&config, "run-1").unwrap().unwrap();
     assert_eq!(run.status, AgentRunStatus::AwaitingUser);
 }
 
@@ -355,7 +374,14 @@ fn follow_up_records_an_event_without_changing_status() {
     let config = dir.path().to_path_buf();
     seed_run(&config, "run-1", AgentRunStatus::Completed);
 
-    let row = apply_control(&config, "run-1", ControlVerb::FollowUp, Some("now summarize it"), None,, &no_names)
+    let row = apply_control(
+        &config,
+        "run-1",
+        ControlVerb::FollowUp,
+        Some("now summarize it"),
+        None,
+        &no_names,
+    )
     .unwrap();
     assert_eq!(row.status, "completed");
 
@@ -378,7 +404,8 @@ fn invalid_transition_is_rejected() {
     let config = dir.path().to_path_buf();
     seed_run(&config, "run-1", AgentRunStatus::Completed);
 
-    let err = apply_control(&config, "run-1", ControlVerb::Stop, None, None, &no_names).unwrap_err();
+    let err =
+        apply_control(&config, "run-1", ControlVerb::Stop, None, None, &no_names).unwrap_err();
     assert!(matches!(
         err,
         ControlError::InvalidTransition {
@@ -392,6 +419,7 @@ fn invalid_transition_is_rejected() {
 fn unknown_run_is_not_found() {
     let dir = TempDir::new().unwrap();
     let config = dir.path().to_path_buf();
-    let err = apply_control(&config, "ghost", ControlVerb::Stop, None, None, &no_names).unwrap_err();
+    let err =
+        apply_control(&config, "ghost", ControlVerb::Stop, None, None, &no_names).unwrap_err();
     assert!(matches!(err, ControlError::RunNotFound(id) if id == "ghost"));
 }
