@@ -1,14 +1,16 @@
 //! Fault-tolerant, per-turn-caching wrapper around any [`Summarizer`].
 
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tinyinference_llm::message::Message;
 
 use super::model_summarizer::role_label;
-use super::{CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens};
+use super::{
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens,
+};
 use crate::error::Result;
 
 /// Token budget for the deterministic-trim fallback summary, as a fraction of
@@ -232,4 +234,3 @@ impl Summarizer for FaultTolerantCachingSummarizer {
         Ok(record)
     }
 }
-

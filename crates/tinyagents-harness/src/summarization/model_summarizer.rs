@@ -20,7 +20,9 @@ use async_trait::async_trait;
 use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ChatModel, ModelRequest};
 
-use super::{CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens};
+use super::{
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens,
+};
 use crate::error::{Result, TinyAgentsError};
 
 /// Default fraction of the model's context window at which summarization fires.
@@ -235,4 +237,3 @@ Files read, created, or modified, with a one-line note on each.\n\
 \n\
 ## Critical Context\n\
 Anything else essential to continue correctly (constraints, environment facts, gotchas).";
-
