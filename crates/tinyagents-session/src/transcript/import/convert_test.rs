@@ -30,11 +30,11 @@ fn thread_id_synthesized_only_when_absent() {
     );
     assert_eq!(
         effective_thread_id("s1", None),
-        ("imported-s1".to_string(), true)
+        ("imported-s7331".to_string(), true)
     );
     assert_eq!(
         effective_thread_id("s1", Some("")),
-        ("imported-s1".to_string(), true)
+        ("imported-s7331".to_string(), true)
     );
 }
 
@@ -42,6 +42,6 @@ fn thread_id_synthesized_only_when_absent() {
 fn stream_name_is_store_safe() {
     assert_eq!(
         stream_name("1719_a__1720_b"),
-        "session.1719_a__1720_b.messages"
+        "session.s313731395f615f5f313732305f62.messages"
     );
 }
