@@ -8,7 +8,9 @@ use tempfile::TempDir;
 use tinyagents_harness::store::{AppendStore, FileStore, JsonlAppendStore, Store};
 
 use super::convert::{journal_messages, plain_journal_message, sanitize_store_name};
-use super::ops::{run_import as run_import_with, store_root};
+use super::ops::{
+    open_session_stores, rewrite_journal_stream, run_import as run_import_with, store_root,
+};
 use super::types::{
     ImportOptions, ImportSummary, ItemAction, JournalMessage, MARKER_KEY, NS_MIGRATIONS,
     NS_SESSIONS, SessionDescriptor,
@@ -21,6 +23,18 @@ async fn run_import(ws: &Path, opts: &ImportOptions) -> anyhow::Result<ImportSum
 
 fn ws() -> TempDir {
     TempDir::new().expect("tempdir")
+}
+
+#[tokio::test]
+async fn empty_journal_rewrite_installs_an_empty_stream() {
+    let ws = ws();
+    let stores = open_session_stores(ws.path());
+    fs::create_dir_all(&stores.journal_root).unwrap();
+    rewrite_journal_stream(&stores.journal, &stores.journal_root, "empty", Vec::new())
+        .await
+        .unwrap();
+
+    assert_eq!(fs::read(stores.journal_root.join("empty.jsonl")).unwrap(), b"");
 }
 
 fn write_file(path: &Path, contents: &str) {
