@@ -87,7 +87,7 @@ impl Tool for CurrentTimeTool {
     ) -> anyhow::Result<ToolResult> {
         tracing::debug!(args = %arguments, "[current_time] execute start");
         let payload = current_time_payload(&arguments);
-        let mut result = ToolResult::success(serde_json::to_string_pretty(&payload)?);
+        let mut result = ToolResult::json(payload.clone());
         if options.prefer_markdown {
             result = result.with_markdown(current_time_markdown(&payload));
         }
@@ -277,7 +277,7 @@ impl Tool for ResolveTimeTool {
             payload["rfc3339"],
             payload["unix_s"]
         );
-        let mut result = ToolResult::success(serde_json::to_string_pretty(&payload)?);
+        let mut result = ToolResult::json(payload.clone());
         if options.prefer_markdown {
             result = result.with_markdown(resolve_time_markdown(&payload));
         }
