@@ -94,6 +94,7 @@ pub mod stream;
 pub mod structured;
 pub mod summarization;
 pub mod testkit;
+pub mod title;
 pub mod token_estimation;
 pub mod tool;
 #[cfg(feature = "builtin-tools")]
