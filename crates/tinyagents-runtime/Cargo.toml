@@ -11,13 +11,15 @@ description = "Host-neutral stateful sessions over TinyAgents harness and transc
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+regex = "1.10"
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = "2"
 tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.2" }
 tinyagents-session = { path = "../tinyagents-session", version = "2.1.2" }
 tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm", version = "0.3.0" }
 tinytools = { path = "../../vendor/tinytools/crates/tinytools", version = "0.4.1" }
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

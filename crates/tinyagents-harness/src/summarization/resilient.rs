@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use tinyinference_llm::message::Message;
 
-use super::model_summarizer::role_label;
 use super::{
-    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, estimate_tokens,
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, SummaryRequest,
+    estimate_tokens, render_message_for_summary,
 };
 use crate::error::Result;
+use crate::token_estimation::estimate_slice_tokens;
 
 /// Token budget for the deterministic-trim fallback summary, as a fraction of
 /// the policy's summarization trigger budget. The fallback must actually *free*
@@ -37,13 +38,13 @@ struct CachedSummary {
 
 /// Fault-tolerant, per-turn-caching [`Summarizer`] adapter (issue #4461).
 ///
-/// Wraps the real (LLM-backed) [`ModelSummarizer`] the turn hands the
+/// Wraps the real (LLM-backed) [`super::ModelSummarizer`] the turn hands the
 /// crate [`ContextCompressionMiddleware`][crate::middleware::ContextCompressionMiddleware]
 /// and hardens two regressions the crate introduced versus the legacy engine:
 ///
 /// 1. **Failure no longer aborts the turn.** The crate's `before_model` does
 ///    `self.summarizer.summarize(..).await?`, so any provider hiccup maps to
-///    [`TinyAgentsError::Model`] and fails the whole run — on exactly the
+///    [`crate::TinyAgentsError::Model`] and fails the whole run — on exactly the
 ///    longest, most valuable threads. This adapter instead catches the error,
 ///    logs a `warn`, trips a **per-turn circuit breaker**, and returns a
 ///    deterministic (LLM-free) trim of the input. The turn continues, matching
@@ -94,15 +95,18 @@ impl FaultTolerantCachingSummarizer {
         }
     }
 
-    /// Content hash of the exact input slice, folding in the message count so a
-    /// count change alone busts the cache (a grown transcript re-summarizes).
-    fn slice_key(messages: &[Message]) -> u64 {
+    /// Content hash of the complete request, including structured message data
+    /// and any prior checkpoint, so either kind of change busts the cache.
+    fn request_key(request: &SummaryRequest) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        messages.len().hash(&mut hasher);
-        for msg in messages {
-            role_label(msg).hash(&mut hasher);
-            msg.text().hash(&mut hasher);
+        request.messages.len().hash(&mut hasher);
+        for message in &request.messages {
+            match serde_json::to_vec(message) {
+                Ok(encoded) => encoded.hash(&mut hasher),
+                Err(_) => format!("{message:?}").hash(&mut hasher),
+            }
         }
+        request.previous_summary.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -114,19 +118,22 @@ impl FaultTolerantCachingSummarizer {
     /// then render the survivors into a single system checkpoint message. Never
     /// fails, spends no tokens, and produces the same [`SummaryRecord`] shape the
     /// LLM path does so provenance still surfaces downstream.
-    fn deterministic_trim(&self, messages: &[Message], cause: &str) -> SummaryRecord {
-        let original_token_estimate: u64 =
-            messages.iter().map(|m| estimate_tokens(&m.text())).sum();
+    fn deterministic_trim(
+        &self,
+        messages: &[Message],
+        previous_summary: Option<&str>,
+        cause: &str,
+    ) -> SummaryRecord {
+        let original_token_estimate =
+            estimate_slice_tokens(messages) + previous_summary.map_or(0, estimate_tokens);
         let source_ids: Vec<String> = (0..messages.len()).map(|i| format!("msg-{i}")).collect();
 
         // Front-drop oldest messages until the tail fits the budget. Keep at
         // least the single most-recent message so the summary is never empty.
         let mut start = 0usize;
+        let previous_token_estimate = previous_summary.map_or(0, estimate_tokens);
         loop {
-            let remaining: u64 = messages[start..]
-                .iter()
-                .map(|m| estimate_tokens(&m.text()))
-                .sum();
+            let remaining = previous_token_estimate + estimate_slice_tokens(&messages[start..]);
             if remaining <= self.fallback_trim_budget || start + 1 >= messages.len() {
                 break;
             }
@@ -142,8 +149,11 @@ impl FaultTolerantCachingSummarizer {
                 "[{dropped} older message(s) dropped to fit the context budget]\n",
             ));
         }
+        if let Some(previous) = previous_summary {
+            body.push_str(&format!("Previous summary (older context):\n{previous}\n"));
+        }
         for msg in &messages[start..] {
-            body.push_str(&format!("{}: {}\n", role_label(msg), msg.text()));
+            body.push_str(&format!("{}\n", render_message_for_summary(msg)));
         }
         let summary_token_estimate = estimate_tokens(&body);
 
@@ -175,7 +185,12 @@ impl FaultTolerantCachingSummarizer {
 #[async_trait]
 impl Summarizer for FaultTolerantCachingSummarizer {
     async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
-        let key = Self::slice_key(messages);
+        self.summarize_request(&SummaryRequest::new(messages.to_vec()))
+            .await
+    }
+
+    async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
+        let key = Self::request_key(request);
 
         // Cache hit: an identical slice was already summarized this turn.
         if let Ok(guard) = self.cache.lock()
@@ -184,7 +199,7 @@ impl Summarizer for FaultTolerantCachingSummarizer {
         {
             tracing::debug!(
                 key,
-                head_messages = messages.len(),
+                head_messages = request.messages.len(),
                 "[tinyagents::summarize] reusing cached summary (identical input slice; \
                  no summarizer LLM call)"
             );
@@ -196,16 +211,17 @@ impl Summarizer for FaultTolerantCachingSummarizer {
         let record = if self.breaker_tripped.load(Ordering::Relaxed) {
             tracing::debug!(
                 key,
-                head_messages = messages.len(),
+                head_messages = request.messages.len(),
                 "[tinyagents::summarize] circuit breaker open; trimming deterministically \
                  (skipping summarizer LLM)"
             );
             self.deterministic_trim(
-                messages,
+                &request.messages,
+                request.previous_summary.as_deref(),
                 "circuit breaker open (earlier summarizer failure)",
             )
         } else {
-            match self.inner.summarize(messages).await {
+            match self.inner.summarize_request(request).await {
                 Ok(record) => record,
                 Err(err) => {
                     // Trip the per-turn breaker and fall back — never propagate,
@@ -214,11 +230,15 @@ impl Summarizer for FaultTolerantCachingSummarizer {
                     tracing::warn!(
                         error = %err,
                         key,
-                        head_messages = messages.len(),
+                        head_messages = request.messages.len(),
                         "[tinyagents::summarize] summarizer failed; tripping per-turn circuit \
                          breaker and falling back to deterministic trim"
                     );
-                    self.deterministic_trim(messages, &err.to_string())
+                    self.deterministic_trim(
+                        &request.messages,
+                        request.previous_summary.as_deref(),
+                        &err.to_string(),
+                    )
                 }
             }
         };

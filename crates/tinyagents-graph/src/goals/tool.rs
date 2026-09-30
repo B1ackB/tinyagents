@@ -344,6 +344,6 @@ impl Tool for GoalTool {
         }
         let payload = goal_payload(goal.as_ref(), &note);
         let text = payload["text"].as_str().unwrap_or_default().to_string();
-        Ok(ToolResult::success(payload.to_string()).with_markdown(text))
+        Ok(ToolResult::json(payload).with_markdown(text))
     }
 }
