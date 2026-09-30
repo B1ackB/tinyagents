@@ -173,11 +173,13 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
         }
 
         let mut rows: Vec<String> = Vec::new();
+        let mut failed_reads = 0usize;
         for key in &keys {
             let entry = match store.get(&self.namespace, key).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => continue,
                 Err(err) => {
+                    failed_reads += 1;
                     tracing::warn!(
                         key = %key,
                         error = %err,
@@ -195,6 +197,12 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
             rows.push(format!("- `{tool}` → `{path}` ({bytes} bytes)"));
+        }
+        if failed_reads > 0 && rows.is_empty() {
+            tracing::warn!(
+                failed_reads,
+                "[tinyagents::mw] no persisted-artifact index entries could be read"
+            );
         }
         if rows.is_empty() {
             return Ok(());
