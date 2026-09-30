@@ -843,7 +843,13 @@ impl FileTranscriptHistory {
             return Ok(None);
         }
         let lock = generation_lock(&self.path)?;
-        lock.lock_exclusive()?;
+        // A generation reservation may already hold this path's lock while
+        // waiting for the successor's first write. Do not block the parent
+        // writer behind a reservation owned by the same caller; return a
+        // conflict so it can reload or retry after the generation commits.
+        lock.try_lock_exclusive().map_err(|error| {
+            anyhow::anyhow!("transcript {} is reserved by another writer: {error}", self.path.display())
+        })?;
         Ok(Some(lock))
     }
 

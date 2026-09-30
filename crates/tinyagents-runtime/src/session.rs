@@ -783,7 +783,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     target.rebind_session(head);
                 }
             }
-            self.transcript = Some(match target.session.as_ref() {
+            let handle = match target.session.as_ref() {
                 Some(session) => target
                     .locator
                     .open_session(session, target.meta.clone())
@@ -792,16 +792,15 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     .locator
                     .open_stem(&target.stem, target.meta.clone())
                     .map_err(|error| RuntimeError::Persistence(error.to_string()))?,
-            });
+            };
             // Binding can happen without resume (for example ResumeMode::Never).
             // Keep the durable comparison baseline current without changing
             // the visible in-memory history or invoking resume hooks.
-            self.persisted = self
-                .transcript
-                .as_ref()
-                .expect("just bound above")
+            let persisted = handle
                 .messages()
                 .map_err(|error| RuntimeError::Persistence(error.to_string()))?;
+            self.transcript = Some(handle);
+            self.persisted = persisted;
         }
 
         let previous_len = self.persisted.len();
