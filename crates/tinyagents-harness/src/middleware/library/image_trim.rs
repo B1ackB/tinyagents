@@ -187,7 +187,7 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
         // of every retained message (rebuilding as `system ++ other` would
         // reorder history when a system message appears after non-system ones —
         // exactly the crate-trim regression). System messages are NEVER dropped.
-        let mut removable_positions: Vec<usize> = messages
+        let removable_positions: Vec<usize> = messages
             .iter()
             .enumerate()
             .filter_map(|(idx, m)| (!matches!(m, TaMessage::System(_))).then_some(idx))
