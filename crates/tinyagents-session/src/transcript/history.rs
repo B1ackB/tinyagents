@@ -390,7 +390,10 @@ pub trait TranscriptLocator: Send + Sync {
                 "transcript baseline is stale; reload the session before creating a generation"
             );
         } else {
-            anyhow::ensure!(baseline.is_empty(), "transcript baseline is stale; reload the session before creating a generation");
+            anyhow::ensure!(
+                baseline.is_empty(),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
         }
         self.begin_generation(session, seed)
     }
@@ -1076,9 +1079,15 @@ impl FileTranscriptHistory {
         if self.generation_reservation.lock().unwrap().is_some() || !self.path.is_file() {
             return Ok(());
         }
-        let stem = self.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         let (parent_stem, generation) = match stem.rsplit_once(".g") {
-            Some((parent, suffix)) if suffix.parse::<u32>().is_ok() => (parent, suffix.parse::<u32>().unwrap()),
+            Some((parent, suffix)) if suffix.parse::<u32>().is_ok() => {
+                (parent, suffix.parse::<u32>().unwrap())
+            }
             _ => (stem, 0),
         };
         let successor_stem = format!("{parent_stem}.g{}", generation + 1);
