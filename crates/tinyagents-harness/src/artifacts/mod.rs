@@ -62,6 +62,7 @@
 mod ops;
 mod paths;
 pub mod policy;
+pub mod tool_results;
 mod types;
 
 pub use ops::{
@@ -78,3 +79,5 @@ pub use types::{
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tool_results_test;
