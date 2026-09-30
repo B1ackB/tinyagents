@@ -61,9 +61,8 @@ pub(super) async fn rewrite_journal_stream(
     let staged_stream = format!("{stream}.{suffix}");
     // An empty replacement is valid (for example, a metadata-only import).
     // Ensure the staged stream exists even when there are no appends.
-    fs::create_dir_all(journal_root).with_context(|| {
-        format!("create journal directory {}", journal_root.display())
-    })?;
+    fs::create_dir_all(journal_root)
+        .with_context(|| format!("create journal directory {}", journal_root.display()))?;
     let staged = journal_root.join(format!("{staged_stream}.jsonl"));
     fs::File::create(&staged)
         .with_context(|| format!("create staged journal stream {}", staged.display()))?;
