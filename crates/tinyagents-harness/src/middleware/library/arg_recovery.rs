@@ -1,5 +1,5 @@
 //! [`ArgRecoveryMiddleware`]: repair malformed tool-call arguments before the
-//! harness runs its fatal schema gate.
+//! harness runs its fatal schema gate. Generic over the run-context payload.
 
 use std::sync::Arc;
 
@@ -49,7 +49,7 @@ impl ArgRecoveryMiddleware {
 }
 
 #[async_trait]
-impl Middleware<(), C> for ArgRecoveryMiddleware {
+impl<C: Send + Sync> Middleware<(), C> for ArgRecoveryMiddleware {
     fn name(&self) -> &str {
         "arg_recovery"
     }

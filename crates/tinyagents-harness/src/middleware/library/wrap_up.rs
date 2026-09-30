@@ -193,7 +193,6 @@ impl FinalCallWrapUpMiddleware {
             .sum::<u64>()
             .saturating_add(estimate_text_tokens(instruction));
         let restored = {
-            {
                 let mut restored = 0usize;
                 let mut skipped = 0usize;
                 let mut unavailable = false;
@@ -264,7 +263,6 @@ impl FinalCallWrapUpMiddleware {
                     );
                 }
                 restored
-            }
         };
         if restored > 0 {
             tracing::info!(

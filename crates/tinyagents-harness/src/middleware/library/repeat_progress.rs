@@ -19,8 +19,11 @@ use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
 use tinytools::ToolResult as TaToolResult;
 
-use super::loop_guards::is_repeat_call_exempt;
-use crate::agent::context::CLEARED_PLACEHOLDER;
+use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
+
+/// Whether a tool is contractually re-invoked with identical arguments (a
+/// polling/wait tool), so an identical repeat is progress rather than a loop.
+pub type RepeatExemption = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Extract the assistant's visible text (concatenated [`ContentBlock::Text`]
 /// blocks) from a model response message, for the repeat-output signature.
@@ -61,9 +64,10 @@ struct PendingCallBatch {
 
 /// Tracker state shared between [`RepeatProgressMiddleware`] and its
 /// [`RepeatEvictionObserver`].
-#[derive(Default)]
 struct RepeatState {
     tracker: SuccessfulRepeatTracker,
+    /// The body a cleared tool result carries.
+    cleared_placeholder: String,
     /// `call_id`s of the results fed to the recurrence ledger since its last reset.
     recorded: Mutex<HashSet<String>>,
     /// Recorded results still verbatim in the current request before any
@@ -72,13 +76,17 @@ struct RepeatState {
 }
 
 /// The `ids` whose tool result is still in `request` with its body intact.
-fn visible_tool_results(request: &ModelRequest, ids: &HashSet<String>) -> HashSet<String> {
+fn visible_tool_results(
+    request: &ModelRequest,
+    ids: &HashSet<String>,
+    placeholder: &str,
+) -> HashSet<String> {
     request
         .messages
         .iter()
         .filter_map(|message| match message {
             Message::Tool(tool)
-                if ids.contains(&tool.tool_call_id) && message.text() != CLEARED_PLACEHOLDER =>
+                if ids.contains(&tool.tool_call_id) && message.text() != placeholder =>
             {
                 Some(tool.tool_call_id.clone())
             }
@@ -111,7 +119,7 @@ fn visible_tool_results(request: &ModelRequest, ids: &HashSet<String>) -> HashSe
 /// Polling/wait tools ([`is_repeat_call_exempt`]) are exempt from all three:
 /// their contract is to be re-invoked identically, so an all-poll batch resets
 /// the streaks instead of recording. On a trip it writes the legacy root-cause
-/// summary into the shared [`HaltSummarySlot`](crate::agent::tinyagents::HaltSummarySlot) and pauses
+/// summary into the shared [`HaltSummarySlot`] and pauses
 /// the run through the shared steering handle — the same halt mechanism as the
 /// repeated-failure breaker.
 ///
@@ -119,23 +127,44 @@ fn visible_tool_results(request: &ModelRequest, ids: &HashSet<String>) -> HashSe
 /// [`DEFAULT_REPEAT_CALL_THRESHOLD`]: crate::no_progress::DEFAULT_REPEAT_CALL_THRESHOLD
 pub struct RepeatProgressMiddleware {
     handle: SteeringHandle,
-    halt_summary: crate::agent::tinyagents::HaltSummarySlot,
+    halt_summary: HaltSummarySlot,
+    exempt: RepeatExemption,
     state: Arc<RepeatState>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
     pending: Mutex<Option<PendingCallBatch>>,
 }
 
 impl RepeatProgressMiddleware {
-    pub fn new(
-        handle: SteeringHandle,
-        halt_summary: crate::agent::tinyagents::HaltSummarySlot,
-    ) -> Self {
+    /// Build the guard. `exempt` names the polling/wait tools that are exempt
+    /// from all three checks; the cleared-result placeholder defaults to
+    /// [`DEFAULT_CLEARED_PLACEHOLDER`].
+    pub fn new(handle: SteeringHandle, halt_summary: HaltSummarySlot, exempt: RepeatExemption) -> Self {
         Self {
             handle,
             halt_summary,
-            state: Arc::new(RepeatState::default()),
+            exempt,
+            state: Arc::new(RepeatState {
+                tracker: SuccessfulRepeatTracker::default(),
+                cleared_placeholder: DEFAULT_CLEARED_PLACEHOLDER.to_string(),
+                recorded: Mutex::default(),
+                visible_before_reduction: Mutex::default(),
+            }),
             pending: Mutex::new(None),
         }
+    }
+
+    /// Override the placeholder body treated as an evicted tool result. Must be
+    /// called before [`eviction_observer`](Self::eviction_observer).
+    pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        let placeholder = placeholder.into();
+        let state = Arc::new(RepeatState {
+            tracker: SuccessfulRepeatTracker::default(),
+            cleared_placeholder: placeholder,
+            recorded: Mutex::default(),
+            visible_before_reduction: Mutex::default(),
+        });
+        self.state = state;
+        self
     }
 
     /// The companion that resets the recurrence ledger when a recorded result is
@@ -159,9 +188,7 @@ impl RepeatProgressMiddleware {
 }
 
 #[async_trait]
-impl Middleware<(), C>
-    for RepeatProgressMiddleware
-{
+impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     fn name(&self) -> &str {
         "repeat_progress"
     }
@@ -175,7 +202,7 @@ impl Middleware<(), C>
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
         let visible = match self.state.recorded.lock() {
-            Ok(recorded) if !recorded.is_empty() => visible_tool_results(request, &recorded),
+            Ok(recorded) if !recorded.is_empty() => visible_tool_results(request, &recorded, &self.state.cleared_placeholder),
             _ => HashSet::new(),
         };
         if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
@@ -203,7 +230,7 @@ impl Middleware<(), C>
         // Polling/wait tools are contractually re-invoked with identical args +
         // narration each timeout while the work is still running, so an all-poll
         // batch is legitimate progress, not a no-progress repeat.
-        let all_exempt = tool_calls.iter().all(|c| is_repeat_call_exempt(&c.name));
+        let all_exempt = tool_calls.iter().all(|c| (self.exempt)(&c.name));
 
         // Canonical `(tool, args)` batch signature (call guard) and the broader
         // narration+call signature (output guard). Both fold each call in order
@@ -224,7 +251,7 @@ impl Middleware<(), C>
         // identity joins each post-tool result to the provider call id.
         let call_sigs = tool_calls
             .iter()
-            .filter(|call| !is_repeat_call_exempt(&call.name))
+            .filter(|call| !(self.exempt)(&call.name))
             .map(|call| {
                 (
                     call.id.clone(),
@@ -281,7 +308,7 @@ impl Middleware<(), C>
             } else if let Some(sig) = batch.call_sigs.get(&call_id) {
                 recurrence = self.state.tracker.record_call_outcome(
                     sig,
-                    &crate::agent::tinyagents::middleware::tool_result_text(result),
+                    &result.output(),
                 );
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded.insert(call_id);
@@ -349,9 +376,7 @@ pub struct RepeatEvictionObserver {
 }
 
 #[async_trait]
-impl Middleware<(), C>
-    for RepeatEvictionObserver
-{
+impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
     fn name(&self) -> &str {
         "repeat_progress_eviction"
     }
@@ -369,7 +394,7 @@ impl Middleware<(), C>
         if before.is_empty() {
             return Ok(());
         }
-        let evicted = before.len() - visible_tool_results(request, &before).len();
+        let evicted = before.len() - visible_tool_results(request, &before, &self.state.cleared_placeholder).len();
         if evicted == 0 {
             return Ok(());
         }
