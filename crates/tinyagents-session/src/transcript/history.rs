@@ -648,10 +648,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
         let parent_path =
             resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
-        let reservation = generation_reservation_lock(&path)?;
-        reservation.lock_exclusive()?;
-        let mut lock_paths = vec![path.clone(), parent_path.clone()];
-        lock_paths.sort();
+        let mut lock_paths = vec![parent_path.clone(), path.clone()];
         lock_paths.dedup();
         let mut locks = Vec::with_capacity(lock_paths.len());
         for lock_path in &lock_paths {
@@ -695,10 +692,12 @@ impl TranscriptLocator for FileTranscriptLocator {
             path.display()
         );
         let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
+        // The parent is protected while the successor slot is selected and
+        // reserved. Later parent writers take the parent lock first, then fail
+        // promptly on the still-absent, reserved successor slot.
+        drop(parent_lock);
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
             _successor: successor_lock,
-            _parent: parent_lock,
-            _reservation: reservation,
         });
         Ok((successor, Arc::new(history)))
     }
@@ -718,10 +717,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         let path = resolve_keyed_transcript_path(&self.workspace_dir, &stem)?;
         let parent_path =
             resolve_keyed_transcript_path(&self.workspace_dir, &session_stem(session))?;
-        let reservation = generation_reservation_lock(&path)?;
-        reservation.lock_exclusive()?;
-        let mut paths = vec![path.clone(), parent_path.clone()];
-        paths.sort();
+        let mut paths = vec![parent_path.clone(), path.clone()];
         paths.dedup();
         let mut locks = Vec::new();
         for lock_path in &paths {
@@ -756,10 +752,9 @@ impl TranscriptLocator for FileTranscriptLocator {
         meta.session_id = Some(successor.session_id());
         meta.parent_session_id = successor.parent_session_id();
         let mut history = FileTranscriptHistory::new(&self.workspace_dir, &stem, meta)?;
+        drop(parent_lock);
         *history.generation_reservation.get_mut().unwrap() = Some(GenerationReservation {
             _successor: successor_lock,
-            _parent: parent_lock,
-            _reservation: reservation,
         });
         Ok((successor, Arc::new(history)))
     }
@@ -840,12 +835,10 @@ pub struct FileTranscriptHistory {
 
 struct GenerationReservation {
     _successor: File,
-    _parent: Option<File>,
-    _reservation: File,
 }
 
 impl FileTranscriptHistory {
-    fn acquire_write_lock(&self) -> anyhow::Result<Option<(File, File, Option<File>)>> {
+    fn acquire_write_lock(&self) -> anyhow::Result<Option<(File, File)>> {
         if self.generation_reservation.lock().unwrap().is_some() {
             return Ok(None);
         }
@@ -863,20 +856,11 @@ impl FileTranscriptHistory {
         let successor = self
             .path
             .with_file_name(format!("{parent_stem}.g{}.jsonl", generation + 1));
-        let reservation = if !path_entry_exists(&successor)? {
-            let reservation = generation_reservation_lock(&successor)?;
-            reservation.try_lock_shared().map_err(|error| {
-                anyhow::anyhow!(
-                    "successor generation is reserved for {}; retry after it commits: {error}",
-                    self.path.display()
-                )
-            })?;
-            Some(reservation)
-        } else {
-            None
-        };
-        let mut paths = vec![self.path.clone(), successor.clone()];
-        paths.sort();
+        // All writers and generation creators acquire parent before successor.
+        // This lets ordinary writes serialize on the parent while a generation
+        // reservation on an absent successor fails promptly instead of
+        // blocking the generation's first write.
+        let paths = vec![self.path.clone(), successor.clone()];
         let mut locks = Vec::with_capacity(paths.len());
         for lock_path in paths {
             let lock = generation_lock(&lock_path)?;
@@ -908,7 +892,7 @@ impl FileTranscriptHistory {
             .position(|(path, _)| path == &successor)
             .map(|index| locks.remove(index).1)
             .expect("successor path lock acquired");
-        Ok(Some((successor_lock, parent_lock, reservation)))
+        Ok(Some((successor_lock, parent_lock)))
     }
 
     fn finish_generation_reservation(&self, success: bool) -> anyhow::Result<()> {
@@ -1012,24 +996,6 @@ fn generation_lock(path: &Path) -> anyhow::Result<File> {
     fs::create_dir_all(&lock_dir)?;
     let lock_name = path.file_name().unwrap_or_default();
     let lock_path = lock_dir.join(lock_name);
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)
-        .map_err(Into::into)
-}
-
-/// The generation-only reservation lock is separate from writer locks, so
-/// ordinary concurrent appends can wait on one another without mistaking a
-/// short-lived writer lock for an unwritten successor reservation.
-fn generation_reservation_lock(path: &Path) -> anyhow::Result<File> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let lock_path = path.with_file_name(format!("{file_name}.reservation"));
     OpenOptions::new()
         .create(true)
         .truncate(false)
