@@ -673,6 +673,30 @@ fn opening_a_generation_that_already_exists_is_refused() {
     );
 }
 
+#[test]
+fn clearing_an_absent_successor_releases_its_reservation() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let session = SessionRef::scoped("thread-clear-reservation", "orchestrator");
+    let (_, handle) = locator.begin_generation(&session, meta()).unwrap();
+
+    handle.clear().unwrap();
+    // Keep the original handle alive: clear must release its reservation itself.
+    assert!(locator.begin_generation(&session, meta()).is_ok());
+}
+
+#[test]
+fn non_file_entry_occupying_successor_is_rejected() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let session = SessionRef::scoped("thread-occupied-successor", "orchestrator");
+    let successor = session.next_generation();
+    let path = resolve_keyed_transcript_path(dir.path(), &session_stem(&successor)).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    assert!(locator.begin_generation(&session, meta()).is_err());
+}
+
 /// Concurrent generation selection must reserve the successor slot until
 /// its first write. Exactly one process may commit that generation.
 #[test]
