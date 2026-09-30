@@ -11,9 +11,29 @@ use crate::middleware::Middleware;
 use tinyinference_llm::message::{ContentBlock, Message as TaMessage};
 use tinyinference_llm::model::ModelRequest;
 
-use crate::agent::context::CLEARED_PLACEHOLDER;
+use super::image_trim::{estimate_message_tokens, estimate_text_tokens};
 
-use super::message_trim::{estimate_message_tokens, estimate_text_tokens};
+/// The body microcompact swaps in for a cleared tool result, and therefore the
+/// only body this middleware treats as restorable. The default for
+/// [`FinalCallWrapUpMiddleware::with_cleared_placeholder`]; it must match the
+/// placeholder the run's `MicrocompactMiddleware` was built with.
+pub const DEFAULT_CLEARED_PLACEHOLDER: &str = "[Old tool result content cleared]";
+
+/// The captured outcome store could not be read (a poisoned lock, say).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutcomesUnavailable;
+
+/// Where [`FinalCallWrapUpMiddleware`] finds each tool call's captured result,
+/// so the concluding call can be given back what microcompact blanked.
+///
+/// The host owns the capture (it records each call as the result enters the
+/// transcript, after any per-result byte cap); this is the read side.
+pub trait CapturedOutcomes: Send + Sync {
+    /// The captured result text for `call_id`, `Ok(None)` when nothing was
+    /// captured for it, or `Err` when the store cannot be read at all (the
+    /// middleware then concludes without restoring anything).
+    fn content_for(&self, call_id: &str) -> Result<Option<String>, OutcomesUnavailable>;
+}
 
 /// Turns the **last permitted model call of a capped turn** into the turn's
 /// conclusion, in the loop, instead of leaving the answer to an extra call
@@ -60,36 +80,32 @@ use super::message_trim::{estimate_message_tokens, estimate_text_tokens};
 /// request makes it structural instead: there is nothing to call. `tool_choice`
 /// is reset alongside them because a `Required` choice with an empty tool array
 /// is a provider 400.
-/// The tools left on the belt for the **penultimate** call of a capped turn
-/// (see [`FinalCallWrapUpMiddleware::reserve_final_write`]).
+/// The middleware itself. Generic over the run-context payload: nothing here
+/// reads it. Configure the deliverable-tool names with
+/// [`with_deliverable_tools`](Self::with_deliverable_tools) — the tools left on
+/// the belt for the **penultimate** call (see `reserve_final_write`).
 ///
-/// The membership rule is "can only emit, never gather". Both of these write a
-/// file the caller already knows the contents of, so neither can be spent
-/// discovering something the turn then has no room to report — which is what
-/// makes reserving the call for them a safe trade rather than a gamble.
-///
-/// `file_write` is the only create-capable file tool (it resolves through
-/// `validate_parent_path` rather than `validate_path`); `apply_patch` gained a
-/// create mode in #6548 and is the one an agent editing an existing artifact
-/// reaches for. `shell` is deliberately absent even though it can redirect into
-/// a file: it can equally run a crawler, so keeping it would leave the belt
-/// effectively unnarrowed.
-pub const DELIVERABLE_TOOLS: &[&str] = &["file_write", "apply_patch"];
-
-/// Whether a tool is one the penultimate call keeps.
-fn is_deliverable_tool(name: &str) -> bool {
-    DELIVERABLE_TOOLS.contains(&name)
-}
-
+/// The membership rule is "can only emit, never gather": a tool that writes a
+/// file the caller already knows the contents of cannot be spent discovering
+/// something the turn then has no room to report, which is what makes reserving
+/// the call for them a safe trade rather than a gamble. A shell is deliberately
+/// not one — it can equally run a crawler, so keeping it would leave the belt
+/// effectively unnarrowed. With none configured the penultimate call is left
+/// ordinary.
 pub struct FinalCallWrapUpMiddleware {
     /// The synthetic user turn appended on the final call.
-    instruction: &'static str,
+    instruction: String,
     /// The synthetic user turn appended on the call before it, when the belt is
-    /// narrowed to [`DELIVERABLE_TOOLS`] instead of cleared.
-    final_write_instruction: &'static str,
+    /// narrowed to the deliverable tools instead of cleared.
+    final_write_instruction: String,
+    /// Names of the tools the penultimate call keeps.
+    deliverable_tools: Vec<String>,
+    /// The body a cleared tool result carries (see
+    /// [`DEFAULT_CLEARED_PLACEHOLDER`]).
+    cleared_placeholder: String,
     /// Every tool call's captured outcome, so the concluding call can be given
     /// back the results microcompact blanked (see `before_model`).
-    outcomes: crate::agent::tinyagents::ToolOutcomeSink,
+    outcomes: Arc<dyn CapturedOutcomes>,
     /// The input-token allowance the trim downstream enforces, so restoration
     /// can stay under it rather than provoking an eviction. `0` disables the
     /// bound (a model advertising no context window).
@@ -103,19 +119,44 @@ pub struct FinalCallWrapUpMiddleware {
 }
 
 impl FinalCallWrapUpMiddleware {
+    /// Build the middleware. The cleared-result placeholder defaults to
+    /// [`DEFAULT_CLEARED_PLACEHOLDER`] and no deliverable tools are configured.
     pub fn new(
-        instruction: &'static str,
-        final_write_instruction: &'static str,
-        outcomes: crate::agent::tinyagents::ToolOutcomeSink,
+        instruction: impl Into<String>,
+        final_write_instruction: impl Into<String>,
+        outcomes: Arc<dyn CapturedOutcomes>,
         input_budget: u64,
     ) -> Self {
         Self {
-            instruction,
-            final_write_instruction,
+            instruction: instruction.into(),
+            final_write_instruction: final_write_instruction.into(),
+            deliverable_tools: Vec::new(),
+            cleared_placeholder: DEFAULT_CLEARED_PLACEHOLDER.to_string(),
             outcomes,
             input_budget,
             fired: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Tools the penultimate call keeps when the belt is narrowed.
+    pub fn with_deliverable_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.deliverable_tools = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Override the placeholder body treated as a cleared tool result.
+    pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.cleared_placeholder = placeholder.into();
+        self
+    }
+
+    /// Whether a tool is one the penultimate call keeps.
+    fn is_deliverable_tool(&self, name: &str) -> bool {
+        self.deliverable_tools.iter().any(|tool| tool == name)
     }
 
     /// The shared flag, for the run loop to read after the drive future returns.
