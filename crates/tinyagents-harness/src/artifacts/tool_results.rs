@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
-use tinytools_agent::dialect::ToolOutcome;
 
 use super::policy::{ArtifactRedactor, Redacted};
 
@@ -584,7 +583,7 @@ pub async fn apply_per_result_persistence(
 }
 
 pub async fn spill_aggregate_tool_results(
-    results: &mut [ToolOutcome],
+    results: &mut [tinytools_agent::dialect::ToolOutcome],
     store: Option<&ToolResultArtifactStore>,
     budget_bytes: usize,
 ) {

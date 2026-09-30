@@ -4,7 +4,6 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tinytools_agent::dialect::ToolOutcome;
 
 /// Stand-in for a host's credential/PII pass: rewrites a GitHub token and
 /// phone numbers, and (like the real one) can grow a body.
@@ -207,21 +206,21 @@ async fn aggregate_spills_largest_until_under_budget() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(tmp.path(), "session");
     let mut results = vec![
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "small".into(),
             output: "a".repeat(100),
             success: true,
             tool_call_id: Some("small".into()),
             trusted_verbatim: false,
         },
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "largest".into(),
             output: "b".repeat(2000),
             success: true,
             tool_call_id: Some("largest".into()),
             trusted_verbatim: false,
         },
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "medium".into(),
             output: "c".repeat(900),
             success: true,
@@ -248,21 +247,21 @@ async fn aggregate_forces_budget_when_envelope_has_no_savings() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(tmp.path(), "session");
     let mut results = vec![
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "one".into(),
             output: "a".repeat(350),
             success: true,
             tool_call_id: Some("one".into()),
             trusted_verbatim: false,
         },
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "two".into(),
             output: "b".repeat(350),
             success: true,
             tool_call_id: Some("two".into()),
             trusted_verbatim: false,
         },
-        ToolOutcome {
+        tinytools_agent::dialect::ToolOutcome {
             name: "three".into(),
             output: "c".repeat(350),
             success: true,
