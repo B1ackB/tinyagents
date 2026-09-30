@@ -71,10 +71,10 @@ struct RepeatState {
     /// The body a cleared tool result carries.
     cleared_placeholder: String,
     /// `call_id`s of the results fed to the recurrence ledger since its last reset.
-    recorded: Mutex<HashSet<String>>,
+    recorded: Mutex<HashMap<String, HashSet<String>>>,
     /// Recorded results still verbatim in the current request before any
     /// reduction step ran; compared against the final request by the observer.
-    visible_before_reduction: Mutex<HashSet<String>>,
+    visible_before_reduction: Mutex<HashMap<String, HashSet<String>>>,
 }
 
 impl RepeatState {
@@ -200,20 +200,22 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
 
     async fn before_model(
         &self,
-        _ctx: &mut RunContext<C>,
+        ctx: &mut RunContext<C>,
         _state: &(),
         request: &mut ModelRequest,
     ) -> TaResult<()> {
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
         let visible = match self.state.recorded.lock() {
-            Ok(recorded) if !recorded.is_empty() => {
-                visible_tool_results(request, &recorded, &self.state.cleared_placeholder)
-            }
+            Ok(recorded) => recorded
+                .get(&ctx.run_id().as_str().to_string())
+                .filter(|ids| !ids.is_empty())
+                .map(|ids| visible_tool_results(request, ids, &self.state.cleared_placeholder))
+                .unwrap_or_default(),
             _ => HashSet::new(),
         };
         if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
-            *slot = visible;
+            slot.insert(ctx.run_id().as_str().to_string(), visible);
         }
         Ok(())
     }
@@ -340,7 +342,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                         .record_call_outcome(&sig, &result.output());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
-                    recorded.insert(call_id);
+                    recorded.entry(run_id.clone()).or_default().insert(call_id);
                 }
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
@@ -425,8 +427,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
         _state: &(),
         request: &mut ModelRequest,
     ) -> TaResult<()> {
+        let run_id = ctx.run_id().as_str().to_string();
         let before = match self.state.visible_before_reduction.lock() {
-            Ok(mut slot) => std::mem::take(&mut *slot),
+            Ok(mut slot) => slot.remove(&run_id).unwrap_or_default(),
             Err(_) => return Ok(()),
         };
         if before.is_empty() {
@@ -448,7 +451,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
                 .reset();
         }
         if let Ok(mut recorded) = self.state.recorded.lock() {
-            recorded.clear();
+            recorded.remove(&run_id);
         }
         Ok(())
     }
