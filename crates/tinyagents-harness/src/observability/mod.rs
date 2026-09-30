@@ -30,6 +30,10 @@ mod profile;
 mod types;
 mod worker;
 
+pub mod file_status;
+pub mod reaper;
+pub mod replay;
+
 #[doc(hidden)]
 pub use worker::{AppendWorker, DEFAULT_DRAIN_CAPACITY};
 
@@ -43,6 +47,10 @@ pub use profile::{ProcessProfile, ProcessProfiler, ProcessSnapshot};
 #[cfg(feature = "langfuse")]
 #[doc(hidden)]
 pub use langfuse::{clean_nulls, iso_ms};
+pub use file_status::{
+    FileStatusStore, STATUS_NS, is_active, mint_run_id, process_env_secrets, secrets_from_vars,
+};
+pub use reaper::{ORPHAN_REAP_REASON, reap_orphaned_runs};
 pub use types::*;
 
 use std::collections::HashMap;
