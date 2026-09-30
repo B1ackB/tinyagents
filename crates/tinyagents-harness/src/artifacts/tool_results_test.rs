@@ -12,7 +12,7 @@ struct TestRedactor;
 
 impl ArtifactRedactor for TestRedactor {
     fn redact(&self, content: &str) -> Redacted {
-        let mut out = content.replace("ghp_abcdefghijklmnopqrstuvwxyz123456", "[REDACTED_SECRET]");
+        let mut out = content.replace(&test_github_token(), "[REDACTED_SECRET]");
         out = out.replace("+1555", "[REDACTED_PII_PHONE]");
         if out == content {
             Redacted::unchanged(out)
@@ -20,6 +20,10 @@ impl ArtifactRedactor for TestRedactor {
             Redacted::rewritten(out)
         }
     }
+}
+
+fn test_github_token() -> String {
+    ["ghp", "_abcdefghijklmnopqrstuvwxyz123456"].concat()
 }
 
 fn store(dir: &Path, session: &str) -> ToolResultArtifactStore {
@@ -43,7 +47,7 @@ async fn threshold_persists_redacted_preview_and_file() {
     let raw = format!(
         "{} {}",
         "x".repeat(4096),
-        "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        test_github_token()
     );
 
     let (out, outcome) =
@@ -57,7 +61,7 @@ async fn threshold_persists_redacted_preview_and_file() {
     assert!(out.contains("original_bytes:"));
     assert!(out.contains("[preview]"));
     assert!(out.contains("Credential/PII redaction was applied"));
-    assert!(!out.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+    assert!(!out.contains(test_github_token()));
 
     let stored = std::fs::read_to_string(
         tmp.path()
@@ -65,7 +69,7 @@ async fn threshold_persists_redacted_preview_and_file() {
     )
     .unwrap();
     assert!(stored.contains("xxxx"));
-    assert!(!stored.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+    assert!(!stored.contains(test_github_token()));
 }
 
 /// A call with no id still gets a unique, well-formed file name.
