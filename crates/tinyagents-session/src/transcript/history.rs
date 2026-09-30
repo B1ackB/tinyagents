@@ -679,7 +679,7 @@ impl TranscriptLocator for FileTranscriptLocator {
             );
         }
         anyhow::ensure!(
-            !path.is_file(),
+            !path_entry_exists(&path)?,
             "session generation {stem} already exists; refusing to overwrite a sealed transcript"
         );
 
@@ -744,7 +744,7 @@ impl TranscriptLocator for FileTranscriptLocator {
             parent_path.display()
         );
         anyhow::ensure!(
-            !path.is_file(),
+            !path_entry_exists(&path)?,
             "session generation {stem} already exists; refusing to overwrite a sealed transcript"
         );
         let mut meta = seed;
@@ -756,6 +756,14 @@ impl TranscriptLocator for FileTranscriptLocator {
             _parent: parent_lock,
         });
         Ok((successor, Arc::new(history)))
+    }
+}
+
+fn path_entry_exists(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1215,6 +1223,7 @@ impl TranscriptHistory for FileTranscriptHistory {
         let lock = path_lock(&self.path);
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if !self.path.exists() {
+            self.finish_generation_reservation(true)?;
             drop(os_lock);
             return Ok(());
         }
