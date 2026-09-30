@@ -141,7 +141,7 @@ fn child_run_roots_its_own_trace_and_preserves_parent_lineage() {
                 Some("parent-run".into()),
                 Some("root-run".into()),
             ),
-        &root_subagent_observations(&[child.clone()]),
+        &root_subagent_observations(std::slice::from_ref(&child)),
     );
     let trace = trace_config_from_context(&ctx, "production", &BRAND);
     assert_eq!(trace.session_id.as_deref(), Some("thread-1"));
