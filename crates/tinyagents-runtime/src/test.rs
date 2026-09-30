@@ -2624,12 +2624,20 @@ async fn a_restart_after_a_compaction_resumes_the_head_generation() {
     let directory = tempfile::tempdir().unwrap();
     let session_ref = SessionRef::scoped("thread-1", "agent-id");
     let locator = Arc::new(FileTranscriptLocator::new(directory.path()));
-    let (_, handle) = locator.begin_generation(&session_ref, meta()).unwrap();
     locator
         .open_session(&session_ref, meta())
         .unwrap()
         .append(TranscriptMessage::new("user", "sealed"))
         .unwrap();
+    let (_, handle) = locator.begin_generation(&session_ref, meta()).unwrap();
+    let parent_write = locator
+        .open_session(&session_ref, meta())
+        .unwrap()
+        .append(TranscriptMessage::new("user", "sealed"));
+    assert!(
+        parent_write.is_err(),
+        "a parent write must not block behind a successor reservation"
+    );
     handle
         .append(TranscriptMessage::new("user", "current"))
         .unwrap();
