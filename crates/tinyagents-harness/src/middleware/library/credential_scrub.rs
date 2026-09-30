@@ -132,6 +132,9 @@ impl<C: Send + Sync> ToolMiddleware<(), C> for CredentialScrubMiddleware {
             let (text, is_json) = match block {
                 tinytools::ToolContent::Text { text } => (text.clone(), false),
                 tinytools::ToolContent::Json { data } => (data.to_string(), true),
+                tinytools::ToolContent::Image { .. } | tinytools::ToolContent::File { .. } => {
+                    continue;
+                }
             };
             if let Some((scrubbed, count)) = (self.scrubber)(&tool_name, &text) {
                 if is_json {

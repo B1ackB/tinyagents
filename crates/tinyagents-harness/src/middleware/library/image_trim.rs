@@ -118,7 +118,13 @@ pub fn estimate_message_tokens(msg: &TaMessage) -> u64 {
             ContentBlock::ProviderExtension(value) => {
                 total = total.saturating_add(estimate_text_tokens(&value.to_string()));
             }
-            ContentBlock::Text(_) | ContentBlock::Image(_) => {}
+            ContentBlock::Image(_)
+            | ContentBlock::Audio(_)
+            | ContentBlock::Video(_)
+            | ContentBlock::Document(_) => {
+                total = total.saturating_add(IMAGE_MARKER_TOKEN_COST);
+            }
+            ContentBlock::Text(_) => {}
         }
     }
     if let TaMessage::Assistant(m) = msg {
