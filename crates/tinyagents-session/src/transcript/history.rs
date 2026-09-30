@@ -714,7 +714,7 @@ impl FileTranscriptHistory {
 
     fn finish_generation_reservation(&self, success: bool) -> anyhow::Result<()> {
         if success && let Some(lock) = self.generation_reservation.lock().unwrap().take() {
-            lock.unlock()?;
+            FileExt::unlock(&lock)?;
         }
         Ok(())
     }
