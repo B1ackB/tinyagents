@@ -267,7 +267,6 @@ impl ToolResultArtifactOutcome {
 }
 
 impl ToolResultArtifactStore {
-
     /// `read_tool` is the host's file-reading tool and `max_readable_bytes` the
     /// largest body it will open; a body whose redacted form exceeds it is
     /// never stored, because the model could not read it back.
