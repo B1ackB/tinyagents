@@ -456,6 +456,19 @@ fn wired_events_do_not_warn() {
 }
 
 #[test]
+fn loop_limit_distinguishes_missing_null_and_numbers() {
+    let parsed = config::parse_one(
+        &PathBuf::from("/tmp/hooks.json"),
+        HookLayer::Project,
+        r#"{"version":1,"hooks":{"stop":[{"command":"default"},{"command":"unlimited","loop_limit":null},{"command":"limited","loop_limit":3}]}}"#,
+    );
+    let hooks = parsed.for_event(HookEvent::Stop);
+    assert_eq!(hooks[0].loop_limit, super::config::LoopLimit::Default);
+    assert_eq!(hooks[1].loop_limit, super::config::LoopLimit::Unlimited);
+    assert_eq!(hooks[2].loop_limit, super::config::LoopLimit::Limited(3));
+}
+
+#[test]
 fn a_payload_is_parsed_for_its_event_not_by_untagged_guessing() {
     // `{"trigger": "auto"}` also satisfies `SessionPayload` (every field
     // optional), which is declared earlier in the untagged enum — so untagged
