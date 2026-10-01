@@ -54,6 +54,18 @@ fn wait_loop_tick_repeats_same_message() {
     assert!(output.contains("\"iteration\":3"));
 }
 
+#[test]
+fn wait_loop_tick_at_max_iteration_does_not_overflow() {
+    let request = parse_wait_request(&json!({
+        "message": "poll",
+        "duration_ms": 10,
+        "iteration": u64::MAX
+    }))
+    .unwrap();
+    let output = format_wait_tick(&request, true);
+    assert!(output.contains(&format!("\"iteration\":{}", u64::MAX)));
+}
+
 #[tokio::test]
 async fn wait_execute_returns_callback_message() {
     let res = WaitTool::new()
