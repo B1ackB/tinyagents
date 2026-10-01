@@ -1,0 +1,271 @@
+//! Tests for the host policy gate and approval resolver seam.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+
+use super::*;
+use crate::context::{RunConfig, RunContext};
+use crate::middleware::{BoxToolFuture, MiddlewareStack, ToolBaseCall, ToolMiddleware};
+use tinyinference_llm::tool::ToolCall;
+use tinytools::ToolResult;
+
+/// Host context stand-in: the policy reads the channel from it.
+struct Host {
+    channel: &'static str,
+}
+
+fn ctx() -> RunContext<Host> {
+    RunContext::new(RunConfig::new("gate"), Host { channel: "web" })
+}
+
+fn call(name: &str) -> ToolCall {
+    ToolCall {
+        id: "call-1".to_string(),
+        name: name.to_string(),
+        arguments: serde_json::json!({ "to": "a@b.c" }),
+        invalid: None,
+    }
+}
+
+struct Base {
+    runs: Arc<Mutex<usize>>,
+    fail: bool,
+}
+
+impl ToolBaseCall<(), Host> for Base {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a mut RunContext<Host>,
+        _state: &'a (),
+        _call: ToolCall,
+    ) -> BoxToolFuture<'a> {
+        Box::pin(async move {
+            *self.runs.lock().unwrap() += 1;
+            Ok(if self.fail {
+                ToolResult::error("boom")
+            } else {
+                ToolResult::success("ran")
+            })
+        })
+    }
+}
+
+/// Policy keyed on tool name; `channel_deny` also reads the host context.
+struct NamePolicy;
+
+#[async_trait]
+impl ToolCallPolicy<Host> for NamePolicy {
+    fn name(&self) -> &str {
+        "name_policy"
+    }
+
+    async fn check(&self, ctx: &RunContext<Host>, call: &ToolCall) -> PolicyDecision {
+        match call.name.as_str() {
+            "rm" => PolicyDecision::deny("destructive"),
+            "send" => PolicyDecision::require_approval("sends mail"),
+            "web_only" if ctx.data.channel != "web" => PolicyDecision::deny("wrong channel"),
+            _ => PolicyDecision::Allow,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Resolver {
+    verdict: Mutex<Option<ApprovalResolution>>,
+    recorded: Mutex<Vec<(String, bool)>>,
+    resolved: Mutex<usize>,
+}
+
+#[async_trait]
+impl ApprovalResolver<Host> for Resolver {
+    async fn requires_approval(&self, _ctx: &RunContext<Host>, call: &ToolCall) -> bool {
+        call.name == "send"
+    }
+
+    async fn resolve(&self, _ctx: &RunContext<Host>, _call: &ToolCall) -> ApprovalResolution {
+        *self.resolved.lock().unwrap() += 1;
+        self.verdict.lock().unwrap().clone().unwrap()
+    }
+
+    fn record(&self, ticket: &str, result: &ToolResult) {
+        self.recorded
+            .lock()
+            .unwrap()
+            .push((ticket.to_string(), result.is_error));
+    }
+}
+
+async fn run(mw: Arc<dyn ToolMiddleware<(), Host>>, name: &str, fail: bool) -> (ToolResult, usize) {
+    let runs = Arc::new(Mutex::new(0));
+    let base = Base {
+        runs: runs.clone(),
+        fail,
+    };
+    let mut stack: MiddlewareStack<(), Host> = MiddlewareStack::new();
+    stack.push_tool_middleware(mw);
+    let mut c = ctx();
+    let result = stack
+        .run_wrapped_tool(&mut c, &(), call(name), &base)
+        .await
+        .unwrap()
+        .into_result();
+    let n = *runs.lock().unwrap();
+    (result, n)
+}
+
+#[test]
+fn decision_helpers_expose_the_blocking_reason() {
+    assert_eq!(PolicyDecision::Allow.blocking_reason(), None);
+    assert_eq!(
+        PolicyDecision::require_approval("ask").blocking_reason(),
+        Some("ask")
+    );
+    assert_eq!(PolicyDecision::deny("no").blocking_reason(), Some("no"));
+    assert_eq!(
+        PolicyDecision::deny("no"),
+        PolicyDecision::Deny {
+            reason: "no".to_string()
+        }
+    );
+}
+
+#[tokio::test]
+async fn gate_check_passes_the_host_context_and_waives_only_approval() {
+    let gate = ToolPolicyGate::new(Arc::new(NamePolicy));
+    let mut c = ctx();
+    assert_eq!(gate.policy_name(), "name_policy");
+    assert_eq!(
+        gate.check(&c, &call("read"), false).await,
+        PolicyDecision::Allow
+    );
+    assert_eq!(
+        gate.check(&c, &call("send"), false).await,
+        PolicyDecision::require_approval("sends mail")
+    );
+    assert_eq!(
+        gate.check(&c, &call("send"), true).await,
+        PolicyDecision::Allow
+    );
+    // A deny is never waived.
+    assert_eq!(
+        gate.check(&c, &call("rm"), true).await,
+        PolicyDecision::deny("destructive")
+    );
+    // The context parameter reaches the policy.
+    assert_eq!(
+        gate.check(&c, &call("web_only"), false).await,
+        PolicyDecision::Allow
+    );
+    c.data.channel = "cron";
+    assert_eq!(
+        gate.check(&c, &call("web_only"), false).await,
+        PolicyDecision::deny("wrong channel")
+    );
+}
+
+#[tokio::test]
+async fn policy_middleware_fails_closed_on_deny_and_require_approval() {
+    let mw = || Arc::new(ToolPolicyGateMiddleware::new(Arc::new(NamePolicy)));
+    let (r, runs) = run(mw(), "rm", false).await;
+    assert!(r.is_error);
+    assert_eq!(
+        r.output(),
+        "Tool 'rm' denied by policy 'name_policy': destructive"
+    );
+    assert_eq!(runs, 0);
+
+    let (r, runs) = run(mw(), "send", false).await;
+    assert!(r.is_error);
+    assert_eq!(
+        r.output(),
+        "Tool 'send' requires approval by policy 'name_policy': sends mail"
+    );
+    assert_eq!(runs, 0);
+
+    let (r, runs) = run(mw(), "read", false).await;
+    assert!(!r.is_error);
+    assert_eq!(runs, 1);
+}
+
+#[tokio::test]
+async fn policy_middleware_uses_the_custom_denial_renderer() {
+    let mw = Arc::new(
+        ToolPolicyGateMiddleware::new(Arc::new(NamePolicy)).with_denial_renderer(Arc::new(
+            |c, p, d| format!("{}|{p}|{}", c.name, d.blocking_reason().unwrap()),
+        )),
+    );
+    let (r, _) = run(mw, "rm", false).await;
+    assert_eq!(r.output(), "rm|name_policy|destructive");
+}
+
+#[tokio::test]
+async fn require_approval_with_a_resolver_runs_once_approved_and_records() {
+    let resolver = Arc::new(Resolver::default());
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Allow {
+        ticket: Some("t-1".to_string()),
+    });
+    let mw = Arc::new(
+        ToolPolicyGateMiddleware::new(Arc::new(NamePolicy))
+            .with_approval_resolver(resolver.clone()),
+    );
+    let (r, runs) = run(mw, "send", true).await;
+    assert!(r.is_error);
+    assert_eq!(runs, 1);
+    assert_eq!(
+        *resolver.recorded.lock().unwrap(),
+        vec![("t-1".to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn require_approval_with_a_resolver_denial_never_runs_the_tool() {
+    let resolver = Arc::new(Resolver::default());
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Deny {
+        reason: "user said no".to_string(),
+    });
+    let mw = Arc::new(
+        ToolPolicyGateMiddleware::new(Arc::new(NamePolicy))
+            .with_approval_resolver(resolver.clone()),
+    );
+    let (r, runs) = run(mw, "send", false).await;
+    assert_eq!(r.output(), "user said no");
+    assert!(r.is_error);
+    assert_eq!(runs, 0);
+    assert!(resolver.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn approval_gate_only_asks_for_calls_the_resolver_flags() {
+    let resolver = Arc::new(Resolver::default());
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Allow { ticket: None });
+    let mw = || Arc::new(ApprovalGateMiddleware::new("approval", resolver.clone()));
+
+    let (r, runs) = run(mw(), "read", false).await;
+    assert!(!r.is_error);
+    assert_eq!(runs, 1);
+    assert_eq!(*resolver.resolved.lock().unwrap(), 0);
+
+    // Approved without a ticket: runs, records nothing.
+    let (r, runs) = run(mw(), "send", false).await;
+    assert!(!r.is_error);
+    assert_eq!(runs, 1);
+    assert_eq!(*resolver.resolved.lock().unwrap(), 1);
+    assert!(resolver.recorded.lock().unwrap().is_empty());
+    assert_eq!(ToolMiddleware::<(), Host>::name(&*mw()), "approval");
+}
+
+#[tokio::test]
+async fn approval_gate_records_success_and_failure_for_an_approved_ticket() {
+    let resolver = Arc::new(Resolver::default());
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Allow {
+        ticket: Some("t-9".to_string()),
+    });
+    let mw = Arc::new(ApprovalGateMiddleware::new("approval", resolver.clone()));
+    run(mw.clone(), "send", false).await;
+    run(mw, "send", true).await;
+    assert_eq!(
+        *resolver.recorded.lock().unwrap(),
+        vec![("t-9".to_string(), false), ("t-9".to_string(), true)]
+    );
+}
