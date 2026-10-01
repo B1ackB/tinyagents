@@ -263,10 +263,10 @@ impl TranscriptMessage {
                 self.tool_calls.iter().cloned().map(Into::into).collect();
             return encode_assistant_envelope(Some(&self.content), &calls, None);
         }
-        if self.role == "tool" {
-            if let Some(id) = self.tool_call_id.as_deref() {
-                return encode_tool_envelope(id, &self.content);
-            }
+        if self.role == "tool"
+            && let Some(id) = self.tool_call_id.as_deref()
+        {
+            return encode_tool_envelope(id, &self.content);
         }
         if let Some(parts) = self.parts.as_deref() {
             let parts: Vec<ContentPart> = parts
