@@ -524,3 +524,42 @@ fn request_less_compaction_with_usage_identical_to_history_still_counts() {
     assert_eq!(spend.root.input_tokens, 10_000);
     assert_eq!(spend.root.turns, 2);
 }
+
+/// A successor generation starts with the rows it retained from its parent.
+/// Those rows keep their original `request_id`, and their usage was already
+/// counted in the sealed generation.
+#[test]
+fn retained_rows_in_a_successor_generation_are_not_counted_twice() {
+    use crate::transcript::{
+        FileTranscriptLocator, SessionRef, TranscriptHistory, TranscriptLocator, TruncateCut,
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-generations";
+    let locator = FileTranscriptLocator::new(tmp.path());
+    let session = SessionRef::scoped(thread, "orchestrator");
+    let first = locator
+        .open_session(&session, meta("orchestrator", "root", Some(thread)))
+        .expect("open session");
+    first
+        .append(TranscriptMessage::new("user", "q0"))
+        .expect("append user");
+    let mut answer = TranscriptMessage::assistant("a0");
+    answer.turn_usage = Some(turn_usage(4_000, 40, 0));
+    answer.request_id = Some("req-0".into());
+    answer.preserve_request_id = true;
+    first.append(answer).expect("append answer");
+
+    let before = thread_spend(tmp.path(), thread);
+    assert_eq!(before.root.input_tokens, 4_000);
+
+    locator
+        .truncate_into_next_generation(
+            &session,
+            TruncateCut::BeforeIndex(2),
+            meta("orchestrator", "root", Some(thread)),
+        )
+        .expect("next generation");
+    let after = thread_spend(tmp.path(), thread);
+    assert_eq!(after.root.input_tokens, 4_000, "retained row counted twice");
+    assert_eq!(after.root.turns, 1);
+}
