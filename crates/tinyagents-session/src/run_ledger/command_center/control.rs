@@ -32,8 +32,7 @@ use thiserror::Error;
 use std::path::Path;
 
 use crate::run_ledger::{
-    AgentRunStatus, RunEventAppend, RunTransition, get_agent_run,
-    transition_agent_run_status_from,
+    AgentRunStatus, RunEventAppend, RunTransition, get_agent_run, transition_agent_run_status_from,
 };
 
 use super::types::AgentWorkRow;
@@ -235,15 +234,14 @@ pub fn apply_control(
 
         // Verb-specific error / completion handling. The transition op writes
         // both columns verbatim, so `None` clears them.
-        let (next_error, next_completed_at): (Option<String>, Option<DateTime<Utc>>) =
-            match verb {
-                // Stopping records the optional reason and stamps completion now.
-                ControlVerb::Stop => (reason.map(str::to_string), Some(Utc::now())),
-                // Re-queuing drops the stale failure reason and completion time.
-                ControlVerb::Retry | ControlVerb::Continue => (None, None),
-                // Follow-up leaves the run as-is.
-                ControlVerb::FollowUp => (run.error.clone(), run.completed_at),
-            };
+        let (next_error, next_completed_at): (Option<String>, Option<DateTime<Utc>>) = match verb {
+            // Stopping records the optional reason and stamps completion now.
+            ControlVerb::Stop => (reason.map(str::to_string), Some(Utc::now())),
+            // Re-queuing drops the stale failure reason and completion time.
+            ControlVerb::Retry | ControlVerb::Continue => (None, None),
+            // Follow-up leaves the run as-is.
+            ControlVerb::FollowUp => (run.error.clone(), run.completed_at),
+        };
 
         // The action's timeline entry commits with the status change or not
         // at all.

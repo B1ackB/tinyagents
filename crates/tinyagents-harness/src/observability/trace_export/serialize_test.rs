@@ -55,7 +55,10 @@ fn newest_nested_message_over_budget_is_kept_as_a_preview() {
     let content = messages[1]["content"].as_str().unwrap();
     assert!(content.ends_with("…[message truncated]"));
     assert!(content.chars().count() <= MAX_MODEL_CONTENT_CHARS);
-    assert_eq!(messages[0]["content"], "[1 earlier messages omitted from telemetry]");
+    assert_eq!(
+        messages[0]["content"],
+        "[1 earlier messages omitted from telemetry]"
+    );
 }
 
 #[test]
