@@ -120,7 +120,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx> for Timeo
         let fut = next.run(ctx, state, request);
         match tokio::time::timeout(self.timeout, fut).await {
             Ok(result) => result,
-            Err(_) => Err(TinyAgentsError::Timeout(format!(
+            // Only this one wrapped call expired; the run may have time left,
+            // so report the retryable per-call timeout, not the run's own.
+            Err(_) => Err(TinyAgentsError::CallTimeout(format!(
                 "model call for run `{run_id}` exceeded the {} ms middleware timeout",
                 self.timeout.as_millis()
             ))),

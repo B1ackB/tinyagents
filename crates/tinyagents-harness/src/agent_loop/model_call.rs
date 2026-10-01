@@ -70,7 +70,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             })
             .await
             .map_err(|error| match error {
-                TinyAgentsError::Cancelled | TinyAgentsError::Timeout(_) => error,
+                // `RunContext::bounded` always reports `Timeout`; when the
+                // per-model-call ceiling was the tighter bound, surface it as
+                // `CallTimeout` so the run is not mistaken for out of time.
+                TinyAgentsError::Timeout(message) if bound == PER_CALL_BOUND_LABEL => {
+                    TinyAgentsError::CallTimeout(message)
+                }
+                TinyAgentsError::Cancelled
+                | TinyAgentsError::Timeout(_)
+                | TinyAgentsError::CallTimeout(_) => error,
                 _ => {
                     tracing::warn!(agent_id = %host_run.agent_id, "[host] model resolution failed");
                     TinyAgentsError::Model("host model resolution failed".to_string())

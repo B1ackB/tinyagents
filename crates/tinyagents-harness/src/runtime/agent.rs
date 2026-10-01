@@ -200,7 +200,8 @@ fn hosted_error(error: &TinyAgentsError, run: AgentRun) -> HostedError {
 /// internal callers (recursive hosted delegation) that must keep propagating
 /// through the ordinary `Result<T>` = `Result<T, TinyAgentsError>` surface.
 /// This is a lossless-enough round trip for control flow: `Cancelled` and
-/// `Timeout` map back to their own variants (so cancellation/deadline
+/// `Timeout` map back to their own variants (`CallTimeout` when
+/// [`HostedError::timeout_bound`] is [`TimeoutBound::PerModelCall`]) (so cancellation/deadline
 /// semantics upstream keep working, e.g. the fallback gate in
 /// `invoke_model_resolving`), and the rest become typed but message-generic
 /// variants — never worse than what this boundary already returned before
@@ -209,7 +210,12 @@ impl From<HostedError> for TinyAgentsError {
     fn from(error: HostedError) -> Self {
         match error.kind {
             HostedErrorKind::Cancelled => TinyAgentsError::Cancelled,
-            HostedErrorKind::Timeout => TinyAgentsError::Timeout(error.message),
+            HostedErrorKind::Timeout => match error.timeout_bound {
+                // Keep the per-call ceiling distinct so a parent treats a
+                // wedged child call as retryable, not as an exhausted run.
+                Some(TimeoutBound::PerModelCall) => TinyAgentsError::CallTimeout(error.message),
+                _ => TinyAgentsError::Timeout(error.message),
+            },
             HostedErrorKind::LimitExceeded => TinyAgentsError::LimitExceeded(error.message),
             HostedErrorKind::Policy => TinyAgentsError::Validation(error.message),
             HostedErrorKind::Provider | HostedErrorKind::Internal => {
