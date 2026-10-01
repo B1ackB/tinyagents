@@ -83,12 +83,20 @@ impl Tool for AskClarificationTool {
             .filter(|q| !q.is_empty())
             .unwrap_or("Could you clarify?");
 
-        let options = args.get("options").and_then(|v| v.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
+        // Only non-empty string options are shown; with none, the question
+        // stands alone rather than ending on a dangling "Options:" line.
+        let options = args
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|opt| !opt.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|opts| !opts.is_empty());
 
         // Plain question text, no marker: this output IS the message the user
         // reads. The early-exit hook captures it verbatim as the pause question,

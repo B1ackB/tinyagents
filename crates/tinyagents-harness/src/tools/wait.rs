@@ -243,15 +243,17 @@ fn parse_wait_request(args: &serde_json::Value) -> Result<WaitRequest, String> {
 fn format_wait_tick(request: &WaitRequest, loop_mode: bool) -> String {
     let seconds = request.duration_ms as f64 / MILLIS_PER_SEC as f64;
     let loop_instruction = loop_mode.then(|| {
-        json!({
-            "tool": "wait_loop",
-            "arguments": {
-                "message": request.message,
-                "duration_ms": request.duration_ms,
-                "loop_key": request.loop_key,
-                "iteration": request.iteration.saturating_add(1)
-            }
-        })
+        let mut arguments = json!({
+            "message": request.message,
+            "duration_ms": request.duration_ms,
+            "iteration": request.iteration.saturating_add(1)
+        });
+        // The schema allows `loop_key` only as a string: omit it rather than
+        // hand back a ready-to-call instruction carrying `null`.
+        if let Some(loop_key) = &request.loop_key {
+            arguments["loop_key"] = json!(loop_key);
+        }
+        json!({ "tool": "wait_loop", "arguments": arguments })
     });
     let payload = json!({
         "status": "elapsed",
