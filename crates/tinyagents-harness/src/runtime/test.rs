@@ -237,13 +237,7 @@ struct TaggedSecurity {
 #[async_trait]
 impl SecurityGate for TaggedSecurity {
     async fn authorize_tool(&self, call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             self.trace
                 .mark("security", format!("deny:{}", call.tool_name));
             Ok(GateDecision::deny("tagged approval denied"))
@@ -713,13 +707,7 @@ impl SecurityGate for DenyToolGate {
 #[async_trait]
 impl SecurityGate for DenyThenAllowGate {
     async fn authorize_tool(&self, _call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             Ok(GateDecision::deny("approval declined"))
         } else {
             Ok(GateDecision::Allow)
@@ -3507,4 +3495,21 @@ fn child_with_data_never_propagates_host_authority() {
         .child_with_data(RunConfig::new("different-ctx"), "child-data")
         .unwrap();
     assert!(different_ctx_child.host_authority.is_none());
+}
+
+/// Atomically decrement `counter` if it is non-zero, returning whether it was.
+///
+/// A compare-exchange loop rather than `fetch_update`: that method was renamed
+/// `try_update` on newer toolchains (deprecating the old name, which clippy
+/// `-D warnings` rejects) while `try_update` does not exist at the workspace
+/// MSRV, so neither spelling compiles cleanly on both.
+fn take_one(counter: &AtomicUsize) -> bool {
+    let mut current = counter.load(Ordering::SeqCst);
+    while let Some(next) = current.checked_sub(1) {
+        match counter.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
 }
