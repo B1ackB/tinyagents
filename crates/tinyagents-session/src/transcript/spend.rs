@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{
-    DisplayRecord, SessionTranscript, TranscriptMeta, TurnUsage, find_root_transcripts_for_thread,
-    read_transcript_display,
+    DisplayRecord, SessionTranscript, TranscriptMessage, TranscriptMeta, TurnUsage,
+    find_root_transcripts_for_thread, read_transcript_display,
 };
 
 /// One transcript's own spend, summed from the per-turn `turn_usage` records
@@ -124,6 +124,9 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
     };
     let mut usages: Vec<&TurnUsage> = Vec::new();
     let mut counted_requests: HashSet<&str> = HashSet::new();
+    // The logical context as of the previous record: what a compaction's kept
+    // rows are carried over from.
+    let mut context: Vec<&TranscriptMessage> = Vec::new();
     for record in &display.records {
         match record {
             DisplayRecord::Message(message) if !message.interrupted => {
@@ -133,48 +136,57 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
                         counted_requests.insert(request_id);
                     }
                 }
+                context.push(&message.message);
             }
             DisplayRecord::Message(_) => {}
             DisplayRecord::Compaction(marker) => {
-                let Some(turn) = marker.request_id.as_deref() else {
-                    // A compaction written without a `request_id` has no turn
-                    // identity to match rows against. Its writing turn's
-                    // spend is the usage on the replacement's final assistant
-                    // row (where the writer attaches it), and that row carries
-                    // no `request_id` either; kept history rows that carry
-                    // usage were read back and keep their own ids. Count it
-                    // unless the very same record was already counted.
-                    if let Some(usage) = marker
-                        .replacement
-                        .iter()
-                        .rev()
-                        .find(|row| row.message.role == "assistant")
-                        .filter(|row| row.request_id.is_none())
-                        .and_then(|row| row.message.turn_usage.as_ref())
-                        && !usages.contains(&usage)
-                    {
-                        usages.push(usage);
+                match marker.request_id.as_deref() {
+                    Some(turn) if !counted_requests.contains(turn) => {
+                        let fresh: Vec<&TurnUsage> = marker
+                            .replacement
+                            .iter()
+                            .filter(|row| row.request_id.as_deref() == Some(turn))
+                            .filter_map(|row| row.message.turn_usage.as_ref())
+                            .collect();
+                        if !fresh.is_empty() {
+                            counted_requests.insert(turn);
+                        }
+                        usages.extend(fresh);
                     }
-                    continue;
-                };
-                if counted_requests.contains(turn) {
-                    continue;
+                    Some(_) => {}
+                    None => {
+                        // A compaction written without a `request_id` has no
+                        // turn identity. Its writing turn's spend sits on the
+                        // replacement's final assistant row; that row is fresh
+                        // unless it was carried over from the context this
+                        // compaction replaced (same position-free row:
+                        // role, content and usage).
+                        if let Some(row) = marker
+                            .replacement
+                            .iter()
+                            .rev()
+                            .find(|row| row.message.role == "assistant")
+                            && let Some(usage) = row.message.turn_usage.as_ref()
+                            && !context
+                                .iter()
+                                .any(|prior| carried_from(prior, &row.message))
+                        {
+                            usages.push(usage);
+                        }
+                    }
                 }
-                let fresh: Vec<&TurnUsage> = marker
-                    .replacement
-                    .iter()
-                    .filter(|row| row.request_id.as_deref() == Some(turn))
-                    .filter_map(|row| row.message.turn_usage.as_ref())
-                    .collect();
-                if !fresh.is_empty() {
-                    counted_requests.insert(turn);
-                }
-                usages.extend(fresh);
+                context = marker.replacement.iter().map(|row| &row.message).collect();
             }
         }
     }
     let spend = spend_from_usages(usages, display.meta.model.as_ref());
     Some((spend, display.meta))
+}
+
+/// Whether `row` in a compaction replacement is `prior` carried over: same
+/// role, content and usage record.
+fn carried_from(prior: &TranscriptMessage, row: &TranscriptMessage) -> bool {
+    prior.role == row.role && prior.content == row.content && prior.turn_usage == row.turn_usage
 }
 
 /// Every descendant transcript of `root`, at any delegation depth.

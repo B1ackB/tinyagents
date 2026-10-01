@@ -235,3 +235,22 @@ async fn collect_reaches_the_next_model_boundary_as_additional_context() {
     );
     assert!(!collect.text().starts_with(STEER_PREFIX));
 }
+
+#[tokio::test]
+async fn requeue_front_keeps_returned_items_ahead_of_newer_ones() {
+    let queue = RunQueue::<Item>::new();
+    queue.push(QueueLane::Steer, item("newer", "newer")).await;
+    queue
+        .requeue_front(
+            QueueLane::Steer,
+            vec![item("old-1", "old-1"), item("old-2", "old-2")],
+        )
+        .await;
+    let order: Vec<String> = queue
+        .drain(QueueLane::Steer)
+        .await
+        .iter()
+        .map(|msg| msg.id().to_string())
+        .collect();
+    assert_eq!(order, ["old-1", "old-2", "newer"]);
+}
