@@ -139,7 +139,14 @@ pub use observability::{
 pub use observability::{
     LangfuseAuth, LangfuseClient, LangfuseScore, LangfuseScoreValue, LangfuseTraceConfig,
 };
-pub use run_queue::{QueueLane, QueueMode, QueueStatus, RunQueue, RunQueueHandle};
+pub use observability::replay::{
+    RunEventsPage, list_active_runs, read_run_events_page, read_run_status,
+};
+pub use observability::{FileStatusStore, mint_run_id, reap_orphaned_runs};
+pub use run_queue::{
+    ForwardEvent, ForwardEventSink, ForwarderCleanup, QueueLane, QueueMode, QueueStatus,
+    QueuedMessage, RunQueue, RunQueueHandle, SteeringForwarderGuard,
+};
 pub use steering::{
     SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringOutcome, SteeringPolicy,
 };
