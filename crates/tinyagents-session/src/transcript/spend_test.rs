@@ -491,3 +491,36 @@ fn request_less_compaction_turn_still_counts() {
     assert_eq!(spend.root.input_tokens, 12_000);
     assert_eq!(spend.root.turns, 2);
 }
+
+/// An anonymous compaction turn whose usage equals an earlier turn's is still
+/// its own spend: its answer row was not carried over from the prior context.
+#[test]
+fn request_less_compaction_with_usage_identical_to_history_still_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-compacted-anon-twin";
+    let stem = "1790000008_orchestrator_anon_twin";
+    let root_meta = meta("orchestrator", "root", Some(thread));
+    write_transcript_turns(tmp.path(), stem, &root_meta, &[(5_000, 50, 0)]);
+    let path = tmp.path().join("session_raw").join(format!("{stem}.jsonl"));
+    let persisted = vec![
+        TranscriptMessage::new("user", "q0"),
+        TranscriptMessage::assistant("a0"),
+    ];
+    let reduced = vec![
+        TranscriptMessage::new("user", "summary"),
+        TranscriptMessage::new("user", "q1"),
+        TranscriptMessage::assistant("a1"),
+    ];
+    append_transcript_turn(
+        &path,
+        &persisted,
+        &reduced,
+        &root_meta,
+        Some(&turn_usage(5_000, 50, 0)),
+        None,
+    )
+    .expect("append compaction turn");
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 10_000);
+    assert_eq!(spend.root.turns, 2);
+}
