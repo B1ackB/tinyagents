@@ -1191,3 +1191,32 @@ fn thread_scan_orders_a_generation_chain_by_generation() {
         "newest-wins resolves the head generation"
     );
 }
+
+#[test]
+fn role_constructors_build_bare_rows() {
+    for (row, role) in [
+        (TranscriptMessage::system("s"), "system"),
+        (TranscriptMessage::user("u"), "user"),
+        (TranscriptMessage::assistant("a"), "assistant"),
+        (TranscriptMessage::tool("t"), "tool"),
+    ] {
+        assert_eq!(row, TranscriptMessage::new(role, row.content.clone()));
+        assert!(row.id.is_none() && row.extra_metadata.is_none());
+    }
+    assert_eq!(
+        TranscriptMessage::tool("ok")
+            .with_id("call-1")
+            .id
+            .as_deref(),
+        Some("call-1")
+    );
+}
+
+/// A host that persisted only `{role, content}` rows (a checkpoint written
+/// before the row type was shared) must still load as a bare row.
+#[test]
+fn role_content_only_json_deserializes_to_a_bare_row() {
+    let row: TranscriptMessage =
+        serde_json::from_str(r#"{"role":"assistant","content":"hello"}"#).unwrap();
+    assert_eq!(row, TranscriptMessage::assistant("hello"));
+}

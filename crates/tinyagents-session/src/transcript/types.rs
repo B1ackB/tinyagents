@@ -74,9 +74,31 @@ impl TranscriptMessage {
         }
     }
 
+    /// Shorthand for [`TranscriptMessage::new`] with `role = "system"`.
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::new("system", content)
+    }
+
+    /// Shorthand for [`TranscriptMessage::new`] with `role = "user"`.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self::new("user", content)
+    }
+
     /// Shorthand for [`TranscriptMessage::new`] with `role = "assistant"`.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::new("assistant", content)
+    }
+
+    /// Shorthand for [`TranscriptMessage::new`] with `role = "tool"`.
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self::new("tool", content)
+    }
+
+    /// Sets the row's id (a tool row's id is the call id it answers).
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 }
 
