@@ -28,7 +28,7 @@ pub enum QueueLane {
     /// run end, and not injected into the transcript by the harness itself.
     ///
     /// A host that arms a
-    /// [`SteeringForwarderGuard`][crate::run_queue::forwarder::SteeringForwarderGuard]
+    /// [`SteeringForwarderGuard`][crate::run_queue::SteeringForwarderGuard]
     /// over the queue opts into the other path: the forwarder drains this lane
     /// during the run and injects each item as framed additional context, so
     /// those items no longer appear on `AgentRun::collected`.
