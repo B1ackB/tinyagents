@@ -179,7 +179,7 @@ fn root_run_falls_back_to_parent_session() {
     record_spawned(&store, &s);
     let rec = store.get(&TaskId::new("t1")).unwrap();
     assert_eq!(rec.spec.metadata.get("rootSession").unwrap(), "p1");
-    assert!(rec.spec.metadata.get("sessionParentPrefix").is_none());
+    assert!(!rec.spec.metadata.contains_key("sessionParentPrefix"));
 }
 
 #[test]
