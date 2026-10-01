@@ -70,7 +70,10 @@ fn wait_loop_tick_at_max_iteration_does_not_overflow() {
 fn wait_loop_tick_omits_an_absent_loop_key() {
     let request = parse_wait_request(&json!({ "message": "poll", "duration_ms": 10 })).unwrap();
     let output = format_wait_tick(&request, true);
-    assert!(!output.contains("loop_key"), "null loop_key leaked: {output}");
+    assert!(
+        !output.contains("loop_key"),
+        "null loop_key leaked: {output}"
+    );
 }
 
 #[tokio::test]

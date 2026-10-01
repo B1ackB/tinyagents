@@ -134,3 +134,15 @@ fn wire_schema_is_stable() {
         })
     );
 }
+
+#[tokio::test]
+async fn options_without_usable_strings_add_no_options_line() {
+    let tool = AskClarificationTool::new();
+    for options in [json!([]), json!([1, 2]), json!(["", "  "])] {
+        let result = tool
+            .execute(json!({ "question": "Which one?", "options": options }))
+            .await
+            .unwrap();
+        assert_eq!(result.output(), "Which one?");
+    }
+}
