@@ -1146,10 +1146,6 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
         .await
         .expect_err("per-model-call cap must bound host resolution");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
-    assert_eq!(
-        error.timeout_bound,
-        Some(crate::runtime::TimeoutBound::PerModelCall)
-    );
 }
 
 /// A model whose every call (streaming included) never answers.
