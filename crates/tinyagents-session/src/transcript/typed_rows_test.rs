@@ -440,7 +440,7 @@ fn the_in_memory_history_returns_lifted_rows_like_the_file_backend() {
 
 #[test]
 fn plain_journal_message_keeps_the_legacy_string_form_of_typed_rows() {
-    use crate::transcript::import::plain_journal_message;
+    use crate::transcript::import::convert::plain_journal_message;
     let typed = TranscriptMessage::assistant_with_calls(
         "on it",
         vec![TranscriptToolCall::from(call("c1", None))],
