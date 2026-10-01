@@ -73,6 +73,7 @@ fn append_only_transcript_reopens_with_compacted_context_and_full_display_histor
             tool_calls: Vec::new(),
             tool_call_id: None,
             parts: None,
+        legacy: Default::default(),
             extra_metadata: Some(json!({"policy_version": 1})),
             cache_breakpoints: vec![8],
             turn_usage: None,

@@ -162,9 +162,9 @@ pub use thread_lookup::{
     find_root_transcripts_for_thread, read_thread_usage_summary,
 };
 pub use types::{
-    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, MessageUsage,
-    SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta, TranscriptPart,
-    TranscriptToolCall, TurnUsage,
+    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, LegacyText,
+    MessageUsage, SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta,
+    TranscriptPart, TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,

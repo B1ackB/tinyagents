@@ -525,6 +525,7 @@ fn append_transcript_turn_projects_full_display_shape() {
         tool_calls: Vec::new(),
         tool_call_id: None,
         parts: None,
+        legacy: Default::default(),
         extra_metadata: None,
         cache_breakpoints: Vec::new(),
         turn_usage: None,

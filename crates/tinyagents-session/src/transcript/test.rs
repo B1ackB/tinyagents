@@ -265,6 +265,7 @@ fn file_history_never_converts_or_drops_durable_fields() {
         tool_calls: Vec::new(),
         tool_call_id: None,
         parts: None,
+        legacy: Default::default(),
         extra_metadata: Some(serde_json::json!({
             "trusted_verbatim": true,
             "artifacts": ["artifact-1"],

@@ -34,6 +34,22 @@ pub enum TranscriptPart {
     Image { url: String },
 }
 
+/// The legacy string a row was lifted from ([`TranscriptMessage::normalized`]),
+/// remembered so [`TranscriptMessage::legacy_content`] can hand back the exact
+/// original bytes (key order, `null` content, embedded reasoning) while the row
+/// is still semantically what that string parses to.
+///
+/// Never serialized, and equal to every other value: it is a memo, not part of
+/// the row's identity.
+#[derive(Debug, Clone, Default)]
+pub struct LegacyText(Option<String>);
+
+impl PartialEq for LegacyText {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// The host-visible marker prefix an image part renders as in display text.
 const DISPLAY_IMAGE_PREFIX: &str = "[IMAGE:";
 
@@ -76,6 +92,9 @@ pub struct TranscriptMessage {
     /// `None` for a text-only row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<TranscriptPart>>,
+    /// The legacy string this row was lifted from, if any; see [`LegacyText`].
+    #[serde(skip)]
+    pub legacy: LegacyText,
     #[serde(default)]
     pub extra_metadata: Option<serde_json::Value>,
     #[serde(default)]
@@ -115,6 +134,7 @@ impl TranscriptMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             parts: None,
+            legacy: LegacyText::default(),
             extra_metadata: None,
             cache_breakpoints: Vec::new(),
             turn_usage: None,
@@ -208,6 +228,7 @@ impl TranscriptMessage {
         if self.is_typed() {
             return self;
         }
+        let original = self.content.clone();
         match self.role.as_str() {
             "assistant" => {
                 if let Some(envelope) = parse_assistant_envelope(&self.content) {
@@ -244,6 +265,9 @@ impl TranscriptMessage {
             }
             _ => {}
         }
+        if self.is_typed() {
+            self.legacy = LegacyText(Some(original));
+        }
         self
     }
 
@@ -258,6 +282,15 @@ impl TranscriptMessage {
     /// result gets the typed row back through [`Self::normalized`].
     #[must_use]
     pub fn legacy_content(&self) -> String {
+        // A row lifted from a legacy string hands that string back untouched
+        // for as long as it still means the same thing.
+        if let Some(raw) = self.legacy.0.as_deref() {
+            let mut lifted = Self::new(self.role.clone(), raw);
+            lifted = lifted.normalized();
+            if lifted.same_structure_as(self) {
+                return raw.to_string();
+            }
+        }
         if self.role == "assistant" && !self.tool_calls.is_empty() {
             let calls: Vec<NativeToolCall> =
                 self.tool_calls.iter().cloned().map(Into::into).collect();
@@ -307,9 +340,13 @@ impl TranscriptMessage {
     /// they are enriched between the in-memory and the persisted row.
     #[must_use]
     pub fn same_row_as(&self, other: &Self) -> bool {
+        self.id == other.id && self.same_structure_as(other)
+    }
+
+    /// [`Self::same_row_as`] without the id.
+    fn same_structure_as(&self, other: &Self) -> bool {
         self.role == other.role
             && self.content == other.content
-            && self.id == other.id
             && self.tool_calls == other.tool_calls
             && self.tool_call_id == other.tool_call_id
             && self.parts == other.parts

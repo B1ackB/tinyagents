@@ -323,8 +323,8 @@ fn a_future_version_or_part_kind_keeps_the_stored_content() {
 
 #[test]
 fn typed_rows_project_to_the_same_display_items_as_their_legacy_strings() {
-    use super::view::project_records;
     use super::view::DisplayItem;
+    use super::view::project_records;
 
     let dir = tempdir().unwrap();
     let project = |name: &str, rows: &[TranscriptMessage]| {
