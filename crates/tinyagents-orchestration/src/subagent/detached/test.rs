@@ -166,7 +166,7 @@ fn ledger_record_has_literal_metadata_and_status_mirroring() {
     assert_eq!(rec.status, OrchestrationTaskStatus::Completed);
 
     record_spawned(&store, &spawned("t2")).unwrap();
-    record_cancelled(&store, "t2");
+    record_cancelled(&store, "t2").unwrap();
     assert_eq!(
         store.get(&TaskId::new("t2")).unwrap().status,
         OrchestrationTaskStatus::Cancelled
@@ -624,4 +624,14 @@ fn record_status_propagates_store_failures_but_not_first_writer_races() {
     assert!(record_status(&store, "f1", &done).is_ok());
     // Unknown task: nothing to mirror.
     assert!(record_status(&store, "missing", &done).is_ok());
+}
+
+#[test]
+fn record_cancelled_is_a_noop_when_terminal_and_propagates_other_failures() {
+    let store = InMemoryTaskStore::new();
+    record_spawned(&store, &spawned("c1")).unwrap();
+    record_cancelled(&store, "c1").unwrap();
+    // Already terminal: benign no-op.
+    record_cancelled(&store, "c1").unwrap();
+    record_cancelled(&store, "missing").unwrap();
 }
