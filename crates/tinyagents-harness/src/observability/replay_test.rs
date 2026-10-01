@@ -160,8 +160,7 @@ async fn page_cursor_stays_in_journal_offset_space_across_dropped_events() {
 #[tokio::test]
 async fn page_cursor_advances_from_an_evicting_stores_retained_base() {
     use crate::store::InMemoryAppendStore;
-    let journal =
-        StoreEventJournal::new(InMemoryAppendStore::new().with_max_entries_per_stream(3));
+    let journal = StoreEventJournal::new(InMemoryAppendStore::new().with_max_entries_per_stream(3));
     for i in 0..6u64 {
         let obs = AgentObservation {
             event_id: crate::ids::EventId::new(format!("evt-{i}")),
@@ -179,7 +178,9 @@ async fn page_cursor_advances_from_an_evicting_stores_retained_base() {
         journal.append(obs).await.unwrap();
     }
     // Offsets 0..=2 were evicted; a stale cursor resumes at 3.
-    let page = read_run_events_page(&journal, "run-evict", 0, 1).await.unwrap();
+    let page = read_run_events_page(&journal, "run-evict", 0, 1)
+        .await
+        .unwrap();
     assert_eq!(page.events[0].offset, 3);
     assert_eq!(page.next_offset, Some(4), "the cursor must progress");
 }

@@ -109,7 +109,8 @@ fn spend_from_usages<'a>(
 ///   their original `request_id`; the turn's own rows take the compaction's
 ///   `request_id`. So a replacement row's usage counts only when its
 ///   `request_id` is the compaction's and no appended line already counted
-///   spend under that `request_id`.
+///   spend under that `request_id`. A compaction written without a
+///   `request_id` falls back to the usage on its final assistant row.
 fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
     let display = match read_transcript_display(path) {
         Ok(display) => display,
@@ -136,6 +137,24 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
             DisplayRecord::Message(_) => {}
             DisplayRecord::Compaction(marker) => {
                 let Some(turn) = marker.request_id.as_deref() else {
+                    // A compaction written without a `request_id` has no turn
+                    // identity to match rows against. Its writing turn's
+                    // spend is the usage on the replacement's final assistant
+                    // row (where the writer attaches it), and that row carries
+                    // no `request_id` either; kept history rows that carry
+                    // usage were read back and keep their own ids. Count it
+                    // unless the very same record was already counted.
+                    if let Some(usage) = marker
+                        .replacement
+                        .iter()
+                        .rev()
+                        .find(|row| row.message.role == "assistant")
+                        .filter(|row| row.request_id.is_none())
+                        .and_then(|row| row.message.turn_usage.as_ref())
+                        && !usages.contains(&usage)
+                    {
+                        usages.push(usage);
+                    }
                     continue;
                 };
                 if counted_requests.contains(turn) {
