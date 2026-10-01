@@ -44,10 +44,13 @@ pub async fn read_run_events_page(
          limit={limit} effective_limit={effective_limit}"
     );
 
-    let mut events = journal.read_from(run_id, offset).await?;
+    // One entry past the page tells whether a further page exists without a
+    // second round-trip, and goes through the bounded `read_window` seam so a
+    // backend with a server-side limit never materialises the whole tail.
+    let mut events = journal
+        .read_window(run_id, offset, effective_limit as usize + 1)
+        .await?;
 
-    // Reading the whole tail lets us detect a further page without a second
-    // store round-trip.
     let has_more = events.len() as u64 > effective_limit;
     if has_more {
         events.truncate(effective_limit as usize);
