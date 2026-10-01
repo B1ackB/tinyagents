@@ -202,7 +202,7 @@ fn file_spend(
 /// Whether `row` in a compaction replacement is `prior` carried over: same
 /// role, content and usage record.
 fn carried_from(prior: &TranscriptMessage, row: &TranscriptMessage) -> bool {
-    prior.role == row.role && prior.content == row.content && prior.turn_usage == row.turn_usage
+    prior.same_row_as(row) && prior.turn_usage == row.turn_usage
 }
 
 /// Every descendant transcript of `root`, at any delegation depth.

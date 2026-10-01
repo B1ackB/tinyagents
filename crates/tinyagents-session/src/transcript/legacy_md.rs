@@ -116,35 +116,19 @@ fn parse_legacy_messages(raw: &str) -> Result<Vec<TranscriptMessage>> {
                 break;
             };
             let content = &raw[content_start..content_start + content_end_rel];
-            messages.push(TranscriptMessage {
-                id: None,
+            messages.push(TranscriptMessage::from_legacy(
                 role,
-                content: content.replace(LEGACY_MSG_CLOSE_ESCAPED, LEGACY_MSG_CLOSE),
-                extra_metadata: None,
-                cache_breakpoints: Vec::new(),
-                turn_usage: None,
-                request_id: None,
-                preserve_request_id: false,
-                interrupted: false,
-                tool_failure: None,
-            });
+                content.replace(LEGACY_MSG_CLOSE_ESCAPED, LEGACY_MSG_CLOSE),
+            ));
             search_from = content_start + content_end_rel + LEGACY_MSG_CLOSE.len();
             continue;
         };
 
         let content = &raw[content_start..content_start + content_end_rel];
-        messages.push(TranscriptMessage {
-            id: None,
+        messages.push(TranscriptMessage::from_legacy(
             role,
-            content: content.replace(LEGACY_MSG_CLOSE_ESCAPED, LEGACY_MSG_CLOSE),
-            extra_metadata: None,
-            cache_breakpoints: Vec::new(),
-            turn_usage: None,
-            request_id: None,
-            preserve_request_id: false,
-            interrupted: false,
-            tool_failure: None,
-        });
+            content.replace(LEGACY_MSG_CLOSE_ESCAPED, LEGACY_MSG_CLOSE),
+        ));
 
         search_from = content_start + content_end_rel + close_tag.len();
     }

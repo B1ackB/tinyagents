@@ -392,14 +392,15 @@ pub fn append_interrupted_partial(
 }
 
 /// Longest common prefix length between two message slices, comparing on the
-/// stable, serialised fields (`role`, `content`, `id`). `TranscriptMessage` does not
-/// derive `PartialEq`, and `extra_metadata` is intentionally excluded because
+/// model-visible fields (`role`, `content`, `id` and the typed tool-call, tool-result
+/// and image structure; see [`TranscriptMessage::same_row_as`]). `extra_metadata` is
+/// intentionally excluded because
 /// it is enriched (turn usage) between the in-memory history and the persisted
 /// line, which must not count as a divergence.
 fn common_prefix_len(a: &[TranscriptMessage], b: &[TranscriptMessage]) -> usize {
     a.iter()
         .zip(b.iter())
-        .take_while(|(x, y)| x.role == y.role && x.content == y.content && x.id == y.id)
+        .take_while(|(x, y)| x.same_row_as(y))
         .count()
 }
 
