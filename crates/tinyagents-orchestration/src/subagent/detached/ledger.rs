@@ -13,6 +13,17 @@ use super::types::{DetachedSubagentStatus, SpawnedSubagent, WaitError, WaitOutco
 /// default window; execution is governed by the detached task itself.
 pub const DETACHED_LEDGER_TIMEOUT_MS: u64 = 120_000;
 
+/// How many times the status watcher tries to persist a terminal status.
+pub const STATUS_WRITE_ATTEMPTS: usize = 3;
+
+fn record_status_with_retries(store: &dyn TaskStore, task_id: &str, status: &DetachedSubagentStatus) {
+    for _ in 0..STATUS_WRITE_ATTEMPTS {
+        if record_status(store, task_id, status).is_ok() {
+            return;
+        }
+    }
+}
+
 /// Record a freshly-spawned subagent in `store` (`Pending` then `Running`).
 ///
 /// An insert failure (e.g. a task id still present in the durable store) is
@@ -58,22 +69,39 @@ pub fn record_spawned(
     Ok(())
 }
 
-/// Mirror a published status into the store. Transition errors (already
-/// terminal / cancelled) are ignored: first writer wins.
-pub fn record_status(store: &dyn TaskStore, task_id: &str, status: &DetachedSubagentStatus) {
+/// Mirror a published status into the store.
+///
+/// First writer wins: when the record is already terminal (or gone) the call
+/// is a no-op. Any other store failure, such as a durable backend that cannot
+/// persist the transition, is returned so the caller can retry or report it
+/// instead of losing the terminal result.
+pub fn record_status(
+    store: &dyn TaskStore,
+    task_id: &str,
+    status: &DetachedSubagentStatus,
+) -> tinyagents_harness::Result<()> {
     let id = TaskId::new(task_id);
+    if matches!(status, DetachedSubagentStatus::Running) {
+        return Ok(());
+    }
+    match store.get(&id) {
+        None => return Ok(()),
+        Some(record) if record.is_terminal() => return Ok(()),
+        Some(_) => {}
+    }
     match status {
         DetachedSubagentStatus::Completed { output, .. } => {
-            let _ = store.complete(&id, OrchestrationTaskResult::text(output.clone()));
+            store.complete(&id, OrchestrationTaskResult::text(output.clone()))?;
         }
         DetachedSubagentStatus::Failed { error } => {
-            let _ = store.fail(&id, error.clone());
+            store.fail(&id, error.clone())?;
         }
         DetachedSubagentStatus::AwaitingUser { question } => {
-            let _ = store.mark_awaiting_with_question(&id, question.clone());
+            store.mark_awaiting_with_question(&id, question.clone())?;
         }
         DetachedSubagentStatus::Running => {}
     }
+    Ok(())
 }
 
 /// Record a cancellation (`CancelRequested` then `Cancelled`).
@@ -85,7 +113,9 @@ pub fn record_cancelled(store: &dyn TaskStore, task_id: &str) {
 
 /// Watch a child's status channel and mirror its first terminal status into
 /// `store`. A dropped sender without a terminal status is recorded as
-/// [`DetachedSubagentStatus::ended_without_result`].
+/// [`DetachedSubagentStatus::ended_without_result`]. A failed write is retried
+/// up to [`STATUS_WRITE_ATTEMPTS`] times before the watcher gives up; hosts
+/// that must observe persistence failures call [`record_status`] themselves.
 pub fn spawn_status_watcher(
     store: Arc<dyn TaskStore>,
     task_id: String,
@@ -95,11 +125,11 @@ pub fn spawn_status_watcher(
         loop {
             let snapshot = status.borrow_and_update().clone();
             if snapshot.is_terminal() {
-                record_status(store.as_ref(), &task_id, &snapshot);
+                record_status_with_retries(store.as_ref(), &task_id, &snapshot);
                 break;
             }
             if status.changed().await.is_err() {
-                record_status(
+                record_status_with_retries(
                     store.as_ref(),
                     &task_id,
                     &DetachedSubagentStatus::ended_without_result(),

@@ -152,13 +152,13 @@ fn ledger_record_has_literal_metadata_and_status_mirroring() {
             output: "done".into(),
             iterations: 3,
         },
-    );
+    ).unwrap();
     // First writer wins: a later failure does not rewrite the terminal state.
     record_status(
         &store,
         "t1",
         &DetachedSubagentStatus::Failed { error: "x".into() },
-    );
+    ).unwrap();
     let rec = store.get(&TaskId::new("t1")).unwrap();
     assert_eq!(rec.status, OrchestrationTaskStatus::Completed);
 
@@ -507,7 +507,7 @@ fn awaiting_question_is_persisted_and_read_back() {
         &DetachedSubagentStatus::AwaitingUser {
             question: "which branch?".into(),
         },
-    );
+    ).unwrap();
     let rec = subagent_record_for_task(&store, "q1", "p1").unwrap();
     assert_eq!(rec.status, OrchestrationTaskStatus::Awaiting);
     assert_eq!(
@@ -527,7 +527,7 @@ fn reused_task_id_surfaces_the_insert_failure_and_leaves_the_record() {
             output: "old".into(),
             iterations: 1,
         },
-    );
+    ).unwrap();
     assert!(record_spawned(&store, &spawned("dup")).is_err());
     let rec = store.get(&TaskId::new("dup")).unwrap();
     assert_eq!(rec.status, OrchestrationTaskStatus::Completed);
@@ -542,4 +542,65 @@ fn registry_errors_map_onto_wait_errors() {
         WaitError::RegistryPoisoned
     );
     assert_eq!(WaitError::from(E::AlreadyDone), WaitError::Unknown);
+}
+
+struct FailingStore(InMemoryTaskStore);
+
+impl TaskStore for FailingStore {
+    fn insert(&self, spec: OrchestrationTaskSpec) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.insert(spec)
+    }
+    fn get(&self, id: &TaskId) -> Option<OrchestrationTaskRecord> {
+        self.0.get(id)
+    }
+    fn list(&self, f: OrchestrationTaskFilter) -> Vec<OrchestrationTaskRecord> {
+        self.0.list(f)
+    }
+    fn mark_running(&self, id: &TaskId) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.mark_running(id)
+    }
+    fn mark_awaiting(&self, id: &TaskId) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.mark_awaiting(id)
+    }
+    fn complete(
+        &self,
+        _id: &TaskId,
+        _result: OrchestrationTaskResult,
+    ) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        Err(tinyagents_harness::TinyAgentsError::Internal("disk full".into()))
+    }
+    fn fail(&self, id: &TaskId, e: String) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.fail(id, e)
+    }
+    fn timeout(&self, id: &TaskId, e: String) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.timeout(id, e)
+    }
+    fn request_cancel(&self, id: &TaskId) -> tinyagents_harness::Result<OrchestrationControlOutcome> {
+        self.0.request_cancel(id)
+    }
+    fn mark_cancelled(&self, id: &TaskId) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.mark_cancelled(id)
+    }
+    fn kill(&self, id: &TaskId) -> tinyagents_harness::Result<OrchestrationControlOutcome> {
+        self.0.kill(id)
+    }
+    fn set_timeout_ms(&self, id: &TaskId, ms: u64) -> tinyagents_harness::Result<OrchestrationTaskRecord> {
+        self.0.set_timeout_ms(id, ms)
+    }
+}
+
+#[test]
+fn record_status_propagates_store_failures_but_not_first_writer_races() {
+    let store = FailingStore(InMemoryTaskStore::new());
+    record_spawned(&store, &spawned("f1")).unwrap();
+    let done = DetachedSubagentStatus::Completed {
+        output: "x".into(),
+        iterations: 1,
+    };
+    assert!(record_status(&store, "f1", &done).is_err());
+    // Already terminal: a later writer is a benign no-op.
+    store.fail(&TaskId::new("f1"), "boom".into()).unwrap();
+    assert!(record_status(&store, "f1", &done).is_ok());
+    // Unknown task: nothing to mirror.
+    assert!(record_status(&store, "missing", &done).is_ok());
 }
