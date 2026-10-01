@@ -1063,6 +1063,7 @@ async fn initial_host_model_resolution_is_cancelled_while_the_resolver_is_pendin
         result = &mut invocation => panic!("pending resolver unexpectedly finished: {result:?}"),
     };
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Cancelled);
+    assert_eq!(error.timeout_bound, None);
 }
 
 #[tokio::test]
