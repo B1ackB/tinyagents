@@ -50,6 +50,19 @@ pub trait TaskStore: Send + Sync {
     /// Marks a task as awaiting a child task or external input.
     fn mark_awaiting(&self, task_id: &TaskId) -> Result<OrchestrationTaskRecord>;
 
+    /// Marks a task as awaiting external input and durably keeps the
+    /// `question` it is waiting on (surfaced in [`OrchestrationTaskRecord::error`]
+    /// while the task is `Awaiting`). The default drops the question and
+    /// delegates to [`Self::mark_awaiting`]; the bundled stores override it.
+    fn mark_awaiting_with_question(
+        &self,
+        task_id: &TaskId,
+        question: String,
+    ) -> Result<OrchestrationTaskRecord> {
+        let _ = question;
+        self.mark_awaiting(task_id)
+    }
+
     /// Completes a live task.
     fn complete(
         &self,
@@ -179,6 +192,27 @@ impl TaskStore for InMemoryTaskStore {
                 OrchestrationTaskStatus::Awaiting,
             )?;
             record.status = OrchestrationTaskStatus::Awaiting;
+            record.updated_at = SystemTime::now();
+            Ok(record.clone())
+        })
+    }
+
+    fn mark_awaiting_with_question(
+        &self,
+        task_id: &TaskId,
+        question: String,
+    ) -> Result<OrchestrationTaskRecord> {
+        self.with_task(task_id, |record| {
+            require_status(
+                record,
+                &[
+                    OrchestrationTaskStatus::Pending,
+                    OrchestrationTaskStatus::Running,
+                ],
+                OrchestrationTaskStatus::Awaiting,
+            )?;
+            record.status = OrchestrationTaskStatus::Awaiting;
+            record.error = Some(question);
             record.updated_at = SystemTime::now();
             Ok(record.clone())
         })
@@ -423,6 +457,16 @@ impl TaskStore for JsonlTaskStore {
 
     fn mark_awaiting(&self, task_id: &TaskId) -> Result<OrchestrationTaskRecord> {
         let record = self.inner.mark_awaiting(task_id)?;
+        self.persist(&record)?;
+        Ok(record)
+    }
+
+    fn mark_awaiting_with_question(
+        &self,
+        task_id: &TaskId,
+        question: String,
+    ) -> Result<OrchestrationTaskRecord> {
+        let record = self.inner.mark_awaiting_with_question(task_id, question)?;
         self.persist(&record)?;
         Ok(record)
     }
