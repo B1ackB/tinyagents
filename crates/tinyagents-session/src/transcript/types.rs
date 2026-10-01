@@ -100,11 +100,6 @@ impl TranscriptMessage {
         self.id = Some(id.into());
         self
     }
-
-    /// Whether `role` is the model-facing role `role`.
-    pub fn has_role(&self, role: &str) -> bool {
-        self.role == role
-    }
 }
 
 /// Provider-neutral failure status for a durable tool-result row.
