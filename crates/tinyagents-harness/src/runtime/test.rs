@@ -1134,6 +1134,33 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
         .await
         .expect_err("per-model-call cap must bound host resolution");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
+}
+
+#[test]
+fn hosted_timeout_round_trip_preserves_the_bound() {
+    use crate::runtime::{HostedError, HostedErrorKind, TimeoutBound};
+    let hosted = |bound| HostedError {
+        kind: HostedErrorKind::Timeout,
+        message: "timed out".to_string(),
+        timeout_bound: bound,
+        run: None,
+    };
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::PerModelCall))),
+        TinyAgentsError::CallTimeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::Run))),
+        TinyAgentsError::Timeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(None)),
+        TinyAgentsError::Timeout(_)
+    ));
 }
 
 /// A model whose every call (streaming included) never answers.
