@@ -356,7 +356,22 @@ impl TranscriptMessage {
         // row; compare them in one normal form.
         let left = self.clone().normalized();
         let right = other.clone().normalized();
-        left.id == right.id && left.same_structure_as(&right)
+        // Two rows lifted from different legacy strings are different stored
+        // rows even when the lifted fields agree (embedded reasoning or
+        // provider keys differ), so a redaction is never taken for a no-op.
+        let same_stored_text = match (left.live_legacy(), right.live_legacy()) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
+        left.id == right.id && left.same_structure_as(&right) && same_stored_text
+    }
+
+    /// The legacy string this row was lifted from, while the row still means
+    /// what that string parses to.
+    fn live_legacy(&self) -> Option<&str> {
+        let raw = self.legacy.0.as_deref()?;
+        let lifted = Self::new(self.role.clone(), raw).normalized();
+        lifted.same_structure_as(self).then_some(raw)
     }
 
     /// The row as it was *before* normalization lifted it: `content` holds the
@@ -368,11 +383,7 @@ impl TranscriptMessage {
     /// envelope (embedded reasoning, extra keys) survives a read and rewrite
     /// byte for byte instead of being re-encoded from the lifted fields.
     pub(crate) fn unlifted(&self) -> Option<Self> {
-        let raw = self.legacy.0.as_deref()?;
-        let lifted = Self::new(self.role.clone(), raw).normalized();
-        if !lifted.same_structure_as(self) {
-            return None;
-        }
+        let raw = self.live_legacy()?;
         let mut row = self.clone();
         row.content = raw.to_string();
         row.tool_calls = Vec::new();

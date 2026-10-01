@@ -503,3 +503,25 @@ fn rows_from_a_newer_version_are_not_normalized() {
     assert!(row.parts.is_none());
     assert_eq!(row.content, "look [OH_IMAGE:data:image/png;base64,AA] here");
 }
+
+#[test]
+fn rows_lifted_from_different_legacy_envelopes_are_different_rows() {
+    let with_reasoning = TranscriptMessage::from_legacy(
+        "assistant",
+        encode_assistant_envelope(Some("x"), &[call("c1", None)], Some("private")),
+    );
+    let redacted = TranscriptMessage::from_legacy(
+        "assistant",
+        encode_assistant_envelope(Some("x"), &[call("c1", None)], None),
+    );
+    assert_eq!(with_reasoning.content, redacted.content);
+    assert_eq!(with_reasoning.tool_calls, redacted.tool_calls);
+    assert!(!with_reasoning.same_row_as(&redacted));
+    assert!(with_reasoning.same_row_as(&with_reasoning.clone()));
+    // A typed row built from scratch carries no memo and matches on structure.
+    let built = TranscriptMessage::assistant_with_calls(
+        "x",
+        vec![TranscriptToolCall::from(call("c1", None))],
+    );
+    assert!(redacted.same_row_as(&built));
+}
