@@ -82,6 +82,11 @@ pub trait SubagentIdentity {
     fn agent_id(&self) -> &str;
     /// Durable, stable per-worker reference, if any.
     fn subagent_session_id(&self) -> Option<&str>;
+    /// Chat thread that spawned the worker, if any. Used to abort workers when
+    /// their thread is deleted or stopped; the default is "no parent thread".
+    fn parent_thread_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Compact, read-only view of one registered subagent.
