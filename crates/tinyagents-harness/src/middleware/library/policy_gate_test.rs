@@ -252,7 +252,7 @@ async fn approval_gate_only_asks_for_calls_the_resolver_flags() {
     assert_eq!(runs, 1);
     assert_eq!(*resolver.resolved.lock().unwrap(), 1);
     assert!(resolver.recorded.lock().unwrap().is_empty());
-    assert_eq!(mw().name(), "approval");
+    assert_eq!(ToolMiddleware::<(), Host>::name(&*mw()), "approval");
 }
 
 #[tokio::test]
