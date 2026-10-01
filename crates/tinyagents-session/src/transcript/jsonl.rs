@@ -528,25 +528,34 @@ fn rebuild_content(
     }
 }
 
-/// The row's model-visible `content` as the in-memory row carries it: the
-/// stored string for a legacy row, rebuilt from the typed fields for a typed
-/// one. An unknown future `shape` (or one whose fields are missing) keeps the
-/// stored string.
-fn content_from_line(ml: &MessageLine) -> String {
-    if ml.row_version != TYPED_ROW_VERSION {
-        return ml.content.clone();
+/// The in-memory row a message line stands for: plain `content` plus the typed
+/// structure. A typed (`"v":2`) line of a known shape supplies its fields
+/// directly; any other line (every row written before typed rows, an unknown
+/// future shape, a typed line missing the fields its shape needs) is a legacy
+/// string row and is normalized by lifting whatever envelope or marker its
+/// `content` holds.
+fn row_from_line(ml: &MessageLine) -> TranscriptMessage {
+    let mut row = TranscriptMessage::new(ml.role.clone(), ml.content.clone());
+    row.id = ml.id.clone();
+    if ml.row_version == TYPED_ROW_VERSION {
+        let typed = match ml.shape.as_deref().and_then(TypedShape::parse) {
+            Some(TypedShape::AssistantCalls) => ml
+                .tool_calls
+                .clone()
+                .filter(|calls| !calls.is_empty())
+                .map(|calls| row.tool_calls = calls),
+            Some(TypedShape::ToolResult) => ml
+                .tool_call_id
+                .clone()
+                .map(|tool_call_id| row.tool_call_id = Some(tool_call_id)),
+            Some(TypedShape::UserParts) => ml.parts.clone().map(|parts| row.parts = Some(parts)),
+            None => None,
+        };
+        if typed.is_some() {
+            return row;
+        }
     }
-    let Some(shape) = ml.shape.as_deref().and_then(TypedShape::parse) else {
-        return ml.content.clone();
-    };
-    rebuild_content(
-        shape,
-        &ml.content,
-        ml.tool_calls.as_deref(),
-        ml.tool_call_id.as_deref(),
-        ml.parts.as_deref(),
-    )
-    .unwrap_or_else(|| ml.content.clone())
+    row.normalized()
 }
 
 /// Serialise `messages` into JSONL message lines, attributing
@@ -679,11 +688,14 @@ fn turn_usage_from_line(ml: &MessageLine) -> Option<TurnUsage> {
 pub(super) fn message_from_line(ml: MessageLine) -> TranscriptMessage {
     let turn_usage = turn_usage_from_line(&ml);
     let failure_detail = ml.failure.then(|| ml.failure_detail.clone());
-    let content = content_from_line(&ml);
+    let typed = row_from_line(&ml);
     TranscriptMessage {
-        id: ml.id,
-        role: ml.role,
-        content,
+        id: typed.id,
+        role: typed.role,
+        content: typed.content,
+        tool_calls: typed.tool_calls,
+        tool_call_id: typed.tool_call_id,
+        parts: typed.parts,
         extra_metadata: ml.extra_metadata,
         cache_breakpoints: ml.cache_breakpoints,
         turn_usage: turn_usage.clone(),
@@ -736,7 +748,7 @@ pub(super) fn display_message_from_line(ml: MessageLine) -> DisplayMessage {
             .as_ref()
             .and_then(|tu| tu.reasoning_content.clone())
     });
-    let content = content_from_line(&ml);
+    let typed = row_from_line(&ml);
     DisplayMessage {
         interrupted: ml.interrupted,
         request_id: ml.request_id.clone(),
@@ -747,9 +759,12 @@ pub(super) fn display_message_from_line(ml: MessageLine) -> DisplayMessage {
         failure: ml.failure,
         failure_detail: ml.failure_detail.clone(),
         message: TranscriptMessage {
-            id: ml.id,
-            role: ml.role,
-            content,
+            id: typed.id,
+            role: typed.role,
+            content: typed.content,
+            tool_calls: typed.tool_calls,
+            tool_call_id: typed.tool_call_id,
+            parts: typed.parts,
             extra_metadata: ml.extra_metadata,
             cache_breakpoints: ml.cache_breakpoints,
             turn_usage,
