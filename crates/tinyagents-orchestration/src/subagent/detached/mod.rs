@@ -50,4 +50,6 @@ pub use types::{
 };
 
 #[cfg(test)]
+mod steer_test;
+#[cfg(test)]
 mod test;
