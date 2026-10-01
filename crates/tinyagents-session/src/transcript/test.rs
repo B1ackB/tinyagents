@@ -262,6 +262,9 @@ fn file_history_never_converts_or_drops_durable_fields() {
         id: Some("assistant-id".into()),
         role: "assistant".into(),
         content: r#"{"tool_calls":[{"id":"call-1"}]}"#.into(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        parts: None,
         extra_metadata: Some(serde_json::json!({
             "trusted_verbatim": true,
             "artifacts": ["artifact-1"],
