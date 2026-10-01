@@ -121,6 +121,27 @@ pub trait ApprovalResolver<Ctx: Send + Sync = ()>: Send + Sync {
     fn record(&self, ticket: &str, result: &ToolResult);
 }
 
+/// What a host must do with a call after [`ToolPolicyGate::evaluate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateVerdict {
+    /// Run the call. `ticket` is what the resolver handed back for the
+    /// approved request; pass it to [`record_approved`] with the call's result.
+    Proceed {
+        /// Opaque host identifier for the approved request, if any.
+        ticket: Option<String>,
+    },
+    /// The policy refused the call, or required approval and no resolver was
+    /// supplied (fail closed). Carries the policy's own decision so the host
+    /// can render its wording.
+    Blocked(PolicyDecision),
+    /// The policy required approval and the resolver refused it; `reason` is
+    /// the resolver's text, shown to the model as-is.
+    Refused {
+        /// Why the approval request was refused.
+        reason: String,
+    },
+}
+
 /// A [`ToolCallPolicy`] plus the context-free glue shared by its consumers.
 pub struct ToolPolicyGate<Ctx: Send + Sync = ()> {
     policy: Arc<dyn ToolCallPolicy<Ctx>>,
@@ -163,6 +184,46 @@ impl<Ctx: Send + Sync> ToolPolicyGate<Ctx> {
     }
 }
 
+impl<Ctx: Send + Sync> ToolPolicyGate<Ctx> {
+    /// Decides one call end to end for hosts that interleave the gate with
+    /// their own checks: the policy decision (with the `waive_approval`
+    /// downgrade of [`Self::check`]), then, for a
+    /// [`PolicyDecision::RequireApproval`], settlement through `resolver`.
+    /// Without a resolver an approval requirement fails closed as
+    /// [`GateVerdict::Blocked`].
+    pub async fn evaluate(
+        &self,
+        ctx: &RunContext<Ctx>,
+        call: &ToolCall,
+        waive_approval: bool,
+        resolver: Option<&dyn ApprovalResolver<Ctx>>,
+    ) -> GateVerdict {
+        let decision = self.check(ctx, call, waive_approval).await;
+        match (decision, resolver) {
+            (PolicyDecision::Allow, _) => GateVerdict::Proceed { ticket: None },
+            (PolicyDecision::RequireApproval { .. }, Some(resolver)) => {
+                match resolver.resolve(ctx, call).await {
+                    ApprovalResolution::Allow { ticket } => GateVerdict::Proceed { ticket },
+                    ApprovalResolution::Deny { reason } => GateVerdict::Refused { reason },
+                }
+            }
+            (decision, _) => GateVerdict::Blocked(decision),
+        }
+    }
+}
+
+/// Records the terminal result of an approved call with its resolver. A no-op
+/// when there is no ticket or the outcome is not a tool result.
+pub fn record_approved<Ctx: Send + Sync>(
+    resolver: &dyn ApprovalResolver<Ctx>,
+    ticket: Option<&str>,
+    outcome: &MiddlewareToolOutcome,
+) {
+    if let (Some(ticket), MiddlewareToolOutcome::Result(result)) = (ticket, outcome) {
+        resolver.record(ticket, result);
+    }
+}
+
 async fn run_approved<State: Send + Sync, Ctx: Send + Sync>(
     resolver: &dyn ApprovalResolver<Ctx>,
     ctx: &mut RunContext<Ctx>,
@@ -176,9 +237,7 @@ async fn run_approved<State: Send + Sync, Ctx: Send + Sync>(
         }
         ApprovalResolution::Allow { ticket } => {
             let outcome = next.run(ctx, state, call).await?;
-            if let (Some(ticket), MiddlewareToolOutcome::Result(result)) = (ticket, &outcome) {
-                resolver.record(&ticket, result);
-            }
+            record_approved(resolver, ticket.as_deref(), &outcome);
             Ok(outcome)
         }
     }
@@ -281,13 +340,22 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolMiddleware<State, Ctx>
         call: ToolCall,
         next: ToolHandler<'_, State, Ctx>,
     ) -> Result<MiddlewareToolOutcome> {
-        let decision = self.gate.check(ctx, &call, false).await;
-        match (&decision, &self.resolver) {
-            (PolicyDecision::Allow, _) => next.run(ctx, state, call).await,
-            (PolicyDecision::RequireApproval { .. }, Some(resolver)) => {
-                run_approved(resolver.as_ref(), ctx, state, call, next).await
+        let verdict = self
+            .gate
+            .evaluate(ctx, &call, false, self.resolver.as_deref())
+            .await;
+        match verdict {
+            GateVerdict::Proceed { ticket } => {
+                let outcome = next.run(ctx, state, call).await?;
+                if let Some(resolver) = &self.resolver {
+                    record_approved(resolver.as_ref(), ticket.as_deref(), &outcome);
+                }
+                Ok(outcome)
             }
-            _ => {
+            GateVerdict::Refused { reason } => {
+                Ok(MiddlewareToolOutcome::Result(ToolResult::error(reason)))
+            }
+            GateVerdict::Blocked(decision) => {
                 let text = (self.render)(&call, self.gate.policy_name(), &decision);
                 Ok(MiddlewareToolOutcome::Result(ToolResult::error(text)))
             }
