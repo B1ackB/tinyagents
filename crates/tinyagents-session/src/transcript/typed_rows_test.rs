@@ -1,7 +1,9 @@
-//! Typed row form: tool calls, tool results and inline images are stored as
-//! fields, and every read rebuilds the exact legacy `content` string, so
-//! nothing downstream of the reader changes. Legacy rows (literal fixtures
-//! below) keep loading, and a file may hold both generations.
+//! Typed rows: tool calls, tool results and inline images are fields of the
+//! in-memory row and of the stored line, and `content` is plain text. Legacy
+//! rows (a native envelope or `[OH_IMAGE:]` marker inside `content`, literal
+//! fixtures below) keep loading, normalized into the same typed fields, and a
+//! file may hold both generations. [`TranscriptMessage::legacy_content`]
+//! rebuilds the old string for compatibility adapters.
 
 use super::*;
 use std::fs;
@@ -49,7 +51,37 @@ fn message_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The same turn as typed rows.
 fn typed_turn() -> Vec<TranscriptMessage> {
+    let image = "data:image/png;base64,AAAA";
+    vec![
+        TranscriptMessage::user_with_parts(vec![
+            TranscriptPart::Text {
+                text: "look ".into(),
+            },
+            TranscriptPart::Image { url: image.into() },
+            TranscriptPart::Text {
+                text: " please".into(),
+            },
+        ]),
+        TranscriptMessage::assistant_with_calls(
+            "on it",
+            vec![
+                TranscriptToolCall::from(call(
+                    "c1",
+                    Some(serde_json::json!({"google": {"thought_signature": "sig"}})),
+                )),
+                TranscriptToolCall::from(call("c2", None)),
+            ],
+        ),
+        TranscriptMessage::tool_result("c1", "out \"1\"").with_id("c1"),
+        TranscriptMessage::tool_result("c2", "out 2").with_id("c2"),
+        TranscriptMessage::assistant("done"),
+    ]
+}
+
+/// The same turn as the legacy string rows an older host built.
+fn legacy_turn() -> Vec<TranscriptMessage> {
     let image = "[OH_IMAGE:data:image/png;base64,AAAA]";
     vec![
         TranscriptMessage::user(format!("look {image} please")),
@@ -71,7 +103,7 @@ fn typed_turn() -> Vec<TranscriptMessage> {
 }
 
 #[test]
-fn new_rows_store_fields_and_read_back_the_exact_legacy_content() {
+fn typed_rows_store_fields_and_read_back_equal() {
     let dir = tempdir().unwrap();
     let path = resolve_keyed_transcript_path(dir.path(), "typed").unwrap();
     let rows = typed_turn();
@@ -101,27 +133,48 @@ fn new_rows_store_fields_and_read_back_the_exact_legacy_content() {
     let read = read_transcript(&path).unwrap();
     assert_eq!(read.messages.len(), rows.len());
     for (read, written) in read.messages.iter().zip(&rows) {
-        assert_eq!(read.role, written.role);
-        assert_eq!(read.content, written.content);
-        assert_eq!(read.id, written.id);
+        assert!(read.same_row_as(written), "{read:?} vs {written:?}");
     }
     let display = read_transcript_display(&path).unwrap();
     let displayed: Vec<_> = display
         .records
         .iter()
         .filter_map(|record| match record {
-            DisplayRecord::Message(message) => Some(message.message.content.clone()),
+            DisplayRecord::Message(message) => Some(message.message.clone()),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        displayed,
-        rows.iter().map(|r| r.content.clone()).collect::<Vec<_>>()
-    );
+    assert_eq!(displayed.len(), rows.len());
+    for (read, written) in displayed.iter().zip(&rows) {
+        assert!(read.same_row_as(written));
+    }
+}
+
+/// A host that still builds string rows gets the same typed lines, and the
+/// rebuilt legacy string of a typed row is exactly the old string.
+#[test]
+fn string_rows_and_typed_rows_write_identical_lines() {
+    let dir = tempdir().unwrap();
+    let typed_path = resolve_keyed_transcript_path(dir.path(), "typed").unwrap();
+    let legacy_path = resolve_keyed_transcript_path(dir.path(), "legacy").unwrap();
+    write_transcript(&typed_path, &typed_turn(), &meta(), None).unwrap();
+    write_transcript(&legacy_path, &legacy_turn(), &meta(), None).unwrap();
+    assert_eq!(message_lines(&typed_path), message_lines(&legacy_path));
+    for (typed, legacy) in typed_turn().iter().zip(legacy_turn()) {
+        assert_eq!(typed.legacy_content(), legacy.content);
+        assert!(
+            TranscriptMessage::from_legacy(&legacy.role, legacy.content).same_row_as(
+                &TranscriptMessage {
+                    id: None,
+                    ..typed.clone()
+                }
+            )
+        );
+    }
 }
 
 #[test]
-fn non_canonical_strings_stay_legacy_rows() {
+fn non_canonical_strings_stay_legacy_lines_and_load_normalized() {
     let dir = tempdir().unwrap();
     let path = resolve_keyed_transcript_path(dir.path(), "opaque").unwrap();
     let rows = vec![
@@ -139,13 +192,32 @@ fn non_canonical_strings_stay_legacy_rows() {
         TranscriptMessage::user("no image marker, [OH_IMAGE:unterminated"),
     ];
     write_transcript(&path, &rows, &meta(), None).unwrap();
-    for line in message_lines(&path) {
+    let lines = message_lines(&path);
+    for (line, row) in lines.iter().zip(&rows) {
         assert!(line.get("v").is_none(), "{line}");
+        // Stored exactly as given.
+        assert_eq!(line["content"], row.content.as_str());
     }
     let read = read_transcript(&path).unwrap();
     for (read, written) in read.messages.iter().zip(&rows) {
-        assert_eq!(read.content, written.content);
+        assert!(
+            read.same_row_as(&TranscriptMessage::from_legacy(
+                &written.role,
+                written.content.clone()
+            )),
+            "{read:?}"
+        );
     }
+    // The null-content envelope lifts into a calls row with empty text; the
+    // one with reasoning keeps its calls (reasoning lives in metadata); plain
+    // JSON prose and a bare result stay text.
+    assert_eq!(read.messages[1].tool_calls.len(), 1);
+    assert_eq!(read.messages[1].content, "");
+    assert_eq!(read.messages[2].tool_calls[0].id, "c2");
+    assert!(read.messages[3].tool_calls.is_empty());
+    assert_eq!(read.messages[4].tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(read.messages[5].tool_call_id, None);
+    assert!(read.messages[6].parts.is_none());
 }
 
 /// Rows exactly as the pre-typed writer produced them (envelope in `content`).
@@ -168,12 +240,16 @@ fn legacy_envelope_rows_still_load_and_a_new_turn_appends_typed_rows() {
 
     let before = read_transcript(&path).unwrap();
     assert_eq!(before.messages.len(), 3);
+    assert_eq!(before.messages[1].content, "on it");
+    assert_eq!(before.messages[1].tool_calls.len(), 1);
     assert_eq!(
-        before.messages[1].content,
+        before.messages[1].legacy_content(),
         r#"{"content":"on it","tool_calls":[{"arguments":"{}","id":"c1","name":"shell"}]}"#
     );
+    assert_eq!(before.messages[2].content, "ok");
+    assert_eq!(before.messages[2].tool_call_id.as_deref(), Some("c1"));
     assert_eq!(
-        before.messages[2].content,
+        before.messages[2].legacy_content(),
         r#"{"content":"ok","tool_call_id":"c1"}"#
     );
 
@@ -181,12 +257,11 @@ fn legacy_envelope_rows_still_load_and_a_new_turn_appends_typed_rows() {
     let prior = before.messages.clone();
     let mut next = prior.clone();
     next.push(TranscriptMessage::user("again"));
-    next.push(TranscriptMessage::assistant(encode_assistant_envelope(
-        Some("sure"),
-        &[call("c9", None)],
-        None,
-    )));
-    next.push(TranscriptMessage::tool(encode_tool_envelope("c9", "done")).with_id("c9"));
+    next.push(TranscriptMessage::assistant_with_calls(
+        "sure",
+        vec![TranscriptToolCall::from(call("c9", None))],
+    ));
+    next.push(TranscriptMessage::tool_result("c9", "done").with_id("c9"));
     append_transcript_turn(&path, &prior, &next, &meta(), None, Some("req-2")).unwrap();
 
     let file = fs::read_to_string(&path).unwrap();
@@ -203,8 +278,8 @@ fn legacy_envelope_rows_still_load_and_a_new_turn_appends_typed_rows() {
     let after = read_transcript(&path).unwrap();
     assert_eq!(after.messages.len(), 6);
     assert_eq!(&after.messages[..3], &before.messages[..3]);
-    assert_eq!(after.messages[4].content, next[4].content);
-    assert_eq!(after.messages[5].content, next[5].content);
+    assert!(after.messages[4].same_row_as(&next[4]));
+    assert!(after.messages[5].same_row_as(&next[5]));
 }
 
 #[test]

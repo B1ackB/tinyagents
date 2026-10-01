@@ -242,8 +242,7 @@ fn own_state(records: &[DisplayRecord]) -> OwnState {
                     .turn_usage
                     .as_ref()
                     .is_none_or(|usage| usage.tool_calls.is_empty())
-                && native_tool_round(&msg.message)
-                    .is_none_or(|(_, calls)| calls.is_empty()) =>
+                && native_tool_round(&msg.message).is_none_or(|(_, calls)| calls.is_empty()) =>
         {
             OwnState::Completed
         }

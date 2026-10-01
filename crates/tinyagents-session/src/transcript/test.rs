@@ -1141,8 +1141,8 @@ fn a_turn_stamps_iteration_and_ts_on_every_step_it_appends() {
         vec![
             // An earlier turn written without usage stays unstamped.
             ("earlier answer".to_string(), None, None),
-            (r#"{"content":"step"#.to_string(), Some(1), ts.clone()),
-            (r#"{"content":"","t"#.to_string(), Some(2), ts.clone()),
+            ("step one".to_string(), Some(1), ts.clone()),
+            (String::new(), Some(2), ts.clone()),
             ("done".to_string(), Some(3), ts),
         ]
     );
