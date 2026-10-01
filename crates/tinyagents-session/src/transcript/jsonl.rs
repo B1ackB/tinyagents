@@ -5,7 +5,7 @@
 use super::types::{
     DisplayMessage, MessageUsage, TRANSCRIPT_SCHEMA_VERSION, TranscriptMeta, TurnUsage,
 };
-use super::types::{ToolFailure, TranscriptMessage, TranscriptToolCall};
+use super::types::{ToolFailure, TranscriptMessage, TranscriptPart, TranscriptToolCall};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,14 +57,6 @@ impl TypedShape {
             _ => None,
         }
     }
-}
-
-/// One part of a `user_parts` row.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum TypedPart {
-    Text { text: String },
-    Image { url: String },
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -186,7 +178,7 @@ pub(super) struct MessageLine {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient_parts"
     )]
-    pub(super) parts: Option<Vec<TypedPart>>,
+    pub(super) parts: Option<Vec<TranscriptPart>>,
     /// Absorb any unknown fields so forward-compat reads don't error.
     #[serde(flatten)]
     pub(super) _extra: HashMap<String, serde_json::Value>,
@@ -194,7 +186,7 @@ pub(super) struct MessageLine {
 
 /// Deserialises `parts`, mapping any shape this reader cannot decode (an
 /// unknown part variant) to `None` rather than failing the whole line.
-fn lenient_parts<'de, D>(deserializer: D) -> Result<Option<Vec<TypedPart>>, D::Error>
+fn lenient_parts<'de, D>(deserializer: D) -> Result<Option<Vec<TranscriptPart>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -377,13 +369,43 @@ pub(super) fn build_message_line(
     }
 }
 
+/// The storage form of a row that already carries typed fields. `None` when
+/// the fields do not fit the row's role (they are then stored as the legacy
+/// string, which a reader normalizes back).
+fn direct_form(msg: &TranscriptMessage) -> Option<TypedForm> {
+    match msg.role.as_str() {
+        "assistant" if !msg.tool_calls.is_empty() => Some(TypedForm {
+            shape: TypedShape::AssistantCalls,
+            content: msg.content.clone(),
+            tool_calls: Some(msg.tool_calls.clone()),
+            tool_call_id: None,
+            parts: None,
+        }),
+        "tool" if msg.tool_call_id.is_some() => Some(TypedForm {
+            shape: TypedShape::ToolResult,
+            content: msg.content.clone(),
+            tool_calls: None,
+            tool_call_id: msg.tool_call_id.clone(),
+            parts: None,
+        }),
+        "user" if msg.parts.is_some() => Some(TypedForm {
+            shape: TypedShape::UserParts,
+            content: msg.content.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+            parts: msg.parts.clone(),
+        }),
+        _ => None,
+    }
+}
+
 /// The typed storage form of one row.
 struct TypedForm {
     shape: TypedShape,
     content: String,
     tool_calls: Option<Vec<TranscriptToolCall>>,
     tool_call_id: Option<String>,
-    parts: Option<Vec<TypedPart>>,
+    parts: Option<Vec<TranscriptPart>>,
 }
 
 /// Lift a row's string-encoded structure into typed fields, **only** when
@@ -391,6 +413,9 @@ struct TypedForm {
 /// that is not exactly a canonical native envelope or marker string stays a
 /// legacy row, so a read can never return a different string than was written.
 fn typed_form(msg: &TranscriptMessage) -> Option<TypedForm> {
+    if msg.is_typed() {
+        return direct_form(msg);
+    }
     let form = match msg.role.as_str() {
         "assistant" => {
             let envelope = parse_canonical_assistant_envelope(&msg.content)?;
@@ -447,8 +472,8 @@ fn typed_form(msg: &TranscriptMessage) -> Option<TypedForm> {
                     parts
                         .into_iter()
                         .map(|part| match part {
-                            ContentPart::Text(text) => TypedPart::Text { text },
-                            ContentPart::Image(url) => TypedPart::Image { url },
+                            ContentPart::Text(text) => TranscriptPart::Text { text },
+                            ContentPart::Image(url) => TranscriptPart::Image { url },
                         })
                         .collect(),
                 ),
@@ -474,7 +499,7 @@ fn rebuild_content(
     content: &str,
     tool_calls: Option<&[TranscriptToolCall]>,
     tool_call_id: Option<&str>,
-    parts: Option<&[TypedPart]>,
+    parts: Option<&[TranscriptPart]>,
 ) -> Option<String> {
     match shape {
         TypedShape::AssistantCalls => {
@@ -494,8 +519,8 @@ fn rebuild_content(
             let parts: Vec<ContentPart> = parts?
                 .iter()
                 .map(|part| match part {
-                    TypedPart::Text { text } => ContentPart::Text(text.clone()),
-                    TypedPart::Image { url } => ContentPart::Image(url.clone()),
+                    TranscriptPart::Text { text } => ContentPart::Text(text.clone()),
+                    TranscriptPart::Image { url } => ContentPart::Image(url.clone()),
                 })
                 .collect();
             Some(join_image_parts(&parts))
