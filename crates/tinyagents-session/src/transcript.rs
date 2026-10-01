@@ -50,6 +50,21 @@
 //! requirement and is logged+skipped) rather than crashing. The `_meta`
 //! carries a `version` field (`TRANSCRIPT_SCHEMA_VERSION`) for future readers.
 //!
+//! ### Typed rows (`"v":2`)
+//!
+//! A row whose model-visible `content` is a native tool-call envelope, a native
+//! tool-result envelope, or text with inline `[OH_IMAGE:..]` markers is written
+//! as **fields**: `{"v":2,"shape":"assistant_calls","content":"<text>","tool_calls":[..]}`,
+//! `{"v":2,"shape":"tool_result","tool_call_id":"..","content":"<output>"}` or
+//! `{"v":2,"shape":"user_parts","parts":[{"type":"text",..},{"type":"image",..}]}`.
+//! Both readers rebuild the exact legacy `content` string from those fields
+//! (`tinytools_agent::dialect` owns the encoding), so everything downstream of
+//! the reader is unchanged. A row is only written typed when that rebuild is
+//! byte-identical; any other string stays a legacy row. Legacy rows keep
+//! loading and a file may hold both generations; existing bytes are never
+//! rewritten. **Downgrade is unsupported:** a reader that predates `"v"` would
+//! see a typed row's plain `content` without its tool calls or images.
+//!
 //! ## Storage layout
 //!
 //! ```text
@@ -153,3 +168,5 @@ pub use writer::{
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod typed_rows_test;
