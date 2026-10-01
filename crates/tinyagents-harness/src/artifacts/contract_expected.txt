@@ -1,0 +1,16 @@
+## Long-horizon Artifact Offload
+
+Large results belong on disk, not in your reply. Two directories sit under your action directory:
+- `outputs/` for deliverables, anything the parent or a later step needs to read.
+- `workspace/` for scratch, intermediate files you do not intend to hand back.
+
+When a result would run past roughly 2000 tokens:
+1. Write the full content to a file under `outputs/` with `file_write`.
+2. Reply with that relative path plus a short abstract, not the full payload.
+3. Quote the path exactly, so the parent can open it verbatim.
+
+Rules:
+- Offload paths are always relative to your action directory. Never write outside it, and never target the core's internal workspace state.
+- Keep the abstract honest: say what the file holds and what is still open. Never present it as the complete result.
+- Small results stay inline. A pointer to a two-line file costs the parent more than the two lines.
+- If you inline an oversized result anyway, the harness persists it under `outputs/` and hands the parent the path instead.

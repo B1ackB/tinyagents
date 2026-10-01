@@ -39,7 +39,7 @@ tinytools = { path = "../../vendor/tinytools/crates/tinytools", version = "0.5.0
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "rt-multi-thread", "fs", "io-util", "process"] }
 tempfile = { workspace = true }
 wait-timeout = { version = "0.2", optional = true }
-uuid = { workspace = true, optional = true }
+uuid = { workspace = true }
 
 [features]
 default = ["claude-code", "langfuse"]
@@ -52,9 +52,9 @@ multimodal = ["dep:flate2", "dep:reqwest"]
 # Image and video generation tools over tinyinference-image / -video.
 media = ["dep:tinyinference-image", "dep:tinyinference-video"]
 # Gates the Claude Code CLI and Claude Agent SDK provider adapters, which are
-# the only consumers of `uuid`, `tempfile` beyond the artifact tests, `dirs`,
+# the only consumers of `tempfile` beyond the artifact tests, `dirs`,
 # and `wait-timeout` in this crate.
-claude-code = ["dep:uuid", "dep:wait-timeout", "dep:dirs"]
+claude-code = ["dep:wait-timeout", "dep:dirs"]
 # Gates the Langfuse observability exporter and its `reqwest` transport.
 langfuse = ["dep:reqwest"]
 # Tracing instrumentation is now always compiled in (via the `tracing` crate

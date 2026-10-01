@@ -32,9 +32,15 @@
 //! `RunQueue<T>` itself stays generic: hosts may keep using it with any `T`
 //! for their own bookkeeping; only a `RunQueue<Message>` is loop-consumable.
 
+mod forwarder;
 mod types;
 
 use tokio::sync::Mutex;
+
+pub use forwarder::{
+    COLLECT_PREFIX, ForwardEvent, ForwardEventSink, ForwarderCleanup, QueuedMessage, STEER_PREFIX,
+    SteeringForwarderGuard, forward_collects, forward_steers,
+};
 
 pub use types::{QueueLane, QueueMode, QueueStatus, RunQueueHandle};
 

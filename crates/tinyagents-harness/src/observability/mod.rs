@@ -30,6 +30,11 @@ mod profile;
 mod types;
 mod worker;
 
+pub mod file_status;
+pub mod reaper;
+pub mod replay;
+pub mod trace_export;
+
 #[doc(hidden)]
 pub use worker::{AppendWorker, DEFAULT_DRAIN_CAPACITY};
 
@@ -40,9 +45,13 @@ pub use langfuse::{
 pub use profile::{ProcessProfile, ProcessProfiler, ProcessSnapshot};
 // Shared Langfuse payload helpers reused by the graph observability exporter so
 // ISO-8601 timestamp formatting and null-field pruning live in one place.
+pub use file_status::{
+    FileStatusStore, STATUS_NS, is_active, mint_run_id, process_env_secrets, secrets_from_vars,
+};
 #[cfg(feature = "langfuse")]
 #[doc(hidden)]
 pub use langfuse::{clean_nulls, iso_ms};
+pub use reaper::{ORPHAN_REAP_REASON, reap_orphaned_runs};
 pub use types::*;
 
 use std::collections::HashMap;
@@ -350,6 +359,36 @@ impl<A: AppendStore + 'static> HarnessEventJournal for StoreEventJournal<A> {
         let mut out = Vec::with_capacity(raw.len());
         for (_offset, value) in raw {
             out.push(serde_json::from_value(value)?);
+        }
+        Ok(out)
+    }
+
+    async fn read_window(
+        &self,
+        run_id: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<AgentObservation>> {
+        Ok(self
+            .read_window_positioned(run_id, offset, limit)
+            .await?
+            .into_iter()
+            .map(|(_offset, obs)| obs)
+            .collect())
+    }
+
+    async fn read_window_positioned(
+        &self,
+        run_id: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, AgentObservation)>> {
+        // The store reports each entry's own offset, which is what a pager
+        // must continue from when an evicting store resumed past `offset`.
+        let raw = self.store.read_window(run_id, offset, limit).await?;
+        let mut out = Vec::with_capacity(raw.len());
+        for (position, value) in raw {
+            out.push((position, serde_json::from_value(value)?));
         }
         Ok(out)
     }

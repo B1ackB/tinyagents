@@ -6,13 +6,16 @@
 //! from an unclean shutdown at cold boot. [`types`] holds the wire/storage
 //! shapes (camelCase, mirroring a chat-runtime UI slice).
 //!
-//! Filling a snapshot from a host's progress events is host work: the host
-//! builds a [`types::TurnState`], mutates it, and calls [`store::put`] at
-//! iteration / tool boundaries.
+//! [`mirror::TurnStateMirror`] is the writer: it owns the in-memory snapshot,
+//! the flush policy, the size caps, interrupted-turn finalization and the
+//! transcript bookkeeping helpers. Translating a host's own progress events into
+//! mutations stays host work.
 
+pub mod mirror;
 pub mod store;
 pub mod types;
 
+pub use mirror::TurnStateMirror;
 pub use store::TurnStateStore;
 pub use types::{
     SubagentActivity, SubagentToolCall, ToolTimelineEntry, ToolTimelineStatus, TurnLifecycle,

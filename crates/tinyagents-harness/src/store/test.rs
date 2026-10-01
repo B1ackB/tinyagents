@@ -325,6 +325,29 @@ async fn jsonl_append_returns_increasing_offsets_and_reads_tail() {
 }
 
 #[tokio::test]
+async fn read_window_returns_a_bounded_slice_for_both_backends() {
+    let dir = TempDir::new("jsonl-window");
+    let jsonl = JsonlAppendStore::new(&dir.0);
+    let memory = InMemoryAppendStore::new();
+    for n in 0..5 {
+        jsonl.append("evts", json!({ "n": n })).await.unwrap();
+        memory.append("evts", json!({ "n": n })).await.unwrap();
+    }
+    let expected = vec![(1, json!({"n": 1})), (2, json!({"n": 2}))];
+    assert_eq!(jsonl.read_window("evts", 1, 2).await.unwrap(), expected);
+    assert_eq!(memory.read_window("evts", 1, 2).await.unwrap(), expected);
+    assert!(jsonl.read_window("evts", 1, 0).await.unwrap().is_empty());
+    assert_eq!(jsonl.read_window("evts", 4, 10).await.unwrap().len(), 1);
+    assert!(
+        jsonl
+            .read_window("missing", 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn jsonl_round_trips_across_two_store_instances() {
     let dir = TempDir::new("jsonl-reopen");
 
