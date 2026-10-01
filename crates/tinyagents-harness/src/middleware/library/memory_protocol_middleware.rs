@@ -29,14 +29,15 @@ use tinytools::{ToolContent, ToolResult as TaToolResult};
 /// ignored, so this is a no-op on turns that never touch memory.
 ///
 /// One instance can sit on a reusable harness and serve many runs, including
-/// concurrent ones, so the protocol state is keyed by run id and released in
-/// `after_agent`. A call that admission stopped before execution (rejected,
+/// concurrent ones, so the protocol state is keyed by the run's
+/// [`RunContext::instance_id`] (unique per run even when two runs share a
+/// caller-supplied run id) and released in `after_agent`. A call that admission stopped before execution (rejected,
 /// awaiting approval, deferred) never reaches `after_tool`; its pending entry
 /// is dropped with the rest of its run's state.
 pub struct MemoryProtocolMiddleware {
     spec: Arc<MemoryProtocolSpec>,
     can_update_index: bool,
-    runs: Mutex<HashMap<String, RunProtocolState>>,
+    runs: Mutex<HashMap<u64, RunProtocolState>>,
 }
 
 /// Protocol state for one run.
@@ -67,14 +68,15 @@ impl MemoryProtocolMiddleware {
         }
     }
 
-    /// Run `f` against `run_id`'s protocol state, creating it on first use.
-    fn with_run<R>(&self, run_id: &str, f: impl FnOnce(&mut RunProtocolState) -> R) -> R {
+    /// Run `f` against the protocol state of the run whose
+    /// [`RunContext::instance_id`] is `instance`, creating it on first use.
+    fn with_run<R>(&self, instance: u64, f: impl FnOnce(&mut RunProtocolState) -> R) -> R {
         let mut runs = match self.runs.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         let state = runs
-            .entry(run_id.to_string())
+            .entry(instance)
             .or_insert_with(|| RunProtocolState {
                 tracker: MemoryProtocolTracker::new(Arc::clone(&self.spec)),
                 pending_ops: HashMap::new(),
@@ -106,7 +108,7 @@ impl<C: Send + Sync> Middleware<(), C> for MemoryProtocolMiddleware {
         // the map stays empty on turns that never touch memory.
         let op = self.spec.classify(&call.name, &call.arguments);
         if op != MemoryOp::Other {
-            self.with_run(ctx.run_id().as_str(), |run| {
+            self.with_run(ctx.instance_id(), |run| {
                 run.pending_ops.insert(call.id.clone(), op);
             });
         }
@@ -125,7 +127,7 @@ impl<C: Send + Sync> Middleware<(), C> for MemoryProtocolMiddleware {
         // grow unbounded). Absent → a non-memory tool: nothing to enforce.
         let call_id = invocation.call_id().to_string();
         let is_error = result.is_error;
-        let observation = self.with_run(ctx.run_id().as_str(), |run| {
+        let observation = self.with_run(ctx.instance_id(), |run| {
             let op = run.pending_ops.remove(&call_id)?;
             // Only successful memory ops advance the protocol — a failed write
             // did not mutate memory and must not demand an index update.
@@ -160,8 +162,8 @@ impl<C: Send + Sync> Middleware<(), C> for MemoryProtocolMiddleware {
         // Release this run's state: its tracker and any pending entries left by
         // calls that admission stopped before they executed.
         let finished = match self.runs.lock() {
-            Ok(mut runs) => runs.remove(ctx.run_id().as_str()),
-            Err(poisoned) => poisoned.into_inner().remove(ctx.run_id().as_str()),
+            Ok(mut runs) => runs.remove(&ctx.instance_id()),
+            Err(poisoned) => poisoned.into_inner().remove(&ctx.instance_id()),
         };
         let pending = finished
             .map(|run| run.tracker.pending_index_update())
