@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::context::{RunConfig, RunContext};
-use crate::middleware::{BoxToolFuture, MiddlewareStack, ToolBaseCall};
+use crate::middleware::{BoxToolFuture, MiddlewareStack, ToolBaseCall, ToolMiddleware};
 use tinyinference_llm::tool::ToolCall;
 use tinytools::ToolResult;
 
