@@ -13,8 +13,8 @@ run. This module only shapes data, so every function is deterministic apart
 from id minting and is unit-tested without a network or a clock.
 
 Product identity stays out of the crate: the host passes an `ExportBrand`
-(product name, scope prefix) and it becomes the OTLP `service.name` and
-instrumentation scope.
+(product slug and version), which becomes the OTLP `service.name`, the
+`<product>.agent` scope, trace metadata keys and the release version.
 
 ## Public surface
 

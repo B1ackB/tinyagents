@@ -132,27 +132,25 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
         }
     };
     let mut seen = HashSet::new();
-    let mut usages: Vec<&TurnUsage> = Vec::new();
-    let mut take = |usage: Option<&TurnUsage>| {
-        if let Some(usage) = usage
-            && seen.insert(usage_key(usage))
-        {
-            usages.push(usage);
-        }
-    };
-    for record in &display.records {
-        match record {
-            DisplayRecord::Message(message) if !message.interrupted => {
-                take(message.message.turn_usage.as_ref());
-            }
-            DisplayRecord::Message(_) => {}
-            DisplayRecord::Compaction(marker) => {
-                for kept in &marker.replacement {
-                    take(kept.message.turn_usage.as_ref());
+    let usages: Vec<&TurnUsage> = display
+        .records
+        .iter()
+        .flat_map(|record| -> Vec<Option<&TurnUsage>> {
+            match record {
+                DisplayRecord::Message(message) if !message.interrupted => {
+                    vec![message.message.turn_usage.as_ref()]
                 }
+                DisplayRecord::Message(_) => Vec::new(),
+                DisplayRecord::Compaction(marker) => marker
+                    .replacement
+                    .iter()
+                    .map(|kept| kept.message.turn_usage.as_ref())
+                    .collect(),
             }
-        }
-    }
+        })
+        .flatten()
+        .filter(|usage| seen.insert(usage_key(usage)))
+        .collect();
     let spend = spend_from_usages(usages, display.meta.model.as_ref());
     Some((spend, display.meta))
 }
