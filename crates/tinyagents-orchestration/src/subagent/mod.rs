@@ -18,7 +18,8 @@ mod planner;
 mod types;
 
 pub use detached::{
-    DETACHED_LEDGER_TIMEOUT_MS, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
+    DETACHED_LEDGER_TIMEOUT_MS, SteerAccess, SteerError, SteerRoute, cancel_for_thread,
+    distinct_parent_threads, queue_lane_name, steer_detached, steering_command_for_lane, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
     SubagentIdentity, SubagentResumeRef, SubagentSnapshot, WaitError, WaitOutcome,
     list_subagent_records, orphaned_subagent_reason, record_agent_id, record_cancelled,
     record_parent_session, record_spawned, record_status, record_subagent_session_id,

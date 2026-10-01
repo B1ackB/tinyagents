@@ -16,6 +16,7 @@ use super::*;
 struct Meta {
     agent: &'static str,
     session: Option<&'static str>,
+    thread: Option<&'static str>,
 }
 
 impl SubagentIdentity for Meta {
@@ -24,6 +25,9 @@ impl SubagentIdentity for Meta {
     }
     fn subagent_session_id(&self) -> Option<&str> {
         self.session
+    }
+    fn parent_thread_id(&self) -> Option<&str> {
+        self.thread
     }
 }
 
