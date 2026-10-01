@@ -121,9 +121,15 @@ impl TurnStateStore {
     /// completed": the caller must not overwrite an outcome it cannot see.
     pub fn put_unless_completed(&self, state: &TurnState) -> Result<bool, String> {
         let _guard = TURN_STATE_LOCK.lock();
-        self.migrate_thread_locked(&state.thread_id);
         let path = self.turn_path(&state.thread_id, &state.request_id);
-        if path.exists() && read_snapshot(&path)?.lifecycle == TurnLifecycle::Completed {
+        // Check before migration as well as after: migration must never be
+        // what hides a completed outcome, and a legacy file can itself hold
+        // the completed snapshot.
+        let completed = Self::is_completed_locked(&path)? || {
+            self.migrate_thread_locked(&state.thread_id);
+            Self::is_completed_locked(&path)?
+        };
+        if completed {
             debug!(
                 "{LOG_PREFIX} kept completed snapshot thread={} request={} (conditional write skipped)",
                 state.thread_id, state.request_id
@@ -480,7 +486,7 @@ impl TurnStateStore {
         }
         match read_snapshot(&flat) {
             Ok(state) => {
-                if let Err(err) = self.write_turn_file(&state) {
+                if let Err(err) = self.migrate_snapshot_locked(&state) {
                     warn!(
                         "{LOG_PREFIX} legacy migrate write failed thread={thread_id}: {err} (flat file kept)"
                     );
@@ -525,7 +531,7 @@ impl TurnStateStore {
             }
             match read_snapshot(&path) {
                 Ok(state) => {
-                    if self.write_turn_file(&state).is_ok() {
+                    if self.migrate_snapshot_locked(&state).is_ok() {
                         let _ = fs::remove_file(&path);
                         debug!(
                             "{LOG_PREFIX} migrated legacy snapshot thread={} request={}",
@@ -539,6 +545,32 @@ impl TurnStateStore {
                 ),
             }
         }
+    }
+
+    /// Relocate a legacy snapshot into the per-turn layout. An existing
+    /// per-turn snapshot for the same turn is newer than the legacy flat file
+    /// and is kept as is. Caller holds the lock.
+    fn migrate_snapshot_locked(&self, state: &TurnState) -> Result<(), String> {
+        if self
+            .turn_path(&state.thread_id, &state.request_id)
+            .exists()
+        {
+            debug!(
+                "{LOG_PREFIX} legacy migrate: per-turn snapshot already present thread={} request={} (kept)",
+                state.thread_id, state.request_id
+            );
+            return Ok(());
+        }
+        self.write_turn_file(state)
+    }
+
+    /// Whether the stored per-turn snapshot at `path` is `Completed`. A missing
+    /// file is not; an unreadable one is an error. Caller holds the lock.
+    fn is_completed_locked(path: &std::path::Path) -> Result<bool, String> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        Ok(read_snapshot(path)?.lifecycle == TurnLifecycle::Completed)
     }
 
     /// Atomic per-turn write without migration/retention side effects. Used by
