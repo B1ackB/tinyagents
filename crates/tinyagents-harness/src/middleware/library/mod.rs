@@ -67,6 +67,7 @@ mod image_trim;
 mod memory_protocol;
 mod memory_protocol_middleware;
 mod observe;
+mod policy_gate;
 mod repeat_progress;
 mod resilience;
 mod tool_policy;
@@ -90,6 +91,10 @@ pub use memory_protocol::{
     MemoryProtocolTracker, ModeTool,
 };
 pub use memory_protocol_middleware::MemoryProtocolMiddleware;
+pub use policy_gate::{
+    ApprovalGateMiddleware, ApprovalResolution, ApprovalResolver, DenialRenderer, PolicyDecision,
+    ToolCallPolicy, ToolPolicyGate, ToolPolicyGateMiddleware,
+};
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
 };
@@ -105,6 +110,8 @@ mod artifact_toc_test;
 mod credential_scrub_test;
 #[cfg(test)]
 mod image_trim_test;
+#[cfg(test)]
+mod policy_gate_test;
 #[cfg(test)]
 mod repeat_progress_test;
 #[cfg(test)]
