@@ -175,6 +175,8 @@ pub use writer::{
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "transcript/transcript_tests.rs"]
 mod test;
 #[cfg(test)]
+#[path = "transcript/typed_rows_tests.rs"]
 mod typed_rows_test;

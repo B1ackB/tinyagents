@@ -26,6 +26,7 @@ use crate::config::ToolDispatcher;
 use crate::ids::CallId;
 
 #[cfg(test)]
+#[path = "dialect/dialect_tests.rs"]
 mod test;
 
 /// The dialect a run speaks, resolved once from policy.

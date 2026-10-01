@@ -702,4 +702,5 @@ fn escape_label(label: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

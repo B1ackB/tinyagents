@@ -591,4 +591,5 @@ pub fn default_prompted_template() -> &'static str {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

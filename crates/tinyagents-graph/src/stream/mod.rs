@@ -102,4 +102,5 @@ impl GraphEventSink for CollectingSink {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

@@ -622,4 +622,5 @@ fn poisoned<E: std::fmt::Display>(
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

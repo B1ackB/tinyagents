@@ -822,4 +822,5 @@ impl<State: Send + Sync> std::fmt::Debug for CapabilityRegistry<State> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

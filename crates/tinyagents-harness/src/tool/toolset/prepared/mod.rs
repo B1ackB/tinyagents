@@ -1,6 +1,7 @@
 //! [`PreparedToolSet`]: a per-step schema transform over an inner toolset.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 mod types;
 

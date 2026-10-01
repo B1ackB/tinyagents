@@ -369,4 +369,5 @@ fn mint_tool_call_id(id: &str, target: &ModelProfile, used: &mut HashSet<String>
 }
 
 #[cfg(test)]
+#[path = "handoff_transform/handoff_transform_tests.rs"]
 mod test;

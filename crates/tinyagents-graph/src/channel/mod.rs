@@ -910,4 +910,5 @@ impl StateReducer<ChannelState, ChannelUpdate> for ChannelState {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

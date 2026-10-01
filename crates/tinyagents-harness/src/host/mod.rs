@@ -213,4 +213,5 @@ impl<State: Send + Sync> Clone for HostCapabilities<State> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

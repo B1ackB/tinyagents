@@ -152,4 +152,5 @@ pub fn new_call_id() -> CallId {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

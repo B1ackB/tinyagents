@@ -21,8 +21,11 @@ pub mod scan;
 pub mod types;
 
 #[cfg(test)]
+#[path = "convert_tests.rs"]
 mod convert_test;
 #[cfg(test)]
+#[path = "live_tests.rs"]
 mod live_test;
 #[cfg(test)]
+#[path = "ops_tests.rs"]
 mod ops_test;

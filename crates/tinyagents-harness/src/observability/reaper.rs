@@ -91,5 +91,5 @@ pub async fn reap_orphaned_runs(store: &dyn HarnessStatusStore) -> usize {
 }
 
 #[cfg(test)]
-#[path = "reaper_test.rs"]
+#[path = "reaper_tests.rs"]
 mod tests;

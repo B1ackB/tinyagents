@@ -167,4 +167,5 @@ fn fold_patch(leading: &mut SystemMessage, patch: SystemMessage) {
 }
 
 #[cfg(test)]
+#[path = "tool_changes/tool_changes_tests.rs"]
 mod test;

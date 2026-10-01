@@ -1,6 +1,7 @@
 //! [`FilteredToolSet`]: keep only the tools a predicate accepts.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 mod types;
 

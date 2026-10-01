@@ -757,4 +757,5 @@ impl tinytools::Tool for SubAgentToolDeclaration {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

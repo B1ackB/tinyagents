@@ -208,5 +208,5 @@ fn render_property_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "signature_test.rs"]
+#[path = "signature_tests.rs"]
 mod test;

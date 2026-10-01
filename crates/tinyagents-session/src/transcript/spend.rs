@@ -322,5 +322,5 @@ pub fn thread_spend(workspace_dir: &Path, thread_id: &str) -> ThreadSpend {
 }
 
 #[cfg(test)]
-#[path = "spend_test.rs"]
+#[path = "spend_tests.rs"]
 mod tests;

@@ -56,6 +56,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 mod types;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 pub use types::{DagIssue, DagNode};

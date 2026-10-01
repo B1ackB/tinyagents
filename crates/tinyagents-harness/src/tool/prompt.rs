@@ -694,5 +694,5 @@ fn strip_code_fence(raw: &str) -> &str {
 }
 
 #[cfg(test)]
-#[path = "prompt_test.rs"]
+#[path = "prompt_tests.rs"]
 mod tests;

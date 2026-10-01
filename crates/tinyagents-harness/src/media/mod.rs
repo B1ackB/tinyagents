@@ -66,4 +66,5 @@ fn artifact_stem(kind: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
