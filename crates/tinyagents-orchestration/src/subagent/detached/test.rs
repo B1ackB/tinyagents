@@ -627,7 +627,7 @@ fn record_status_propagates_store_failures_but_not_first_writer_races() {
 }
 
 #[test]
-fn record_cancelled_is_a_noop_when_terminal_and_propagates_other_failures() {
+fn record_cancelled_is_a_noop_when_terminal_or_missing() {
     let store = InMemoryTaskStore::new();
     record_spawned(&store, &spawned("c1")).unwrap();
     record_cancelled(&store, "c1").unwrap();
