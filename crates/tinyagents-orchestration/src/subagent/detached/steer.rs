@@ -161,10 +161,10 @@ where
 {
     let mut out: Vec<String> = Vec::new();
     for entry in cancelled {
-        if let Some(thread) = entry.metadata.parent_thread_id() {
-            if !out.iter().any(|seen| seen == thread) {
-                out.push(thread.to_string());
-            }
+        if let Some(thread) = entry.metadata.parent_thread_id()
+            && !out.iter().any(|seen| seen == thread)
+        {
+            out.push(thread.to_string());
         }
     }
     out

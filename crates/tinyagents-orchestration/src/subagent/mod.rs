@@ -18,14 +18,15 @@ mod planner;
 mod types;
 
 pub use detached::{
-    DETACHED_LEDGER_TIMEOUT_MS, SteerAccess, SteerError, SteerRoute, cancel_for_thread,
-    distinct_parent_threads, queue_lane_name, steer_detached, steering_command_for_lane, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
-    SubagentIdentity, SubagentResumeRef, SubagentSnapshot, WaitError, WaitOutcome,
-    list_subagent_records, orphaned_subagent_reason, record_agent_id, record_cancelled,
+    DETACHED_LEDGER_TIMEOUT_MS, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
+    SteerAccess, SteerError, SteerRoute, SubagentIdentity, SubagentResumeRef, SubagentSnapshot,
+    WaitError, WaitOutcome, cancel_for_thread, distinct_parent_threads, list_subagent_records,
+    orphaned_subagent_reason, queue_lane_name, record_agent_id, record_cancelled,
     record_parent_session, record_spawned, record_status, record_subagent_session_id,
     record_to_wait_outcome, resume_ref_for_task, resume_ref_from_record, snapshot_for_owner,
-    spawn_status_watcher, subagent_record_for_task, task_id_for_session,
-    task_id_for_session_in_records, task_status_label, wait_detached, wait_error_from_registry,
+    spawn_status_watcher, steer_detached, steering_command_for_lane, subagent_record_for_task,
+    task_id_for_session, task_id_for_session_in_records, task_status_label, wait_detached,
+    wait_error_from_registry,
 };
 pub use driver::{SubagentCapabilities, SubagentDriver};
 pub use executor::SubagentExecutor;
