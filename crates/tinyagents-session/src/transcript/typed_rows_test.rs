@@ -224,3 +224,24 @@ fn an_unknown_shape_or_missing_fields_keep_the_stored_content() {
     assert_eq!(read.messages[0].content, "kept");
     assert_eq!(read.messages[1].content, "no calls");
 }
+
+#[test]
+fn a_future_version_or_part_kind_keeps_the_stored_content() {
+    let dir = tempdir().unwrap();
+    let path = resolve_keyed_transcript_path(dir.path(), "future-parts").unwrap();
+    let body = concat!(
+        r#"{"_meta":{"agent":"a","dispatcher":"native","created":"c","updated":"u","turn_count":0,"input_tokens":0,"output_tokens":0,"cached_input_tokens":0,"charged_amount_usd":0.0}}"#,
+        "\n",
+        // A later writer reusing a known shape name under a newer version.
+        r#"{"v":3,"shape":"tool_result","tool_call_id":"c1","role":"tool","content":"stored-v3"}"#,
+        "\n",
+        // The current version carrying a part kind this reader does not know.
+        r#"{"v":2,"shape":"user_parts","role":"user","content":"stored-parts","parts":[{"kind":"document","uri":"x"}]}"#,
+        "\n",
+    );
+    fs::write(&path, body).unwrap();
+    let read = read_transcript(&path).unwrap();
+    assert_eq!(read.messages.len(), 2);
+    assert_eq!(read.messages[0].content, "stored-v3");
+    assert_eq!(read.messages[1].content, "stored-parts");
+}
