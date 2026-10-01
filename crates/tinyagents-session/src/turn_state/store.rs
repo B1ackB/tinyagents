@@ -386,7 +386,7 @@ impl TurnStateStore {
         self.dir().join(hex::encode(thread_id.as_bytes()))
     }
 
-    fn turn_path(&self, thread_id: &str, request_id: &str) -> PathBuf {
+    pub(crate) fn turn_path(&self, thread_id: &str, request_id: &str) -> PathBuf {
         self.thread_dir(thread_id).join(format!(
             "{}.{}",
             hex::encode(request_id.as_bytes()),

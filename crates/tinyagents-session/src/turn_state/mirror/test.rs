@@ -241,3 +241,28 @@ fn finish_keeps_a_terminal_outcome_the_driver_already_recorded() {
         "a settled turn's reply must not be duplicated as a partial"
     );
 }
+
+#[test]
+fn finish_leaves_an_unreadable_snapshot_alone_and_appends_no_partial() {
+    let dir = tempdir().expect("tempdir");
+    let path = seed_root_transcript(dir.path(), "thr_corrupt");
+    let store = TurnStateStore::new(dir.path().to_path_buf());
+    let mut m = TurnStateMirror::new(store.clone(), "thr_corrupt", "req-c");
+    m.state.streaming_text = "maybe delivered".into();
+    let snapshot = store.turn_path("thr_corrupt", "req-c");
+    std::fs::write(&snapshot, b"{not json").expect("corrupt snapshot");
+    m.finish();
+    assert_eq!(
+        std::fs::read(&snapshot).expect("snapshot still there"),
+        b"{not json",
+        "an outcome that cannot be read must not be overwritten"
+    );
+    let display = read_transcript_display(&path).expect("read display");
+    assert!(
+        !display
+            .records
+            .iter()
+            .any(|r| matches!(r, DisplayRecord::Message(msg) if msg.interrupted)),
+        "no partial may be appended when completion cannot be ruled out"
+    );
+}
