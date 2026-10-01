@@ -1103,6 +1103,11 @@ async fn policy_only_deadline_bounds_initial_host_resolution_with_a_timeout_erro
     // text is still available on the run's internal `TinyAgentsError` (see
     // the non-hosted equivalents of this test), just not leaked here.
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::Run),
+        "the run's own budget is the run bound"
+    );
 }
 
 #[tokio::test]
@@ -1140,6 +1145,10 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
         .await
         .expect_err("per-model-call cap must bound host resolution");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
 }
 
 /// A model whose every call (streaming included) never answers.
@@ -1197,6 +1206,10 @@ async fn invoke_agent_streaming_preserves_the_timeout_kind_of_a_stalled_model_ca
         .expect_err("a stalled model call must hit the per-model-call ceiling");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
     assert_eq!(error.message, "hosted agent invocation timed out");
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
 }
 
 async fn assert_rebound_host_resolution_stops(
