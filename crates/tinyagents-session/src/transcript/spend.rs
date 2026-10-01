@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{
-    DisplayRecord, SessionTranscript, TranscriptMessage, TranscriptMeta, TurnUsage, find_root_transcripts_for_thread,
-    read_transcript_display,
+    DisplayRecord, SessionTranscript, TranscriptMessage, TranscriptMeta, TurnUsage,
+    find_root_transcripts_for_thread, read_transcript_display,
 };
 
 /// One transcript's own spend, summed from the per-turn `turn_usage` records
@@ -167,7 +167,9 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
                             .rev()
                             .find(|row| row.message.role == "assistant")
                             && let Some(usage) = row.message.turn_usage.as_ref()
-                            && !context.iter().any(|prior| carried_from(prior, &row.message))
+                            && !context
+                                .iter()
+                                .any(|prior| carried_from(prior, &row.message))
                         {
                             usages.push(usage);
                         }
