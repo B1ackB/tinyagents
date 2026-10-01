@@ -52,18 +52,26 @@
 //!
 //! ### Typed rows (`"v":2`)
 //!
-//! A row whose model-visible `content` is a native tool-call envelope, a native
-//! tool-result envelope, or text with inline `[OH_IMAGE:..]` markers is written
-//! as **fields**: `{"v":2,"shape":"assistant_calls","content":"<text>","tool_calls":[..]}`,
+//! The in-memory [`TranscriptMessage`] is typed: `content` is plain text, and a
+//! native tool-call round or an image is carried in fields
+//! (`tool_calls`, `tool_call_id`, `parts`) instead of a string envelope or an
+//! `[OH_IMAGE:..]` marker inside `content`. The stored line mirrors it:
+//! `{"v":2,"shape":"assistant_calls","content":"<text>","tool_calls":[..]}`,
 //! `{"v":2,"shape":"tool_result","tool_call_id":"..","content":"<output>"}` or
 //! `{"v":2,"shape":"user_parts","parts":[{"type":"text",..},{"type":"image",..}]}`.
-//! Both readers rebuild the exact legacy `content` string from those fields
-//! (`tinytools_agent::dialect` owns the encoding), so everything downstream of
-//! the reader is unchanged. A row is only written typed when that rebuild is
-//! byte-identical; any other string stays a legacy row. Legacy rows keep
-//! loading and a file may hold both generations; existing bytes are never
-//! rewritten. **Downgrade is unsupported:** a reader that predates `"v"` would
-//! see a typed row's plain `content` without its tool calls or images.
+//!
+//! **Read-both.** Every row written before typed rows keeps its envelope or
+//! marker in `content`; both readers lift it into the typed fields
+//! ([`TranscriptMessage::normalized`], lenient: any well-formed native envelope,
+//! a tool-result envelope, `[OH_IMAGE:..]` markers). A line the reader cannot
+//! type stays a plain text row. Existing bytes are never rewritten; a file may
+//! hold both generations. A host that still builds string rows gets the same
+//! typed lines for any canonical envelope/marker string.
+//!
+//! [`TranscriptMessage::legacy_content`] rebuilds the old string for the places
+//! that must keep it (a journal, a host file shared with older binaries).
+//! **Downgrade is unsupported:** a reader that predates `"v"` would see a typed
+//! row's plain `content` without its tool calls or images.
 //!
 //! ## Storage layout
 //!
