@@ -52,6 +52,32 @@ pub fn capture_model_content(value: &serde_json::Value) -> serde_json::Value {
             used += size;
             kept.push(message);
         }
+        // The newest message alone can exceed the budget when its bulk is not
+        // a top-level `content` string (a nested `{ "<role>": { "content": … } }`
+        // shape, or large `tool_calls`). Keep a bounded preview of it rather
+        // than dropping the latest turn entirely.
+        if kept.is_empty()
+            && let Some(newest) = messages.last()
+        {
+            let role = newest
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    newest
+                        .as_object()
+                        .filter(|fields| fields.len() == 1)
+                        .and_then(|fields| fields.keys().next().cloned())
+                })
+                .unwrap_or_else(|| "user".to_string());
+            kept.push(serde_json::json!({
+                "role": role,
+                "content": format!(
+                    "{}…[message truncated]",
+                    truncate_chars(&newest.to_string(), MAX_MODEL_CONTENT_CHARS / 2)
+                ),
+            }));
+        }
         kept.reverse();
         let omitted = messages.len().saturating_sub(kept.len());
         if omitted > 0 {

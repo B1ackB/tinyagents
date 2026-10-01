@@ -423,3 +423,60 @@ fn unknown_run_is_not_found() {
         apply_control(&config, "ghost", ControlVerb::Stop, None, None, &no_names).unwrap_err();
     assert!(matches!(err, ControlError::RunNotFound(id) if id == "ghost"));
 }
+
+#[test]
+fn stale_transition_does_not_overwrite_a_status_another_writer_recorded() {
+    use crate::run_ledger::{RunEventAppend, RunTransition, transition_agent_run_status_from};
+
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().to_path_buf();
+    // A stop was planned against `running`, but the worker recorded
+    // `completed` first.
+    seed_run(&config, "run-race", AgentRunStatus::Completed);
+
+    let outcome = transition_agent_run_status_from(
+        &config,
+        "run-race",
+        AgentRunStatus::Running,
+        AgentRunStatus::Cancelled,
+        Some("manual"),
+        Some(Utc::now()),
+        Some(RunEventAppend {
+            run_id: "run-race".into(),
+            event_type: "control_stopped".into(),
+            payload: json!({}),
+        }),
+    )
+    .unwrap();
+    match outcome {
+        RunTransition::StatusChanged(run) => assert_eq!(run.status, AgentRunStatus::Completed),
+        other => panic!("expected StatusChanged, got {other:?}"),
+    }
+    let stored = get_agent_run(&config, "run-race").unwrap().unwrap();
+    assert_eq!(stored.status, AgentRunStatus::Completed);
+    assert!(stored.error.is_none());
+    let events = list_recent_run_events(
+        &config,
+        &RunEventListRequest {
+            run_id: "run-race".into(),
+            after_sequence: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert!(events.events.is_empty(), "no event without its transition");
+
+    assert!(matches!(
+        transition_agent_run_status_from(
+            &config,
+            "missing",
+            AgentRunStatus::Running,
+            AgentRunStatus::Cancelled,
+            None,
+            None,
+            None,
+        )
+        .unwrap(),
+        RunTransition::NotFound
+    ));
+}
