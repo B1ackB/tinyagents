@@ -108,11 +108,18 @@ pub fn record_status(
     Ok(())
 }
 
-/// Record a cancellation (`CancelRequested` then `Cancelled`).
-pub fn record_cancelled(store: &dyn TaskStore, task_id: &str) {
+/// Record a cancellation (`CancelRequested` then `Cancelled`). Store failures
+/// are returned; a record that is already terminal (or gone) is a no-op.
+pub fn record_cancelled(store: &dyn TaskStore, task_id: &str) -> tinyagents_harness::Result<()> {
     let id = TaskId::new(task_id);
-    let _ = store.request_cancel(&id);
-    let _ = store.mark_cancelled(&id);
+    match store.get(&id) {
+        None => return Ok(()),
+        Some(record) if record.is_terminal() => return Ok(()),
+        Some(_) => {}
+    }
+    store.request_cancel(&id)?;
+    store.mark_cancelled(&id)?;
+    Ok(())
 }
 
 /// Watch a child's status channel and mirror its first terminal status into
