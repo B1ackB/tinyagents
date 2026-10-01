@@ -39,10 +39,18 @@ pub enum TranscriptPart {
 /// original bytes (key order, `null` content, embedded reasoning) while the row
 /// is still semantically what that string parses to.
 ///
-/// Never serialized, and equal to every other value: it is a memo, not part of
-/// the row's identity.
-#[derive(Debug, Clone, Default)]
+/// Equal to every other value: it is a memo, not part of the row's identity.
+/// It is serialized (only when present) so the original bytes survive a serde
+/// round trip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct LegacyText(Option<String>);
+
+impl LegacyText {
+    fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+}
 
 impl PartialEq for LegacyText {
     fn eq(&self, _: &Self) -> bool {
@@ -93,7 +101,9 @@ pub struct TranscriptMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<TranscriptPart>>,
     /// The legacy string this row was lifted from, if any; see [`LegacyText`].
-    #[serde(skip)]
+    /// Serialized so a store that round-trips the row through serde (the entry
+    /// tree) keeps the original bytes of a non-canonical envelope.
+    #[serde(default, skip_serializing_if = "LegacyText::is_none")]
     pub legacy: LegacyText,
     #[serde(default)]
     pub extra_metadata: Option<serde_json::Value>,

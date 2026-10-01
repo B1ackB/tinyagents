@@ -462,3 +462,16 @@ fn plain_journal_message_keeps_the_legacy_string_form_of_typed_rows() {
     assert!(journal.content.contains("[OH_IMAGE:"));
     assert!(TranscriptMessage::from_legacy("user", journal.content).same_row_as(&image));
 }
+
+#[test]
+fn a_lifted_rows_original_string_survives_a_serde_round_trip() {
+    let envelope = encode_assistant_envelope(Some("x"), &[call("c1", None)], Some("why"));
+    let lifted = TranscriptMessage::from_legacy("assistant", envelope.clone());
+    assert!(lifted.is_typed());
+    let json = serde_json::to_string(&lifted).unwrap();
+    let back: TranscriptMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.legacy_content(), envelope);
+    // A row that was never lifted serializes without the memo.
+    let plain = serde_json::to_value(TranscriptMessage::user("hi")).unwrap();
+    assert!(plain.get("legacy").is_none());
+}
