@@ -130,17 +130,19 @@ async fn page_cursor_stays_in_journal_offset_space_across_dropped_events() {
     // The sink numbered these 0, 10, 11: events 1..=9 never reached the
     // journal, which stores them at positions 0, 1, 2.
     for sink_offset in [0u64, 10, 11] {
-        let mut obs = AgentObservation::new(
-            "run-gap",
-            None,
-            None,
-            AgentEvent::ToolStarted {
+        let obs = AgentObservation {
+            event_id: crate::ids::EventId::new(format!("evt-{sink_offset}")),
+            run_id: crate::ids::RunId::new("run-gap"),
+            parent_run_id: None,
+            root_run_id: crate::ids::RunId::new("run-gap"),
+            offset: sink_offset,
+            ts_ms: 0,
+            event: AgentEvent::ToolStarted {
                 call_id: format!("c{sink_offset}").into(),
                 tool_name: "t".into(),
                 input: None,
             },
-        );
-        obs.offset = sink_offset;
+        };
         journal.append(obs).await.unwrap();
     }
     let page1 = read_run_events_page(&journal, "run-gap", 0, 1).await.unwrap();
