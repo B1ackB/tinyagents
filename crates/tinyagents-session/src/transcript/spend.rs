@@ -5,10 +5,13 @@
 //! each token exactly once. Pricing (re-auditing cost at current rates) is the
 //! host's concern and stays out of here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::{SessionTranscript, find_root_transcripts_for_thread, read_transcript};
+use super::{
+    DisplayRecord, SessionTranscript, TranscriptMeta, TurnUsage, find_root_transcripts_for_thread,
+    read_transcript_display,
+};
 
 /// One transcript's own spend, summed from the per-turn `turn_usage` records
 /// the codec attaches to its assistant rows.
@@ -28,7 +31,7 @@ pub struct TranscriptSpend {
     pub context_window: u64,
 }
 
-/// Total one transcript file's own recorded spend.
+/// Total one transcript's own recorded spend over its logical message set.
 ///
 /// The `_meta` header carries denormalised rollups for the same figures, but
 /// nothing has written them on the root path since the TinyAgents runtime
@@ -37,15 +40,26 @@ pub struct TranscriptSpend {
 /// records are the authoritative copy and the only one that is written on every
 /// path, so this reads those and ignores the header.
 ///
-/// `read_transcript` is the reader that applies compaction records and drops
-/// interrupted partials, so a compacted or interrupted session is summed over
-/// its logical message set rather than its raw append log.
+/// This sums only what `transcript.messages` still holds: after a compaction
+/// that is the reduced context, so it undercounts a compacted session. The
+/// thread aggregate ([`thread_spend`]) reads the full append history instead.
 pub fn transcript_spend(transcript: &SessionTranscript) -> TranscriptSpend {
+    spend_from_usages(
+        transcript
+            .messages
+            .iter()
+            .filter_map(|message| message.turn_usage.as_ref()),
+        transcript.meta.model.as_ref(),
+    )
+}
+
+/// Sum a sequence of per-turn usage records, oldest first.
+fn spend_from_usages<'a>(
+    usages: impl IntoIterator<Item = &'a TurnUsage>,
+    header_model: Option<&String>,
+) -> TranscriptSpend {
     let mut spend = TranscriptSpend::default();
-    for message in &transcript.messages {
-        let Some(usage) = message.turn_usage.as_ref() else {
-            continue;
-        };
+    for usage in usages {
         // A text-dialect tool round's issuing row carries a provenance-only
         // record (its calls, zero spend); the turn's spend is on its final row.
         // It is not a turn that spent, and must not become the "last" one.
@@ -76,24 +90,75 @@ pub fn transcript_spend(transcript: &SessionTranscript) -> TranscriptSpend {
     // A transcript whose model never landed on a usage record still has one in
     // its header; prefer the record, fall back to the header.
     if spend.model.is_none() {
-        spend.model = transcript.meta.model.clone();
+        spend.model = header_model.cloned();
     }
     spend
 }
 
-/// Read one transcript, logging and skipping an unreadable file rather than
-/// failing the whole thread's aggregate for it.
-fn read(path: &Path) -> Option<SessionTranscript> {
-    match read_transcript(path) {
-        Ok(transcript) => Some(transcript),
+/// Identity of one usage record. A compaction record re-carries the usage of
+/// the messages it keeps, so the same record can appear on an appended line
+/// and again inside a later replacement; it must count once.
+fn usage_key(usage: &TurnUsage) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        usage.ts,
+        usage.iteration,
+        usage.provider,
+        usage.model,
+        usage.usage.input,
+        usage.usage.output,
+        usage.usage.cached_input,
+        usage.usage.cost_usd.to_bits(),
+    )
+}
+
+/// Spend of one transcript file over its whole append history.
+///
+/// Compaction never deletes lines: the earlier rows (and their usage) stay in
+/// the file, and the compaction record carries the reduced context. Reading
+/// the model-context view would drop every usage record a compaction summarised
+/// away, so this walks every appended message line and every compaction
+/// replacement, counting each distinct usage record once. Interrupted partials
+/// carry no spend and are skipped.
+fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
+    let display = match read_transcript_display(path) {
+        Ok(display) => display,
         Err(err) => {
             tracing::warn!(
                 "[transcript:spend] skipping unreadable transcript {}: {err}",
                 path.display()
             );
-            None
+            return None;
+        }
+    };
+    let mut seen = HashSet::new();
+    let mut usages: Vec<&TurnUsage> = Vec::new();
+    let mut take = |usage: Option<&'_ TurnUsage>| -> Option<()> {
+        let usage = usage?;
+        seen.insert(usage_key(usage)).then_some(())?;
+        Some(())
+    };
+    for record in &display.records {
+        match record {
+            DisplayRecord::Message(message) if !message.interrupted => {
+                let usage = message.message.turn_usage.as_ref();
+                if take(usage).is_some() {
+                    usages.extend(usage);
+                }
+            }
+            DisplayRecord::Message(_) => {}
+            DisplayRecord::Compaction(marker) => {
+                for kept in &marker.replacement {
+                    let usage = kept.message.turn_usage.as_ref();
+                    if take(usage).is_some() {
+                        usages.extend(usage);
+                    }
+                }
+            }
         }
     }
+    let spend = spend_from_usages(usages, display.meta.model.as_ref());
+    Some((spend, display.meta))
 }
 
 /// Every descendant transcript of `root`, at any delegation depth.
@@ -155,8 +220,7 @@ pub fn thread_spend(workspace_dir: &Path, thread_id: &str) -> ThreadSpend {
     let roots = find_root_transcripts_for_thread(workspace_dir, thread_id);
     for root in &roots {
         out.found_transcript = true;
-        if let Some(transcript) = read(root) {
-            let spend = transcript_spend(&transcript);
+        if let Some((spend, meta)) = file_spend(root) {
             out.root.input_tokens = out.root.input_tokens.saturating_add(spend.input_tokens);
             out.root.output_tokens = out.root.output_tokens.saturating_add(spend.output_tokens);
             out.root.cached_input_tokens = out
@@ -177,17 +241,16 @@ pub fn thread_spend(workspace_dir: &Path, thread_id: &str) -> ThreadSpend {
             if spend.model.is_some() {
                 out.root.model = spend.model;
             }
-            out.updated = Some(transcript.meta.updated);
+            out.updated = Some(meta.updated);
         }
         for child in descendant_transcripts(root) {
-            let Some(child_transcript) = read(&child) else {
+            let Some((spend, child_meta)) = file_spend(&child) else {
                 continue;
             };
-            let spend = transcript_spend(&child_transcript);
             out.found_transcript = true;
             let entry = out
                 .subagents
-                .entry(child_transcript.meta.agent_name.clone())
+                .entry(child_meta.agent_name.clone())
                 .or_default();
             entry.0.input_tokens = entry.0.input_tokens.saturating_add(spend.input_tokens);
             entry.0.output_tokens = entry.0.output_tokens.saturating_add(spend.output_tokens);
