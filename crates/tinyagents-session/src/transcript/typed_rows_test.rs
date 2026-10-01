@@ -320,3 +320,56 @@ fn a_future_version_or_part_kind_keeps_the_stored_content() {
     assert_eq!(read.messages[0].content, "stored-v3");
     assert_eq!(read.messages[1].content, "stored-parts");
 }
+
+#[test]
+fn typed_rows_project_to_the_same_display_items_as_their_legacy_strings() {
+    use super::view::project::project_records;
+    use super::view::types::DisplayItem;
+
+    let dir = tempdir().unwrap();
+    let project = |name: &str, rows: &[TranscriptMessage]| {
+        let path = resolve_keyed_transcript_path(dir.path(), name).unwrap();
+        write_transcript(&path, rows, &meta(), None).unwrap();
+        project_records(&read_transcript_display(&path).unwrap().records)
+    };
+    let typed = project("typed", &typed_turn());
+    let legacy = project("legacy", &legacy_turn());
+    assert_eq!(typed, legacy);
+    assert!(
+        typed
+            .iter()
+            .any(|item| matches!(item, DisplayItem::ToolCall { call_id, .. } if call_id == "c2"))
+    );
+    // The user's image renders in place as the host-visible marker.
+    assert!(typed.iter().any(|item| matches!(
+        item,
+        DisplayItem::UserMessage { content, .. }
+            if content == "look [IMAGE:data:image/png;base64,AAAA] please"
+    )));
+}
+
+#[test]
+fn display_and_legacy_text_of_typed_rows() {
+    let rows = typed_turn();
+    assert_eq!(
+        rows[0].display_content(),
+        "look [IMAGE:data:image/png;base64,AAAA] please"
+    );
+    assert_eq!(
+        rows[0].legacy_content(),
+        "look [OH_IMAGE:data:image/png;base64,AAAA] please"
+    );
+    assert_eq!(rows[1].display_content(), "on it");
+    assert!(rows[1].legacy_content().starts_with('{'));
+    assert_eq!(rows[4].legacy_content(), "done");
+    // Normalizing a row that is already typed changes nothing.
+    for row in &rows {
+        assert_eq!(&row.clone().normalized(), row);
+    }
+    // A parts list without an image is just text.
+    let text_only = TranscriptMessage::user_with_parts(vec![TranscriptPart::Text {
+        text: "hello".into(),
+    }]);
+    assert!(text_only.parts.is_none());
+    assert_eq!(text_only.content, "hello");
+}
