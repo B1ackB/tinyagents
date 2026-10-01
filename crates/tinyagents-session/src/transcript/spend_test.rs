@@ -530,9 +530,7 @@ fn request_less_compaction_with_usage_identical_to_history_still_counts() {
 /// counted in the sealed generation.
 #[test]
 fn retained_rows_in_a_successor_generation_are_not_counted_twice() {
-    use crate::transcript::{
-        FileTranscriptLocator, SessionRef, TranscriptHistory, TranscriptLocator, TruncateCut,
-    };
+    use crate::transcript::{FileTranscriptLocator, SessionRef, TranscriptLocator, TruncateCut};
     let tmp = tempfile::tempdir().expect("tempdir");
     let thread = "thread-generations";
     let locator = FileTranscriptLocator::new(tmp.path());
