@@ -381,8 +381,12 @@ fn compacted_transcript_keeps_pre_compaction_spend_and_counts_each_record_once()
     ];
     // The reduced context keeps the second turn's answer, re-carrying its
     // usage, then adds the third turn.
+    // A kept row was read back from the transcript, so it owns its original
+    // correlation id.
     let mut kept = TranscriptMessage::assistant("a1");
     kept.turn_usage = Some(turn_usage(20_000, 200, 0));
+    kept.request_id = Some("req-1".into());
+    kept.preserve_request_id = true;
     let reduced = vec![
         TranscriptMessage::new("user", "summary of q0/a0"),
         kept,
@@ -420,5 +424,70 @@ fn identical_usage_on_separate_appends_counts_each_turn() {
     );
     let spend = thread_spend(tmp.path(), thread);
     assert_eq!(spend.root.input_tokens, 2_000);
+    assert_eq!(spend.root.turns, 2);
+}
+
+/// A compaction turn whose usage is value-identical to an earlier turn's is
+/// still its own spend: identity is the turn's `request_id`, not the numbers.
+#[test]
+fn compaction_turn_with_usage_identical_to_history_still_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-compacted-twin";
+    let stem = "1790000006_orchestrator_twin";
+    let root_meta = meta("orchestrator", "root", Some(thread));
+    write_transcript_turns(tmp.path(), stem, &root_meta, &[(5_000, 50, 0)]);
+    let path = tmp.path().join("session_raw").join(format!("{stem}.jsonl"));
+    let persisted = vec![
+        TranscriptMessage::new("user", "q0"),
+        TranscriptMessage::assistant("a0"),
+    ];
+    let reduced = vec![
+        TranscriptMessage::new("user", "summary"),
+        TranscriptMessage::new("user", "q1"),
+        TranscriptMessage::assistant("a1"),
+    ];
+    append_transcript_turn(
+        &path,
+        &persisted,
+        &reduced,
+        &root_meta,
+        Some(&turn_usage(5_000, 50, 0)),
+        Some("req-1"),
+    )
+    .expect("append compaction turn");
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 10_000);
+    assert_eq!(spend.root.turns, 2);
+}
+
+/// A compaction written without a `request_id` still counts its turn's spend.
+#[test]
+fn request_less_compaction_turn_still_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-compacted-anon";
+    let stem = "1790000007_orchestrator_anon";
+    let root_meta = meta("orchestrator", "root", Some(thread));
+    write_transcript_turns(tmp.path(), stem, &root_meta, &[(5_000, 50, 0)]);
+    let path = tmp.path().join("session_raw").join(format!("{stem}.jsonl"));
+    let persisted = vec![
+        TranscriptMessage::new("user", "q0"),
+        TranscriptMessage::assistant("a0"),
+    ];
+    let reduced = vec![
+        TranscriptMessage::new("user", "summary"),
+        TranscriptMessage::new("user", "q1"),
+        TranscriptMessage::assistant("a1"),
+    ];
+    append_transcript_turn(
+        &path,
+        &persisted,
+        &reduced,
+        &root_meta,
+        Some(&turn_usage(7_000, 70, 0)),
+        None,
+    )
+    .expect("append compaction turn");
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 12_000);
     assert_eq!(spend.root.turns, 2);
 }

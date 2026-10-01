@@ -48,19 +48,24 @@ pub async fn read_run_events_page(
     // One entry past the page tells whether a further page exists without a
     // second round-trip, and goes through the bounded `read_window` seam so a
     // backend with a server-side limit never materialises the whole tail.
-    let mut events = journal
-        .read_window(run_id, offset, effective_limit as usize + 1)
+    let mut positioned = journal
+        .read_window_positioned(run_id, offset, effective_limit as usize + 1)
         .await?;
-
-    let has_more = events.len() as u64 > effective_limit;
+    let has_more = positioned.len() as u64 > effective_limit;
     if has_more {
-        events.truncate(effective_limit as usize);
+        positioned.truncate(effective_limit as usize);
     }
-    // The cursor lives in the journal's own offset space (dense positional
-    // indexes per run), not in `AgentObservation::offset`: the sink's offset
-    // keeps counting across events a bounded `JournalSink` dropped, so deriving
-    // the cursor from it would skip persisted entries after such a gap.
-    let next_offset = has_more.then(|| offset + events.len() as u64);
+    // The cursor lives in the journal's own offset space, taken from the
+    // backend's position for the last returned entry: not from
+    // `AgentObservation::offset` (the sink's counter keeps counting across
+    // events a bounded `JournalSink` dropped) and not from the requested
+    // `offset` (an evicting store resumes at its oldest retained entry).
+    let next_offset = if has_more {
+        positioned.last().map(|(position, _)| position + 1)
+    } else {
+        None
+    };
+    let events: Vec<AgentObservation> = positioned.into_iter().map(|(_, obs)| obs).collect();
 
     tracing::debug!(
         "[agent] replay read_run_events_page run_id={run_id} returned={} next_offset={:?}",

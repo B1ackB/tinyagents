@@ -171,3 +171,32 @@ async fn concurrent_writes_of_one_id_both_succeed() {
     assert_eq!(b.unwrap(), dir.join("same.png"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn concurrent_writes_under_a_tight_cap_only_return_paths_that_exist() {
+    let dir = tmp("tight-cap");
+    let one = {
+        let probe = tmp("probe");
+        let size = stash(&probe, u64::MAX, Duration::from_secs(3600))
+            .write("p", TINY_PNG)
+            .await
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .len();
+        let _ = std::fs::remove_dir_all(&probe);
+        size
+    };
+    // Room for exactly one attachment.
+    let s = stash(&dir, one, Duration::from_secs(3600));
+    let other = s.clone();
+    let (a, b) = tokio::join!(s.write("a", TINY_PNG), other.write("b", TINY_PNG));
+    for path in [a, b].into_iter().flatten() {
+        assert!(
+            path.exists(),
+            "returned an evicted path: {}",
+            path.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

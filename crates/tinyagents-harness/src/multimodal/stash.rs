@@ -19,6 +19,9 @@ pub struct AttachmentStash {
     dir: PathBuf,
     max_bytes: u64,
     ttl: Duration,
+    /// Serialises cap enforcement across clones of this stash, so two writers
+    /// never evict from the same stale snapshot of the directory.
+    evict_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AttachmentStash {
@@ -30,6 +33,7 @@ impl AttachmentStash {
             dir,
             max_bytes,
             ttl,
+            evict_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -93,6 +97,11 @@ impl AttachmentStash {
             return Err(error.into());
         }
         self.enforce_cap().await;
+        // Never report a path that is gone: a concurrent writer's eviction
+        // (another process sharing the directory) may have reclaimed it.
+        if !tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
+            anyhow::bail!("attachment was evicted by the stash size cap before it could be used");
+        }
         Ok(final_path)
     }
 
@@ -121,6 +130,7 @@ impl AttachmentStash {
     /// Evict oldest files (by mtime) until the directory is under the size cap.
     /// Best-effort.
     pub async fn enforce_cap(&self) {
+        let _evicting = self.evict_lock.lock().await;
         let mut files: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
         let mut total: u64 = 0;
         let Ok(mut rd) = tokio::fs::read_dir(&self.dir).await else {
@@ -148,7 +158,14 @@ impl AttachmentStash {
             if total <= self.max_bytes {
                 break;
             }
-            if tokio::fs::remove_file(&path).await.is_ok() {
+            let removed = match tokio::fs::remove_file(&path).await {
+                Ok(()) => true,
+                // Already gone (removed outside this stash): it no longer
+                // counts toward the total either.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => false,
+            };
+            if removed {
                 total = total.saturating_sub(len);
                 tracing::debug!(
                     target: "multimodal",

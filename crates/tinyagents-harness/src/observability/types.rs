@@ -177,6 +177,21 @@ pub trait HarnessEventJournal: Send + Sync {
         Ok(all)
     }
 
+    /// Like [`Self::read_window`], but pairs each observation with its journal
+    /// offset (the position [`Self::append`] returned), so a pager can derive
+    /// its next cursor even when the backend resumed past a stale `offset`.
+    /// The default assumes the window starts exactly at `offset`; backends
+    /// that can resume elsewhere override it.
+    async fn read_window_positioned(
+        &self,
+        run_id: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, AgentObservation)>> {
+        let window = self.read_window(run_id, offset, limit).await?;
+        Ok((offset..).zip(window).collect())
+    }
+
     /// Returns observations for `run_id` from `offset` whose
     /// [`AgentEvent::kind`][crate::events::AgentEvent::kind] is in
     /// `kinds`. An empty `kinds` slice matches everything. This is the

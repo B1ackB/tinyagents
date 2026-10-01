@@ -189,16 +189,19 @@ pub fn insert_run_telemetry_generation(
     }) {
         return false;
     }
-    // Per-call token usage is likewise already summed by Langfuse. When any
-    // generation carries it, the aggregate contributes only the cost it would
-    // otherwise be missing, never the tokens a second time.
-    let per_call_usage = batch.iter().any(|event| {
-        event["type"] == "generation-create"
-            && event["body"]["usageDetails"]
-                .as_object()
-                .is_some_and(|usage| !usage.is_empty())
-    });
-    if per_call_usage && telemetry.cost_usd == 0.0 {
+    // Per-call token usage is likewise already summed by Langfuse, but it can
+    // be incomplete (a call that reported no usage). The aggregate carries only
+    // the tokens the per-call generations do not cover, never the covered ones
+    // a second time.
+    let covered = covered_usage(batch);
+    let uncovered_input = telemetry.input_tokens.saturating_sub(covered.input);
+    let uncovered_output = telemetry.output_tokens.saturating_sub(covered.output);
+    let uncovered_cached = telemetry
+        .cached_input_tokens
+        .saturating_sub(covered.cached_input)
+        .min(uncovered_input);
+    let has_uncovered_tokens = uncovered_input > 0 || uncovered_output > 0;
+    if !has_uncovered_tokens && telemetry.cost_usd == 0.0 {
         return false;
     }
     let Some(trace_id) = batch
@@ -223,9 +226,6 @@ pub fn insert_run_telemetry_generation(
         .unwrap_or(start_time.as_str())
         .to_string();
 
-    let non_cached_input = telemetry
-        .input_tokens
-        .saturating_sub(telemetry.cached_input_tokens);
     let mut body = json!({
         "id": format!("{trace_id}:{}-run-telemetry", brand.product),
         "traceId": trace_id,
@@ -233,10 +233,10 @@ pub fn insert_run_telemetry_generation(
         "startTime": start_time,
         "endTime": end_time,
         "usageDetails": {
-            "input": non_cached_input,
-            "output": telemetry.output_tokens,
-            "total": telemetry.input_tokens.saturating_add(telemetry.output_tokens),
-            "cache_read_input_tokens": telemetry.cached_input_tokens,
+            "input": uncovered_input.saturating_sub(uncovered_cached),
+            "output": uncovered_output,
+            "total": uncovered_input.saturating_add(uncovered_output),
+            "cache_read_input_tokens": uncovered_cached,
         },
         "costDetails": {
             "total": telemetry.cost_usd,
@@ -247,7 +247,7 @@ pub fn insert_run_telemetry_generation(
             "tool_count": telemetry.tool_count,
         },
     });
-    if per_call_usage && let Some(fields) = body.as_object_mut() {
+    if !has_uncovered_tokens && let Some(fields) = body.as_object_mut() {
         fields.remove("usageDetails");
     }
     if let Some(model) = &telemetry.model {
@@ -271,6 +271,34 @@ pub fn insert_run_telemetry_generation(
         }),
     );
     true
+}
+
+/// Token totals the batch's per-call generations already report.
+#[derive(Default)]
+struct CoveredUsage {
+    /// Prompt tokens including cache reads.
+    input: u64,
+    output: u64,
+    cached_input: u64,
+}
+
+fn covered_usage(batch: &[Value]) -> CoveredUsage {
+    let mut covered = CoveredUsage::default();
+    for event in batch {
+        if event["type"] != "generation-create" {
+            continue;
+        }
+        let usage = &event["body"]["usageDetails"];
+        let field = |key: &str| usage[key].as_u64().unwrap_or(0);
+        let cached = field("cache_read_input_tokens");
+        covered.input = covered
+            .input
+            .saturating_add(field("input"))
+            .saturating_add(cached);
+        covered.output = covered.output.saturating_add(field("output"));
+        covered.cached_input = covered.cached_input.saturating_add(cached);
+    }
+    covered
 }
 
 #[cfg(test)]
