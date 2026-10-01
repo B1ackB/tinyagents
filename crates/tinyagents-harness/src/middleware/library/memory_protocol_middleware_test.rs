@@ -147,9 +147,6 @@ async fn skill_md_update_does_not_close_the_memory_cycle() {
         None,
     )
     .await;
-    let mut run = AgentRun::new();
-    // Still pending → after_agent takes its warn path without erroring.
-    mw.after_agent(&mut ctx(), &(), &mut run).await.unwrap();
     // A following write reports drift, proving pending was not cleared.
     let next = run_cycle(&mw, "memory_store", json!({}), "again", None).await;
     assert!(
@@ -157,6 +154,9 @@ async fn skill_md_update_does_not_close_the_memory_cycle() {
         "SKILL.md update must not mask the stale MEMORY.md index: {}",
         result_text(&next)
     );
+    let mut run = AgentRun::new();
+    // Still pending → after_agent takes its warn path without erroring.
+    mw.after_agent(&mut ctx(), &(), &mut run).await.unwrap();
 }
 
 #[tokio::test]
