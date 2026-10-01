@@ -559,6 +559,11 @@ fn retained_rows_in_a_successor_generation_are_not_counted_twice() {
             meta("orchestrator", "root", Some(thread)),
         )
         .expect("next generation");
+    assert_eq!(
+        find_root_transcripts_for_thread(tmp.path(), thread).len(),
+        2,
+        "both generations are root transcripts of the thread"
+    );
     let after = thread_spend(tmp.path(), thread);
     assert_eq!(after.root.input_tokens, 4_000, "retained row counted twice");
     assert_eq!(after.root.turns, 1);
