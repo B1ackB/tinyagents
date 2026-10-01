@@ -338,7 +338,13 @@ async fn read_window_returns_a_bounded_slice_for_both_backends() {
     assert_eq!(memory.read_window("evts", 1, 2).await.unwrap(), expected);
     assert!(jsonl.read_window("evts", 1, 0).await.unwrap().is_empty());
     assert_eq!(jsonl.read_window("evts", 4, 10).await.unwrap().len(), 1);
-    assert!(jsonl.read_window("missing", 0, 10).await.unwrap().is_empty());
+    assert!(
+        jsonl
+            .read_window("missing", 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
