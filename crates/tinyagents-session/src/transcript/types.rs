@@ -2,6 +2,10 @@
 //! the model-context and display projections, and thread usage summaries.
 
 use serde::{Deserialize, Serialize};
+use tinytools_agent::dialect::{
+    ContentPart, NativeToolCall, encode_assistant_envelope, encode_tool_envelope, join_image_parts,
+    parse_assistant_envelope, parse_tool_envelope, split_image_parts,
+};
 
 /// A provider-neutral tool call as recorded in a durable transcript.
 ///
@@ -17,17 +21,61 @@ pub struct TranscriptToolCall {
     pub extra_content: Option<serde_json::Value>,
 }
 
+/// One ordered part of a user row that mixes text and images.
+///
+/// Serialized as `{"type":"text","text":..}` / `{"type":"image","url":..}`,
+/// which is also the on-disk `parts` shape of a typed `user_parts` line.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TranscriptPart {
+    /// Literal text, verbatim.
+    Text { text: String },
+    /// An image reference (a `data:` URI, an `http(s)` URL or a path).
+    Image { url: String },
+}
+
+/// The host-visible marker prefix an image part renders as in display text.
+const DISPLAY_IMAGE_PREFIX: &str = "[IMAGE:";
+
 /// A durable, provider-neutral message record.
 ///
 /// This intentionally is not an inference message: transcript persistence is
 /// an on-disk compatibility boundary, and callers adapt it to their runtime
 /// message dialect at the host boundary.
+///
+/// # Typed rows
+///
+/// `content` is always the row's **plain text**. Structure that a flat
+/// `{role, content}` row used to smuggle inside `content` as a string
+/// (a native tool-call envelope, a tool-result envelope, inline image
+/// markers) lives in typed fields instead:
+///
+/// - an `assistant` row that made native tool calls carries them in
+///   [`tool_calls`](Self::tool_calls), with the visible prose in `content`;
+/// - a `tool` row answering a native call carries that call's id in
+///   [`tool_call_id`](Self::tool_call_id), with the output in `content`;
+/// - a `user` row that mixes text and images carries the ordered
+///   [`parts`](Self::parts), with the concatenated text in `content`.
+///
+/// Rows read from older transcripts are normalized into this shape by the
+/// readers ([`Self::normalized`]); [`Self::legacy_content`] rebuilds the old
+/// string for the few places that must keep writing it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TranscriptMessage {
     #[serde(default)]
     pub id: Option<String>,
     pub role: String,
     pub content: String,
+    /// Native tool calls an `assistant` row made, in order. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<TranscriptToolCall>,
+    /// The call a `tool` row answers (native tool calling), if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// The ordered text and image parts of a `user` row that carries images.
+    /// `None` for a text-only row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<TranscriptPart>>,
     #[serde(default)]
     pub extra_metadata: Option<serde_json::Value>,
     #[serde(default)]
@@ -64,6 +112,9 @@ impl TranscriptMessage {
             id: None,
             role: role.into(),
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            parts: None,
             extra_metadata: None,
             cache_breakpoints: Vec::new(),
             turn_usage: None,
@@ -99,6 +150,202 @@ impl TranscriptMessage {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
+    }
+
+    /// An `assistant` row that made native tool calls; `text` is the visible
+    /// prose (possibly empty).
+    pub fn assistant_with_calls(
+        text: impl Into<String>,
+        tool_calls: Vec<TranscriptToolCall>,
+    ) -> Self {
+        let mut row = Self::assistant(text);
+        row.tool_calls = tool_calls;
+        row
+    }
+
+    /// A `tool` row carrying the output of the native call `tool_call_id`.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        let mut row = Self::tool(content);
+        row.tool_call_id = Some(tool_call_id.into());
+        row
+    }
+
+    /// A `user` row from ordered text/image parts. `content` becomes the
+    /// concatenated text parts. A parts list with no image is just text.
+    pub fn user_with_parts(parts: Vec<TranscriptPart>) -> Self {
+        let text = parts_text(&parts);
+        let mut row = Self::user(text);
+        if parts
+            .iter()
+            .any(|part| matches!(part, TranscriptPart::Image { .. }))
+        {
+            row.parts = Some(parts);
+        }
+        row
+    }
+
+    /// Builds a normalized row from a legacy `{role, content}` pair whose
+    /// `content` may carry a string-encoded envelope or image marker.
+    pub fn from_legacy(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::new(role, content).normalized()
+    }
+
+    /// Whether the row carries any typed structure.
+    #[must_use]
+    pub fn is_typed(&self) -> bool {
+        !self.tool_calls.is_empty() || self.tool_call_id.is_some() || self.parts.is_some()
+    }
+
+    /// Lifts a legacy string-encoded structure out of `content` into the typed
+    /// fields, leniently: an assistant native envelope (any JSON object with a
+    /// non-empty `tool_calls` array), a tool-result envelope (`tool_call_id`),
+    /// or a user row with `[OH_IMAGE:<url>]` markers. A row that already
+    /// carries typed fields, or whose `content` is none of those, is returned
+    /// unchanged. An envelope's own `reasoning_content` is not lifted (the host
+    /// keeps reasoning in `extra_metadata`).
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        if self.is_typed() {
+            return self;
+        }
+        match self.role.as_str() {
+            "assistant" => {
+                if let Some(envelope) = parse_assistant_envelope(&self.content) {
+                    self.content = envelope.content;
+                    self.tool_calls = envelope
+                        .tool_calls
+                        .into_iter()
+                        .map(TranscriptToolCall::from)
+                        .collect();
+                }
+            }
+            "tool" => {
+                if let Some((tool_call_id, content)) = parse_tool_envelope(&self.content) {
+                    self.content = content;
+                    self.tool_call_id = Some(tool_call_id);
+                }
+            }
+            "user" => {
+                let parts = split_image_parts(&self.content);
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, ContentPart::Image(_)))
+                {
+                    let parts: Vec<TranscriptPart> = parts
+                        .into_iter()
+                        .map(|part| match part {
+                            ContentPart::Text(text) => TranscriptPart::Text { text },
+                            ContentPart::Image(url) => TranscriptPart::Image { url },
+                        })
+                        .collect();
+                    self.content = parts_text(&parts);
+                    self.parts = Some(parts);
+                }
+            }
+            _ => {}
+        }
+        self
+    }
+
+    /// The string a flat `{role, content}` row would have held for this row:
+    /// the native envelope for an assistant row with calls (`content` as its
+    /// text), the tool-result envelope for a tool row with a call id, and
+    /// `[OH_IMAGE:<url>]` markers for a user row with parts. Everything else is
+    /// `content` as is.
+    ///
+    /// For the compatibility adapters that must keep writing the old string
+    /// (host files shared with older binaries, journals). A reader of the
+    /// result gets the typed row back through [`Self::normalized`].
+    #[must_use]
+    pub fn legacy_content(&self) -> String {
+        if self.role == "assistant" && !self.tool_calls.is_empty() {
+            let calls: Vec<NativeToolCall> =
+                self.tool_calls.iter().cloned().map(Into::into).collect();
+            return encode_assistant_envelope(Some(&self.content), &calls, None);
+        }
+        if self.role == "tool" {
+            if let Some(id) = self.tool_call_id.as_deref() {
+                return encode_tool_envelope(id, &self.content);
+            }
+        }
+        if let Some(parts) = self.parts.as_deref() {
+            let parts: Vec<ContentPart> = parts
+                .iter()
+                .map(|part| match part {
+                    TranscriptPart::Text { text } => ContentPart::Text(text.clone()),
+                    TranscriptPart::Image { url } => ContentPart::Image(url.clone()),
+                })
+                .collect();
+            return join_image_parts(&parts);
+        }
+        self.content.clone()
+    }
+
+    /// The row's text as a person reads it: `content`, except that a user row's
+    /// image parts render in place as `[IMAGE:<url>]`.
+    #[must_use]
+    pub fn display_content(&self) -> String {
+        let Some(parts) = self.parts.as_deref() else {
+            return self.content.clone();
+        };
+        let mut out = String::new();
+        for part in parts {
+            match part {
+                TranscriptPart::Text { text } => out.push_str(text),
+                TranscriptPart::Image { url } => {
+                    out.push_str(DISPLAY_IMAGE_PREFIX);
+                    out.push_str(url);
+                    out.push(']');
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether two rows are the same model-visible row: role, text, id and the
+    /// typed structure. Usage, metadata and correlation ids are excluded, as
+    /// they are enriched between the in-memory and the persisted row.
+    #[must_use]
+    pub fn same_row_as(&self, other: &Self) -> bool {
+        self.role == other.role
+            && self.content == other.content
+            && self.id == other.id
+            && self.tool_calls == other.tool_calls
+            && self.tool_call_id == other.tool_call_id
+            && self.parts == other.parts
+    }
+}
+
+/// The concatenated text parts.
+fn parts_text(parts: &[TranscriptPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            TranscriptPart::Text { text } => Some(text.as_str()),
+            TranscriptPart::Image { .. } => None,
+        })
+        .collect()
+}
+
+impl From<NativeToolCall> for TranscriptToolCall {
+    fn from(call: NativeToolCall) -> Self {
+        Self {
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+            extra_content: call.extra_content,
+        }
+    }
+}
+
+impl From<TranscriptToolCall> for NativeToolCall {
+    fn from(call: TranscriptToolCall) -> Self {
+        Self {
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+            extra_content: call.extra_content,
+        }
     }
 }
 

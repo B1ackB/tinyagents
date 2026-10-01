@@ -155,8 +155,8 @@ pub use thread_lookup::{
 };
 pub use types::{
     CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, MessageUsage,
-    SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta, TranscriptToolCall,
-    TurnUsage,
+    SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta, TranscriptPart,
+    TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,
