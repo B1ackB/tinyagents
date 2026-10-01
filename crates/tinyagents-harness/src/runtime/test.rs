@@ -1142,6 +1142,63 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
 }
 
+/// A model whose every call (streaming included) never answers.
+struct StalledModel;
+
+#[async_trait]
+impl ChatModel<()> for StalledModel {
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        std::future::pending().await
+    }
+}
+
+/// The public hosted stream sanitizes every terminal failure to one fixed
+/// string, so a host draining it cannot tell a wedged call from a provider
+/// failure. `invoke_agent_streaming` keeps the typed kind: a per-model-call
+/// ceiling that stops a stalled streaming call must come back as
+/// [`crate::runtime::HostedErrorKind::Timeout`].
+#[tokio::test]
+async fn invoke_agent_streaming_preserves_the_timeout_kind_of_a_stalled_model_call() {
+    let host = crate::host::HostCapabilities::new(
+        Arc::new(StaticContextComposer::empty()),
+        Arc::new(InMemoryDefinitionRegistry::new(vec![AgentDefinition::new(
+            "helper",
+            "Helper",
+            "test helper",
+        )])),
+        Arc::new(AllowAllSecurityGate),
+        Arc::new(FixedModelResolver::new(Arc::new(StalledModel))),
+    );
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.with_policy(RunPolicy {
+        limits: RunLimits::default().with_max_model_call_ms(Some(20)),
+        // One attempt: the point is the kind of the terminal error.
+        retry: RetryPolicy::none(),
+        ..RunPolicy::default()
+    });
+
+    let error = harness
+        .invoke_agent_streaming(
+            AgentInvocation::new(
+                host,
+                AgentTurnRequest::new(
+                    "helper",
+                    vec![tinyinference_llm::message::Message::user("go")],
+                ),
+                RunContext::new(RunConfig::new("streaming-call-timeout"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect_err("a stalled model call must hit the per-model-call ceiling");
+    assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(error.message, "hosted agent invocation timed out");
+}
+
 async fn assert_rebound_host_resolution_stops(
     token: Option<crate::CancellationToken>,
     policy_timeout: Option<u64>,
