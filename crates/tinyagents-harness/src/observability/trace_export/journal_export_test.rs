@@ -282,55 +282,77 @@ fn run_telemetry_inserts_aggregate_generation() {
     assert_eq!(body["metadata"]["tool_count"], 2);
     assert_eq!(body["metadata"]["provider"], "managed");
 
-    // Per-call usage present: the aggregate adds only the missing cost.
-    let with_usage = vec![obs(
-        1,
-        AgentEvent::ModelCompleted {
-            call_id: CallId::new("model-1"),
-            started_at_ms: Some(1_000),
-            usage: Some(Usage::new(100, 20)),
-            input: None,
-            output: None,
-        },
-    )];
-    let mut cost_only = client
-        .build_ingestion_batch(
-            trace_config_from_context(
-                &TraceContext::new("trace:req-1", None),
-                "production",
-                &BRAND,
-            ),
-            &with_usage,
+    let batch_for = |observations: &[AgentObservation]| {
+        client
+            .build_ingestion_batch(
+                trace_config_from_context(
+                    &TraceContext::new("trace:req-1", None),
+                    "production",
+                    &BRAND,
+                ),
+                observations,
+            )
+            .unwrap()
+    };
+    let model_call = |id: &str, usage: Option<Usage>| {
+        obs(
+            1,
+            AgentEvent::ModelCompleted {
+                call_id: CallId::new(id),
+                started_at_ms: Some(1_000),
+                usage,
+                input: None,
+                output: None,
+            },
         )
-        .unwrap();
+    };
+
+    // Per-call usage covers the run: the aggregate adds only the missing cost.
+    let with_usage = vec![model_call("model-1", Some(Usage::new(100, 20)))];
+    let covered_totals = RunTotals {
+        input_tokens: 100,
+        output_tokens: 20,
+        cached_input_tokens: 0,
+        ..telemetry.clone()
+    };
+    let mut cost_only = batch_for(&with_usage);
     assert!(insert_run_telemetry_generation(
         &mut cost_only,
-        Some(&telemetry),
+        Some(&covered_totals),
         &BRAND
     ));
     let body = &cost_only["batch"][1]["body"];
     assert_eq!(body["name"], "run.total");
     assert!(body.get("usageDetails").is_none(), "tokens counted twice");
     assert_eq!(body["costDetails"]["total"], 0.0123);
-    let mut no_cost = client
-        .build_ingestion_batch(
-            trace_config_from_context(
-                &TraceContext::new("trace:req-1", None),
-                "production",
-                &BRAND,
-            ),
-            &with_usage,
-        )
-        .unwrap();
+    let mut no_cost = batch_for(&with_usage);
     let zero_cost = RunTotals {
         cost_usd: 0.0,
-        ..telemetry.clone()
+        ..covered_totals.clone()
     };
     assert!(!insert_run_telemetry_generation(
         &mut no_cost,
         Some(&zero_cost),
         &BRAND
     ));
+
+    // One call reported usage and one did not: only the uncovered remainder
+    // goes on the aggregate.
+    let partial = vec![
+        model_call("model-1", Some(Usage::new(100, 20))),
+        model_call("model-2", None),
+    ];
+    let mut remainder = batch_for(&partial);
+    assert!(insert_run_telemetry_generation(
+        &mut remainder,
+        Some(&telemetry),
+        &BRAND
+    ));
+    let usage = &remainder["batch"][1]["body"]["usageDetails"];
+    assert_eq!(usage["input"], 0);
+    assert_eq!(usage["cache_read_input_tokens"], 20);
+    assert_eq!(usage["output"], 10);
+    assert_eq!(usage["total"], 30);
 
     let mut already_charged = client
         .build_ingestion_batch(
