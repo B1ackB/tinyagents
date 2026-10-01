@@ -5,7 +5,7 @@
 //! each token exactly once. Pricing (re-auditing cost at current rates) is the
 //! host's concern and stays out of here.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -95,31 +95,20 @@ fn spend_from_usages<'a>(
     spend
 }
 
-/// Identity of one usage record. A compaction record re-carries the usage of
-/// the messages it keeps, so the same record can appear on an appended line
-/// and again inside a later replacement; it must count once.
-fn usage_key(usage: &TurnUsage) -> String {
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
-        usage.ts,
-        usage.iteration,
-        usage.provider,
-        usage.model,
-        usage.usage.input,
-        usage.usage.output,
-        usage.usage.cached_input,
-        usage.usage.cost_usd.to_bits(),
-    )
-}
-
 /// Spend of one transcript file over its whole append history.
 ///
 /// Compaction never deletes lines: the earlier rows (and their usage) stay in
 /// the file, and the compaction record carries the reduced context. Reading
 /// the model-context view would drop every usage record a compaction summarised
-/// away, so this walks every appended message line and every compaction
-/// replacement, counting each distinct usage record once. Interrupted partials
-/// carry no spend and are skipped.
+/// away, so this walks the whole log instead:
+///
+/// - every appended message line is a distinct durable append and always
+///   counts (interrupted partials carry no spend and are skipped);
+/// - a compaction replacement re-carries the usage of the messages it keeps,
+///   so a replacement record counts only when no earlier line or replacement
+///   in this file already carried that same record. That is how the turn that
+///   wrote the compaction (whose new answer exists only inside the
+///   replacement) is counted, without counting the kept history twice.
 fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
     let display = match read_transcript_display(path) {
         Ok(display) => display,
@@ -131,26 +120,24 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
             return None;
         }
     };
-    let mut seen = HashSet::new();
-    let usages: Vec<&TurnUsage> = display
-        .records
-        .iter()
-        .flat_map(|record| -> Vec<Option<&TurnUsage>> {
-            match record {
-                DisplayRecord::Message(message) if !message.interrupted => {
-                    vec![message.message.turn_usage.as_ref()]
-                }
-                DisplayRecord::Message(_) => Vec::new(),
-                DisplayRecord::Compaction(marker) => marker
+    let mut usages: Vec<&TurnUsage> = Vec::new();
+    for record in &display.records {
+        match record {
+            DisplayRecord::Message(message) if !message.interrupted => {
+                usages.extend(message.message.turn_usage.as_ref());
+            }
+            DisplayRecord::Message(_) => {}
+            DisplayRecord::Compaction(marker) => {
+                let fresh: Vec<&TurnUsage> = marker
                     .replacement
                     .iter()
-                    .map(|kept| kept.message.turn_usage.as_ref())
-                    .collect(),
+                    .filter_map(|kept| kept.message.turn_usage.as_ref())
+                    .filter(|usage| !usages.contains(usage))
+                    .collect();
+                usages.extend(fresh);
             }
-        })
-        .flatten()
-        .filter(|usage| seen.insert(usage_key(usage)))
-        .collect();
+        }
+    }
     let spend = spend_from_usages(usages, display.meta.model.as_ref());
     Some((spend, display.meta))
 }

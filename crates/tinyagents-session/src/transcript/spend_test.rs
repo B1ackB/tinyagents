@@ -405,3 +405,20 @@ fn compacted_transcript_keeps_pre_compaction_spend_and_counts_each_record_once()
     assert_eq!(spend.root.turns, 3);
     assert_eq!(spend.root.last_input_tokens, 30_000);
 }
+
+/// Two independent turns can record identical usage (same numbers, same
+/// timestamp); each appended line is its own spend and both count.
+#[test]
+fn identical_usage_on_separate_appends_counts_each_turn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-twins";
+    write_transcript_turns(
+        tmp.path(),
+        "1790000005_orchestrator_twins",
+        &meta("orchestrator", "root", Some(thread)),
+        &[(1_000, 10, 0), (1_000, 10, 0)],
+    );
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 2_000);
+    assert_eq!(spend.root.turns, 2);
+}
