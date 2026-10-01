@@ -391,7 +391,7 @@ impl<T: QueuedMessage> Drop for SteeringForwarderGuard<T> {
             .map(|(text, _lane, id)| (Some(id.clone()), Some(text.clone())))
             .unwrap_or((None, None));
 
-        // `RunQueue::push` is async (tokio `Mutex`); `Drop` is synchronous. Push
+        // `RunQueue` is async (tokio `Mutex`); `Drop` is synchronous. Put
         // the recovered steers back on a detached task so they land in the
         // session queue and become the next turn's input. The forwarder poll
         // loop keeps re-draining the queue, so even if the requeue completes
@@ -400,11 +400,19 @@ impl<T: QueuedMessage> Drop for SteeringForwarderGuard<T> {
             Ok(rt) => {
                 let label = thread_label.clone();
                 rt.spawn(async move {
+                    // These were delivered before anything still queued, so
+                    // they go back at the front of their lane, in order.
+                    let mut steers = Vec::new();
+                    let mut collects = Vec::new();
                     for (text, lane, id) in requeue_items {
-                        queue
-                            .push(lane, T::requeued(id, text, &label, now_ms()))
-                            .await;
+                        let item = T::requeued(id, text, &label, now_ms());
+                        match lane {
+                            QueueLane::Collect => collects.push(item),
+                            _ => steers.push(item),
+                        }
                     }
+                    queue.requeue_front(QueueLane::Steer, steers).await;
+                    queue.requeue_front(QueueLane::Collect, collects).await;
                 });
             }
             Err(_) => {
