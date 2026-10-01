@@ -48,7 +48,10 @@ struct InMemoryTranscriptState {
 /// its typed form on read, so the in-memory logical view does the same on
 /// write and the two backends agree.
 fn normalized_rows(rows: &[TranscriptMessage]) -> Vec<TranscriptMessage> {
-    rows.iter().cloned().map(TranscriptMessage::normalized).collect()
+    rows.iter()
+        .cloned()
+        .map(TranscriptMessage::normalized)
+        .collect()
 }
 
 impl InMemoryTranscriptHistory {

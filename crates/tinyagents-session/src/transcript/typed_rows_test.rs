@@ -373,3 +373,92 @@ fn display_and_legacy_text_of_typed_rows() {
     assert!(text_only.parts.is_none());
     assert_eq!(text_only.content, "hello");
 }
+
+#[test]
+fn non_canonical_legacy_rows_survive_a_read_then_rewrite_byte_for_byte() {
+    let dir = tempdir().unwrap();
+    let path = resolve_keyed_transcript_path(dir.path(), "rewrite").unwrap();
+    // Envelope with embedded reasoning, and a tool result with an extra key:
+    // neither is canonical, so a typed v2 rewrite would drop those fields.
+    let assistant = encode_assistant_envelope(Some("x"), &[call("c1", None)], Some("why"));
+    let tool = r#"{"tool_call_id":"c1","content":"a","name":"n"}"#.to_string();
+    let rows = vec![
+        TranscriptMessage::user("go"),
+        TranscriptMessage::assistant(assistant.clone()),
+        TranscriptMessage::tool(tool.clone()).with_id("c1"),
+    ];
+    write_transcript(&path, &rows, &meta(), None).unwrap();
+
+    let read = read_transcript(&path).unwrap();
+    assert!(read.messages[1].is_typed(), "lifted on read");
+    let rewritten = resolve_keyed_transcript_path(dir.path(), "rewrite-2").unwrap();
+    write_transcript(&rewritten, &read.messages, &meta(), None).unwrap();
+
+    let lines = message_lines(&rewritten);
+    assert_eq!(lines[1]["content"], assistant.as_str());
+    assert_eq!(lines[2]["content"], tool.as_str());
+    assert!(lines[1].get("v").is_none() && lines[2].get("v").is_none());
+
+    // An edited lifted row is stored typed, from its current fields.
+    let mut edited = read.messages.clone();
+    edited[2].content = "changed".into();
+    write_transcript(&rewritten, &edited, &meta(), None).unwrap();
+    let lines = message_lines(&rewritten);
+    assert_eq!(lines[2]["shape"], "tool_result");
+    assert_eq!(lines[2]["content"], "changed");
+}
+
+#[test]
+fn legacy_and_lifted_rows_are_the_same_row() {
+    let legacy = TranscriptMessage::assistant(encode_assistant_envelope(
+        Some("on it"),
+        &[call("c1", None)],
+        None,
+    ));
+    let lifted = legacy.clone().normalized();
+    assert!(legacy.same_row_as(&lifted));
+    assert!(lifted.same_row_as(&legacy));
+    assert!(!legacy.same_row_as(&TranscriptMessage::assistant("on it")));
+}
+
+#[test]
+fn the_in_memory_history_returns_lifted_rows_like_the_file_backend() {
+    use crate::testkit::InMemoryTranscriptHistory;
+    let envelope = encode_tool_envelope("c1", "ok");
+    let history = InMemoryTranscriptHistory::new("lifted", meta());
+    history
+        .append(TranscriptMessage::tool(envelope.clone()))
+        .unwrap();
+    history
+        .replace(&[TranscriptMessage::tool(envelope.clone())])
+        .unwrap();
+    let rows = history.messages().unwrap();
+    assert_eq!(rows[0].content, "ok");
+    assert_eq!(rows[0].tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(rows[0].legacy_content(), envelope);
+}
+
+#[test]
+fn plain_journal_message_keeps_the_legacy_string_form_of_typed_rows() {
+    use crate::transcript::import::plain_journal_message;
+    let typed = TranscriptMessage::assistant_with_calls(
+        "on it",
+        vec![TranscriptToolCall::from(call("c1", None))],
+    );
+    let journal = plain_journal_message(typed.clone());
+    assert_eq!(journal.content, typed.legacy_content());
+    // The journal string reads back as the original typed row.
+    let back = TranscriptMessage::from_legacy("assistant", journal.content);
+    assert!(back.same_row_as(&typed));
+    let image = TranscriptMessage::user_with_parts(vec![
+        TranscriptPart::Text {
+            text: "see ".into(),
+        },
+        TranscriptPart::Image {
+            url: "data:image/png;base64,AA".into(),
+        },
+    ]);
+    let journal = plain_journal_message(image.clone());
+    assert!(journal.content.contains("[OH_IMAGE:"));
+    assert!(TranscriptMessage::from_legacy("user", journal.content).same_row_as(&image));
+}
