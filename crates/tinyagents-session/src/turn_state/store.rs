@@ -113,6 +113,30 @@ impl TurnStateStore {
         Ok(())
     }
 
+    /// Write `state` unless its turn's stored snapshot is already `Completed`,
+    /// as one operation under the store lock. Returns `Ok(true)` when it wrote
+    /// and `Ok(false)` when a completed snapshot was kept.
+    ///
+    /// A snapshot that exists but cannot be read is an error, not "not
+    /// completed": the caller must not overwrite an outcome it cannot see.
+    pub fn put_unless_completed(&self, state: &TurnState) -> Result<bool, String> {
+        let _guard = TURN_STATE_LOCK.lock();
+        self.migrate_thread_locked(&state.thread_id);
+        let path = self.turn_path(&state.thread_id, &state.request_id);
+        if path.exists() && read_snapshot(&path)?.lifecycle == TurnLifecycle::Completed {
+            debug!(
+                "{LOG_PREFIX} kept completed snapshot thread={} request={} (conditional write skipped)",
+                state.thread_id, state.request_id
+            );
+            return Ok(false);
+        }
+        self.write_turn_file(state)?;
+        if state.lifecycle == TurnLifecycle::Completed {
+            self.prune_completed_locked(&state.thread_id);
+        }
+        Ok(true)
+    }
+
     /// Return the latest turn for `thread_id`, or `None` if none exists.
     /// "Latest" is the turn with the greatest `started_at` (ties broken by
     /// `updated_at`) — the in-flight or most-recent turn.

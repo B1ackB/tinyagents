@@ -20,30 +20,31 @@ impl TurnStateMirror {
         // for a cached per-thread session that waits for the *next* turn. If the
         // driver already recorded a terminal outcome, keep it: a late blind
         // `Interrupted` here would raise a retry banner on a turn that actually
-        // succeeded and whose reply was delivered.
-        let already_completed = matches!(
-            self.store
-                .get_turn(&self.state.thread_id, &self.state.request_id)
-                .ok()
-                .flatten()
-                .map(|snapshot| snapshot.lifecycle),
-            Some(TurnLifecycle::Completed)
-        );
-        self.state.lifecycle = if already_completed {
-            self.state.phase = None;
-            TurnLifecycle::Completed
-        } else {
-            TurnLifecycle::Interrupted
-        };
+        // succeeded and whose reply was delivered. The completion check and the
+        // `Interrupted` write are one store operation, so a settle landing in
+        // between cannot be overwritten.
+        self.state.lifecycle = TurnLifecycle::Interrupted;
         self.state.active_tool = None;
         self.state.active_subagent = None;
         self.state.updated_at = chrono::Utc::now().to_rfc3339();
-        self.flush();
-        // Only a genuinely interrupted turn has a partial answer to carry over;
-        // a settled turn's reply was already delivered and persisted, and
-        // appending it again would duplicate it in the session transcript.
-        if !already_completed {
-            self.persist_interrupted_partial();
+        match self.store.put_unless_completed(&self.state) {
+            // Only a genuinely interrupted turn has a partial answer to carry
+            // over.
+            Ok(true) => self.persist_interrupted_partial(),
+            // A settled turn's reply was already delivered and persisted;
+            // appending it again would duplicate it in the session transcript.
+            Ok(false) => tracing::debug!(
+                "{MIRROR_LOG_PREFIX} turn already completed thread={} request={} — keeping it",
+                self.state.thread_id,
+                self.state.request_id
+            ),
+            // The stored outcome cannot be read, so it cannot be ruled out that
+            // the turn completed: neither overwrite it nor append a partial.
+            Err(err) => tracing::warn!(
+                "{MIRROR_LOG_PREFIX} could not finalize turn thread={} request={}: {err} — leaving the stored snapshot as is",
+                self.state.thread_id,
+                self.state.request_id
+            ),
         }
     }
 
