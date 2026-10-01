@@ -332,7 +332,7 @@ fn entry_to_message(kind: &EntryKind) -> Option<Message> {
 /// bare transcript row), is carried through as `Message::Custom` tagged
 /// `legacy:{role}` so no content is silently dropped.
 fn transcript_message_to_message(message: &crate::transcript::TranscriptMessage) -> Message {
-    let text = message.content.clone();
+    let text = message.legacy_content();
     match message.role.as_str() {
         "system" => Message::System(SystemMessage {
             content: vec![ContentBlock::Text(text)],
