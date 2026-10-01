@@ -130,3 +130,44 @@ async fn managed_path_only_accepts_files_inside_the_stash() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&outside);
 }
+
+#[tokio::test]
+async fn write_rejects_ids_that_are_not_a_single_safe_component() {
+    let dir = tmp("ids");
+    let s = stash(&dir, u64::MAX, Duration::from_secs(3600));
+    for bad in ["", "../victim", "a/b", "a.b", "..", "a\\b"] {
+        assert!(s.write(bad, TINY_PNG).await.is_err(), "accepted {bad:?}");
+    }
+    assert!(!dir.parent().unwrap().join("victim.png").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn oversized_attachment_is_rejected_without_evicting_existing_files() {
+    let dir = tmp("oversize");
+    std::fs::create_dir_all(&dir).unwrap();
+    let existing = dir.join("old.png");
+    std::fs::write(&existing, b"x").unwrap();
+    // The decoded TINY_PNG is larger than this 4-byte cap.
+    let s = stash(&dir, 4, Duration::from_secs(3600));
+    assert!(s.write("big", TINY_PNG).await.is_err());
+    assert!(existing.exists(), "existing attachment was evicted");
+    assert!(!dir.join("big.png").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn concurrent_writes_of_one_id_both_succeed() {
+    let dir = tmp("concurrent");
+    let s = stash(&dir, u64::MAX, Duration::from_secs(3600));
+    let (a, b) = tokio::join!(s.write("same", TINY_PNG), s.write("same", TINY_PNG));
+    assert_eq!(a.unwrap(), dir.join("same.png"));
+    assert_eq!(b.unwrap(), dir.join("same.png"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
