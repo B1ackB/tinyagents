@@ -7,13 +7,12 @@ use super::types::{
 };
 use super::types::{ToolFailure, TranscriptMessage, TranscriptToolCall};
 use anyhow::{Context, Result};
-use tinytools_agent::dialect::{
-    ContentPart, NativeToolCall, encode_assistant_envelope, encode_tool_envelope,
-    join_image_parts, parse_canonical_assistant_envelope, parse_canonical_tool_envelope,
-    split_image_parts,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tinytools_agent::dialect::{
+    ContentPart, NativeToolCall, encode_assistant_envelope, encode_tool_envelope, join_image_parts,
+    parse_canonical_assistant_envelope, parse_canonical_tool_envelope, split_image_parts,
+};
 
 /// Discriminator value for a compaction record's `kind` field.
 pub(super) const COMPACTION_KIND: &str = "compaction";
@@ -410,7 +409,10 @@ fn typed_form(msg: &TranscriptMessage) -> Option<TypedForm> {
         }
         "user" => {
             let parts = split_image_parts(&msg.content);
-            if !parts.iter().any(|part| matches!(part, ContentPart::Image(_))) {
+            if !parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image(_)))
+            {
                 return None;
             }
             let text = parts
