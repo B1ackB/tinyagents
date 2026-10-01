@@ -63,7 +63,7 @@ fired, and it is `None` for every other kind:
 
 | `timeout_bound` | Meaning | Host handling |
 | --- | --- | --- |
-| `Some(TimeoutBound::PerModelCall)` | One call exceeded the per-model-call ceiling (`RunLimits::max_model_call_ms`), including a wedged host model resolution or a `TimeoutMiddleware` expiry. The run still had time. | Retryable, but only safely when the run had no external effects. If tools already ran, continue from `HostedError::run`'s partial transcript (with the host's idempotency/effect reconciliation) instead of re-issuing the original turn, which could repeat a non-idempotent tool. |
+| `Some(TimeoutBound::PerModelCall)` | One call exceeded the per-model-call ceiling (`RunLimits::max_model_call_ms`), including a wedged host model resolution. A `TimeoutMiddleware` expiry is reported as `Run`. The run still had time. | Retryable, but only safely when the run had no external effects. If tools already ran, continue from `HostedError::run`'s partial transcript (with the host's idempotency/effect reconciliation) instead of re-issuing the original turn, which could repeat a non-idempotent tool. |
 | `Some(TimeoutBound::Run)` | The run's own timeout or deadline was exhausted. | Terminal for this run; do not retry it as-is. |
 
 ```rust,no_run

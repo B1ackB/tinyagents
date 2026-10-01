@@ -265,8 +265,7 @@ async fn timeout_middleware_times_out_slow_call() {
         .run_wrapped_model(&mut ctx, &(), ModelRequest::default(), &SlowBase)
         .await
         .expect_err("slow call should time out");
-    // Only the wrapped call expired, so it is the retryable per-call timeout.
-    assert!(matches!(err, TinyAgentsError::CallTimeout(_)));
+    assert!(matches!(err, TinyAgentsError::Timeout(_)));
 }
 
 // ── ModelFallbackMiddleware ─────────────────────────────────────────────────
