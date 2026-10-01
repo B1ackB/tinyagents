@@ -40,5 +40,6 @@ store lives, progress projection and policy.
   ignored. An awaiting run stores its question through
   `TaskStore::mark_awaiting_with_question`, so a restarted process can still
   surface the clarification text.
+- `spawn_status_watcher` retries a failed terminal write a bounded number of times; call `record_status` directly to observe persistence failures.
 - A run the process never registered (for example after a restart) resolves
   from its durable record, with `iterations` reported as 0.
