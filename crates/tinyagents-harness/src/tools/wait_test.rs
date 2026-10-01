@@ -66,6 +66,24 @@ fn wait_loop_tick_at_max_iteration_does_not_overflow() {
     assert!(output.contains(&format!("\"iteration\":{}", u64::MAX)));
 }
 
+#[test]
+fn wait_loop_tick_omits_an_absent_loop_key() {
+    let request = parse_wait_request(&json!({ "message": "poll", "duration_ms": 10 })).unwrap();
+    let output = format_wait_tick(&request, true);
+    let json = output
+        .split("[wait_tick]\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[/wait_tick]").next())
+        .expect("wait_tick payload");
+    let payload: serde_json::Value = serde_json::from_str(json).unwrap();
+    let arguments = &payload["instructions"]["repeat"]["arguments"];
+    assert!(arguments.is_object());
+    assert!(
+        arguments.get("loop_key").is_none(),
+        "the repeat call must not carry a null loop_key: {arguments}"
+    );
+}
+
 #[tokio::test]
 async fn wait_execute_returns_callback_message() {
     let res = WaitTool::new()

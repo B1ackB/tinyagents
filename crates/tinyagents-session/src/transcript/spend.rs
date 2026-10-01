@@ -111,7 +111,16 @@ fn spend_from_usages<'a>(
 ///   `request_id` is the compaction's and no appended line already counted
 ///   spend under that `request_id`. A compaction written without a
 ///   `request_id` falls back to the usage on its final assistant row.
-fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
+///
+/// `earlier_requests` holds the `request_id`s that earlier generation files of
+/// the same conversation already counted. A successor generation starts by
+/// writing the rows it retained from its parent, and those rows keep their
+/// original `request_id`, so a row whose `request_id` is in that set is
+/// carried history, not new spend. The ids this file counts are added to it.
+fn file_spend(
+    path: &Path,
+    earlier_requests: &mut HashSet<String>,
+) -> Option<(TranscriptSpend, TranscriptMeta)> {
     let display = match read_transcript_display(path) {
         Ok(display) => display,
         Err(err) => {
@@ -130,7 +139,11 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
     for record in &display.records {
         match record {
             DisplayRecord::Message(message) if !message.interrupted => {
-                if let Some(usage) = message.message.turn_usage.as_ref() {
+                let carried = message
+                    .request_id
+                    .as_deref()
+                    .is_some_and(|request_id| earlier_requests.contains(request_id));
+                if !carried && let Some(usage) = message.message.turn_usage.as_ref() {
                     usages.push(usage);
                     if let Some(request_id) = message.request_id.as_deref() {
                         counted_requests.insert(request_id);
@@ -141,7 +154,9 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
             DisplayRecord::Message(_) => {}
             DisplayRecord::Compaction(marker) => {
                 match marker.request_id.as_deref() {
-                    Some(turn) if !counted_requests.contains(turn) => {
+                    Some(turn)
+                        if !counted_requests.contains(turn) && !earlier_requests.contains(turn) =>
+                    {
                         let fresh: Vec<&TurnUsage> = marker
                             .replacement
                             .iter()
@@ -180,6 +195,7 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
         }
     }
     let spend = spend_from_usages(usages, display.meta.model.as_ref());
+    earlier_requests.extend(counted_requests.into_iter().map(str::to_owned));
     Some((spend, display.meta))
 }
 
@@ -246,9 +262,12 @@ pub struct ThreadSpend {
 pub fn thread_spend(workspace_dir: &Path, thread_id: &str) -> ThreadSpend {
     let mut out = ThreadSpend::default();
     let roots = find_root_transcripts_for_thread(workspace_dir, thread_id);
+    // Shared across the thread's root files (oldest first), so rows a later
+    // generation carried over from an earlier one are not counted twice.
+    let mut root_requests = HashSet::new();
     for root in &roots {
         out.found_transcript = true;
-        if let Some((spend, meta)) = file_spend(root) {
+        if let Some((spend, meta)) = file_spend(root, &mut root_requests) {
             out.root.input_tokens = out.root.input_tokens.saturating_add(spend.input_tokens);
             out.root.output_tokens = out.root.output_tokens.saturating_add(spend.output_tokens);
             out.root.cached_input_tokens = out
@@ -272,7 +291,7 @@ pub fn thread_spend(workspace_dir: &Path, thread_id: &str) -> ThreadSpend {
             out.updated = Some(meta.updated);
         }
         for child in descendant_transcripts(root) {
-            let Some((spend, child_meta)) = file_spend(&child) else {
+            let Some((spend, child_meta)) = file_spend(&child, &mut HashSet::new()) else {
                 continue;
             };
             out.found_transcript = true;
