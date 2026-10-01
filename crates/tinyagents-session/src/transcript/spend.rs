@@ -5,7 +5,7 @@
 //! each token exactly once. Pricing (re-auditing cost at current rates) is the
 //! host's concern and stays out of here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -104,11 +104,12 @@ fn spend_from_usages<'a>(
 ///
 /// - every appended message line is a distinct durable append and always
 ///   counts (interrupted partials carry no spend and are skipped);
-/// - a compaction replacement re-carries the usage of the messages it keeps,
-///   so a replacement record counts only when no earlier line or replacement
-///   in this file already carried that same record. That is how the turn that
-///   wrote the compaction (whose new answer exists only inside the
-///   replacement) is counted, without counting the kept history twice.
+/// - a compaction replacement mixes kept history with the rows of the turn
+///   that wrote it. Kept rows were read back from the transcript and keep
+///   their original `request_id`; the turn's own rows take the compaction's
+///   `request_id`. So a replacement row's usage counts only when its
+///   `request_id` is the compaction's and no appended line already counted
+///   spend under that `request_id`.
 fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
     let display = match read_transcript_display(path) {
         Ok(display) => display,
@@ -121,19 +122,34 @@ fn file_spend(path: &Path) -> Option<(TranscriptSpend, TranscriptMeta)> {
         }
     };
     let mut usages: Vec<&TurnUsage> = Vec::new();
+    let mut counted_requests: HashSet<&str> = HashSet::new();
     for record in &display.records {
         match record {
             DisplayRecord::Message(message) if !message.interrupted => {
-                usages.extend(message.message.turn_usage.as_ref());
+                if let Some(usage) = message.message.turn_usage.as_ref() {
+                    usages.push(usage);
+                    if let Some(request_id) = message.request_id.as_deref() {
+                        counted_requests.insert(request_id);
+                    }
+                }
             }
             DisplayRecord::Message(_) => {}
             DisplayRecord::Compaction(marker) => {
+                let Some(turn) = marker.request_id.as_deref() else {
+                    continue;
+                };
+                if counted_requests.contains(turn) {
+                    continue;
+                }
                 let fresh: Vec<&TurnUsage> = marker
                     .replacement
                     .iter()
-                    .filter_map(|kept| kept.message.turn_usage.as_ref())
-                    .filter(|usage| !usages.contains(usage))
+                    .filter(|row| row.request_id.as_deref() == Some(turn))
+                    .filter_map(|row| row.message.turn_usage.as_ref())
                     .collect();
+                if !fresh.is_empty() {
+                    counted_requests.insert(turn);
+                }
                 usages.extend(fresh);
             }
         }
