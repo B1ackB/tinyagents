@@ -9,12 +9,63 @@ use super::types::{ToolFailure, TranscriptMessage, TranscriptToolCall};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tinytools_agent::dialect::{
+    ContentPart, NativeToolCall, encode_assistant_envelope, encode_tool_envelope, join_image_parts,
+    parse_canonical_assistant_envelope, parse_canonical_tool_envelope, split_image_parts,
+};
 
 /// Discriminator value for a compaction record's `kind` field.
 pub(super) const COMPACTION_KIND: &str = "compaction";
 
 /// Discriminator value for a tool-declaration record's `kind` field.
 pub(super) const TOOLS_KIND: &str = "tools";
+
+/// `v` of a typed row (see [`MessageLine::row_version`]).
+pub(super) const TYPED_ROW_VERSION: u32 = 2;
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// The structure a typed row stores as fields instead of inside `content`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TypedShape {
+    /// Assistant row that made native tool calls: `content` is the visible
+    /// text, `tool_calls` the calls.
+    AssistantCalls,
+    /// Native tool result: `content` is the output, `tool_call_id` the call.
+    ToolResult,
+    /// User row with inline images: `parts` is the ordered text/image list.
+    UserParts,
+}
+
+impl TypedShape {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AssistantCalls => "assistant_calls",
+            Self::ToolResult => "tool_result",
+            Self::UserParts => "user_parts",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "assistant_calls" => Some(Self::AssistantCalls),
+            "tool_result" => Some(Self::ToolResult),
+            "user_parts" => Some(Self::UserParts),
+            _ => None,
+        }
+    }
+}
+
+/// One part of a `user_parts` row.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum TypedPart {
+    Text { text: String },
+    Image { url: String },
+}
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
@@ -115,9 +166,40 @@ pub(super) struct MessageLine {
     /// the error output). Present only alongside `failure: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) failure_detail: Option<String>,
+    /// Row form marker. Absent (`0`) on every row written before typed rows;
+    /// [`TYPED_ROW_VERSION`] on a row whose tool-call / tool-result / image
+    /// structure is stored as fields rather than encoded into `content`.
+    #[serde(default, rename = "v", skip_serializing_if = "is_zero")]
+    pub(super) row_version: u32,
+    /// Which structure a typed row carries (`assistant_calls`, `tool_result`
+    /// or `user_parts`); see [`TypedShape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) shape: Option<String>,
+    /// The answered call id of a `tool_result` row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) tool_call_id: Option<String>,
+    /// The ordered text/image parts of a `user_parts` row. A part kind this
+    /// reader does not know (a future typed-row version) reads as `None`, so
+    /// the row keeps its stored `content` instead of being dropped.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_parts"
+    )]
+    pub(super) parts: Option<Vec<TypedPart>>,
     /// Absorb any unknown fields so forward-compat reads don't error.
     #[serde(flatten)]
     pub(super) _extra: HashMap<String, serde_json::Value>,
+}
+
+/// Deserialises `parts`, mapping any shape this reader cannot decode (an
+/// unknown part variant) to `None` rather than failing the whole line.
+fn lenient_parts<'de, D>(deserializer: D) -> Result<Option<Vec<TypedPart>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// A compaction record: `{"kind":"compaction","replacement":[…]}`.
@@ -255,10 +337,15 @@ pub(super) fn build_message_line(
         .and_then(|value| value.get("tool_calls"))
         .and_then(|value| serde_json::from_value::<Vec<TranscriptToolCall>>(value.clone()).ok())
         .filter(|calls| !calls.is_empty());
+    let typed = typed_form(msg);
+    let (content, tool_calls_override) = match &typed {
+        Some(typed) => (typed.content.clone(), typed.tool_calls.clone()),
+        None => (msg.content.clone(), None),
+    };
     MessageLine {
         id: msg.id.clone(),
         role: msg.role.clone(),
-        content: msg.content.clone(),
+        content,
         extra_metadata,
         cache_breakpoints: msg.cache_breakpoints.clone(),
         provider: assistant_usage.map(|tu| tu.provider.clone()),
@@ -267,7 +354,7 @@ pub(super) fn build_message_line(
         reasoning_content: message_reasoning
             .or(envelope_reasoning)
             .or_else(|| assistant_usage.and_then(|tu| tu.reasoning_content.clone())),
-        tool_calls: envelope_tool_calls.or_else(|| {
+        tool_calls: tool_calls_override.or(envelope_tool_calls).or_else(|| {
             assistant_usage.and_then(|tu| {
                 if tu.tool_calls.is_empty() {
                     None
@@ -282,8 +369,159 @@ pub(super) fn build_message_line(
         interrupted,
         failure,
         failure_detail,
+        row_version: typed.as_ref().map_or(0, |_| TYPED_ROW_VERSION),
+        shape: typed.as_ref().map(|typed| typed.shape.as_str().to_string()),
+        tool_call_id: typed.as_ref().and_then(|typed| typed.tool_call_id.clone()),
+        parts: typed.and_then(|typed| typed.parts),
         _extra: HashMap::new(),
     }
+}
+
+/// The typed storage form of one row.
+struct TypedForm {
+    shape: TypedShape,
+    content: String,
+    tool_calls: Option<Vec<TranscriptToolCall>>,
+    tool_call_id: Option<String>,
+    parts: Option<Vec<TypedPart>>,
+}
+
+/// Lift a row's string-encoded structure into typed fields, **only** when
+/// [`rebuild_content`] reproduces the row's `content` byte for byte. Anything
+/// that is not exactly a canonical native envelope or marker string stays a
+/// legacy row, so a read can never return a different string than was written.
+fn typed_form(msg: &TranscriptMessage) -> Option<TypedForm> {
+    let form = match msg.role.as_str() {
+        "assistant" => {
+            let envelope = parse_canonical_assistant_envelope(&msg.content)?;
+            TypedForm {
+                shape: TypedShape::AssistantCalls,
+                content: envelope.content,
+                tool_calls: Some(
+                    envelope
+                        .tool_calls
+                        .into_iter()
+                        .map(|call| TranscriptToolCall {
+                            id: call.id,
+                            name: call.name,
+                            arguments: call.arguments,
+                            extra_content: call.extra_content,
+                        })
+                        .collect(),
+                ),
+                tool_call_id: None,
+                parts: None,
+            }
+        }
+        "tool" => {
+            let (tool_call_id, content) = parse_canonical_tool_envelope(&msg.content)?;
+            TypedForm {
+                shape: TypedShape::ToolResult,
+                content,
+                tool_calls: None,
+                tool_call_id: Some(tool_call_id),
+                parts: None,
+            }
+        }
+        "user" => {
+            let parts = split_image_parts(&msg.content);
+            if !parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image(_)))
+            {
+                return None;
+            }
+            let text = parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text(text) => Some(text.as_str()),
+                    ContentPart::Image(_) => None,
+                })
+                .collect::<String>();
+            TypedForm {
+                shape: TypedShape::UserParts,
+                content: text,
+                tool_calls: None,
+                tool_call_id: None,
+                parts: Some(
+                    parts
+                        .into_iter()
+                        .map(|part| match part {
+                            ContentPart::Text(text) => TypedPart::Text { text },
+                            ContentPart::Image(url) => TypedPart::Image { url },
+                        })
+                        .collect(),
+                ),
+            }
+        }
+        _ => return None,
+    };
+    let rebuilt = rebuild_content(
+        form.shape,
+        &form.content,
+        form.tool_calls.as_deref(),
+        form.tool_call_id.as_deref(),
+        form.parts.as_deref(),
+    )?;
+    (rebuilt == msg.content).then_some(form)
+}
+
+/// Rebuild the legacy string `content` of a typed row. `None` when the row's
+/// typed fields do not carry what its `shape` needs (the caller then keeps
+/// `content` as read).
+fn rebuild_content(
+    shape: TypedShape,
+    content: &str,
+    tool_calls: Option<&[TranscriptToolCall]>,
+    tool_call_id: Option<&str>,
+    parts: Option<&[TypedPart]>,
+) -> Option<String> {
+    match shape {
+        TypedShape::AssistantCalls => {
+            let calls: Vec<NativeToolCall> = tool_calls?
+                .iter()
+                .map(|call| NativeToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    extra_content: call.extra_content.clone(),
+                })
+                .collect();
+            (!calls.is_empty()).then(|| encode_assistant_envelope(Some(content), &calls, None))
+        }
+        TypedShape::ToolResult => Some(encode_tool_envelope(tool_call_id?, content)),
+        TypedShape::UserParts => {
+            let parts: Vec<ContentPart> = parts?
+                .iter()
+                .map(|part| match part {
+                    TypedPart::Text { text } => ContentPart::Text(text.clone()),
+                    TypedPart::Image { url } => ContentPart::Image(url.clone()),
+                })
+                .collect();
+            Some(join_image_parts(&parts))
+        }
+    }
+}
+
+/// The row's model-visible `content` as the in-memory row carries it: the
+/// stored string for a legacy row, rebuilt from the typed fields for a typed
+/// one. An unknown future `shape` (or one whose fields are missing) keeps the
+/// stored string.
+fn content_from_line(ml: &MessageLine) -> String {
+    if ml.row_version != TYPED_ROW_VERSION {
+        return ml.content.clone();
+    }
+    let Some(shape) = ml.shape.as_deref().and_then(TypedShape::parse) else {
+        return ml.content.clone();
+    };
+    rebuild_content(
+        shape,
+        &ml.content,
+        ml.tool_calls.as_deref(),
+        ml.tool_call_id.as_deref(),
+        ml.parts.as_deref(),
+    )
+    .unwrap_or_else(|| ml.content.clone())
 }
 
 /// Serialise `messages` into JSONL message lines, attributing
@@ -416,10 +654,11 @@ fn turn_usage_from_line(ml: &MessageLine) -> Option<TurnUsage> {
 pub(super) fn message_from_line(ml: MessageLine) -> TranscriptMessage {
     let turn_usage = turn_usage_from_line(&ml);
     let failure_detail = ml.failure.then(|| ml.failure_detail.clone());
+    let content = content_from_line(&ml);
     TranscriptMessage {
         id: ml.id,
         role: ml.role,
-        content: ml.content,
+        content,
         extra_metadata: ml.extra_metadata,
         cache_breakpoints: ml.cache_breakpoints,
         turn_usage: turn_usage.clone(),
@@ -472,6 +711,7 @@ pub(super) fn display_message_from_line(ml: MessageLine) -> DisplayMessage {
             .as_ref()
             .and_then(|tu| tu.reasoning_content.clone())
     });
+    let content = content_from_line(&ml);
     DisplayMessage {
         interrupted: ml.interrupted,
         request_id: ml.request_id.clone(),
@@ -484,7 +724,7 @@ pub(super) fn display_message_from_line(ml: MessageLine) -> DisplayMessage {
         message: TranscriptMessage {
             id: ml.id,
             role: ml.role,
-            content: ml.content,
+            content,
             extra_metadata: ml.extra_metadata,
             cache_breakpoints: ml.cache_breakpoints,
             turn_usage,
