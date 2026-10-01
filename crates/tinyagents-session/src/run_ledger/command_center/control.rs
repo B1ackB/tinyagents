@@ -1,6 +1,6 @@
 //! Command-center control verbs.
 //!
-//! The read-only projection in [`super::ops`] shows what background agent work
+//! The read-only projection in [`super::view`] shows what background agent work
 //! is in flight; these verbs let a reviewer *act* on a single row. Each verb is
 //! a durable transition on the run ledger (`crate::run_ledger`):
 //!
@@ -15,14 +15,15 @@
 //! (`close_agent` / `resume_agent` / `follow_up` / `message_agent`) but operate
 //! on the *durable* ledger, so they survive restart and apply to any tracked
 //! run rather than only the children of a live session. They persist the new
-//! status (via [`transition_agent_run_status`], which can clear `error` /
+//! status (via [`transition_agent_run_status_from`], which can clear `error` /
 //! `completed_at` — the upsert path cannot) and append a `run_event` recording
-//! the action for the run's timeline.
+//! the action for the run's timeline, in one transaction that only applies if
+//! the run is still in the status the verb was checked against.
 //!
 //! The allowed-transition matrix lives in the pure [`plan_transition`], which is
 //! unit-tested without a database, mirroring [`super::view::build_view`].
 //!
-//! [`transition_agent_run_status`]: crate::run_ledger::transition_agent_run_status
+//! [`transition_agent_run_status_from`]: crate::run_ledger::transition_agent_run_status_from
 
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -31,7 +32,8 @@ use thiserror::Error;
 use std::path::Path;
 
 use crate::run_ledger::{
-    AgentRunStatus, RunEventAppend, append_run_event, get_agent_run, transition_agent_run_status,
+    AgentRunStatus, RunEventAppend, RunTransition, get_agent_run,
+    transition_agent_run_status_from,
 };
 
 use super::types::AgentWorkRow;
@@ -218,35 +220,34 @@ pub fn apply_control(
         return Err(ControlError::MessageRequired(verb.as_str()));
     }
 
-    let run = get_agent_run(workspace_dir, run_id)?
+    let mut run = get_agent_run(workspace_dir, run_id)?
         .ok_or_else(|| ControlError::RunNotFound(run_id.to_string()))?;
-    let from_status = run.status;
-    let plan = plan_transition(from_status, verb)?;
+    // Another writer (the run's own worker, the host progress bridge) can move
+    // the run between this read and the write. The write is a compare-and-set
+    // on the status the plan was made for; when it lost the race, re-plan
+    // against the status that won, a bounded number of times.
+    const MAX_ATTEMPTS: usize = 3;
+    let mut attempt = 0;
+    let (updated, from_status, plan) = loop {
+        attempt += 1;
+        let from_status = run.status;
+        let plan = plan_transition(from_status, verb)?;
 
-    // Verb-specific error / completion handling. The transition op writes both
-    // columns verbatim, so `None` clears them.
-    let (next_error, next_completed_at): (Option<String>, Option<DateTime<Utc>>) = match verb {
-        // Stopping records the optional reason and stamps completion now.
-        ControlVerb::Stop => (reason.map(str::to_string), Some(Utc::now())),
-        // Re-queuing drops the stale failure reason and completion time.
-        ControlVerb::Retry | ControlVerb::Continue => (None, None),
-        // Follow-up leaves the run as-is.
-        ControlVerb::FollowUp => (run.error.clone(), run.completed_at),
-    };
+        // Verb-specific error / completion handling. The transition op writes
+        // both columns verbatim, so `None` clears them.
+        let (next_error, next_completed_at): (Option<String>, Option<DateTime<Utc>>) =
+            match verb {
+                // Stopping records the optional reason and stamps completion now.
+                ControlVerb::Stop => (reason.map(str::to_string), Some(Utc::now())),
+                // Re-queuing drops the stale failure reason and completion time.
+                ControlVerb::Retry | ControlVerb::Continue => (None, None),
+                // Follow-up leaves the run as-is.
+                ControlVerb::FollowUp => (run.error.clone(), run.completed_at),
+            };
 
-    let updated = transition_agent_run_status(
-        workspace_dir,
-        run_id,
-        plan.target_status,
-        next_error.as_deref(),
-        next_completed_at,
-    )?
-    .ok_or_else(|| ControlError::RunNotFound(run_id.to_string()))?;
-
-    // Record the action on the run's durable timeline.
-    append_run_event(
-        workspace_dir,
-        RunEventAppend {
+        // The action's timeline entry commits with the status change or not
+        // at all.
+        let event = RunEventAppend {
             run_id: run_id.to_string(),
             event_type: plan.event_type.to_string(),
             payload: json!({
@@ -256,8 +257,36 @@ pub fn apply_control(
                 "message": message,
                 "reason": reason,
             }),
-        },
-    )?;
+        };
+        match transition_agent_run_status_from(
+            workspace_dir,
+            run_id,
+            from_status,
+            plan.target_status,
+            next_error.as_deref(),
+            next_completed_at,
+            Some(event),
+        )? {
+            RunTransition::Applied(updated) => break (updated, from_status, plan),
+            RunTransition::NotFound => return Err(ControlError::RunNotFound(run_id.to_string())),
+            RunTransition::StatusChanged(current) => {
+                tracing::debug!(
+                    target: "command_center",
+                    "[command_center] apply_control.status_changed run_id={run_id} verb={} planned_from={} now={} attempt={attempt}",
+                    verb.as_str(),
+                    from_status.as_str(),
+                    current.status.as_str()
+                );
+                if attempt >= MAX_ATTEMPTS {
+                    return Err(ControlError::InvalidTransition {
+                        verb: verb.as_str(),
+                        status: current.status.as_str(),
+                    });
+                }
+                run = current;
+            }
+        }
+    };
 
     tracing::debug!(
         target: "command_center",
