@@ -173,7 +173,7 @@ async fn concurrent_writes_of_one_id_both_succeed() {
 }
 
 #[tokio::test]
-async fn concurrent_writes_under_a_tight_cap_only_return_paths_that_exist() {
+async fn concurrent_writes_under_a_tight_cap_leave_the_stash_within_its_cap() {
     let dir = tmp("tight-cap");
     let one = {
         let probe = tmp("probe");
@@ -191,12 +191,17 @@ async fn concurrent_writes_under_a_tight_cap_only_return_paths_that_exist() {
     let s = stash(&dir, one, Duration::from_secs(3600));
     let other = s.clone();
     let (a, b) = tokio::join!(s.write("a", TINY_PNG), other.write("b", TINY_PNG));
-    for path in [a, b].into_iter().flatten() {
-        assert!(
-            path.exists(),
-            "returned an evicted path: {}",
-            path.display()
-        );
-    }
+    // A path may legitimately be evicted by a later write after its own write
+    // returned, so check the end state: at least one write succeeded and the
+    // stash is back under its cap.
+    assert!(a.is_ok() || b.is_ok(), "both concurrent writes failed");
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .collect();
+    let total: u64 = files.iter().map(|e| e.metadata().unwrap().len()).sum();
+    assert!(!files.is_empty());
+    assert!(total <= one, "stash over its cap: {total} > {one}");
     let _ = std::fs::remove_dir_all(&dir);
 }
