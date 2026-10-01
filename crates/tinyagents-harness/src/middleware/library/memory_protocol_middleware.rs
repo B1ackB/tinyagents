@@ -75,12 +75,10 @@ impl MemoryProtocolMiddleware {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let state = runs
-            .entry(instance)
-            .or_insert_with(|| RunProtocolState {
-                tracker: MemoryProtocolTracker::new(Arc::clone(&self.spec)),
-                pending_ops: HashMap::new(),
-            });
+        let state = runs.entry(instance).or_insert_with(|| RunProtocolState {
+            tracker: MemoryProtocolTracker::new(Arc::clone(&self.spec)),
+            pending_ops: HashMap::new(),
+        });
         f(state)
     }
 

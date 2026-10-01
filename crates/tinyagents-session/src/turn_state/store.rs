@@ -551,10 +551,7 @@ impl TurnStateStore {
     /// per-turn snapshot for the same turn is newer than the legacy flat file
     /// and is kept as is. Caller holds the lock.
     fn migrate_snapshot_locked(&self, state: &TurnState) -> Result<(), String> {
-        if self
-            .turn_path(&state.thread_id, &state.request_id)
-            .exists()
-        {
+        if self.turn_path(&state.thread_id, &state.request_id).exists() {
             debug!(
                 "{LOG_PREFIX} legacy migrate: per-turn snapshot already present thread={} request={} (kept)",
                 state.thread_id, state.request_id

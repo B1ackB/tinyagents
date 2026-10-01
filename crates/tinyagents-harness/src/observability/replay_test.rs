@@ -145,9 +145,13 @@ async fn page_cursor_stays_in_journal_offset_space_across_dropped_events() {
         };
         journal.append(obs).await.unwrap();
     }
-    let page1 = read_run_events_page(&journal, "run-gap", 0, 1).await.unwrap();
+    let page1 = read_run_events_page(&journal, "run-gap", 0, 1)
+        .await
+        .unwrap();
     assert_eq!(page1.next_offset, Some(1));
-    let page2 = read_run_events_page(&journal, "run-gap", 1, 1).await.unwrap();
+    let page2 = read_run_events_page(&journal, "run-gap", 1, 1)
+        .await
+        .unwrap();
     assert_eq!(page2.events.len(), 1);
     assert_eq!(page2.events[0].offset, 10, "no persisted entry is skipped");
     assert_eq!(page2.next_offset, Some(2));

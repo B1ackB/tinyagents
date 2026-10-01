@@ -79,7 +79,15 @@ async fn run_cycle(
 async fn memory_write_without_index_read_gets_a_corrective_note() {
     let mw = MemoryProtocolMiddleware::new(spec());
     let mut cx = ctx();
-    let result = run_cycle(&mw, &mut cx, "memory_store", json!({}), "stored entry 42", None).await;
+    let result = run_cycle(
+        &mw,
+        &mut cx,
+        "memory_store",
+        json!({}),
+        "stored entry 42",
+        None,
+    )
+    .await;
     assert!(
         result_text(&result).contains(MEMORY_PROTOCOL_MARKER),
         "a write with no preceding dedupe read should be annotated: {}",
@@ -95,13 +103,37 @@ async fn memory_write_without_index_read_gets_a_corrective_note() {
 async fn memory_write_without_index_tool_still_gets_dedupe_guidance() {
     let mw = MemoryProtocolMiddleware::with_index_update_tool(spec(), false);
     let mut cx = ctx();
-    let result = run_cycle(&mw, &mut cx, "memory_store", json!({}), "stored entry", None).await;
+    let result = run_cycle(
+        &mw,
+        &mut cx,
+        "memory_store",
+        json!({}),
+        "stored entry",
+        None,
+    )
+    .await;
     let text = result_text(&result);
     assert!(text.contains("without first reading the memory index"));
     assert!(!text.contains("update_memory_md"));
 
-    run_cycle(&mw, &mut cx, "memory_recall", json!({}), "found entry", None).await;
-    let after_read = run_cycle(&mw, &mut cx, "memory_store", json!({}), "stored another", None).await;
+    run_cycle(
+        &mw,
+        &mut cx,
+        "memory_recall",
+        json!({}),
+        "found entry",
+        None,
+    )
+    .await;
+    let after_read = run_cycle(
+        &mw,
+        &mut cx,
+        "memory_store",
+        json!({}),
+        "stored another",
+        None,
+    )
+    .await;
     assert!(!result_text(&after_read).contains("update_memory_md"));
 }
 
@@ -231,7 +263,15 @@ async fn protocol_state_is_isolated_per_run_even_with_a_shared_run_id() {
     let mut run_a = ctx();
     let mut run_b = ctx();
     // Run A reads the index (satisfies its dedupe read) …
-    run_cycle(&mw, &mut run_a, "memory_recall", json!({}), "recalled", None).await;
+    run_cycle(
+        &mw,
+        &mut run_a,
+        "memory_recall",
+        json!({}),
+        "recalled",
+        None,
+    )
+    .await;
     // … which must not excuse run B's write from the missing-read note.
     let write = run_cycle(&mw, &mut run_b, "memory_store", json!({}), "stored", None).await;
     assert!(result_text(&write).contains(MEMORY_PROTOCOL_MARKER));
