@@ -262,6 +262,10 @@ fn file_history_never_converts_or_drops_durable_fields() {
         id: Some("assistant-id".into()),
         role: "assistant".into(),
         content: r#"{"tool_calls":[{"id":"call-1"}]}"#.into(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        parts: None,
+        legacy: Default::default(),
         extra_metadata: Some(serde_json::json!({
             "trusted_verbatim": true,
             "artifacts": ["artifact-1"],
@@ -1138,8 +1142,8 @@ fn a_turn_stamps_iteration_and_ts_on_every_step_it_appends() {
         vec![
             // An earlier turn written without usage stays unstamped.
             ("earlier answer".to_string(), None, None),
-            (r#"{"content":"step"#.to_string(), Some(1), ts.clone()),
-            (r#"{"content":"","t"#.to_string(), Some(2), ts.clone()),
+            ("step one".to_string(), Some(1), ts.clone()),
+            (String::new(), Some(2), ts.clone()),
             ("done".to_string(), Some(3), ts),
         ]
     );

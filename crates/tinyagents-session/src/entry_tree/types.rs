@@ -71,6 +71,9 @@ pub struct Entry {
 // representation rejects a payload field that collides with the tag name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// A message row is the common entry; boxing it would change the public
+// variant for every consumer to save space on the rarer variants.
+#[allow(clippy::large_enum_variant)]
 pub enum EntryKind {
     /// An ordinary conversation message.
     Message(TranscriptMessage),

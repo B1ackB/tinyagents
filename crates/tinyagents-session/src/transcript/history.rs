@@ -728,11 +728,7 @@ fn path_entry_exists(path: &Path) -> anyhow::Result<bool> {
 }
 
 fn same_transcript_messages(left: &[TranscriptMessage], right: &[TranscriptMessage]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(a, b)| a.role == b.role && a.content == b.content && a.id == b.id)
+    left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.same_row_as(b))
 }
 
 /// A placeholder `_meta` for a handle bound to an already-existing transcript.
@@ -1113,9 +1109,10 @@ impl FileTranscriptHistory {
         );
         let disk = self.persisted()?;
         let same = disk.len() == prev.len()
-            && disk.iter().zip(prev).all(|(left, right)| {
-                left.role == right.role && left.content == right.content && left.id == right.id
-            });
+            && disk
+                .iter()
+                .zip(prev)
+                .all(|(left, right)| left.same_row_as(right));
         anyhow::ensure!(
             same,
             "transcript baseline is stale for {}; reload the session before persisting",
