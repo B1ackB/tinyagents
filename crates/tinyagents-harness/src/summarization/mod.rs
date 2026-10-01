@@ -285,4 +285,5 @@ impl SummarizationPolicy {
 #[cfg(test)]
 mod model_summarizer_test;
 #[cfg(test)]
-mod test;
+#[path = "mod_tests.rs"]
+mod tests;
