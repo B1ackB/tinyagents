@@ -53,6 +53,34 @@ allowlist and inherits the exact bundle. The borrowed-state-compatible
 `SubAgent::invoke_in_parent` is explicit-only and rejects a hosted parent
 context before it can start a child.
 
+## Hosted failures and timeout bounds
+
+`invoke_agent` (and its streaming counterpart) fail with a `HostedError`, not a
+raw `TinyAgentsError`. `kind` is a closed `HostedErrorKind` and `message` is a
+fixed, sanitized string, so neither carries provider text. When
+`kind == HostedErrorKind::Timeout`, `timeout_bound` says which wall-clock bound
+fired, and it is `None` for every other kind:
+
+| `timeout_bound` | Meaning | Host handling |
+| --- | --- | --- |
+| `Some(TimeoutBound::PerModelCall)` | One call exceeded the per-model-call ceiling (`RunLimits::max_model_call_ms`), including a wedged host model resolution. A `TimeoutMiddleware` expiry is reported as `Run`. The run still had time. | Retryable, but only safely when the run had no external effects. If tools already ran, continue from `HostedError::run`'s partial transcript (with the host's idempotency/effect reconciliation) instead of re-issuing the original turn, which could repeat a non-idempotent tool. |
+| `Some(TimeoutBound::Run)` | The run's own timeout or deadline was exhausted. | Terminal for this run; do not retry it as-is. |
+
+```rust,no_run
+use tinyagents_harness::runtime::{HostedError, HostedErrorKind, TimeoutBound};
+
+fn should_retry(error: &HostedError) -> bool {
+    error.kind == HostedErrorKind::Timeout
+        && error.timeout_bound == Some(TimeoutBound::PerModelCall)
+}
+```
+
+`TimeoutBound` is `#[non_exhaustive]`; treat an unknown bound like `Run`.
+`HostedError` gained the public `timeout_bound` field, so code that builds it
+with a struct literal must set it. Recursive hosted children convert back to
+`TinyAgentsError` with the bound preserved (`PerModelCall` becomes
+`CallTimeout`, anything else `Timeout`).
+
 ## Tool timeout policy
 
 Hosts enable per-tool deadlines with

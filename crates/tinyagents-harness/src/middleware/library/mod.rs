@@ -92,8 +92,8 @@ pub use memory_protocol::{
 };
 pub use memory_protocol_middleware::MemoryProtocolMiddleware;
 pub use policy_gate::{
-    ApprovalGateMiddleware, ApprovalResolution, ApprovalResolver, DenialRenderer, PolicyDecision,
-    ToolCallPolicy, ToolPolicyGate, ToolPolicyGateMiddleware,
+    ApprovalGateMiddleware, ApprovalResolution, ApprovalResolver, DenialRenderer, GateVerdict,
+    PolicyDecision, ToolCallPolicy, ToolPolicyGate, ToolPolicyGateMiddleware, record_approved,
 };
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,

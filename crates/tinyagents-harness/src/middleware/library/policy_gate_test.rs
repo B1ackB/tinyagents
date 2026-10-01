@@ -6,7 +6,9 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::context::{RunConfig, RunContext};
-use crate::middleware::{BoxToolFuture, MiddlewareStack, ToolBaseCall, ToolMiddleware};
+use crate::middleware::{
+    BoxToolFuture, MiddlewareStack, MiddlewareToolOutcome, ToolBaseCall, ToolMiddleware,
+};
 use tinyinference_llm::tool::ToolCall;
 use tinytools::ToolResult;
 
@@ -267,5 +269,78 @@ async fn approval_gate_records_success_and_failure_for_an_approved_ticket() {
     assert_eq!(
         *resolver.recorded.lock().unwrap(),
         vec![("t-9".to_string(), false), ("t-9".to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn evaluate_settles_each_decision_for_a_host_that_interleaves_the_gate() {
+    let gate = ToolPolicyGate::new(Arc::new(NamePolicy));
+    let resolver = Resolver::default();
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Allow {
+        ticket: Some("t-9".to_string()),
+    });
+
+    // Allow never consults the resolver.
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("read"), false, Some(&resolver))
+            .await,
+        GateVerdict::Proceed { ticket: None }
+    );
+    assert_eq!(*resolver.resolved.lock().unwrap(), 0);
+
+    // Deny is terminal and carries the policy's own decision.
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("rm"), false, Some(&resolver))
+            .await,
+        GateVerdict::Blocked(PolicyDecision::deny("destructive"))
+    );
+
+    // RequireApproval settles through the resolver...
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("send"), false, Some(&resolver))
+            .await,
+        GateVerdict::Proceed {
+            ticket: Some("t-9".to_string())
+        }
+    );
+    assert_eq!(*resolver.resolved.lock().unwrap(), 1);
+
+    // ...fails closed without one...
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("send"), false, None).await,
+        GateVerdict::Blocked(PolicyDecision::require_approval("sends mail"))
+    );
+
+    // ...is waivable without asking anyone...
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("send"), true, Some(&resolver))
+            .await,
+        GateVerdict::Proceed { ticket: None }
+    );
+    assert_eq!(*resolver.resolved.lock().unwrap(), 1);
+
+    // ...and a refusal carries the resolver's text.
+    *resolver.verdict.lock().unwrap() = Some(ApprovalResolution::Deny {
+        reason: "user said no".to_string(),
+    });
+    assert_eq!(
+        gate.evaluate(&ctx(), &call("send"), false, Some(&resolver))
+            .await,
+        GateVerdict::Refused {
+            reason: "user said no".to_string()
+        }
+    );
+}
+
+#[test]
+fn record_approved_needs_a_ticket_and_a_result() {
+    let resolver = Resolver::default();
+    let outcome = MiddlewareToolOutcome::Result(ToolResult::error("boom"));
+    record_approved(&resolver, None, &outcome);
+    assert!(resolver.recorded.lock().unwrap().is_empty());
+    record_approved(&resolver, Some("t-1"), &outcome);
+    assert_eq!(
+        *resolver.recorded.lock().unwrap(),
+        vec![("t-1".to_string(), true)]
     );
 }
