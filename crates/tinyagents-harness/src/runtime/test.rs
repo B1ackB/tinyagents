@@ -237,13 +237,7 @@ struct TaggedSecurity {
 #[async_trait]
 impl SecurityGate for TaggedSecurity {
     async fn authorize_tool(&self, call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             self.trace
                 .mark("security", format!("deny:{}", call.tool_name));
             Ok(GateDecision::deny("tagged approval denied"))
@@ -713,13 +707,7 @@ impl SecurityGate for DenyToolGate {
 #[async_trait]
 impl SecurityGate for DenyThenAllowGate {
     async fn authorize_tool(&self, _call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             Ok(GateDecision::deny("approval declined"))
         } else {
             Ok(GateDecision::Allow)
@@ -1063,6 +1051,7 @@ async fn initial_host_model_resolution_is_cancelled_while_the_resolver_is_pendin
         result = &mut invocation => panic!("pending resolver unexpectedly finished: {result:?}"),
     };
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Cancelled);
+    assert_eq!(error.timeout_bound, None);
 }
 
 #[tokio::test]
@@ -1103,6 +1092,11 @@ async fn policy_only_deadline_bounds_initial_host_resolution_with_a_timeout_erro
     // text is still available on the run's internal `TinyAgentsError` (see
     // the non-hosted equivalents of this test), just not leaked here.
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::Run),
+        "the run's own budget is the run bound"
+    );
 }
 
 #[tokio::test]
@@ -1140,6 +1134,34 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
         .await
         .expect_err("per-model-call cap must bound host resolution");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
+}
+
+#[test]
+fn hosted_timeout_round_trip_preserves_the_bound() {
+    use crate::error::TinyAgentsError;
+    use crate::runtime::{HostedError, HostedErrorKind, TimeoutBound};
+    let hosted = |bound| HostedError {
+        kind: HostedErrorKind::Timeout,
+        message: "timed out".to_string(),
+        timeout_bound: bound,
+        run: None,
+    };
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::PerModelCall))),
+        TinyAgentsError::CallTimeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::Run))),
+        TinyAgentsError::Timeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(None)),
+        TinyAgentsError::Timeout(_)
+    ));
 }
 
 /// A model whose every call (streaming included) never answers.
@@ -1197,6 +1219,10 @@ async fn invoke_agent_streaming_preserves_the_timeout_kind_of_a_stalled_model_ca
         .expect_err("a stalled model call must hit the per-model-call ceiling");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
     assert_eq!(error.message, "hosted agent invocation timed out");
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
 }
 
 async fn assert_rebound_host_resolution_stops(
@@ -3497,4 +3523,21 @@ fn child_with_data_never_propagates_host_authority() {
         .child_with_data(RunConfig::new("different-ctx"), "child-data")
         .unwrap();
     assert!(different_ctx_child.host_authority.is_none());
+}
+
+/// Atomically decrement `counter` if it is non-zero, returning whether it was.
+///
+/// A compare-exchange loop rather than `fetch_update`: that method was renamed
+/// `try_update` on newer toolchains (deprecating the old name, which clippy
+/// `-D warnings` rejects) while `try_update` does not exist at the workspace
+/// MSRV, so neither spelling compiles cleanly on both.
+fn take_one(counter: &AtomicUsize) -> bool {
+    let mut current = counter.load(Ordering::SeqCst);
+    while let Some(next) = current.checked_sub(1) {
+        match counter.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
 }

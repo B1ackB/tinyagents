@@ -96,6 +96,23 @@ pub enum HostedErrorKind {
     Internal,
 }
 
+/// Which wall-clock bound fired for a [`HostedErrorKind::Timeout`].
+///
+/// The two are different triage paths: a wedged single call (the per-model-call
+/// ceiling) versus a run that spent its whole budget. The hosted `message` is
+/// sanitized and carries neither, so a host reads this field instead of
+/// parsing text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TimeoutBound {
+    /// One call exceeded the per-model-call ceiling
+    /// ([`TinyAgentsError::CallTimeout`]); the run itself had time left.
+    PerModelCall,
+    /// The run's own wall-clock budget or deadline was exhausted
+    /// ([`TinyAgentsError::Timeout`]).
+    Run,
+}
+
 /// The typed failure returned by the hosted entry points
 /// ([`AgentHarness::invoke_agent`] and its streaming counterpart) in place of
 /// a generic `TinyAgentsError::Model("hosted agent invocation failed")`.
@@ -114,6 +131,9 @@ pub struct HostedError {
     /// Fixed, sanitized message selected by `kind` — never raw provider,
     /// middleware, or budget error text.
     pub message: String,
+    /// Which bound fired, set exactly when `kind` is
+    /// [`HostedErrorKind::Timeout`] and `None` otherwise.
+    pub timeout_bound: Option<TimeoutBound>,
     /// The accumulated transcript, usage, and executed-tool summary as far as
     /// the run got before failing, when available.
     pub run: Option<Box<AgentRun>>,
@@ -142,6 +162,15 @@ fn classify_hosted_error(error: &TinyAgentsError) -> HostedErrorKind {
     }
 }
 
+/// The wall-clock bound a timeout error hit, or `None` for any other error.
+fn classify_timeout_bound(error: &TinyAgentsError) -> Option<TimeoutBound> {
+    match error {
+        TinyAgentsError::CallTimeout(_) => Some(TimeoutBound::PerModelCall),
+        TinyAgentsError::Timeout(_) => Some(TimeoutBound::Run),
+        _ => None,
+    }
+}
+
 /// The fixed, sanitized message for each [`HostedErrorKind`]. Never derived
 /// from the underlying error's own text.
 fn hosted_error_message(kind: HostedErrorKind) -> &'static str {
@@ -162,6 +191,7 @@ fn hosted_error(error: &TinyAgentsError, run: AgentRun) -> HostedError {
     HostedError {
         kind,
         message: hosted_error_message(kind).to_string(),
+        timeout_bound: classify_timeout_bound(error),
         run: Some(Box::new(run)),
     }
 }
@@ -170,7 +200,8 @@ fn hosted_error(error: &TinyAgentsError, run: AgentRun) -> HostedError {
 /// internal callers (recursive hosted delegation) that must keep propagating
 /// through the ordinary `Result<T>` = `Result<T, TinyAgentsError>` surface.
 /// This is a lossless-enough round trip for control flow: `Cancelled` and
-/// `Timeout` map back to their own variants (so cancellation/deadline
+/// `Timeout` map back to their own variants (`CallTimeout` when
+/// [`HostedError::timeout_bound`] is [`TimeoutBound::PerModelCall`]) (so cancellation/deadline
 /// semantics upstream keep working, e.g. the fallback gate in
 /// `invoke_model_resolving`), and the rest become typed but message-generic
 /// variants — never worse than what this boundary already returned before
@@ -179,7 +210,12 @@ impl From<HostedError> for TinyAgentsError {
     fn from(error: HostedError) -> Self {
         match error.kind {
             HostedErrorKind::Cancelled => TinyAgentsError::Cancelled,
-            HostedErrorKind::Timeout => TinyAgentsError::Timeout(error.message),
+            HostedErrorKind::Timeout => match error.timeout_bound {
+                // Keep the per-call ceiling distinct so a parent treats a
+                // wedged child call as retryable, not as an exhausted run.
+                Some(TimeoutBound::PerModelCall) => TinyAgentsError::CallTimeout(error.message),
+                _ => TinyAgentsError::Timeout(error.message),
+            },
             HostedErrorKind::LimitExceeded => TinyAgentsError::LimitExceeded(error.message),
             HostedErrorKind::Policy => TinyAgentsError::Validation(error.message),
             HostedErrorKind::Provider | HostedErrorKind::Internal => {
