@@ -43,6 +43,25 @@ fn object_model_content_is_truncated_without_panicking() {
 }
 
 #[test]
+fn newest_nested_message_over_budget_is_kept_as_a_preview() {
+    let older = serde_json::json!({ "role": "user", "content": "earlier" });
+    let newest = serde_json::json!({
+        "user": { "content": [{ "type": "text", "text": "x".repeat(MAX_MODEL_CONTENT_CHARS) }] }
+    });
+    let captured = capture_model_content(&serde_json::json!([older, newest]));
+    let messages = captured.as_array().expect("still structured");
+    assert_eq!(messages.len(), 2, "marker plus the newest message preview");
+    assert_eq!(messages[1]["role"], "user");
+    let content = messages[1]["content"].as_str().unwrap();
+    assert!(content.ends_with("…[message truncated]"));
+    assert!(content.chars().count() <= MAX_MODEL_CONTENT_CHARS);
+    assert_eq!(
+        messages[0]["content"],
+        "[1 earlier messages omitted from telemetry]"
+    );
+}
+
+#[test]
 fn trace_session_id_prefers_ui_session_else_thread() {
     assert_eq!(trace_session_id(Some(99), "thread-x"), "99");
     assert_eq!(trace_session_id(None, "thread-x"), "thread-x");

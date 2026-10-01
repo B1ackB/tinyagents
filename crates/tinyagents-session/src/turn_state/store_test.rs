@@ -574,3 +574,34 @@ fn settle_turn_is_a_noop_when_no_snapshot_exists() {
         .expect("settle_turn");
     assert!(!changed);
 }
+
+#[test]
+fn legacy_migration_never_replaces_a_completed_per_turn_snapshot() {
+    use std::io::Write as _;
+    let dir = tempdir().expect("tempdir");
+    let store = TurnStateStore::new(dir.path().to_path_buf());
+    let mut done = turn("mig-thread", "req-m", "2026-05-04T09:00:00Z");
+    done.lifecycle = TurnLifecycle::Completed;
+    store.put(&done).expect("put completed");
+
+    // A stale, non-terminal legacy flat file for the same turn reappears.
+    let mut stale = done.clone();
+    stale.lifecycle = TurnLifecycle::Streaming;
+    let root = turn_states_root(&dir);
+    let flat_path = root.join(format!("{}.json", hex::encode("mig-thread".as_bytes())));
+    let mut f = std::fs::File::create(&flat_path).expect("create flat");
+    f.write_all(serde_json::to_vec_pretty(&stale).unwrap().as_slice())
+        .expect("write flat");
+    drop(f);
+
+    let mut interrupted = done.clone();
+    interrupted.lifecycle = TurnLifecycle::Interrupted;
+    assert!(
+        !store
+            .put_unless_completed(&interrupted)
+            .expect("conditional put"),
+        "a completed snapshot must be kept"
+    );
+    let stored = store.get_turn("mig-thread", "req-m").unwrap().unwrap();
+    assert_eq!(stored.lifecycle, TurnLifecycle::Completed);
+}

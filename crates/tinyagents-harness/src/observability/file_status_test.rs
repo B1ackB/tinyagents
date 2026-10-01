@@ -105,6 +105,18 @@ async fn undecodable_record_is_skipped() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[tokio::test]
+async fn malformed_json_record_does_not_hide_valid_runs() {
+    let root = tmp_root("malformed");
+    let store = FileStatusStore::new(FileStore::new(&root));
+    let mut status = HarnessRunStatus::new(mint_run_id(), ComponentId::new("m".to_string()));
+    status.mark_running(HarnessPhase::Model);
+    store.put_status(status).await.unwrap();
+    std::fs::write(root.join("run_status").join("broken.json"), "{not json").unwrap();
+    assert_eq!(store.list_active().await.unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 async fn read_all(root: &std::path::Path, run_id: &str, from: u64) -> Vec<AgentObservation> {
     StoreEventJournal::new(JsonlAppendStore::new(root))
         .read_from(run_id, from)

@@ -363,43 +363,47 @@ pub fn compare_and_swap_workflow_run_lifecycle(
 /// at the call site) so two connections appending concurrently cannot
 /// compute the same next value and lose one event to a primary-key conflict.
 pub fn append_run_event(workspace_dir: &Path, event: RunEventAppend) -> Result<RunEvent> {
+    crate::store::with_connection(workspace_dir, |conn| {
+        init_run_ledger_schema(conn)?;
+        append_run_event_inner(conn, event)
+    })
+}
+
+fn append_run_event_inner(conn: &Connection, event: RunEventAppend) -> Result<RunEvent> {
     let now = Utc::now();
     let payload_json =
         serde_json::to_string(&event.payload).storage_context("serialize run event")?;
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        // Allocate and insert the sequence in ONE statement. Reading
-        // `MAX(sequence) + 1` and then inserting is a read-modify-write race:
-        // two connections appending for the same run can read the same next
-        // value, and the loser fails the `(run_id, sequence)` primary key —
-        // silently dropping a real run event unless every caller implements an
-        // undocumented retry. The sub-select is evaluated inside the same
-        // statement, so SQLite's write lock serializes the whole allocation.
-        let next_sequence: i64 = conn
-            .query_row(
-                "INSERT INTO run_events (run_id, sequence, event_type, payload_json, timestamp)
+    // Allocate and insert the sequence in ONE statement. Reading
+    // `MAX(sequence) + 1` and then inserting is a read-modify-write race:
+    // two connections appending for the same run can read the same next
+    // value, and the loser fails the `(run_id, sequence)` primary key —
+    // silently dropping a real run event unless every caller implements an
+    // undocumented retry. The sub-select is evaluated inside the same
+    // statement, so SQLite's write lock serializes the whole allocation.
+    let next_sequence: i64 = conn
+        .query_row(
+            "INSERT INTO run_events (run_id, sequence, event_type, payload_json, timestamp)
              VALUES (
                 ?1,
                 (SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?1),
                 ?2, ?3, ?4
              )
              RETURNING sequence",
-                params![
-                    event.run_id,
-                    event.event_type,
-                    payload_json,
-                    now.to_rfc3339(),
-                ],
-                |row| row.get(0),
-            )
-            .storage_context("append run event")?;
-        Ok(RunEvent {
-            run_id: event.run_id,
-            sequence: next_sequence as u64,
-            event_type: event.event_type,
-            payload: serde_json::from_str(&payload_json).unwrap_or_else(|_| json!({})),
-            timestamp: now,
-        })
+            params![
+                event.run_id,
+                event.event_type,
+                payload_json,
+                now.to_rfc3339(),
+            ],
+            |row| row.get(0),
+        )
+        .storage_context("append run event")?;
+    Ok(RunEvent {
+        run_id: event.run_id,
+        sequence: next_sequence as u64,
+        event_type: event.event_type,
+        payload: serde_json::from_str(&payload_json).unwrap_or_else(|_| json!({})),
+        timestamp: now,
     })
 }
 
@@ -522,6 +526,76 @@ pub fn transition_agent_run_status(
             return Ok(None);
         }
         get_agent_run_inner(conn, id)
+    })
+}
+
+/// Result of [`transition_agent_run_status_from`].
+#[derive(Debug, Clone)]
+pub enum RunTransition {
+    /// The run was still in the expected status; it moved and the event (if
+    /// any) was recorded. Carries the run as stored afterwards.
+    Applied(AgentRun),
+    /// The run had already left the expected status; nothing was written.
+    /// Carries the run as it is now.
+    StatusChanged(AgentRun),
+    /// No run has this id.
+    NotFound,
+}
+
+/// Compare-and-set form of [`transition_agent_run_status`]: move run `id` to
+/// `status` only if it is still in `expected`, and record `event` in the same
+/// transaction, so a status change never commits without its timeline entry
+/// and never lands on top of a status another writer recorded meanwhile.
+pub fn transition_agent_run_status_from(
+    workspace_dir: &Path,
+    id: &str,
+    expected: AgentRunStatus,
+    status: AgentRunStatus,
+    error: Option<&str>,
+    completed_at: Option<DateTime<Utc>>,
+    event: Option<RunEventAppend>,
+) -> Result<RunTransition> {
+    let now = Utc::now();
+    tracing::debug!(
+        "{LOG_PREFIX} transition_agent_run_status_from id={id} expected={} status={}",
+        expected.as_str(),
+        status.as_str()
+    );
+    crate::store::with_transaction(workspace_dir, |conn| {
+        init_run_ledger_schema(conn)?;
+        let rows_affected = conn
+            .execute(
+                "UPDATE agent_runs
+                 SET status = ?1, error = ?2, completed_at = ?3, updated_at = ?4
+                 WHERE id = ?5 AND status = ?6",
+                params![
+                    status.as_str(),
+                    error,
+                    completed_at.map(|dt| dt.to_rfc3339()),
+                    now.to_rfc3339(),
+                    id,
+                    expected.as_str(),
+                ],
+            )
+            .storage_context("compare-and-set agent run status")?;
+        if rows_affected == 0 {
+            let current = get_agent_run_inner(conn, id)?;
+            tracing::debug!(
+                "{LOG_PREFIX} transition_agent_run_status_from.miss id={id} current={:?}",
+                current.as_ref().map(|run| run.status.as_str())
+            );
+            return Ok(match current {
+                Some(run) => RunTransition::StatusChanged(run),
+                None => RunTransition::NotFound,
+            });
+        }
+        if let Some(event) = event {
+            append_run_event_inner(conn, event)?;
+        }
+        Ok(match get_agent_run_inner(conn, id)? {
+            Some(run) => RunTransition::Applied(run),
+            None => RunTransition::NotFound,
+        })
     })
 }
 

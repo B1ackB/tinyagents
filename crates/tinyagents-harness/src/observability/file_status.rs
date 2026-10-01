@@ -1,7 +1,7 @@
 //! Durable, file-backed [`HarnessStatusStore`] plus the run-id and redaction
 //! helpers a host needs to attach a durable journal to a run.
 //!
-//! The crate ships [`InMemoryStatusStore`], which does not survive a process
+//! The crate ships [`super::types::InMemoryStatusStore`], which does not survive a process
 //! restart. [`FileStatusStore`] overwrites one `run_status/<run_id>.json` file
 //! per run under a [`FileStore`] and answers the lineage and liveness queries
 //! by enumerating that namespace, which is what lets a supervisor reattach
@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 
 use super::HarnessStatusStore;
-use crate::error::Result;
+use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{ExecutionStatus, RunId};
 use crate::store::{FileStore, Store};
@@ -90,12 +90,22 @@ impl FileStatusStore {
     }
 
     /// Enumerate every persisted status snapshot (best-effort per record: a
-    /// corrupt or legacy record is skipped, never fatal).
+    /// corrupt or legacy record is skipped, never fatal). Malformed JSON and a
+    /// schema mismatch are both per-record decode failures; a filesystem read
+    /// error is still returned.
     async fn all(&self) -> Result<Vec<HarnessRunStatus>> {
         let keys = self.kv.list(STATUS_NS).await?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            if let Some(value) = self.kv.get(STATUS_NS, &key).await? {
+            let value = match self.kv.get(STATUS_NS, &key).await {
+                Ok(value) => value,
+                Err(TinyAgentsError::Serialization(err)) => {
+                    tracing::debug!("[journal] skipping malformed run status key={key} err={err}");
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            if let Some(value) = value {
                 match serde_json::from_value::<HarnessRunStatus>(value) {
                     Ok(status) => out.push(status),
                     Err(err) => {

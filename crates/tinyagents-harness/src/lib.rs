@@ -130,16 +130,23 @@ pub use no_progress::{
     DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD, NoProgress, NoProgressTracker,
     StreamTextStallDetector, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
 };
+pub use observability::replay::{
+    RunEventsPage, list_active_runs, read_run_events_page, read_run_status,
+};
 pub use observability::{
     AgentCallLatency, AgentLatencyMetrics, AgentObservation, FanOutSink, HarnessEventJournal,
     HarnessStatusStore, InMemoryEventJournal, InMemoryStatusStore, JournalSink, JsonlSink,
     RedactingSink, StoreEventJournal,
 };
+pub use observability::{FileStatusStore, mint_run_id, reap_orphaned_runs};
 #[cfg(feature = "langfuse")]
 pub use observability::{
     LangfuseAuth, LangfuseClient, LangfuseScore, LangfuseScoreValue, LangfuseTraceConfig,
 };
-pub use run_queue::{QueueLane, QueueMode, QueueStatus, RunQueue, RunQueueHandle};
+pub use run_queue::{
+    ForwardEvent, ForwardEventSink, ForwarderCleanup, QueueLane, QueueMode, QueueStatus,
+    QueuedMessage, RunQueue, RunQueueHandle, SteeringForwarderGuard,
+};
 pub use steering::{
     SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringOutcome, SteeringPolicy,
 };

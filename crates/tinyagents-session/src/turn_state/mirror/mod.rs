@@ -11,7 +11,7 @@
 //! On a completed turn the host sets [`TurnStateMirror::turn_completed`] so
 //! [`TurnStateMirror::finish`] leaves the snapshot alone; if the bridge exits
 //! without ever seeing completion (for example because the agent loop errored),
-//! `finish` flags the snapshot [`TurnLifecycle::Interrupted`] and carries the
+//! `finish` flags the snapshot [`crate::turn_state::types::TurnLifecycle::Interrupted`] and carries the
 //! partial streamed answer into the session transcript.
 
 pub mod caps;

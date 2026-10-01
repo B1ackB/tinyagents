@@ -356,3 +356,69 @@ fn provenance_only_tool_round_records_are_not_counted_as_turns() {
     assert_eq!(spend.root.input_tokens, 5_000);
     assert_eq!(spend.root.last_input_tokens, 5_000);
 }
+
+/// Compaction appends a record carrying the reduced context; the rows it
+/// summarised away stay in the file. Their usage is still spend, and a usage
+/// record the replacement re-carries must not count twice.
+#[test]
+fn compacted_transcript_keeps_pre_compaction_spend_and_counts_each_record_once() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-compacted";
+    let stem = "1790000004_orchestrator_compacted";
+    let root_meta = meta("orchestrator", "root", Some(thread));
+    write_transcript_turns(
+        tmp.path(),
+        stem,
+        &root_meta,
+        &[(10_000, 100, 0), (20_000, 200, 0)],
+    );
+    let path = tmp.path().join("session_raw").join(format!("{stem}.jsonl"));
+    let persisted = vec![
+        TranscriptMessage::new("user", "q0"),
+        TranscriptMessage::assistant("a0"),
+        TranscriptMessage::new("user", "q1"),
+        TranscriptMessage::assistant("a1"),
+    ];
+    // The reduced context keeps the second turn's answer, re-carrying its
+    // usage, then adds the third turn.
+    let mut kept = TranscriptMessage::assistant("a1");
+    kept.turn_usage = Some(turn_usage(20_000, 200, 0));
+    let reduced = vec![
+        TranscriptMessage::new("user", "summary of q0/a0"),
+        kept,
+        TranscriptMessage::new("user", "q2"),
+        TranscriptMessage::assistant("a2"),
+    ];
+    append_transcript_turn(
+        &path,
+        &persisted,
+        &reduced,
+        &root_meta,
+        Some(&turn_usage(30_000, 300, 0)),
+        Some("req-2"),
+    )
+    .expect("append compaction turn");
+
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 60_000);
+    assert_eq!(spend.root.output_tokens, 600);
+    assert_eq!(spend.root.turns, 3);
+    assert_eq!(spend.root.last_input_tokens, 30_000);
+}
+
+/// Two independent turns can record identical usage (same numbers, same
+/// timestamp); each appended line is its own spend and both count.
+#[test]
+fn identical_usage_on_separate_appends_counts_each_turn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let thread = "thread-twins";
+    write_transcript_turns(
+        tmp.path(),
+        "1790000005_orchestrator_twins",
+        &meta("orchestrator", "root", Some(thread)),
+        &[(1_000, 10, 0), (1_000, 10, 0)],
+    );
+    let spend = thread_spend(tmp.path(), thread);
+    assert_eq!(spend.root.input_tokens, 2_000);
+    assert_eq!(spend.root.turns, 2);
+}
