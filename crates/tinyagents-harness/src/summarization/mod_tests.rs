@@ -6,7 +6,6 @@
 //! [`SummarizationPolicy`] gating — both the raw `trigger_tokens` path and the
 //! context-window-aware `threshold_fraction` path, plus `plan` splitting.
 
-#[cfg(test)]
 mod smoke {
     use crate::summarization::{
         ConcatSummarizer, SummarizationPolicy, Summarizer, TokenTrimPolicy, TrimStrategy,
@@ -401,7 +400,6 @@ mod smoke {
 ///
 /// Before the repair landed, `plan` and all three [`TrimStrategy`] variants cut
 /// at a blind index and produced exactly those shapes.
-#[cfg(test)]
 mod pairing {
     use crate::summarization::{
         MessageRole, SummarizationPolicy, TrimOptions, TrimStrategy, tool_pairing_is_intact,
@@ -650,7 +648,6 @@ mod pairing {
 
 /// Tests for [`render_message_for_summary`] and the default summarizer built on
 /// it.
-#[cfg(test)]
 mod rendering {
     use crate::summarization::{ConcatSummarizer, Summarizer, render_message_for_summary};
     use serde_json::json;
