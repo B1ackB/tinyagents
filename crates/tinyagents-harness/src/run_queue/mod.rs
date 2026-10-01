@@ -85,6 +85,22 @@ impl<T> RunQueue<T> {
         }
     }
 
+    /// Puts `items` back at the **front** of `lane`, in their given order, as
+    /// one atomic step. Used to return items that were drained but never
+    /// delivered, so they stay ahead of anything queued after them.
+    pub async fn requeue_front(&self, lane: QueueLane, items: Vec<T>) {
+        if items.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().await;
+        let target = match lane {
+            QueueLane::Steer => &mut inner.steers,
+            QueueLane::Followup => &mut inner.followups,
+            QueueLane::Collect => &mut inner.collects,
+        };
+        target.splice(0..0, items);
+    }
+
     /// Drains one lane in FIFO order.
     pub async fn drain(&self, lane: QueueLane) -> Vec<T> {
         let mut inner = self.inner.lock().await;

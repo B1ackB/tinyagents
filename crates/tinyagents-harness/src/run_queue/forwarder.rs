@@ -156,9 +156,9 @@ async fn forward_lane<T: QueuedMessage>(
             mode,
             "[run_queue] forwarder closed mid-delivery; returned drained message(s) to the queue"
         );
-        for msg in items {
-            queue.push(lane, msg).await;
-        }
+        // Back at the front, in order: anything queued after the drain is
+        // newer and must stay behind these.
+        queue.requeue_front(lane, items).await;
         return false;
     }
     tracing::debug!(
