@@ -38,12 +38,15 @@ Product identity stays out of the crate: the host passes an `ExportBrand`
 
 ## Operational constraints
 
-- Captured content is always bounded. Tool arguments and output, error text and
-  model content are truncated to the caps above so one runaway payload cannot
-  push an ingestion batch past the backend's event size limit.
+- Captured content is always bounded per field. Tool arguments and output,
+  error text and model content are truncated to the caps above, which bounds
+  each event. It does not bound a whole batch: `split_ingestion_batch` limits
+  the event count, not serialized bytes, so a host sending to a backend with a
+  request-size limit should keep content capture conservative or chunk by
+  size itself.
 - `capture_model_content` never drops the newest message: when it alone
   exceeds the budget, a bounded preview of it is kept.
-- Langfuse rejects oversized batches, so payloads go through
+- Langfuse caps the events per ingestion request, so payloads go through
   `split_ingestion_batch` before sending.
 - Callers decide whether content capture is on at all; these helpers do not
   redact secrets. Run them on events that already passed a `RedactingSink`.

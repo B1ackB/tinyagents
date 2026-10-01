@@ -266,3 +266,17 @@ fn finish_leaves_an_unreadable_snapshot_alone_and_appends_no_partial() {
         "no partial may be appended when completion cannot be ruled out"
     );
 }
+
+#[test]
+fn late_boundary_flush_keeps_a_snapshot_the_driver_settled() {
+    let dir = tempdir().expect("tempdir");
+    let store = TurnStateStore::new(dir.path().to_path_buf());
+    let mut m = TurnStateMirror::new(store.clone(), "thr_late", "req-l");
+    let mut settled = m.state.clone();
+    settled.lifecycle = TurnLifecycle::Completed;
+    store.put(&settled).expect("settle");
+    m.state.lifecycle = TurnLifecycle::Streaming;
+    m.flush();
+    let stored = store.get_turn("thr_late", "req-l").unwrap().unwrap();
+    assert_eq!(stored.lifecycle, TurnLifecycle::Completed);
+}

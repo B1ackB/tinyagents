@@ -109,8 +109,16 @@ impl TurnStateMirror {
 
     /// Write the in-memory snapshot through to the store. Best-effort: a failed
     /// write is logged, never fatal.
+    ///
+    /// A non-terminal flush never replaces a snapshot the turn driver already
+    /// settled as `Completed`: the bridge can outlive its turn, and a late
+    /// boundary flush would otherwise resurrect a finished turn.
     pub fn flush(&mut self) {
-        if let Err(err) = self.store.put(&self.state) {
+        let result = match self.state.lifecycle {
+            TurnLifecycle::Completed => self.store.put(&self.state),
+            _ => self.store.put_unless_completed(&self.state).map(|_| ()),
+        };
+        if let Err(err) = result {
             tracing::warn!(
                 "{MIRROR_LOG_PREFIX} failed to persist snapshot for thread={}: {err}",
                 self.state.thread_id
