@@ -247,7 +247,7 @@ pub fn insert_run_telemetry_generation(
             "tool_count": telemetry.tool_count,
         },
     });
-    if per_call_usage && let Some(fields) = body.as_object_mut() {
+    if !has_uncovered_tokens && let Some(fields) = body.as_object_mut() {
         fields.remove("usageDetails");
     }
     if let Some(model) = &telemetry.model {
