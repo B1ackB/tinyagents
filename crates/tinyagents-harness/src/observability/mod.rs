@@ -369,10 +369,26 @@ impl<A: AppendStore + 'static> HarnessEventJournal for StoreEventJournal<A> {
         offset: u64,
         limit: usize,
     ) -> Result<Vec<AgentObservation>> {
+        Ok(self
+            .read_window_positioned(run_id, offset, limit)
+            .await?
+            .into_iter()
+            .map(|(_offset, obs)| obs)
+            .collect())
+    }
+
+    async fn read_window_positioned(
+        &self,
+        run_id: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, AgentObservation)>> {
+        // The store reports each entry's own offset, which is what a pager
+        // must continue from when an evicting store resumed past `offset`.
         let raw = self.store.read_window(run_id, offset, limit).await?;
         let mut out = Vec::with_capacity(raw.len());
-        for (_offset, value) in raw {
-            out.push(serde_json::from_value(value)?);
+        for (position, value) in raw {
+            out.push((position, serde_json::from_value(value)?));
         }
         Ok(out)
     }
