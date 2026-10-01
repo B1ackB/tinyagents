@@ -249,7 +249,7 @@ fn format_wait_tick(request: &WaitRequest, loop_mode: bool) -> String {
                 "message": request.message,
                 "duration_ms": request.duration_ms,
                 "loop_key": request.loop_key,
-                "iteration": request.iteration + 1
+                "iteration": request.iteration.saturating_add(1)
             }
         })
     });
