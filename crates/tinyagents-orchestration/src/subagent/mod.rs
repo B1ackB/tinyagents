@@ -9,6 +9,7 @@
 //! Dependency direction remains `orchestration -> {harness, runtime}`. Lower
 //! TinyAgents layers must not depend on this module.
 
+mod detached;
 mod driver;
 mod executor;
 mod invocation;
@@ -16,6 +17,15 @@ mod persistence;
 mod planner;
 mod types;
 
+pub use detached::{
+    DETACHED_LEDGER_TIMEOUT_MS, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
+    SubagentIdentity, SubagentResumeRef, SubagentSnapshot, WaitError, WaitOutcome,
+    list_subagent_records, orphaned_subagent_reason, record_agent_id, record_cancelled,
+    record_parent_session, record_spawned, record_status, record_subagent_session_id,
+    record_to_wait_outcome, resume_ref_for_task, resume_ref_from_record, snapshot_for_owner,
+    spawn_status_watcher, subagent_record_for_task, task_id_for_session,
+    task_id_for_session_in_records, task_status_label, wait_detached, wait_error_from_registry,
+};
 pub use driver::{SubagentCapabilities, SubagentDriver};
 pub use executor::SubagentExecutor;
 pub use invocation::{
