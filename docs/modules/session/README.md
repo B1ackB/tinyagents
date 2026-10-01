@@ -108,18 +108,20 @@ the structure lives in fields. An assistant row's `tool_calls` carries its
 native tool calls, a tool row's `tool_call_id` names the call it answers, and
 a user row's `parts` holds ordered text and image parts. Rows read from older
 transcripts (an envelope or `[OH_IMAGE:]` marker inside `content`) are
-normalized into the same fields by the readers.
+normalized into the same fields by the readers, so a host that still builds
+string rows keeps working.
 
-`system`/`user`/`assistant` map to their typed counterparts, with an assistant
-entry's `tool_calls` carried over. A `tool` row with a `tool_call_id` converts
-to a tool message for that call, and image parts become image content blocks.
-Any other role, or a `tool` row with no recoverable id, is carried through as
-`Message::Custom{kind: "legacy:{role}", payload: {"content": ...}, display:
-Some(content)}` so no content is silently dropped.
-`TranscriptMessage::legacy_content()` rebuilds the old string form for the
-adapters that must keep writing it. A host that builds string rows keeps
-working, because they are lifted on read; `EntryKind::Custom` is no longer
-needed just to keep tool-call fidelity.
+The `Message` conversion for entry-tree context is still deliberately lossy:
+it maps each row to one text content block holding
+`TranscriptMessage::legacy_content()` (the old envelope or marker string, so
+the structure is preserved inside the text), and an assistant entry's
+`tool_calls` stay empty. `system`/`user`/`assistant` map to their typed
+counterparts; any other role, including `tool`, is carried through as
+`Message::Custom{kind: "legacy:{role}", payload: {"content": ...},
+display: Some(content)}` so no content is silently dropped. A host that needs
+typed tool-call fidelity in a projected context should read the typed fields
+of the `TranscriptMessage` directly, or keep the call id on the entry via
+`EntryKind::Custom`.
 
 ## Fork semantics
 
