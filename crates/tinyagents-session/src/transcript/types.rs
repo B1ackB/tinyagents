@@ -340,7 +340,34 @@ impl TranscriptMessage {
     /// they are enriched between the in-memory and the persisted row.
     #[must_use]
     pub fn same_row_as(&self, other: &Self) -> bool {
-        self.id == other.id && self.same_structure_as(other)
+        // A legacy string row and the typed row lifted from it are the same
+        // row; compare them in one normal form.
+        let left = self.clone().normalized();
+        let right = other.clone().normalized();
+        left.id == right.id && left.same_structure_as(&right)
+    }
+
+    /// The row as it was *before* normalization lifted it: `content` holds the
+    /// original legacy string and the typed fields are empty. `None` when the
+    /// row was not lifted from a legacy string, or has been edited since (its
+    /// structure no longer matches what that string parses to).
+    ///
+    /// The JSONL writer stores such a row from this form, so a non-canonical
+    /// envelope (embedded reasoning, extra keys) survives a read and rewrite
+    /// byte for byte instead of being re-encoded from the lifted fields.
+    pub(crate) fn unlifted(&self) -> Option<Self> {
+        let raw = self.legacy.0.as_deref()?;
+        let lifted = Self::new(self.role.clone(), raw).normalized();
+        if !lifted.same_structure_as(self) {
+            return None;
+        }
+        let mut row = self.clone();
+        row.content = raw.to_string();
+        row.tool_calls = Vec::new();
+        row.tool_call_id = None;
+        row.parts = None;
+        row.legacy = LegacyText::default();
+        Some(row)
     }
 
     /// [`Self::same_row_as`] without the id.

@@ -286,6 +286,10 @@ pub(super) fn build_message_line(
     request_id: Option<&str>,
     interrupted: bool,
 ) -> MessageLine {
+    // A row lifted from a legacy string and not edited since is stored from
+    // that string, so a non-canonical envelope is never re-encoded lossily.
+    let unlifted = msg.unlifted();
+    let msg = unlifted.as_ref().unwrap_or(msg);
     let assistant_usage = if msg.role == "assistant" {
         turn_usage
     } else {
