@@ -189,6 +189,18 @@ pub fn insert_run_telemetry_generation(
     }) {
         return false;
     }
+    // Per-call token usage is likewise already summed by Langfuse. When any
+    // generation carries it, the aggregate contributes only the cost it would
+    // otherwise be missing, never the tokens a second time.
+    let per_call_usage = batch.iter().any(|event| {
+        event["type"] == "generation-create"
+            && event["body"]["usageDetails"]
+                .as_object()
+                .is_some_and(|usage| !usage.is_empty())
+    });
+    if per_call_usage && telemetry.cost_usd == 0.0 {
+        return false;
+    }
     let Some(trace_id) = batch
         .first()
         .and_then(|event| event.get("body"))
@@ -235,6 +247,11 @@ pub fn insert_run_telemetry_generation(
             "tool_count": telemetry.tool_count,
         },
     });
+    if per_call_usage
+        && let Some(fields) = body.as_object_mut()
+    {
+        fields.remove("usageDetails");
+    }
     if let Some(model) = &telemetry.model {
         body["model"] = json!(model);
     }

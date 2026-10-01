@@ -234,7 +234,7 @@ fn run_telemetry_inserts_aggregate_generation() {
         AgentEvent::ModelCompleted {
             call_id: CallId::new("model-1"),
             started_at_ms: Some(1_000),
-            usage: Some(Usage::new(100, 20)),
+            usage: None,
             input: None,
             output: None,
         },
@@ -282,6 +282,56 @@ fn run_telemetry_inserts_aggregate_generation() {
     assert_eq!(body["metadata"]["tool_count"], 2);
     assert_eq!(body["metadata"]["provider"], "managed");
 
+    // Per-call usage present: the aggregate adds only the missing cost.
+    let with_usage = vec![obs(
+        1,
+        AgentEvent::ModelCompleted {
+            call_id: CallId::new("model-1"),
+            started_at_ms: Some(1_000),
+            usage: Some(Usage::new(100, 20)),
+            input: None,
+            output: None,
+        },
+    )];
+    let mut cost_only = client
+        .build_ingestion_batch(
+            trace_config_from_context(
+                &TraceContext::new("trace:req-1", None),
+                "production",
+                &BRAND,
+            ),
+            &with_usage,
+        )
+        .unwrap();
+    assert!(insert_run_telemetry_generation(
+        &mut cost_only,
+        Some(&telemetry),
+        &BRAND
+    ));
+    let body = &cost_only["batch"][1]["body"];
+    assert_eq!(body["name"], "run.total");
+    assert!(body.get("usageDetails").is_none(), "tokens counted twice");
+    assert_eq!(body["costDetails"]["total"], 0.0123);
+    let mut no_cost = client
+        .build_ingestion_batch(
+            trace_config_from_context(
+                &TraceContext::new("trace:req-1", None),
+                "production",
+                &BRAND,
+            ),
+            &with_usage,
+        )
+        .unwrap();
+    let zero_cost = RunTotals {
+        cost_usd: 0.0,
+        ..telemetry.clone()
+    };
+    assert!(!insert_run_telemetry_generation(
+        &mut no_cost,
+        Some(&zero_cost),
+        &BRAND
+    ));
+
     let mut already_charged = client
         .build_ingestion_batch(
             trace_config_from_context(
@@ -289,7 +339,7 @@ fn run_telemetry_inserts_aggregate_generation() {
                 "production",
                 &BRAND,
             ),
-            &observations,
+            &with_usage,
         )
         .unwrap();
     already_charged["batch"][2]["body"]["costDetails"] = json!({ "total": 0.0123 });
