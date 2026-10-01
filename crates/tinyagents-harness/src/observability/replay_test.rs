@@ -122,3 +122,31 @@ async fn list_active_runs_returns_started_and_filters() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn page_cursor_stays_in_journal_offset_space_across_dropped_events() {
+    use crate::observability::InMemoryEventJournal;
+    let journal = InMemoryEventJournal::new();
+    // The sink numbered these 0, 10, 11: events 1..=9 never reached the
+    // journal, which stores them at positions 0, 1, 2.
+    for sink_offset in [0u64, 10, 11] {
+        let mut obs = AgentObservation::new(
+            "run-gap",
+            None,
+            None,
+            AgentEvent::ToolStarted {
+                call_id: format!("c{sink_offset}").into(),
+                tool_name: "t".into(),
+                input: None,
+            },
+        );
+        obs.offset = sink_offset;
+        journal.append(obs).await.unwrap();
+    }
+    let page1 = read_run_events_page(&journal, "run-gap", 0, 1).await.unwrap();
+    assert_eq!(page1.next_offset, Some(1));
+    let page2 = read_run_events_page(&journal, "run-gap", 1, 1).await.unwrap();
+    assert_eq!(page2.events.len(), 1);
+    assert_eq!(page2.events[0].offset, 10, "no persisted entry is skipped");
+    assert_eq!(page2.next_offset, Some(2));
+}
