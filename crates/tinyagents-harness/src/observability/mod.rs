@@ -362,6 +362,20 @@ impl<A: AppendStore + 'static> HarnessEventJournal for StoreEventJournal<A> {
         }
         Ok(out)
     }
+
+    async fn read_window(
+        &self,
+        run_id: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<AgentObservation>> {
+        let raw = self.store.read_window(run_id, offset, limit).await?;
+        let mut out = Vec::with_capacity(raw.len());
+        for (_offset, value) in raw {
+            out.push(serde_json::from_value(value)?);
+        }
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------

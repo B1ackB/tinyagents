@@ -309,6 +309,30 @@ impl AppendStore for InMemoryAppendStore {
             .collect())
     }
 
+    async fn read_window(
+        &self,
+        stream: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, Value)>> {
+        let streams = self
+            .streams
+            .lock()
+            .map_err(|e| TinyAgentsError::Validation(format!("append store lock poisoned: {e}")))?;
+        let Some(buf) = streams.get(stream) else {
+            return Ok(Vec::new());
+        };
+        let skip = offset.saturating_sub(buf.base_offset) as usize;
+        Ok(buf
+            .entries
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .take(limit)
+            .map(|(i, (_ts, value))| (buf.base_offset + i as u64, value.clone()))
+            .collect())
+    }
+
     async fn len(&self, stream: &str) -> Result<u64> {
         let streams = self
             .streams
@@ -545,6 +569,55 @@ impl AppendStore for JsonlAppendStore {
             .filter(|r| r.offset >= offset)
             .map(|r| (r.offset, r.value))
             .collect())
+    }
+
+    async fn read_window(
+        &self,
+        stream: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, Value)>> {
+        let path = self.stream_path(stream)?;
+        // Stream the file line by line and stop once `limit` entries are in
+        // hand. Lines before the window are decoded only far enough to read
+        // their offset, so a page never allocates for the rest of the stream.
+        crate::blocking::run_blocking(move || -> Result<Vec<(u64, Value)>> {
+            #[derive(serde::Deserialize)]
+            struct OffsetOnly {
+                offset: u64,
+            }
+            let file = match fs::File::open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(e) => {
+                    return Err(TinyAgentsError::Validation(format!(
+                        "append store read error: {e}"
+                    )));
+                }
+            };
+            let mut out = Vec::new();
+            if limit == 0 {
+                return Ok(out);
+            }
+            for line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+                let line = line.map_err(|e| {
+                    TinyAgentsError::Validation(format!("append store read error: {e}"))
+                })?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if serde_json::from_str::<OffsetOnly>(&line)?.offset < offset {
+                    continue;
+                }
+                let record: StoreRecord = serde_json::from_str(&line)?;
+                out.push((record.offset, record.value));
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            Ok(out)
+        })
+        .await
     }
 
     async fn len(&self, stream: &str) -> Result<u64> {

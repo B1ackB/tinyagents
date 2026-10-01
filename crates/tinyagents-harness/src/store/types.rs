@@ -81,6 +81,21 @@ pub trait AppendStore: Send + Sync {
     /// `Vec` rather than an error.
     async fn read_from(&self, stream: &str, offset: u64) -> Result<Vec<(u64, Value)>>;
 
+    /// Returns at most `limit` entries of `stream` whose offset is `>= offset`,
+    /// in offset order. The default reads from `offset` and truncates;
+    /// backends override it so a bounded read never materialises the whole
+    /// tail.
+    async fn read_window(
+        &self,
+        stream: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, Value)>> {
+        let mut entries = self.read_from(stream, offset).await?;
+        entries.truncate(limit);
+        Ok(entries)
+    }
+
     /// Returns the number of entries currently stored in `stream`.
     ///
     /// This equals the offset the next [`append`](Self::append) will receive.
