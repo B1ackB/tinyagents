@@ -113,14 +113,15 @@ pub fn build_descriptor(
 /// a parameter instead of assuming a message type.
 pub type JournalProjector = fn(TranscriptMessage) -> JournalMessage;
 
-/// Neutral projector: copies `id`, `role`, `content` and `extra_metadata`
-/// verbatim and adds nothing. For hosts with no message-shape sidecars, and for
+/// Neutral projector: copies `id`, `role`, the row's legacy string `content`
+/// ([`TranscriptMessage::legacy_content`]: a tool round or image stays in the
+/// journal's established string form) and `extra_metadata`, and adds nothing. For hosts with no message-shape sidecars, and for
 /// tests.
 pub fn plain_journal_message(message: TranscriptMessage) -> JournalMessage {
     JournalMessage {
+        content: message.legacy_content(),
         id: message.id,
         role: message.role,
-        content: message.content,
         extra_metadata: message.extra_metadata,
     }
 }

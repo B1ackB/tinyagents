@@ -808,7 +808,13 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         let previous_len = self.persisted.len();
         let next_len = raw.len();
         let common_len = previous_len.min(next_len);
-        let extends = next_len >= previous_len && raw[..common_len] == self.persisted[..common_len];
+        // Compare in normalized form: a legacy-string row from the host and the
+        // typed row the transcript lifted from it are the same row.
+        let extends = next_len >= previous_len
+            && raw[..common_len]
+                .iter()
+                .zip(&self.persisted[..common_len])
+                .all(|(next, previous)| next.clone().normalized() == previous.clone().normalized());
 
         // A turn that no longer extends what is persisted is a compaction. For
         // a session-bound target that seals the current generation and opens
