@@ -178,12 +178,28 @@ pub(super) struct MessageLine {
     /// The answered call id of a `tool_result` row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tool_call_id: Option<String>,
-    /// The ordered text/image parts of a `user_parts` row.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The ordered text/image parts of a `user_parts` row. A part kind this
+    /// reader does not know (a future typed-row version) reads as `None`, so
+    /// the row keeps its stored `content` instead of being dropped.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_parts"
+    )]
     pub(super) parts: Option<Vec<TypedPart>>,
     /// Absorb any unknown fields so forward-compat reads don't error.
     #[serde(flatten)]
     pub(super) _extra: HashMap<String, serde_json::Value>,
+}
+
+/// Deserialises `parts`, mapping any shape this reader cannot decode (an
+/// unknown part variant) to `None` rather than failing the whole line.
+fn lenient_parts<'de, D>(deserializer: D) -> Result<Option<Vec<TypedPart>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// A compaction record: `{"kind":"compaction","replacement":[…]}`.
@@ -492,7 +508,7 @@ fn rebuild_content(
 /// one. An unknown future `shape` (or one whose fields are missing) keeps the
 /// stored string.
 fn content_from_line(ml: &MessageLine) -> String {
-    if ml.row_version < TYPED_ROW_VERSION {
+    if ml.row_version != TYPED_ROW_VERSION {
         return ml.content.clone();
     }
     let Some(shape) = ml.shape.as_deref().and_then(TypedShape::parse) else {
