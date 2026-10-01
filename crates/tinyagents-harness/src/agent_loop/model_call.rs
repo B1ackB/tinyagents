@@ -63,10 +63,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let (budget, bound) = self.model_call_budget(ctx);
         // Set only when the wrapper's own deadline fires, so a `Timeout` the
         // resolver itself returned is never mistaken for the per-call ceiling.
-        let wrapper_expired = std::cell::Cell::new(false);
+        let wrapper_expired = std::sync::atomic::AtomicBool::new(false);
         let model = ctx
             .bounded(budget, resolution, || {
-                wrapper_expired.set(true);
+                wrapper_expired.store(true, std::sync::atomic::Ordering::SeqCst);
                 format!(
                     "host model resolution for run `{}` exceeded its {bound}",
                     ctx.run_id()
@@ -78,7 +78,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // per-model-call ceiling was the tighter bound, surface it as
                 // `CallTimeout` so the run is not mistaken for out of time.
                 TinyAgentsError::Timeout(message)
-                    if wrapper_expired.get() && bound == PER_CALL_BOUND_LABEL =>
+                    if wrapper_expired.load(std::sync::atomic::Ordering::SeqCst)
+                        && bound == PER_CALL_BOUND_LABEL =>
                 {
                     TinyAgentsError::CallTimeout(message)
                 }
