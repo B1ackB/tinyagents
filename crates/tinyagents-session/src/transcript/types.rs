@@ -85,6 +85,7 @@ const DISPLAY_IMAGE_PREFIX: &str = "[IMAGE:";
 /// readers ([`Self::normalized`]); [`Self::legacy_content`] rebuilds the old
 /// string for the few places that must keep writing it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(into = "TranscriptMessageWire")]
 pub struct TranscriptMessage {
     #[serde(default)]
     pub id: Option<String>,
@@ -101,9 +102,10 @@ pub struct TranscriptMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<TranscriptPart>>,
     /// The legacy string this row was lifted from, if any; see [`LegacyText`].
-    /// Serialized so a store that round-trips the row through serde (the entry
-    /// tree) keeps the original bytes of a non-canonical envelope.
-    #[serde(default, skip_serializing_if = "LegacyText::is_none")]
+    /// Serialized (only while it still describes the row; see
+    /// [`TranscriptMessageWire`]) so a store that round-trips the row through
+    /// serde keeps the original bytes of a non-canonical envelope.
+    #[serde(default)]
     pub legacy: LegacyText,
     #[serde(default)]
     pub extra_metadata: Option<serde_json::Value>,
@@ -387,6 +389,63 @@ impl TranscriptMessage {
             && self.tool_calls == other.tool_calls
             && self.tool_call_id == other.tool_call_id
             && self.parts == other.parts
+    }
+}
+
+/// The serialized form of a [`TranscriptMessage`].
+///
+/// Identical to the row's own fields, except that the `legacy` memo is written
+/// only while the row still means what that string parses to. An edit (a
+/// redaction, a replacement) clears it, so the superseded text is never
+/// serialized alongside the new content.
+#[derive(Serialize)]
+struct TranscriptMessageWire {
+    id: Option<String>,
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<TranscriptToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parts: Option<Vec<TranscriptPart>>,
+    #[serde(skip_serializing_if = "LegacyText::is_none")]
+    legacy: LegacyText,
+    extra_metadata: Option<serde_json::Value>,
+    cache_breakpoints: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_usage: Option<TurnUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    preserve_request_id: bool,
+    interrupted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_failure: Option<ToolFailure>,
+}
+
+impl From<TranscriptMessage> for TranscriptMessageWire {
+    fn from(row: TranscriptMessage) -> Self {
+        let legacy = if row.unlifted().is_some() {
+            row.legacy
+        } else {
+            LegacyText::default()
+        };
+        Self {
+            id: row.id,
+            role: row.role,
+            content: row.content,
+            tool_calls: row.tool_calls,
+            tool_call_id: row.tool_call_id,
+            parts: row.parts,
+            legacy,
+            extra_metadata: row.extra_metadata,
+            cache_breakpoints: row.cache_breakpoints,
+            turn_usage: row.turn_usage,
+            request_id: row.request_id,
+            preserve_request_id: row.preserve_request_id,
+            interrupted: row.interrupted,
+            tool_failure: row.tool_failure,
+        }
     }
 }
 

@@ -475,3 +475,31 @@ fn a_lifted_rows_original_string_survives_a_serde_round_trip() {
     let plain = serde_json::to_value(TranscriptMessage::user("hi")).unwrap();
     assert!(plain.get("legacy").is_none());
 }
+
+#[test]
+fn an_edited_lifted_row_does_not_serialize_its_superseded_text() {
+    let envelope = encode_assistant_envelope(Some("secret"), &[call("c1", None)], Some("why"));
+    let mut row = TranscriptMessage::from_legacy("assistant", envelope);
+    row.content = "[redacted]".into();
+    let json = serde_json::to_string(&row).unwrap();
+    assert!(!json.contains("secret"), "{json}");
+    assert!(!json.contains("why"), "{json}");
+    let back: TranscriptMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.content, "[redacted]");
+}
+
+#[test]
+fn rows_from_a_newer_version_are_not_normalized() {
+    let dir = tempdir().unwrap();
+    let path = resolve_keyed_transcript_path(dir.path(), "v3-opaque").unwrap();
+    let body = concat!(
+        r#"{"_meta":{"agent":"a","dispatcher":"native","created":"c","updated":"u","turn_count":0,"input_tokens":0,"output_tokens":0,"cached_input_tokens":0,"charged_amount_usd":0.0}}"#,
+        "\n",
+        r#"{"v":3,"role":"user","content":"look [OH_IMAGE:data:image/png;base64,AA] here"}"#,
+        "\n",
+    );
+    fs::write(&path, body).unwrap();
+    let row = &read_transcript(&path).unwrap().messages[0];
+    assert!(row.parts.is_none());
+    assert_eq!(row.content, "look [OH_IMAGE:data:image/png;base64,AA] here");
+}

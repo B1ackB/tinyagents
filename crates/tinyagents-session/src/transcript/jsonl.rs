@@ -559,6 +559,12 @@ fn row_from_line(ml: &MessageLine) -> TranscriptMessage {
             return row;
         }
     }
+    // A row from a newer writer belongs to a schema this reader does not
+    // know: its stored content stays opaque rather than being re-read through
+    // today's legacy conventions.
+    if ml.row_version > TYPED_ROW_VERSION {
+        return row;
+    }
     row.normalized()
 }
 
