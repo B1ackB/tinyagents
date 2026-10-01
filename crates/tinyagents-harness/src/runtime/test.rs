@@ -1142,6 +1142,7 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
 
 #[test]
 fn hosted_timeout_round_trip_preserves_the_bound() {
+    use crate::error::TinyAgentsError;
     use crate::runtime::{HostedError, HostedErrorKind, TimeoutBound};
     let hosted = |bound| HostedError {
         kind: HostedErrorKind::Timeout,
