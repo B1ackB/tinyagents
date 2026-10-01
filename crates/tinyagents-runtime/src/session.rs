@@ -814,7 +814,10 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             && raw[..common_len]
                 .iter()
                 .zip(&self.persisted[..common_len])
-                .all(|(next, previous)| next.clone().normalized() == previous.clone().normalized());
+                .all(|(next, previous)| {
+                    next.same_row_as(previous)
+                        && next.clone().normalized() == previous.clone().normalized()
+                });
 
         // A turn that no longer extends what is persisted is a compaction. For
         // a session-bound target that seals the current generation and opens
