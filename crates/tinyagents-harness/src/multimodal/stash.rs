@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use super::{data_uri, mime};
@@ -41,9 +42,24 @@ impl AttachmentStash {
     /// by `id`. Atomic (temp file + rename); deduped (an existing target only
     /// has its mtime refreshed). Returns the written path. After a fresh write,
     /// enforces the size cap.
+    ///
+    /// `id` must be a single filename component of ASCII letters, digits, `-`
+    /// and `_`, so it can never name a path outside the stash. An attachment
+    /// larger than the whole cap is rejected before anything is written or
+    /// evicted.
     pub async fn write(&self, id: &str, data_uri_text: &str) -> anyhow::Result<PathBuf> {
+        if !is_safe_id(id) {
+            anyhow::bail!("invalid attachment id: must be non-empty [A-Za-z0-9_-]");
+        }
         let parsed = data_uri::parse_data_uri(data_uri_text)
             .map_err(|reason| anyhow::anyhow!("cannot decode stashed data URI: {reason}"))?;
+        let size = parsed.bytes.len() as u64;
+        if size > self.max_bytes {
+            anyhow::bail!(
+                "attachment of {size} bytes exceeds the stash cap of {} bytes",
+                self.max_bytes
+            );
+        }
         let ext = mime::image_ext_from_mime(&parsed.mime).unwrap_or("img");
         tokio::fs::create_dir_all(&self.dir).await?;
         let final_path = self.dir.join(format!("{id}.{ext}"));
@@ -60,9 +76,22 @@ impl AttachmentStash {
             .await??;
             return Ok(final_path);
         }
-        let tmp_path = self.dir.join(format!(".{id}.{ext}.tmp"));
-        tokio::fs::write(&tmp_path, &parsed.bytes).await?;
-        tokio::fs::rename(&tmp_path, &final_path).await?;
+        // A distinct temp file per write: two concurrent writes of one id must
+        // not share (and then race to rename) a single source path.
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .dir
+            .join(format!(".{id}.{ext}.{}.{seq}.tmp", std::process::id()));
+        let published = async {
+            tokio::fs::write(&tmp_path, &parsed.bytes).await?;
+            tokio::fs::rename(&tmp_path, &final_path).await
+        }
+        .await;
+        if let Err(error) = published {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(error.into());
+        }
         self.enforce_cap().await;
         Ok(final_path)
     }
@@ -168,6 +197,15 @@ impl AttachmentStash {
         let root = self.dir.canonicalize().ok()?;
         candidate.starts_with(root).then_some(candidate)
     }
+}
+
+/// Whether `id` is a single, non-empty filename component made only of ASCII
+/// letters, digits, `-` and `_`.
+fn is_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]

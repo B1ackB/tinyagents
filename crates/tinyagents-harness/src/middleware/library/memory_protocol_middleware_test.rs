@@ -211,3 +211,73 @@ async fn second_write_without_an_update_flags_index_drift() {
         result_text(&second)
     );
 }
+
+fn ctx_for(run_id: &str) -> RunContext {
+    RunContext::new(RunConfig::new(run_id), ())
+}
+
+#[tokio::test]
+async fn protocol_state_is_isolated_per_run() {
+    let mw = MemoryProtocolMiddleware::new(spec());
+    // Run A reads the index (satisfies its dedupe read) …
+    let mut read = TaToolCall {
+        id: "a1".into(),
+        name: "memory_recall".into(),
+        arguments: json!({}),
+        invalid: None,
+    };
+    mw.before_tool(&mut ctx_for("run-a"), &(), &mut read)
+        .await
+        .unwrap();
+    let mut read_result = TaToolResult::success("recalled");
+    mw.after_tool(
+        &mut ctx_for("run-a"),
+        &(),
+        &ToolInvocationIdentity::new("a1", "memory_recall"),
+        &mut read_result,
+    )
+    .await
+    .unwrap();
+
+    // … which must not excuse run B's write from the missing-read note.
+    let mut write = TaToolCall {
+        id: "b1".into(),
+        name: "memory_store".into(),
+        arguments: json!({}),
+        invalid: None,
+    };
+    mw.before_tool(&mut ctx_for("run-b"), &(), &mut write)
+        .await
+        .unwrap();
+    let mut write_result = TaToolResult::success("stored");
+    mw.after_tool(
+        &mut ctx_for("run-b"),
+        &(),
+        &ToolInvocationIdentity::new("b1", "memory_store"),
+        &mut write_result,
+    )
+    .await
+    .unwrap();
+    assert!(result_text(&write_result).contains(MEMORY_PROTOCOL_MARKER));
+}
+
+#[tokio::test]
+async fn after_agent_releases_state_left_by_calls_that_never_executed() {
+    let mw = MemoryProtocolMiddleware::new(spec());
+    // A memory call admission stopped: before_tool ran, after_tool never did.
+    let mut call = TaToolCall {
+        id: "rejected".into(),
+        name: "memory_store".into(),
+        arguments: json!({}),
+        invalid: None,
+    };
+    mw.before_tool(&mut ctx_for("run-x"), &(), &mut call)
+        .await
+        .unwrap();
+    assert_eq!(mw.tracked_runs(), 1);
+    let mut run = AgentRun::new();
+    mw.after_agent(&mut ctx_for("run-x"), &(), &mut run)
+        .await
+        .unwrap();
+    assert_eq!(mw.tracked_runs(), 0);
+}
