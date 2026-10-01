@@ -115,7 +115,7 @@ fn status_labels_and_outcomes_are_literal() {
 #[test]
 fn ledger_record_has_literal_metadata_and_status_mirroring() {
     let store = InMemoryTaskStore::new();
-    record_spawned(&store, &spawned("t1"));
+    record_spawned(&store, &spawned("t1")).unwrap();
     let rec = store.get(&TaskId::new("t1")).unwrap();
     assert_eq!(rec.status, OrchestrationTaskStatus::Running);
     assert_eq!(rec.spec.timeout_ms, Some(120_000));
@@ -162,7 +162,7 @@ fn ledger_record_has_literal_metadata_and_status_mirroring() {
     let rec = store.get(&TaskId::new("t1")).unwrap();
     assert_eq!(rec.status, OrchestrationTaskStatus::Completed);
 
-    record_spawned(&store, &spawned("t2"));
+    record_spawned(&store, &spawned("t2")).unwrap();
     record_cancelled(&store, "t2");
     assert_eq!(
         store.get(&TaskId::new("t2")).unwrap().status,
@@ -176,7 +176,7 @@ fn root_run_falls_back_to_parent_session() {
     let store = InMemoryTaskStore::new();
     let mut s = spawned("t1");
     s.session_parent_prefix = None;
-    record_spawned(&store, &s);
+    record_spawned(&store, &s).unwrap();
     let rec = store.get(&TaskId::new("t1")).unwrap();
     assert_eq!(rec.spec.metadata.get("rootSession").unwrap(), "p1");
     assert!(!rec.spec.metadata.contains_key("sessionParentPrefix"));
@@ -262,8 +262,8 @@ fn status_labels_for_durable_statuses() {
 #[tokio::test]
 async fn watcher_mirrors_terminal_and_dropped_sender() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
-    record_spawned(store.as_ref(), &spawned("w1"));
-    record_spawned(store.as_ref(), &spawned("w2"));
+    record_spawned(store.as_ref(), &spawned("w1")).unwrap();
+    record_spawned(store.as_ref(), &spawned("w2")).unwrap();
     let (tx1, rx1) = watch::channel(DetachedSubagentStatus::Running);
     let (tx2, rx2) = watch::channel(DetachedSubagentStatus::Running);
     spawn_status_watcher(store.clone(), "w1".into(), rx1);
@@ -402,7 +402,7 @@ async fn roster_resolution_and_resume_refs() {
     })
     .unwrap();
 
-    let snap = snapshot_for_owner(&reg, "p1");
+    let snap = snapshot_for_owner(&reg, "p1").unwrap();
     assert_eq!(
         snap,
         vec![
@@ -478,7 +478,7 @@ async fn live_task_preferred_over_terminal_for_same_session() {
 #[test]
 fn session_resolution_from_durable_records() {
     let store = InMemoryTaskStore::new();
-    record_spawned(&store, &spawned("d1"));
+    record_spawned(&store, &spawned("d1")).unwrap();
     let records = list_subagent_records(&store);
     assert_eq!(
         task_id_for_session_in_records(records.clone(), "sub-1", "p1").unwrap(),
@@ -495,4 +495,51 @@ fn session_resolution_from_durable_records() {
     let r = resume_ref_from_record("d1", &records[0]);
     assert_eq!(r.agent_id, "researcher");
     assert_eq!(r.subagent_session_id.as_deref(), Some("sub-1"));
+}
+
+#[test]
+fn awaiting_question_is_persisted_and_read_back() {
+    let store = InMemoryTaskStore::new();
+    record_spawned(&store, &spawned("q1")).unwrap();
+    record_status(
+        &store,
+        "q1",
+        &DetachedSubagentStatus::AwaitingUser {
+            question: "which branch?".into(),
+        },
+    );
+    let rec = subagent_record_for_task(&store, "q1", "p1").unwrap();
+    assert_eq!(rec.status, OrchestrationTaskStatus::Awaiting);
+    assert_eq!(
+        format!("{:?}", record_to_wait_outcome(rec)),
+        "Terminal(AwaitingUser { question: \"which branch?\" })"
+    );
+}
+
+#[test]
+fn reused_task_id_surfaces_the_insert_failure_and_leaves_the_record() {
+    let store = InMemoryTaskStore::new();
+    record_spawned(&store, &spawned("dup")).unwrap();
+    record_status(
+        &store,
+        "dup",
+        &DetachedSubagentStatus::Completed {
+            output: "old".into(),
+            iterations: 1,
+        },
+    );
+    assert!(record_spawned(&store, &spawned("dup")).is_err());
+    let rec = store.get(&TaskId::new("dup")).unwrap();
+    assert_eq!(rec.status, OrchestrationTaskStatus::Completed);
+}
+
+#[test]
+fn registry_errors_map_onto_wait_errors() {
+    use tinyagents_graph::orchestration::DetachedTaskRegistryError as E;
+    assert_eq!(WaitError::from(E::NotOwned), WaitError::NotOwned);
+    assert_eq!(
+        WaitError::from(E::LockPoisoned),
+        WaitError::RegistryPoisoned
+    );
+    assert_eq!(WaitError::from(E::AlreadyDone), WaitError::Unknown);
 }
