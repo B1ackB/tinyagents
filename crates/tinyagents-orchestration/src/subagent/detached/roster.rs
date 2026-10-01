@@ -2,52 +2,22 @@ use tinyagents_graph::orchestration::{DetachedTaskRegistry, OrchestrationTaskRec
 use tinyagents_harness::ids::TaskId;
 
 use super::ledger::{record_agent_id, record_parent_session, record_subagent_session_id};
-use super::status::{DetachedSubagentStatus, WaitError, wait_error_from_registry};
-
-/// What a host's registry metadata must expose for roster and resolution.
-pub trait SubagentIdentity {
-    /// Worker type (not unique across parallel workers).
-    fn agent_id(&self) -> &str;
-    /// Durable, stable per-worker reference, if any.
-    fn subagent_session_id(&self) -> Option<&str>;
-}
-
-/// Compact, read-only view of one registered subagent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubagentSnapshot {
-    /// Worker type.
-    pub agent_id: String,
-    /// Durable per-worker reference.
-    pub subagent_session_id: Option<String>,
-    /// Transient registry key.
-    pub task_id: String,
-    /// Stable status label (see [`DetachedSubagentStatus::label`]).
-    pub status: &'static str,
-}
-
-/// A subagent addressed for resumption.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubagentResumeRef {
-    /// Transient task id.
-    pub task_id: String,
-    /// Worker type.
-    pub agent_id: String,
-    /// Durable per-worker reference.
-    pub subagent_session_id: Option<String>,
-}
+use super::types::{
+    DetachedSubagentStatus, SubagentIdentity, SubagentResumeRef, SubagentSnapshot, WaitError,
+};
 
 /// Snapshot the subagents registered under `owner`, with live status, ordered
 /// by `agent_id` then `task_id` so a rendered roster is stable across turns.
+/// A poisoned registry lock surfaces as [`WaitError::RegistryPoisoned`].
 pub fn snapshot_for_owner<M>(
     registry: &DetachedTaskRegistry<M, DetachedSubagentStatus>,
     owner: &str,
-) -> Vec<SubagentSnapshot>
+) -> Result<Vec<SubagentSnapshot>, WaitError>
 where
     M: SubagentIdentity + Clone + Send + Sync + 'static,
 {
     let mut out: Vec<SubagentSnapshot> = registry
-        .snapshots(Some(owner))
-        .expect("detached task registry lock poisoned")
+        .snapshots(Some(owner))?
         .into_iter()
         .map(|entry| SubagentSnapshot {
             agent_id: entry.metadata.agent_id().to_string(),
@@ -61,7 +31,7 @@ where
             .cmp(&b.agent_id)
             .then_with(|| a.task_id.cmp(&b.task_id))
     });
-    out
+    Ok(out)
 }
 
 /// Resolve a durable session id to the live task id, enforcing ownership. A
@@ -77,8 +47,7 @@ where
     let mut saw_unowned = false;
     let mut owned_terminal: Option<String> = None;
     for snapshot in registry
-        .snapshots(None)
-        .expect("detached task registry lock poisoned")
+        .snapshots(None)?
         .into_iter()
         .filter(|snapshot| snapshot.metadata.subagent_session_id() == Some(subagent_session_id))
     {
@@ -136,9 +105,7 @@ pub fn resume_ref_for_task<M>(
 where
     M: SubagentIdentity + Clone + Send + Sync + 'static,
 {
-    let snapshot = registry
-        .snapshot(&TaskId::new(task_id), owner)
-        .map_err(wait_error_from_registry)?;
+    let snapshot = registry.snapshot(&TaskId::new(task_id), owner)?;
     Ok(SubagentResumeRef {
         task_id: task_id.to_string(),
         agent_id: snapshot.metadata.agent_id().to_string(),

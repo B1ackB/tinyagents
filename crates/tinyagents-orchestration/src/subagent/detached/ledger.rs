@@ -4,37 +4,22 @@ use tinyagents_graph::orchestration::{
     OrchestrationTaskFilter, OrchestrationTaskKind, OrchestrationTaskRecord,
     OrchestrationTaskResult, OrchestrationTaskSpec, OrchestrationTaskStatus, TaskStore,
 };
+use tinyagents_harness::Result;
 use tinyagents_harness::ids::TaskId;
 use tokio::sync::watch;
 
-use super::status::{DetachedSubagentStatus, WaitError, WaitOutcome};
+use super::types::{DetachedSubagentStatus, SpawnedSubagent, WaitError, WaitOutcome};
 
 /// Metadata-only timeout mirrored into the ledger spec. Matches a waiter's
 /// default window; execution is governed by the detached task itself.
 pub const DETACHED_LEDGER_TIMEOUT_MS: u64 = 120_000;
 
-/// What a host records when a detached subagent is spawned.
-#[derive(Debug, Clone, Copy)]
-pub struct SpawnedSubagent<'a> {
-    /// Transient task id (the registry key).
-    pub task_id: &'a str,
-    /// Worker type.
-    pub agent_id: &'a str,
-    /// Owning parent session.
-    pub parent_session: &'a str,
-    /// Session-parent prefix; its first `__`-delimited segment names the root run.
-    pub session_parent_prefix: Option<&'a str>,
-    /// Durable per-worker reference.
-    pub subagent_session_id: Option<&'a str>,
-    /// Workspace the run belongs to (recorded as a display string).
-    pub workspace_dir: &'a str,
-    /// Originating parent thread.
-    pub parent_thread_id: Option<&'a str>,
-}
-
 /// Record a freshly-spawned subagent in `store` (`Pending` then `Running`).
-/// Insert errors (e.g. a re-used id) are intentionally ignored.
-pub fn record_spawned(store: &dyn TaskStore, spawned: &SpawnedSubagent<'_>) {
+///
+/// An insert failure (e.g. a task id still present in the durable store) is
+/// returned and the record is left untouched, so the caller can stop the
+/// spawn instead of advancing a stale record.
+pub fn record_spawned(store: &dyn TaskStore, spawned: &SpawnedSubagent<'_>) -> Result<()> {
     let root_run_id = spawned
         .session_parent_prefix
         .and_then(|prefix| prefix.split("__").next())
@@ -66,8 +51,9 @@ pub fn record_spawned(store: &dyn TaskStore, spawned: &SpawnedSubagent<'_>) {
     if let Some(session) = spawned.subagent_session_id {
         spec = spec.with_metadata("subagentSessionId", session.to_string());
     }
-    let _ = store.insert(spec);
-    let _ = store.mark_running(&TaskId::new(spawned.task_id));
+    store.insert(spec)?;
+    store.mark_running(&TaskId::new(spawned.task_id))?;
+    Ok(())
 }
 
 /// Mirror a published status into the store. Transition errors (already
@@ -81,8 +67,8 @@ pub fn record_status(store: &dyn TaskStore, task_id: &str, status: &DetachedSuba
         DetachedSubagentStatus::Failed { error } => {
             let _ = store.fail(&id, error.clone());
         }
-        DetachedSubagentStatus::AwaitingUser { .. } => {
-            let _ = store.mark_awaiting(&id);
+        DetachedSubagentStatus::AwaitingUser { question } => {
+            let _ = store.mark_awaiting_with_question(&id, question.clone());
         }
         DetachedSubagentStatus::Running => {}
     }

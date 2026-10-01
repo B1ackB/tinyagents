@@ -5,30 +5,7 @@ use tinyagents_graph::orchestration::{
 };
 use tinyagents_harness::ids::TaskId;
 
-/// Terminal/transient state of a detached subagent, published by the
-/// spawner's background task and observed by waiters.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DetachedSubagentStatus {
-    /// Still executing its inner tool-call loop.
-    Running,
-    /// Finished normally with a final response.
-    Completed {
-        /// Final response text.
-        output: String,
-        /// Loop iterations the run used (0 when recovered from a durable record).
-        iterations: usize,
-    },
-    /// Paused on a clarification request; resumed by a follow-up.
-    AwaitingUser {
-        /// The question the child is waiting on.
-        question: String,
-    },
-    /// The run errored out.
-    Failed {
-        /// Failure description.
-        error: String,
-    },
-}
+use super::types::{DetachedSubagentStatus, FinishedOutcome, WaitError, WaitOutcome};
 
 impl DetachedSubagentStatus {
     /// Everything except [`Self::Running`] is terminal (an awaiting run is
@@ -65,15 +42,6 @@ impl DetachedSubagentStatus {
     }
 }
 
-/// The terminal outcome of a run that finished before its cancel arrived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinishedOutcome {
-    /// The run completed.
-    Completed,
-    /// The run failed.
-    Failed,
-}
-
 impl FinishedOutcome {
     /// Wire name (`completed` / `failed`).
     pub fn as_str(self) -> &'static str {
@@ -84,31 +52,9 @@ impl FinishedOutcome {
     }
 }
 
-/// Why a wait or resolution could not be set up.
-#[derive(Debug, PartialEq, Eq)]
-pub enum WaitError {
-    /// No such subagent.
-    Unknown,
-    /// The caller does not own it.
-    NotOwned,
-}
-
-/// Map a registry error onto [`WaitError`] (anything but ownership is unknown).
+/// Map a registry error onto [`WaitError`] (see its `From` impl).
 pub fn wait_error_from_registry(error: DetachedTaskRegistryError) -> WaitError {
-    match error {
-        DetachedTaskRegistryError::NotOwned => WaitError::NotOwned,
-        _ => WaitError::Unknown,
-    }
-}
-
-/// Result of waiting on a subagent.
-#[derive(Debug)]
-pub enum WaitOutcome {
-    /// Reached a terminal status (the registry entry is pruned).
-    Terminal(DetachedSubagentStatus),
-    /// The timeout elapsed first; the entry is intact so the caller can wait
-    /// again. Carries the latest non-terminal snapshot.
-    TimedOut(DetachedSubagentStatus),
+    WaitError::from(error)
 }
 
 /// Block until `task_id` reaches a terminal status or `timeout` elapses.

@@ -23,21 +23,22 @@
 mod ledger;
 mod roster;
 mod status;
+mod types;
 
 pub use ledger::{
-    DETACHED_LEDGER_TIMEOUT_MS, SpawnedSubagent, list_subagent_records, orphaned_subagent_reason,
-    record_agent_id, record_cancelled, record_parent_session, record_spawned, record_status,
+    DETACHED_LEDGER_TIMEOUT_MS, list_subagent_records, orphaned_subagent_reason, record_agent_id,
+    record_cancelled, record_parent_session, record_spawned, record_status,
     record_subagent_session_id, record_to_wait_outcome, spawn_status_watcher,
     subagent_record_for_task, task_status_label,
 };
 pub use roster::{
-    SubagentIdentity, SubagentResumeRef, SubagentSnapshot, resume_ref_for_task,
-    resume_ref_from_record, snapshot_for_owner, task_id_for_session,
+    resume_ref_for_task, resume_ref_from_record, snapshot_for_owner, task_id_for_session,
     task_id_for_session_in_records,
 };
-pub use status::{
-    DetachedSubagentStatus, FinishedOutcome, WaitError, WaitOutcome, wait_detached,
-    wait_error_from_registry,
+pub use status::{wait_detached, wait_error_from_registry};
+pub use types::{
+    DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent, SubagentIdentity, SubagentResumeRef,
+    SubagentSnapshot, WaitError, WaitOutcome,
 };
 
 #[cfg(test)]
