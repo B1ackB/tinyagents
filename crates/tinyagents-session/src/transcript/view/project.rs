@@ -287,7 +287,7 @@ impl Projector {
                 self.step = 0;
                 self.seen_call_ids.clear();
                 self.pending.clear();
-                let raw = msg.message.content.clone();
+                let raw = msg.message.display_content();
                 let sanitized = sanitize_user_content(&raw);
                 if sanitized.is_some() {
                     tracing::debug!(
@@ -335,7 +335,7 @@ impl Projector {
             });
         }
 
-        let native_envelope = parse_native_tool_envelope(&msg.message.content);
+        let native_envelope = native_tool_round(&msg.message);
         let tool_calls: Vec<NativeToolCall> = match &native_envelope {
             Some((_, calls)) => calls.clone(),
             None => {
@@ -439,7 +439,13 @@ impl Projector {
     }
 
     fn tool_result(&mut self, msg: &DisplayMessage) {
-        let (result, wrapped_id) = unwrap_tool_result(&msg.message.content);
+        let (result, wrapped_id) = match msg.message.tool_call_id.as_deref() {
+            Some(call_id) => (
+                msg.message.content.clone(),
+                Some(call_id.to_string()).filter(|id| !id.is_empty()),
+            ),
+            None => unwrap_tool_result(&msg.message.content),
+        };
         // A failed tool line (`ToolResult::is_error`, stamped at persistence)
         // pairs to an error row with a failure payload instead of a false
         // success.
@@ -501,6 +507,23 @@ impl Projector {
             ts,
         });
     }
+}
+
+/// The visible prose and `(id, name, arguments)` calls of a native tool-call
+/// row: its typed [`tool_calls`](crate::transcript::TranscriptMessage::tool_calls),
+/// else (a row that was never normalized) the replay envelope in its `content`.
+pub(super) fn native_tool_round(
+    message: &crate::transcript::TranscriptMessage,
+) -> Option<NativeToolEnvelope> {
+    if message.role == "assistant" && !message.tool_calls.is_empty() {
+        let calls = message
+            .tool_calls
+            .iter()
+            .map(|call| (call.id.clone(), call.name.clone(), call.arguments.clone()))
+            .collect();
+        return Some((message.content.clone(), calls));
+    }
+    parse_native_tool_envelope(&message.content)
 }
 
 /// Decode the native provider replay envelope embedded in `ChatMessage.content`.

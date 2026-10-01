@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use crate::transcript::{self, DisplayRecord};
 
-use super::project::{parse_native_tool_envelope, project_records};
+use super::project::{native_tool_round, project_records};
 use super::types::{DisplayItem, SubagentStatus, ToolCallStatus};
 
 const LOG_PREFIX: &str = "[threads][transcript][subagents]";
@@ -242,7 +242,7 @@ fn own_state(records: &[DisplayRecord]) -> OwnState {
                     .turn_usage
                     .as_ref()
                     .is_none_or(|usage| usage.tool_calls.is_empty())
-                && parse_native_tool_envelope(&msg.message.content)
+                && native_tool_round(&msg.message)
                     .is_none_or(|(_, calls)| calls.is_empty()) =>
         {
             OwnState::Completed
