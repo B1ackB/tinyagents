@@ -4,7 +4,6 @@ use tinyagents_graph::orchestration::{
     OrchestrationTaskFilter, OrchestrationTaskKind, OrchestrationTaskRecord,
     OrchestrationTaskResult, OrchestrationTaskSpec, OrchestrationTaskStatus, TaskStore,
 };
-use tinyagents_harness::Result;
 use tinyagents_harness::ids::TaskId;
 use tokio::sync::watch;
 
@@ -19,7 +18,7 @@ pub const DETACHED_LEDGER_TIMEOUT_MS: u64 = 120_000;
 /// An insert failure (e.g. a task id still present in the durable store) is
 /// returned and the record is left untouched, so the caller can stop the
 /// spawn instead of advancing a stale record.
-pub fn record_spawned(store: &dyn TaskStore, spawned: &SpawnedSubagent<'_>) -> Result<()> {
+pub fn record_spawned(store: &dyn TaskStore, spawned: &SpawnedSubagent<'_>) -> tinyagents_harness::Result<()> {
     let root_run_id = spawned
         .session_parent_prefix
         .and_then(|prefix| prefix.split("__").next())
