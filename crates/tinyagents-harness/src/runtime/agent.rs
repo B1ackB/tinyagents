@@ -633,6 +633,32 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
         }
     }
 
+    /// Runs an agent through this invocation's host-capability bundle on the
+    /// streaming model path, and returns the finished run.
+    ///
+    /// Behaves like [`AgentHarness::invoke_agent`] (typed [`HostedError`] on
+    /// failure, with its closed [`HostedErrorKind`] and the partial run), but
+    /// drives every model call through `ChatModel::stream`, so model deltas
+    /// and delta middleware still run and reach the host's progress sink.
+    ///
+    /// Prefer this over draining [`AgentHarness::invoke_agent_stream`] when a
+    /// host only wants the terminal outcome: the public stream's terminal
+    /// `Failed` item is sanitized to one fixed string for every failure, so a
+    /// per-model-call timeout, a limit, and a provider failure become
+    /// indistinguishable. This entry point keeps the kind.
+    pub async fn invoke_agent_streaming(
+        &self,
+        invocation: AgentInvocation<State, Ctx>,
+        state: &State,
+    ) -> std::result::Result<AgentRun, HostedError>
+    where
+        Ctx: 'static,
+        State: 'static,
+    {
+        self.invoke_agent_streaming_with_capabilities(invocation, state)
+            .await
+    }
+
     /// Collects a hosted turn through the streaming driver while preserving the
     /// parent's exact capability bundle. Recursive streaming delegation uses
     /// this rather than the unary entry point so model deltas and delta
