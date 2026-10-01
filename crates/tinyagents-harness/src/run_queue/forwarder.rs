@@ -96,6 +96,26 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Shared shutdown gate between the poll task and the guard's `Drop`.
+///
+/// The poll task sends into the steering handle only while holding this lock
+/// and seeing `false`; `Drop` sets it to `true` under the same lock before it
+/// drains the handle. So once `Drop` has drained, no later send can land in a
+/// handle nobody will read again: the task pushes what it drained back onto the
+/// queue instead.
+type ClosedGate = std::sync::Mutex<bool>;
+
+fn lock_gate(gate: &ClosedGate) -> std::sync::MutexGuard<'_, bool> {
+    match gate.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Drain `lane` and forward it into `handle`. With a `gate`, delivery happens
+/// under it, and items drained after the gate closed are pushed back onto the
+/// queue; returns `false` in that case (the caller should stop polling).
+#[allow(clippy::too_many_arguments)]
 async fn forward_lane<T: QueuedMessage>(
     queue: &RunQueue<T>,
     handle: &SteeringHandle,
@@ -104,21 +124,42 @@ async fn forward_lane<T: QueuedMessage>(
     mode: &'static str,
     prefix: &str,
     sink: &ForwardEventSink,
-) {
+    gate: Option<&ClosedGate>,
+) -> bool {
     let drained = queue.drain(lane).await;
     if drained.is_empty() {
-        return;
+        return true;
     }
     let delivered = drained.len();
     let (item_id, text) = drained
         .first()
         .map(|msg| (Some(msg.id().to_string()), Some(msg.text().to_string())))
         .unwrap_or((None, None));
-    for msg in &drained {
-        handle.send(SteeringCommand::InjectMessage(TaMessage::user(format!(
-            "{prefix}{}",
-            msg.text()
-        ))));
+    let undelivered = {
+        let closed = gate.map(lock_gate);
+        if closed.as_deref().copied().unwrap_or(false) {
+            Some(drained)
+        } else {
+            for msg in &drained {
+                handle.send(SteeringCommand::InjectMessage(TaMessage::user(format!(
+                    "{prefix}{}",
+                    msg.text()
+                ))));
+            }
+            None
+        }
+    };
+    if let Some(items) = undelivered {
+        tracing::debug!(
+            thread_id = thread_label,
+            returned = items.len(),
+            mode,
+            "[run_queue] forwarder closed mid-delivery; returned drained message(s) to the queue"
+        );
+        for msg in items {
+            queue.push(lane, msg).await;
+        }
+        return false;
     }
     tracing::debug!(
         thread_id = thread_label,
@@ -133,6 +174,7 @@ async fn forward_lane<T: QueuedMessage>(
         item_id,
         text,
     });
+    true
 }
 
 /// Drain the queue's pending **steer** messages and forward them to the
@@ -153,6 +195,7 @@ pub async fn forward_steers<T: QueuedMessage>(
         "steer",
         STEER_PREFIX,
         sink,
+        None,
     )
     .await;
 }
@@ -160,6 +203,11 @@ pub async fn forward_steers<T: QueuedMessage>(
 /// Forward any queued **collect** messages as injected user turns so they reach
 /// the next LLM call as additional context, framed with [`COLLECT_PREFIX`].
 /// Emits a [`ForwardEvent::Delivered`] on delivery.
+///
+/// This drains the lane, so an item forwarded here is no longer handed back on
+/// [`AgentRun::collected`][crate::middleware::AgentRun::collected]: a host
+/// that arms a forwarder over a queue opts its collect lane into injection
+/// (see [`QueueLane::Collect`]).
 pub async fn forward_collects<T: QueuedMessage>(
     queue: &RunQueue<T>,
     handle: &SteeringHandle,
@@ -174,19 +222,21 @@ pub async fn forward_collects<T: QueuedMessage>(
         "collect",
         COLLECT_PREFIX,
         sink,
+        None,
     )
     .await;
 }
 
-/// Abort-on-drop guard around the steering-forwarder poll task.
+/// Stop-on-drop guard around the steering-forwarder poll task.
 ///
 /// Held across the harness drive future so its `Drop` runs on **every** exit
-/// path (normal return, error, and drop-cancellation), aborting the poll task,
+/// path (normal return, error, and drop-cancellation), stopping the poll task,
 /// running the host cleanup, and requeuing residual steers.
 pub struct SteeringForwarderGuard<T: QueuedMessage> {
-    /// The spawned poll task; `abort()`-ed on drop. `None` after the abort so a
-    /// double-drop is a no-op.
+    /// The spawned poll task. `None` after drop so a double-drop is a no-op.
     forwarder: Option<tokio::task::JoinHandle<()>>,
+    /// Closed by `Drop` before it drains the handle; see [`ClosedGate`].
+    closed: Arc<ClosedGate>,
     /// A clone of the run's steering handle, drained on drop to recover
     /// delivered-but-unapplied steers.
     handle: SteeringHandle,
@@ -216,16 +266,45 @@ impl<T: QueuedMessage> SteeringForwarderGuard<T> {
         thread_label: String,
         sink: ForwardEventSink,
     ) -> Self {
+        let closed = Arc::new(ClosedGate::new(false));
         let forwarder = run_queue.as_ref().map(|queue| {
             let loop_queue = queue.clone();
             let loop_handle = handle.clone();
             let loop_label = thread_label.clone();
             let loop_sink = sink.clone();
+            let loop_closed = closed.clone();
             tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                    forward_steers(&loop_queue, &loop_handle, &loop_label, &loop_sink).await;
-                    forward_collects(&loop_queue, &loop_handle, &loop_label, &loop_sink).await;
+                // Not aborted on drop: an abort could land between draining the
+                // queue and delivering, losing what was drained. The loop exits
+                // on its own once the gate is closed, returning anything it
+                // drained after closing to the queue.
+                for (lane, mode, prefix) in [
+                    (QueueLane::Steer, "steer", STEER_PREFIX),
+                    (QueueLane::Collect, "collect", COLLECT_PREFIX),
+                ]
+                .into_iter()
+                .cycle()
+                {
+                    if lane == QueueLane::Steer {
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                    if *lock_gate(&loop_closed) {
+                        break;
+                    }
+                    let open = forward_lane(
+                        &loop_queue,
+                        &loop_handle,
+                        &loop_label,
+                        lane,
+                        mode,
+                        prefix,
+                        &loop_sink,
+                        Some(&loop_closed),
+                    )
+                    .await;
+                    if !open {
+                        break;
+                    }
                 }
             })
         });
@@ -236,6 +315,7 @@ impl<T: QueuedMessage> SteeringForwarderGuard<T> {
         );
         Self {
             forwarder,
+            closed,
             handle,
             run_queue,
             cleanup,
@@ -247,13 +327,15 @@ impl<T: QueuedMessage> SteeringForwarderGuard<T> {
 
 impl<T: QueuedMessage> Drop for SteeringForwarderGuard<T> {
     fn drop(&mut self) {
-        // 1. Stop the poll loop so it can no longer race the next turn's
-        //    forwarder for the shared, session-owned run queue.
-        if let Some(forwarder) = self.forwarder.take() {
-            forwarder.abort();
+        // 1. Close the gate so the poll loop can no longer deliver into this
+        //    handle or race the next turn's forwarder for the shared,
+        //    session-owned run queue. Anything it drains from now on goes back
+        //    to the queue, and it exits at its next check.
+        *lock_gate(&self.closed) = true;
+        if self.forwarder.take().is_some() {
             tracing::debug!(
                 thread_id = self.thread_label.as_str(),
-                "[run_queue] aborted steering forwarder (guard drop)"
+                "[run_queue] closed steering forwarder (guard drop)"
             );
         }
 
