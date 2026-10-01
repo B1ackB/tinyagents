@@ -1177,7 +1177,7 @@ async fn invoke_agent_streaming_preserves_the_timeout_kind_of_a_stalled_model_ca
     harness.with_policy(RunPolicy {
         limits: RunLimits::default().with_max_model_call_ms(Some(20)),
         // One attempt: the point is the kind of the terminal error.
-        retry: RetryPolicy::none(),
+        retry: RetryPolicy::default().with_max_attempts(1),
         ..RunPolicy::default()
     });
 
