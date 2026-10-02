@@ -7879,3 +7879,99 @@ fn host_rendered_with_nothing_to_say_drops_the_stale_tools_segment_without_inven
          nothing (the trivial stable-prefix case), not a whole-request digest"
     );
 }
+
+#[tokio::test]
+async fn run_policy_default_reasoning_reaches_every_request() {
+    use crate::testkit::ScriptedModel;
+
+    let model = Arc::new(ScriptedModel::replies(vec!["done"]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", model.clone());
+    harness.with_policy(RunPolicy {
+        default_reasoning: Some(ReasoningConfig::effort(ReasoningEffort::Low)),
+        ..RunPolicy::default()
+    });
+
+    harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    let requests = model.requests();
+    let request = requests.first().expect("one model call");
+    assert_eq!(
+        request.reasoning.as_ref().and_then(|r| r.effort),
+        Some(ReasoningEffort::Low),
+        "the policy's reasoning default must ride the request: {:?}",
+        request.reasoning
+    );
+}
+
+#[tokio::test]
+async fn run_policy_default_reasoning_goes_through_the_profile_map() {
+    use crate::testkit::ScriptedModel;
+
+    let mut thinking_level_map = std::collections::BTreeMap::new();
+    thinking_level_map.insert(
+        "high".to_string(),
+        ReasoningConfig {
+            effort: Some(ReasoningEffort::High),
+            budget_tokens: Some(16_000),
+            summary: None,
+        },
+    );
+    let model = Arc::new(
+        ScriptedModel::replies(vec!["done"]).with_profile(ModelProfile {
+            thinking_level_map,
+            ..ModelProfile::default()
+        }),
+    );
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", model.clone());
+    harness.with_policy(RunPolicy {
+        default_reasoning: Some(ReasoningConfig::effort(ReasoningEffort::High)),
+        ..RunPolicy::default()
+    });
+
+    harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    let requests = model.requests();
+    let request = requests.first().expect("one model call");
+    assert_eq!(
+        request.reasoning.as_ref().and_then(|r| r.budget_tokens),
+        Some(16_000),
+        "a named policy effort must still resolve through the model's map: {:?}",
+        request.reasoning
+    );
+}
+
+#[tokio::test]
+async fn request_reasoning_wins_over_the_run_policy_default() {
+    use crate::testkit::ScriptedModel;
+
+    let model = Arc::new(ScriptedModel::replies(vec!["done"]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", model.clone());
+    harness.with_policy(RunPolicy {
+        default_reasoning: Some(ReasoningConfig::effort(ReasoningEffort::Low)),
+        ..RunPolicy::default()
+    });
+    harness.push_middleware(Arc::new(RequestReasoningEffort(ReasoningEffort::XHigh)));
+
+    harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    let requests = model.requests();
+    let request = requests.first().expect("one model call");
+    assert_eq!(
+        request.reasoning.as_ref().and_then(|r| r.effort),
+        Some(ReasoningEffort::XHigh),
+        "a request-level reasoning config must not be replaced: {:?}",
+        request.reasoning
+    );
+}

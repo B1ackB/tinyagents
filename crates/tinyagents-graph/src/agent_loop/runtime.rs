@@ -249,6 +249,12 @@ where
     if let Some(format) = &harness.policy().default_response_format {
         request.response_format = Some(format.clone());
     }
+    // Same run-policy reasoning default the direct loop attaches.
+    if let Some(reasoning) = harness.policy().default_reasoning.as_ref()
+        && !reasoning.is_empty()
+    {
+        request.reasoning = Some(reasoning.clone());
+    }
 
     // The structured plan depends on the resolved model's profile, but the
     // model is not resolved until the `model` node (mirroring the direct
@@ -323,6 +329,16 @@ where
     let call_id = CallId::new(format!("{}-model-{}", ctx.run_id(), run.model_calls + 1));
 
     let mut request = request;
+    // Mirror the direct loop: a named effort picks up the resolved model's
+    // tuned `thinking_level_map` entry, unless an explicit budget is pinned.
+    if let Some(profile) = binding.model.profile()
+        && let Some(reasoning) = request.reasoning.as_ref()
+        && reasoning.budget_tokens.is_none()
+        && let Some(effort) = reasoning.effort
+        && let Some(mapped) = profile.thinking_level_map.get(effort.as_str())
+    {
+        request.reasoning = Some(mapped.clone());
+    }
     harness
         .middleware()
         .run_before_model(ctx, app_state, &mut request)
