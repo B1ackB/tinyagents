@@ -283,6 +283,7 @@ impl SummarizationPolicy {
 }
 
 #[cfg(test)]
+#[path = "model_summarizer_tests.rs"]
 mod model_summarizer_test;
 #[cfg(test)]
 #[path = "mod_tests.rs"]

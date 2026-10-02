@@ -33,4 +33,5 @@ pub async fn compose_retrieval_context(
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

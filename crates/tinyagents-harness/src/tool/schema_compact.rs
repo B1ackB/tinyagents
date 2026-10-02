@@ -379,5 +379,5 @@ pub fn clip_bytes(text: &str, max_bytes: usize) -> String {
 }
 
 #[cfg(test)]
-#[path = "schema_compact_test.rs"]
+#[path = "schema_compact_tests.rs"]
 mod test;

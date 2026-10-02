@@ -441,4 +441,5 @@ fn sanitize_run_id(run_id: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "git/git_tests.rs"]
 mod test;

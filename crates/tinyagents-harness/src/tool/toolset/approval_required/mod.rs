@@ -1,6 +1,7 @@
 //! [`ApprovalRequiredToolSet`]: flag matching tools as requiring approval.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 mod types;
 

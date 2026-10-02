@@ -406,10 +406,14 @@ pub(crate) fn provider_schema(tool: &dyn tinytools::Tool) -> tinyinference_llm::
 }
 
 #[cfg(test)]
+#[path = "canonical_tests.rs"]
 mod canonical_test;
 #[cfg(test)]
+#[path = "context_tests.rs"]
 mod context_test;
 #[cfg(test)]
+#[path = "schema_walk_tests.rs"]
 mod schema_walk_test;
 #[cfg(test)]
+#[path = "timeout_tests.rs"]
 mod timeout_test;

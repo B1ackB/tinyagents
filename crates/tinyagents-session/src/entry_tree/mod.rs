@@ -359,4 +359,5 @@ fn transcript_message_to_message(message: &crate::transcript::TranscriptMessage)
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

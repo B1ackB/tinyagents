@@ -283,5 +283,5 @@ pub(super) fn drop_retained_rows(
 }
 
 #[cfg(test)]
-#[path = "resolve_test.rs"]
+#[path = "resolve_tests.rs"]
 mod tests;

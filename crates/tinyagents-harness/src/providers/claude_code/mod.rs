@@ -640,5 +640,5 @@ fn flush_tool_call_scrubber(
 mod tests;
 
 #[cfg(test)]
-#[path = "pipeline_test.rs"]
+#[path = "pipeline_tests.rs"]
 mod pipeline_test;

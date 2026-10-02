@@ -413,4 +413,5 @@ impl<State: Send + Sync, Ctx: Send + Sync> Default for AgentHarness<State, Ctx> 
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

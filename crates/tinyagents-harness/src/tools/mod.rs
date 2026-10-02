@@ -14,6 +14,8 @@ pub use time::{CurrentTimeTool, ResolveTimeTool, register_time_tools, time_tools
 pub use wait::{WaitLoopTool, WaitTool};
 
 #[cfg(test)]
+#[path = "time_parse_tests.rs"]
 mod time_parse_test;
 #[cfg(test)]
+#[path = "time_tests.rs"]
 mod time_test;

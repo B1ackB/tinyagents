@@ -179,4 +179,5 @@ impl Tool for CanonicalSharedToolAdapter {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

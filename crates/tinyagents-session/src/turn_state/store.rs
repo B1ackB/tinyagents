@@ -734,5 +734,5 @@ pub fn mark_all_interrupted(workspace_dir: PathBuf, now_rfc3339: &str) -> Result
 }
 
 #[cfg(test)]
-#[path = "store_test.rs"]
+#[path = "store_tests.rs"]
 mod tests;

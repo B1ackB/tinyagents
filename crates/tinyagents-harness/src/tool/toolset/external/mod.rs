@@ -1,6 +1,7 @@
 //! [`ExternalToolSet`]: schema-only tools the host executes.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 mod types;
 

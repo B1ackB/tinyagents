@@ -576,4 +576,5 @@ fn render_template(template: &str, vars: &Map<String, Value>) -> Result<String> 
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

@@ -116,5 +116,5 @@ impl Tool for AskClarificationTool {
 }
 
 #[cfg(test)]
-#[path = "ask_clarification_test.rs"]
+#[path = "ask_clarification_tests.rs"]
 mod tests;

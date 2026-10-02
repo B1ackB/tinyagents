@@ -870,4 +870,5 @@ pub(crate) fn require_checkpoint_id(config: &CheckpointConfig) -> Result<String>
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

@@ -518,5 +518,5 @@ pub fn validate_against_schema(schema: &Value, value: &Value) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "schema_test.rs"]
+#[path = "schema_tests.rs"]
 mod test;

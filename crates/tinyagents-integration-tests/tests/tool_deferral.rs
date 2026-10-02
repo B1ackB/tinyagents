@@ -1,10 +1,11 @@
 //! End-to-end coverage for deferred tool discovery in the agent loop.
 //!
 //! A `Deferred` tool stays out of the initial request's `tools` array; then
-//! the loop advertises the `tool_search` / `tool_call` bridge, answers
-//! `tool_search` from its own catalogue, unwraps `tool_call` to the real tool
-//! before admission, and promotes a search match's typed declaration on the
-//! next request. The transcript records the promotion for resumed runs.
+//! the loop advertises the `tool_search` bridge, answers `tool_search` from
+//! its own catalogue, admits a deferred tool called by its own name exactly
+//! like any registered tool, and promotes a search match's typed declaration
+//! on the next request. The transcript records the promotion for resumed runs.
+//! There is no call wrapper: `tool_search` is the only intrinsic tool.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +17,7 @@ use tinyagents_harness::events::{AgentEvent, RecordingListener};
 use tinyagents_harness::middleware::Middleware;
 use tinyagents_harness::runtime::{AgentHarness, RunPolicy, UnknownToolPolicy};
 use tinyagents_harness::testkit::FakeTool;
-use tinyagents_harness::tool::discover::{TOOL_CALL_NAME, TOOL_SEARCH_NAME, ToolDiscoveryPolicy};
+use tinyagents_harness::tool::discover::{TOOL_SEARCH_NAME, ToolDiscoveryPolicy};
 use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
 use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::ToolCall;
@@ -245,12 +246,8 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
             TOOL_SEARCH_NAME,
             json!({"query": "price of a ticker", "limit": 1}),
         ),
-        tool_call(
-            "c2",
-            TOOL_CALL_NAME,
-            json!({"name": "stock_quote", "arguments": {"symbol": "ACME"}}),
-        ),
-        // A revealed tool is also callable by its own name.
+        // A revealed tool is called by its own name, with no wrapper.
+        tool_call("c2", "stock_quote", json!({"symbol": "ACME"})),
         tool_call("c3", "stock_quote", json!({"symbol": "XYZ"})),
         // A hidden tool is unknown to the model even by name.
         tool_call("c4", "internal_step", json!({"symbol": "no"})),
@@ -292,14 +289,11 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     // on the next request, and that declaration remains stable thereafter.
     let seen = model.tools_seen();
     assert_eq!(seen.len(), 5);
-    assert_eq!(
-        tool_names(&seen[0]),
-        vec!["read_file", TOOL_SEARCH_NAME, TOOL_CALL_NAME]
-    );
+    assert_eq!(tool_names(&seen[0]), vec!["read_file", TOOL_SEARCH_NAME]);
     assert!(seen[1..].iter().all(|tools| tools == &seen[1]));
     assert_eq!(
         tool_names(&seen[1]),
-        vec!["read_file", "stock_quote", TOOL_SEARCH_NAME, TOOL_CALL_NAME]
+        vec!["read_file", "stock_quote", TOOL_SEARCH_NAME]
     );
     let promoted: Vec<Value> = serde_json::from_str(&seen[1]).unwrap();
     let stock = promoted
@@ -343,7 +337,7 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
         "string"
     );
 
-    // Both the bridged and the direct-by-name call reached the real tool.
+    // Both by-name calls reached the real tool.
     let calls = deferred.calls.lock().unwrap().clone();
     assert_eq!(
         calls,
@@ -351,8 +345,8 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     );
     assert!(hidden.calls.lock().unwrap().is_empty());
 
-    // `before_tool` saw the real name for the bridged call, never `tool_call`;
-    // `tool_search` is answered intrinsically before any hook runs.
+    // `before_tool` saw the real name of every deferred call; `tool_search`
+    // is answered intrinsically before any hook runs.
     let hooks = before_tool.lock().unwrap().clone();
     assert_eq!(hooks, vec!["stock_quote", "stock_quote", "internal_step"]);
 
@@ -382,8 +376,8 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     let events: Vec<AgentEvent> = listener.events().into_iter().map(|r| r.event).collect();
     assert!(events.iter().any(|event| matches!(
         event,
-        // `direct` counts only the `read_file` Direct-exposure tool: the two
-        // intrinsic bridge schemas are implied by `deferred: 1`, not
+        // `direct` counts only the `read_file` Direct-exposure tool: the
+        // intrinsic bridge schema is implied by `deferred: 1`, not
         // double-counted into `direct` (see `ToolsAdvertised`'s doc comment).
         AgentEvent::ToolsAdvertised { direct: 1, deferred: 2, schema_bytes } if *schema_bytes > 0
     )));
@@ -399,10 +393,17 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
         event,
         AgentEvent::ToolStarted { tool_name, .. } if tool_name == "stock_quote"
     )));
-    assert!(events.iter().all(|event| !matches!(
-        event,
-        AgentEvent::ToolStarted { tool_name, .. } if tool_name == TOOL_CALL_NAME
-    )));
+    // Each by-name call to a deferred tool is reported once.
+    let deferred_calls = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::DeferredToolCall { tool_name, .. } if tool_name == "stock_quote"
+            )
+        })
+        .count();
+    assert_eq!(deferred_calls, 2);
 }
 
 #[tokio::test]
@@ -534,10 +535,10 @@ async fn host_registered_tool_search_wins_over_the_intrinsic_bridge() {
         .await
         .expect("run succeeds");
 
-    // The host's `tool_search` keeps its slot and its description; only the
-    // intrinsic `tool_call` half of the bridge is added.
+    // The host's `tool_search` keeps its slot and its description, and the
+    // intrinsic bridge adds nothing: it has no other tool to advertise.
     let tools = model.tools_seen()[0].clone();
-    assert_eq!(tool_names(&tools), vec![TOOL_SEARCH_NAME, TOOL_CALL_NAME]);
+    assert_eq!(tool_names(&tools), vec![TOOL_SEARCH_NAME]);
     assert!(tools.contains("The host's own search tool."));
     assert!(!tools.contains("deferred tool(s) are searchable"));
     // …and the call went to the host's tool, not the intrinsic answer.
@@ -606,11 +607,7 @@ async fn hidden_registration_suppresses_the_matching_bridge_schema() {
         ToolExposure::Hidden,
     );
     let model = RecordingModel::new(vec![
-        tool_call(
-            "c1",
-            TOOL_CALL_NAME,
-            json!({"name": "stock_quote", "arguments": {"symbol": "ACME"}}),
-        ),
+        tool_call("c1", "stock_quote", json!({"symbol": "ACME"})),
         text("done"),
     ]);
 
@@ -628,12 +625,12 @@ async fn hidden_registration_suppresses_the_matching_bridge_schema() {
     assert_eq!(run.text(), Some("done".to_string()));
 
     // The intrinsic `tool_search` schema is suppressed (the registry already
-    // owns that name, even though it is Hidden and unreachable itself); only
-    // `tool_call` is advertised.
+    // owns that name, even though it is Hidden and unreachable itself), and it
+    // was the only bridge schema, so nothing is advertised.
     let tools = model.tools_seen()[0].clone();
-    assert_eq!(tool_names(&tools), vec![TOOL_CALL_NAME]);
-    // The deferred tool is still reachable directly through `tool_call`, and
-    // the hidden registration never ran.
+    assert!(tool_names(&tools).is_empty(), "{tools}");
+    // The deferred tool is still reachable directly by its own name, and the
+    // hidden registration never ran.
     assert_eq!(deferred.calls.lock().unwrap().len(), 1);
     assert!(hidden_search.calls.lock().unwrap().is_empty());
 }
@@ -694,8 +691,8 @@ async fn tool_schemas_projection_applies_to_wire_and_catalog() {
         .unwrap();
     assert!(answer.contains("\"name\": \"stock_quote\""));
 
-    // Regression: the intrinsic `tool_search`/`tool_call` bridge schemas used
-    // to be appended *after* provider preparation ran, so they reached the
+    // Regression: the intrinsic `tool_search` bridge schema used
+    // to be appended *after* provider preparation ran, so it reached the
     // wire unprojected — a `max_description_bytes` budget (or a Gemini
     // `minimum`/`maximum` strip) never applied to them even though the same
     // policy is configured for the whole run. `tool_search`'s description
@@ -712,30 +709,18 @@ async fn tool_schemas_projection_applies_to_wire_and_catalog() {
 }
 
 #[tokio::test]
-async fn tool_call_wrapping_a_non_deferred_name_emits_no_deferred_event() {
+async fn a_deferred_event_is_emitted_only_for_a_deferred_tool_called_by_name() {
     let listener = Arc::new(RecordingListener::new());
     let deferred = ExposedTool::new("stock_quote", "Quote.", ToolExposure::Deferred);
     let direct = ExposedTool::new("read_file", "Read.", ToolExposure::Direct);
     let hidden = ExposedTool::new("internal_step", "Host-only.", ToolExposure::Hidden);
     let model = RecordingModel::new(vec![
-        // A wrapped *direct* tool: runs, but is not a deferred call.
-        tool_call(
-            "c1",
-            TOOL_CALL_NAME,
-            json!({"name": "read_file", "arguments": {"symbol": "A"}}),
-        ),
-        // A wrapped *hidden* tool: rejected as unknown, not a deferred call.
-        tool_call(
-            "c2",
-            TOOL_CALL_NAME,
-            json!({"name": "internal_step", "arguments": {"symbol": "B"}}),
-        ),
-        // A wrapped deferred tool: the one case that is a deferred call.
-        tool_call(
-            "c3",
-            TOOL_CALL_NAME,
-            json!({"name": "stock_quote", "arguments": {"symbol": "C"}}),
-        ),
+        // A *direct* tool: runs, but is not a deferred call.
+        tool_call("c1", "read_file", json!({"symbol": "A"})),
+        // A *hidden* tool: rejected as unknown, not a deferred call.
+        tool_call("c2", "internal_step", json!({"symbol": "B"})),
+        // A deferred tool: the one case that is a deferred call.
+        tool_call("c3", "stock_quote", json!({"symbol": "C"})),
         text("done"),
     ]);
 

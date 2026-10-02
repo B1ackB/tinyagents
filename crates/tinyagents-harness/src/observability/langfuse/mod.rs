@@ -714,4 +714,5 @@ pub fn iso_ms(ms: u64) -> String {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

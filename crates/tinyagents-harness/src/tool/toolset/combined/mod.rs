@@ -1,6 +1,7 @@
 //! [`CombinedToolSet`]: merge multiple toolsets into one.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 mod types;
 

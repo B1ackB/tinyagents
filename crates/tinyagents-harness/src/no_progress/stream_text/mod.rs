@@ -101,4 +101,5 @@ fn is_process_start(start: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

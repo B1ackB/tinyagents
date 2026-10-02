@@ -50,6 +50,8 @@ pub use types::{
 };
 
 #[cfg(test)]
+#[path = "steer_tests.rs"]
 mod steer_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
