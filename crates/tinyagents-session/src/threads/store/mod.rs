@@ -7,36 +7,25 @@
 //! On-disk mutations synchronize at the narrowest safe scope: lifecycle per
 //! conversation root, shared metadata per root, and messages per thread.
 //!
-//! This file is the store as it came back from the memory engine (#5560),
-//! unchanged apart from the one constructor described below. The three
-//! dependency substitutions the round trip introduced — [`std::sync::LazyLock`]
-//! for the statics, the local [`hex_encode`] for per-thread filenames, and the
-//! hand-rolled temp-write in [`rewrite_jsonl`] — are all kept: they produce the
-//! bytes and the paths that every existing transcript already lives at, and a
-//! move must not rewrite those. See [`super`]'s module docs for the full
-//! accounting of what the trip cost.
+//! The persistence choices here — [`std::sync::LazyLock`] for the statics,
+//! the local [`hex_encode`] for per-thread filenames, and the hand-rolled
+//! temp-write in [`rewrite_jsonl`] — are kept exactly as they were in
+//! TinyMemory's `tinymemory-conversations`: they produce the bytes and the
+//! paths every existing transcript already lives at, and a move must not
+//! rewrite those.
 //!
-//! # The one thing that did change: `from_config`
-//!
-//! The engine's [`ConversationStore`] carried a second constructor,
-//! `from_config(&MemoryConfig)`, whose whole body was
-//! `Self::new(config.workspace.clone())`. It is gone rather than translated,
-//! and that is the point of the move: it was this module's *only* coupling to
-//! the rest of the engine, and re-expressing it here would either drag
-//! `MemoryConfig` back in or add a second name for a constructor that already
-//! exists. [`ConversationStore::new`] takes the workspace directory, every
-//! caller in this host already has one, and no caller ever used `from_config`
-//! — so nothing needed a translation and the derived on-disk root
+//! [`ConversationStore::new`] is the only constructor. The conversation root
+//! is derived from the workspace directory alone
 //! (`<workspace>/memory/conversations`, see `ConversationStore::root_dir` in
-//! `index.rs`) is byte-identical either way.
+//! `index.rs`).
 //!
 //! # File split
 //!
-//! To respect the repo's file-size limit the `impl ConversationStore` is split
-//! across two child modules — [`ops`] (the public CRUD + search API) and
-//! [`index`] (private thread-folding and inverted-index helpers). Both are
-//! descendant modules of `store`, so they share access to the private statics,
-//! constants, log-entry enum, and JSONL helpers defined here.
+//! The `impl ConversationStore` is split across child modules — [`ops`] (the
+//! public CRUD + search API), [`index`] (private thread-folding and
+//! inverted-index helpers), and [`locks`] (the per-root lock registry). All
+//! are descendant modules of `store`, so they share access to the private
+//! statics, constants, log-entry enum, and JSONL helpers defined here.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -52,10 +41,9 @@ use super::types::{
     ConversationMessage, ConversationMessagePatch, ConversationThread, CreateConversationThread,
 };
 
-mod ops;
-
 mod index;
 mod locks;
+mod ops;
 
 /// Filename of the append-only thread metadata log, relative to the
 /// `memory/conversations` root.
@@ -235,8 +223,7 @@ pub(super) fn normalize_labels(labels: Vec<String>) -> Vec<String> {
 /// Lowercase hex-encode bytes — used to derive a filesystem-safe per-thread
 /// messages filename from an arbitrary thread id.
 ///
-/// This exists because the memory engine had no `hex` dependency; this crate
-/// does, so `hex::encode` would work here. It is kept anyway: this is the
+/// `hex::encode` would produce the same string; this is kept anyway: it is the
 /// function that decides which file a user's transcript is read from and
 /// written to, and swapping it is only provably safe, never *obviously* safe.
 /// The three lines are cheaper than the argument.
