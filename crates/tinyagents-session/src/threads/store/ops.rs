@@ -151,10 +151,10 @@ impl ConversationStore {
             }
         }
         let path = self.thread_messages_path(thread_id);
-        if is_deterministic_message_id(&message.id) {
-            if let Some(existing) = find_message_by_id(&path, &message.id)? {
-                return Ok(existing);
-            }
+        if is_deterministic_message_id(&message.id)
+            && let Some(existing) = find_message_by_id(&path, &message.id)?
+        {
+            return Ok(existing);
         }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
