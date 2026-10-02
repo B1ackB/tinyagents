@@ -193,4 +193,5 @@ fn record_child_run(ctx: &NodeContext, agent: &str, output: &SubAgentOutput) {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

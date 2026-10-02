@@ -335,5 +335,5 @@ fn marker_path_for(workspace_dir: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
-#[path = "migration_test.rs"]
+#[path = "migration_tests.rs"]
 mod tests;

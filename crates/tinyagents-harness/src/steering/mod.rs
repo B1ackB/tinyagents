@@ -435,4 +435,5 @@ pub fn apply_pending_steering<Ctx>(
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

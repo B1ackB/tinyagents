@@ -362,5 +362,5 @@ pub fn prepare_tool_schemas(
 }
 
 #[cfg(test)]
-#[path = "schema_prepare_test.rs"]
+#[path = "schema_prepare_tests.rs"]
 mod test;

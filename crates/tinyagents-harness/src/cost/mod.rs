@@ -115,4 +115,5 @@ pub fn estimate_cost(pricing: &ModelPricing, usage: &Usage) -> CostTotals {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

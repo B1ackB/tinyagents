@@ -60,6 +60,7 @@
 mod types;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 pub use types::WorkloadRoute;

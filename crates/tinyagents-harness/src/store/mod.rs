@@ -670,4 +670,5 @@ impl Default for StoreRegistry {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

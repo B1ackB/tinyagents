@@ -237,4 +237,5 @@ pub fn build_title_request(user_message: &str, assistant_message: &str) -> Model
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

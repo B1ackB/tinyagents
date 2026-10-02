@@ -126,5 +126,5 @@ pub async fn list_active_runs(
 }
 
 #[cfg(test)]
-#[path = "replay_test.rs"]
+#[path = "replay_tests.rs"]
 mod tests;

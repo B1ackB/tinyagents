@@ -103,18 +103,26 @@ pub use wrap_up::{
 };
 
 #[cfg(test)]
+#[path = "arg_recovery_tests.rs"]
 mod arg_recovery_test;
 #[cfg(test)]
+#[path = "artifact_toc_tests.rs"]
 mod artifact_toc_test;
 #[cfg(test)]
+#[path = "credential_scrub_tests.rs"]
 mod credential_scrub_test;
 #[cfg(test)]
+#[path = "image_trim_tests.rs"]
 mod image_trim_test;
 #[cfg(test)]
+#[path = "policy_gate_tests.rs"]
 mod policy_gate_test;
 #[cfg(test)]
+#[path = "repeat_progress_tests.rs"]
 mod repeat_progress_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 #[cfg(test)]
+#[path = "wrap_up_tests.rs"]
 mod wrap_up_test;

@@ -469,5 +469,5 @@ pub fn otlp_requests(
 }
 
 #[cfg(test)]
-#[path = "otlp_test.rs"]
+#[path = "otlp_tests.rs"]
 mod tests;

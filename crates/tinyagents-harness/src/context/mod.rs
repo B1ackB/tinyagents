@@ -868,4 +868,5 @@ fn shallow_merge_metadata(
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

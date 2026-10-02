@@ -446,4 +446,5 @@ impl<S: NamespacedStore> Store for FlatNamespacedStore<S> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

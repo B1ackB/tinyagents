@@ -200,5 +200,5 @@ pub fn spans_to_ndjson(backend: SpanEnvelope, spans: &[TraceSpan]) -> String {
 }
 
 #[cfg(test)]
-#[path = "serialize_test.rs"]
+#[path = "serialize_tests.rs"]
 mod tests;

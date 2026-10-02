@@ -586,4 +586,5 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

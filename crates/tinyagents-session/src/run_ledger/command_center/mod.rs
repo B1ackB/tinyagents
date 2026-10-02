@@ -16,4 +16,5 @@ pub use types::{AgentWorkBucket, AgentWorkRow, CommandCenterGroup, CommandCenter
 pub use view::{bucket_for, build_view, list_agent_work};
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

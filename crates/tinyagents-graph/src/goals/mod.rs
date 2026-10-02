@@ -28,4 +28,5 @@ pub use tool::{GoalTool, GoalToolKind, GoalUpdateHook, goal_tools, register_goal
 pub use types::{GoalProgress, ThreadGoal, ThreadGoalStatus, TurnOutcome};
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

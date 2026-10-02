@@ -298,5 +298,5 @@ struct WaitRequest {
 }
 
 #[cfg(test)]
-#[path = "wait_test.rs"]
+#[path = "wait_tests.rs"]
 mod tests;

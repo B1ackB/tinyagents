@@ -770,5 +770,5 @@ fn newest_modified(path: &Path) -> std::io::Result<std::time::SystemTime> {
 }
 
 #[cfg(test)]
-#[path = "tool_results_test.rs"]
+#[path = "tool_results_tests.rs"]
 mod test;

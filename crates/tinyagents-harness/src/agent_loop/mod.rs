@@ -133,12 +133,17 @@ pub use stream::AgentStreamItem;
 pub(crate) use stream::{StreamRunner, invoke_stream_with_runner};
 
 #[cfg(test)]
+#[path = "deferred_tests.rs"]
 mod deferred_test;
 #[cfg(test)]
+#[path = "rich_tool_tests.rs"]
 mod rich_tool_test;
 #[cfg(test)]
+#[path = "run_queue_tests.rs"]
 mod run_queue_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 #[cfg(test)]
+#[path = "unknown_tool_tests.rs"]
 mod unknown_tool_test;

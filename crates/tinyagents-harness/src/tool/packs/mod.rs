@@ -38,4 +38,5 @@ pub use tool::{USE_SKILL, UseSkillTool};
 pub use types::ToolPack;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

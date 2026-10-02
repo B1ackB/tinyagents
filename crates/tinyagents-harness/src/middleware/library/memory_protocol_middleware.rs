@@ -177,5 +177,5 @@ impl<C: Send + Sync> Middleware<(), C> for MemoryProtocolMiddleware {
 }
 
 #[cfg(test)]
-#[path = "memory_protocol_middleware_test.rs"]
+#[path = "memory_protocol_middleware_tests.rs"]
 mod tests;

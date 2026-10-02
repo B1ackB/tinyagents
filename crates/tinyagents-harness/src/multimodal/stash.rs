@@ -226,5 +226,5 @@ fn is_safe_id(id: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "stash_test.rs"]
+#[path = "stash_tests.rs"]
 mod tests;

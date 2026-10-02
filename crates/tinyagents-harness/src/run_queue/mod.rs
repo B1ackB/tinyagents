@@ -219,4 +219,5 @@ impl<T> Default for RunQueue<T> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
