@@ -1,13 +1,12 @@
-//! The two bridge tools the agent loop answers itself: `tool_search` and
-//! `tool_call`.
+//! The one bridge tool the agent loop answers itself: `tool_search`.
 //!
-//! Neither is a registered [`tinytools::Tool`]. They are intrinsic to the
-//! loop so they can read the run's deferred catalogue and, for `tool_call`,
-//! be unwrapped *before* admission — every `before_tool` hook, allow-list,
-//! policy middleware, and host authorization gate then sees the real tool
-//! name and arguments, exactly as if the model had called it directly. A
-//! host that registers its own tool under either name keeps it: registry
-//! lookups win over the intrinsic answer.
+//! It is not a registered [`tinytools::Tool`]. It is intrinsic to the loop so
+//! it can read the run's deferred catalogue. There is deliberately no call
+//! wrapper: a tool a search revealed is invoked by its own name, so every
+//! `before_tool` hook, allow-list, policy middleware, and host authorization
+//! gate sees the real tool name and arguments with nothing to unwrap. A host
+//! that registers its own tool under the `tool_search` name keeps it:
+//! registry lookups win over the intrinsic answer.
 
 use serde_json::{Value, json};
 use tinyinference_llm::tool::{ToolFormat, ToolSchema};
@@ -18,18 +17,15 @@ use super::types::{DeferredCatalog, RankedSearch, ToolDiscoveryPolicy};
 
 /// Name of the intrinsic search bridge.
 pub const TOOL_SEARCH_NAME: &str = "tool_search";
-/// Name of the intrinsic call bridge.
-pub const TOOL_CALL_NAME: &str = "tool_call";
 
 /// Longest `description` returned per search hit. The full schema is what the
 /// model needs to call the tool; the prose only needs to confirm the match.
 const HIT_DESCRIPTION_CHARS: usize = 500;
 
-/// The bridge schemas for a run, in the order they are appended to the
-/// request: `tool_search` then `tool_call`.
+/// The bridge schema for a run: `tool_search`, the only intrinsic tool.
 #[must_use]
-pub fn bridge_schemas(catalog: &DeferredCatalog, policy: &ToolDiscoveryPolicy) -> [ToolSchema; 2] {
-    [tool_search_schema(catalog, policy), tool_call_schema()]
+pub fn bridge_schema(catalog: &DeferredCatalog, policy: &ToolDiscoveryPolicy) -> ToolSchema {
+    tool_search_schema(catalog, policy)
 }
 
 fn tool_search_schema(catalog: &DeferredCatalog, policy: &ToolDiscoveryPolicy) -> ToolSchema {
@@ -44,9 +40,9 @@ fn tool_search_schema(catalog: &DeferredCatalog, policy: &ToolDiscoveryPolicy) -
         description: format!(
             "Find a tool that is not in your tool list. Not every capability is \
              advertised up front; describe what you need in plain words and this \
-             returns the matching tools with their full argument schemas. Invoke a \
-             match with `{TOOL_CALL_NAME}` (or by its own name). Use it before \
-             telling the user something is impossible.\n\n{manifest}"
+             returns the matching tools with their full argument schemas. Call a \
+             match directly by its own name. Use it before telling the user \
+             something is impossible.\n\n{manifest}"
         ),
         parameters: json!({
             "type": "object",
