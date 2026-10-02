@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::path::PathBuf;
 
 use super::super::inverted_index::InvertedIndex;
-use super::super::types::{ConversationMessage, ConversationThread};
+use super::super::types::{ConversationThread, ThreadMessage};
 use super::{
     CONVERSATION_INDEX_CACHE, ConversationPurgeStats, ConversationStore, THREAD_MESSAGES_DIR,
     THREADS_FILENAME, ThreadIndexEntry, ThreadLogEntry, append_jsonl, hex_encode, infer_labels,
@@ -70,7 +70,7 @@ impl ConversationStore {
             if !path.exists() {
                 continue;
             }
-            if let Ok(messages) = read_jsonl::<ConversationMessage>(&path) {
+            if let Ok(messages) = read_jsonl::<ThreadMessage>(&path) {
                 for msg in messages {
                     idx.insert(thread_id, msg);
                 }
@@ -284,7 +284,7 @@ impl ConversationStore {
         if !path.exists() {
             return Ok((0, None));
         }
-        let messages = read_jsonl::<ConversationMessage>(&path)?;
+        let messages = read_jsonl::<ThreadMessage>(&path)?;
         let count = messages.len();
         let last = messages.last().map(|m| m.created_at.clone());
         Ok((count, last))

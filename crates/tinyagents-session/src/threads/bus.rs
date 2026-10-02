@@ -28,7 +28,7 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::{
-    ConversationMessage, CreateConversationThread, append_message, ensure_thread, get_messages,
+    CreateConversationThread, ThreadMessage, append_message, ensure_thread, get_messages,
     list_threads,
 };
 
@@ -347,7 +347,7 @@ fn persist_channel_turn(
     append_message(
         workspace_dir.to_path_buf(),
         &thread_id,
-        ConversationMessage {
+        ThreadMessage {
             id: persisted_message_id,
             content: descriptor.content.to_string(),
             message_type: "text".to_string(),

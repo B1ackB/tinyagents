@@ -54,7 +54,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::tokenize::{ngrams, normalize};
-use super::types::{ConversationMessage, CrossThreadHit};
+use super::types::{CrossThreadHit, ThreadMessage};
 
 /// Minimum byte length for a query term to be considered. Matches the
 /// historical behaviour of `search_cross_thread_messages` so existing
@@ -126,8 +126,8 @@ impl InvertedIndex {
     /// in the index this is a no-op (messages are append-only in the
     /// store, so duplicate IDs indicate a corrupt JSONL — silently
     /// ignore rather than panic).
-    pub fn insert(&mut self, thread_id: &str, msg: ConversationMessage) {
-        let ConversationMessage {
+    pub fn insert(&mut self, thread_id: &str, msg: ThreadMessage) {
+        let ThreadMessage {
             id,
             content,
             sender,

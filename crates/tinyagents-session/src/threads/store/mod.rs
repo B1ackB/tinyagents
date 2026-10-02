@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use super::inverted_index::InvertedIndex;
 use super::types::{
-    ConversationMessage, ConversationMessagePatch, ConversationThread, CreateConversationThread,
+    ConversationThread, CreateConversationThread, ThreadMessage, ThreadMessagePatch,
 };
 
 mod index;
@@ -270,10 +270,7 @@ where
 /// lookup costs one parse rather than one per stored message; a line that
 /// merely quotes the id inside its own content is rejected by the `id` check.
 /// Mirrors [`read_jsonl`]'s tolerance of blank and corrupt lines.
-pub(super) fn find_message_by_id(
-    path: &Path,
-    id: &str,
-) -> Result<Option<ConversationMessage>, String> {
+pub(super) fn find_message_by_id(path: &Path, id: &str) -> Result<Option<ThreadMessage>, String> {
     if !path.exists() {
         return Ok(None);
     }
@@ -285,7 +282,7 @@ pub(super) fn find_message_by_id(
         if !line.contains(&needle) {
             continue;
         }
-        match serde_json::from_str::<ConversationMessage>(&line) {
+        match serde_json::from_str::<ThreadMessage>(&line) {
             Ok(message) if message.id == id => return Ok(Some(message)),
             _ => continue,
         }
@@ -376,10 +373,7 @@ pub fn list_threads(workspace_dir: PathBuf) -> Result<Vec<ConversationThread>, S
 }
 
 /// Free-function shim around [`ConversationStore::get_messages`].
-pub fn get_messages(
-    workspace_dir: PathBuf,
-    thread_id: &str,
-) -> Result<Vec<ConversationMessage>, String> {
+pub fn get_messages(workspace_dir: PathBuf, thread_id: &str) -> Result<Vec<ThreadMessage>, String> {
     ConversationStore::new(workspace_dir).get_messages(thread_id)
 }
 
@@ -387,8 +381,8 @@ pub fn get_messages(
 pub fn append_message(
     workspace_dir: PathBuf,
     thread_id: &str,
-    message: ConversationMessage,
-) -> Result<ConversationMessage, String> {
+    message: ThreadMessage,
+) -> Result<ThreadMessage, String> {
     ConversationStore::new(workspace_dir).append_message(thread_id, message)
 }
 
@@ -417,8 +411,8 @@ pub fn update_message(
     workspace_dir: PathBuf,
     thread_id: &str,
     message_id: &str,
-    patch: ConversationMessagePatch,
-) -> Result<ConversationMessage, String> {
+    patch: ThreadMessagePatch,
+) -> Result<ThreadMessage, String> {
     ConversationStore::new(workspace_dir).update_message(thread_id, message_id, patch)
 }
 

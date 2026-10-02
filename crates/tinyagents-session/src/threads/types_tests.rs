@@ -30,10 +30,10 @@ fn conversation_thread_serde_uses_camel_case_and_defaults_labels() {
 
 #[test]
 fn conversation_message_patch_defaults_to_no_changes() {
-    let patch: ConversationMessagePatch = serde_json::from_value(json!({})).unwrap();
+    let patch: ThreadMessagePatch = serde_json::from_value(json!({})).unwrap();
     assert!(patch.extra_metadata.is_none());
 
-    let patch_with_metadata: ConversationMessagePatch =
+    let patch_with_metadata: ThreadMessagePatch =
         serde_json::from_value(json!({"extraMetadata": {"source": "mock"}})).unwrap();
     assert_eq!(
         patch_with_metadata.extra_metadata,

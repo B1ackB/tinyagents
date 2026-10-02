@@ -115,8 +115,8 @@ pub use run_ledger::command_center::{
 };
 pub use store::{db_path, with_connection, with_transaction};
 pub use threads::{
-    ConversationMessage, ConversationMessagePatch, ConversationPurgeStats, ConversationStore,
-    ConversationThread, CreateConversationThread, CrossThreadHit,
+    ConversationPurgeStats, ConversationStore, ConversationThread, CreateConversationThread,
+    CrossThreadHit, ThreadMessage, ThreadMessagePatch,
 };
 pub use transcript::spend::{ThreadSpend, TranscriptSpend, thread_spend, transcript_spend};
 pub use turn_state::TurnStateMirror;

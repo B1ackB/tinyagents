@@ -46,7 +46,7 @@ fn store_roundtrips_threads_and_messages() {
     store
         .append_message(
             "default-thread",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "hello".to_string(),
                 message_type: "text".to_string(),
@@ -80,7 +80,7 @@ fn append_message_is_idempotent_by_message_id() {
             personality_id: None,
         })
         .expect("ensure thread");
-    let first = ConversationMessage {
+    let first = ThreadMessage {
         id: "agent:run-1".to_string(),
         content: "first".to_string(),
         message_type: "text".to_string(),
@@ -95,7 +95,7 @@ fn append_message_is_idempotent_by_message_id() {
     let returned = store
         .append_message(
             "t",
-            ConversationMessage {
+            ThreadMessage {
                 content: "second".to_string(),
                 created_at: "2026-04-10T12:02:00Z".to_string(),
                 ..first
@@ -133,7 +133,7 @@ fn append_message_does_not_dedupe_client_generated_ids() {
             personality_id: None,
         })
         .expect("ensure thread");
-    let message = ConversationMessage {
+    let message = ThreadMessage {
         id: "user:5f1d0c3e-1f8b-4c1a-9c2e-2a7b6d4e8f90".to_string(),
         content: "hello".to_string(),
         message_type: "text".to_string(),
@@ -166,7 +166,7 @@ fn append_message_idempotency_ignores_an_id_quoted_inside_content() {
     store
         .append_message(
             "t",
-            ConversationMessage {
+            ThreadMessage {
                 id: "user:1".to_string(),
                 content: "agent:run-9".to_string(),
                 message_type: "text".to_string(),
@@ -179,7 +179,7 @@ fn append_message_idempotency_ignores_an_id_quoted_inside_content() {
     let stored = store
         .append_message(
             "t",
-            ConversationMessage {
+            ThreadMessage {
                 id: "agent:run-9".to_string(),
                 content: "the real reply".to_string(),
                 message_type: "text".to_string(),
@@ -230,7 +230,7 @@ fn store_updates_message_metadata() {
     store
         .append_message(
             "default-thread",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "hello".to_string(),
                 message_type: "text".to_string(),
@@ -245,7 +245,7 @@ fn store_updates_message_metadata() {
         .update_message(
             "default-thread",
             "m1",
-            ConversationMessagePatch {
+            ThreadMessagePatch {
                 extra_metadata: Some(json!({ "myReactions": ["👍"] })),
             },
         )
@@ -272,7 +272,7 @@ fn purge_removes_threads_and_messages() {
     store
         .append_message(
             "default-thread",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "hello".to_string(),
                 message_type: "text".to_string(),
@@ -322,7 +322,7 @@ fn delete_thread_removes_thread_and_messages() {
     store
         .append_message(
             "t1",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "msg".to_string(),
                 message_type: "text".to_string(),
@@ -387,7 +387,7 @@ fn multiple_threads_and_messages() {
         store
             .append_message(
                 &format!("t{i}"),
-                ConversationMessage {
+                ThreadMessage {
                     id: format!("m{i}"),
                     content: format!("msg {i}"),
                     message_type: "text".to_string(),
@@ -426,7 +426,7 @@ fn update_message_nonexistent_returns_error() {
     let result = store.update_message(
         "t1",
         "nonexistent",
-        ConversationMessagePatch {
+        ThreadMessagePatch {
             extra_metadata: Some(json!({})),
         },
     );

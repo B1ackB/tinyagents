@@ -4,8 +4,8 @@ use serde_json::json;
 
 use super::*;
 
-fn msg(id: &str, content: &str, created: &str) -> ConversationMessage {
-    ConversationMessage {
+fn msg(id: &str, content: &str, created: &str) -> ThreadMessage {
+    ThreadMessage {
         id: id.to_string(),
         content: content.to_string(),
         message_type: "text".to_string(),

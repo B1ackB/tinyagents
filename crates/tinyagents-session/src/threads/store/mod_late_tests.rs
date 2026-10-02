@@ -17,7 +17,7 @@ fn search_cross_thread_messages_finds_japanese_bigram_match() {
     store
         .append_message(
             "thread-jp",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "明日東京に行きます".to_string(), // "Tomorrow I'm going to Tokyo"
                 message_type: "text".to_string(),
@@ -57,7 +57,7 @@ fn search_cross_thread_messages_rebuilds_index_from_jsonl_after_reopen() {
         store
             .append_message(
                 "thread-x",
-                ConversationMessage {
+                ThreadMessage {
                     id: "m1".to_string(),
                     content: "persisted across reopen — checksum kitten".to_string(),
                     message_type: "text".to_string(),
@@ -106,7 +106,7 @@ fn cold_search_does_not_serialize_on_outer_lock() {
     store
         .append_message(
             "t1",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "hello world".to_string(),
                 message_type: "text".to_string(),
@@ -133,7 +133,7 @@ fn cold_search_does_not_serialize_on_outer_lock() {
         store2
             .append_message(
                 "t1",
-                ConversationMessage {
+                ThreadMessage {
                     id: "m2".to_string(),
                     content: "concurrent write".to_string(),
                     message_type: "text".to_string(),
@@ -169,7 +169,7 @@ fn read_jsonl_skips_invalid_lines_but_keeps_valid_ones() {
     )
     .unwrap();
 
-    let messages: Vec<ConversationMessage> = read_jsonl(&path).expect("read jsonl");
+    let messages: Vec<ThreadMessage> = read_jsonl(&path).expect("read jsonl");
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].id, "m1");
     assert_eq!(messages[1].id, "m2");
@@ -299,7 +299,7 @@ fn search_cold_rebuild_does_not_block_concurrent_append() {
         store
             .append_message(
                 "t1",
-                ConversationMessage {
+                ThreadMessage {
                     id: format!("seed-{i}"),
                     content: format!("seed message {i} for cold rebuild test"),
                     message_type: "text".to_string(),
@@ -332,7 +332,7 @@ fn search_cold_rebuild_does_not_block_concurrent_append() {
     thread::spawn(move || {
         let result = store_append.append_message(
             "t2",
-            ConversationMessage {
+            ThreadMessage {
                 id: "concurrent-append".to_string(),
                 content: "written during cold rebuild".to_string(),
                 message_type: "text".to_string(),
@@ -394,7 +394,7 @@ fn delete_during_cold_prime_cannot_republish_stale_messages() {
     store
         .append_message(
             "t1",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "hello from a soon-deleted thread".to_string(),
                 message_type: "text".to_string(),
@@ -527,7 +527,7 @@ fn prime_index_cold_build_works_on_legacy_workspace_without_stats() {
     for i in 0..3_usize {
         append_jsonl(
             &msg_path,
-            &ConversationMessage {
+            &ThreadMessage {
                 id: format!("lm{i}"),
                 content: format!("legacy kitten message {i}"),
                 message_type: "text".to_string(),
@@ -596,7 +596,7 @@ fn legacy_workspace_cold_rebuild_does_not_block_concurrent_append() {
         for m in 0..50_usize {
             append_jsonl(
                 &msg_path,
-                &ConversationMessage {
+                &ThreadMessage {
                     id: format!("lm-{t}-{m}"),
                     content: format!("legacy content thread {t} message {m}"),
                     message_type: "text".to_string(),
@@ -642,7 +642,7 @@ fn legacy_workspace_cold_rebuild_does_not_block_concurrent_append() {
         b_append.wait();
         let result = store_append.append_message(
             "append-target",
-            ConversationMessage {
+            ThreadMessage {
                 id: "concurrent-legacy-append".to_string(),
                 content: "written during legacy cold rebuild".to_string(),
                 message_type: "text".to_string(),
@@ -687,7 +687,7 @@ fn delete_error_still_evicts_tombstoned_thread_from_warm_index() {
     store
         .append_message(
             "delete-error",
-            ConversationMessage {
+            ThreadMessage {
                 id: "indexed-before-delete-error".to_string(),
                 content: "must disappear after tombstone".to_string(),
                 message_type: "text".to_string(),

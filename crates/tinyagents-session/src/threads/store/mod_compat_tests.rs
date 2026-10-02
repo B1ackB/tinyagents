@@ -30,7 +30,7 @@ const LEGACY_THREADS_JSONL: &str = concat!(
     "\n",
 );
 
-/// `default:chat-1`'s message log, as `ConversationMessage` serialized it.
+/// `default:chat-1`'s message log, as `ThreadMessage` serialized it.
 const LEGACY_CHAT_MESSAGES: [&str; 2] = [
     r#"{"id":"user:1","content":"hello legacy world","type":"text","extraMetadata":{"scope":"web"},"sender":"user","createdAt":"2026-01-01T00:01:00Z"}"#,
     r#"{"id":"agent:run-1","content":"Hi there, from the old store","type":"text","extraMetadata":null,"sender":"assistant","createdAt":"2026-01-01T00:02:00Z"}"#,
@@ -124,7 +124,7 @@ fn legacy_messages_round_trip_byte_for_byte() {
     assert_eq!(reply_run_id_of(&messages[1]), Some("run-1"));
 }
 
-fn reply_run_id_of(message: &ConversationMessage) -> Option<&str> {
+fn reply_run_id_of(message: &ThreadMessage) -> Option<&str> {
     super::super::types::reply_run_id(&message.id)
 }
 
@@ -137,7 +137,7 @@ fn appends_to_legacy_thread_in_the_legacy_format() {
     store
         .append_message(
             "default:chat-1",
-            ConversationMessage {
+            ThreadMessage {
                 id: "user:2".to_string(),
                 content: "a follow-up".to_string(),
                 message_type: "text".to_string(),

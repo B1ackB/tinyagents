@@ -31,7 +31,7 @@ fn one_hundred_agent_threads_append_without_loss_or_corruption() {
             barrier.wait();
             store.append_message(
                 &format!("agent-{index}"),
-                ConversationMessage {
+                ThreadMessage {
                     id: format!("message-{index}"),
                     content: format!("reply from agent {index}"),
                     message_type: "text".to_string(),
@@ -80,7 +80,7 @@ fn one_unreadable_transcript_does_not_stop_other_repairs() {
     std::fs::create_dir_all(store.thread_messages_path("a-unreadable")).unwrap();
     append_jsonl(
         &store.thread_messages_path("z-readable"),
-        &ConversationMessage {
+        &ThreadMessage {
             id: "message".to_string(),
             content: "recover me".to_string(),
             message_type: "text".to_string(),

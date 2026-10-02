@@ -17,17 +17,28 @@ session persistence here. Nothing about the format changed:
 - the root, file names, and per-thread file naming are the same;
 - every serde attribute (`camelCase` fields, the `type` and `extraMetadata`
   wire keys, the `op`-tagged log entries) is the same;
-- every public name is the same. No item collided with an existing
-  `tinyagents-session` name, so nothing was renamed.
+- every public name is the same except two types, renamed because
+  TinyAgents' dependency-boundary guard
+  (`tinyagents-integration-tests/tests/dependency_boundary.rs`) reserves
+  `ConversationMessage` and `ConversationMessagePatch` as OpenHuman domain
+  type names that host-independent crates must not use. Type names never
+  reach the disk, so the rename does not affect the format.
 
-A host switches by changing the import path:
+A host switches by changing the import path and the two type names:
 
 | Old | New |
 | --- | --- |
 | `tinymemory_conversations::X` | `tinyagents_session::threads::X` |
 | `tinymemory_conversations::bus::X` | `tinyagents_session::threads::bus::X` |
+| `ConversationMessage` | `ThreadMessage` |
+| `ConversationMessagePatch` | `ThreadMessagePatch` |
 
-The `Conversation*` types and `CrossThreadHit` are also re-exported from the
+Every other name (`ConversationStore`, `ConversationThread`,
+`CreateConversationThread`, `ConversationPurgeStats`, `CrossThreadHit`, the
+free functions, and the `bus` items) is unchanged. A host that wants to keep
+its own spelling can import `ThreadMessage as ConversationMessage`.
+
+The store, its wire types, and `CrossThreadHit` are also re-exported from the
 crate root (`tinyagents_session::ConversationStore`, ...). The free functions
 (`list_threads`, `append_message`, ...) stay under `threads::` so they are
 not confused with the SQLite session operations at the root.
@@ -64,7 +75,7 @@ Every entry point takes the **workspace directory** and derives the root:
   - `stats` — an absolute count/timestamp snapshot. Written to backfill
     threads whose messages predate `message_appended`, and to repair the
     trail after a crash between the two appends.
-- **`threads/{hex}.jsonl`** holds one `ConversationMessage` per line
+- **`threads/{hex}.jsonl`** holds one `ThreadMessage` per line
   (`id`, `content`, `type`, `extraMetadata`, `sender`, `createdAt`). The
   filename is the lowercase hex of the thread id's UTF-8 bytes, so any
   provider id is filesystem-safe.
@@ -149,8 +160,8 @@ Failures are logged with `tracing::warn!` (no message content) and swallowed.
   `ensure_thread`, `list_threads`, `get_messages`, `append_message`,
   `update_thread_title`, `update_thread_labels`, `update_message`,
   `delete_messages_from`, `delete_thread`, `purge_threads`.
-- **Types:** `ConversationThread`, `ConversationMessage`,
-  `CreateConversationThread`, `ConversationMessagePatch`, `CrossThreadHit`.
+- **Types:** `ConversationThread`, `ThreadMessage`,
+  `CreateConversationThread`, `ThreadMessagePatch`, `CrossThreadHit`.
 - **Deterministic ids:** `DETERMINISTIC_MESSAGE_ID_PREFIX`,
   `run_reply_message_id`, `is_deterministic_message_id`, `reply_run_id`.
 - **`bus`:** `ChannelEvent`, `ChannelEventHandler`, `ConversationEventBus`,

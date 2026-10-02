@@ -45,7 +45,7 @@ pub struct ConversationThread {
 /// A single message appended to a thread's JSONL log.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ConversationMessage {
+pub struct ThreadMessage {
     /// Stable message identifier, unique within the thread's log.
     pub id: String,
     /// Message body text.
@@ -88,7 +88,7 @@ pub struct CreateConversationThread {
 /// Partial update to apply to a stored message (e.g. rewriting `extraMetadata`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ConversationMessagePatch {
+pub struct ThreadMessagePatch {
     /// Replacement `extraMetadata` payload; `None` leaves existing metadata
     /// untouched.
     #[serde(default)]

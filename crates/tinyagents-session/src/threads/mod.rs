@@ -12,8 +12,12 @@
 //!
 //! The module was moved verbatim from TinyMemory's `tinymemory-conversations`
 //! crate. The on-disk format, paths, serde wire names, and public names are
-//! unchanged, so a host switches by replacing `tinymemory_conversations::`
-//! with `tinyagents_session::threads::` and existing workspaces keep loading.
+//! unchanged apart from two type names (`ConversationMessage` ->
+//! [`ThreadMessage`], `ConversationMessagePatch` -> [`ThreadMessagePatch`]),
+//! which TinyAgents' dependency-boundary guard reserves for OpenHuman. A host
+//! switches by replacing `tinymemory_conversations::` with
+//! `tinyagents_session::threads::` plus those two names, and existing
+//! workspaces keep loading.
 //! Errors stay `Result<_, String>` for that reason; see `README.md` beside
 //! this file for the layout, locking, and index design.
 //!
@@ -38,7 +42,7 @@ pub use store::{
     update_thread_title,
 };
 pub use types::{
-    ConversationMessage, ConversationMessagePatch, ConversationThread, CreateConversationThread,
-    CrossThreadHit, DETERMINISTIC_MESSAGE_ID_PREFIX, is_deterministic_message_id, reply_run_id,
+    ConversationThread, CreateConversationThread, CrossThreadHit, DETERMINISTIC_MESSAGE_ID_PREFIX,
+    ThreadMessage, ThreadMessagePatch, is_deterministic_message_id, reply_run_id,
     run_reply_message_id,
 };

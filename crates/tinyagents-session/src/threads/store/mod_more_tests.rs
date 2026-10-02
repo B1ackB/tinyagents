@@ -32,7 +32,7 @@ fn list_threads_reconciles_stats_with_authoritative_message_files() {
         store
             .append_message(
                 "t1",
-                ConversationMessage {
+                ThreadMessage {
                     id: format!("m{i}"),
                     content: format!("hi {i}"),
                     message_type: "text".to_string(),
@@ -140,7 +140,7 @@ fn list_threads_repairs_message_append_without_matching_stat_event() {
     store
         .append_message(
             "crash-window",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".into(),
                 content: "first".into(),
                 message_type: "text".into(),
@@ -155,7 +155,7 @@ fn list_threads_repairs_message_append_without_matching_stat_event() {
         .path()
         .join("memory/conversations/threads")
         .join(format!("{}.jsonl", hex_encode("crash-window".as_bytes())));
-    let second = ConversationMessage {
+    let second = ThreadMessage {
         id: "m2".into(),
         content: "persisted before crash".into(),
         message_type: "text".into(),
@@ -217,7 +217,7 @@ fn delete_thread_clears_stats_from_index() {
     store
         .append_message(
             "doomed",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "x".to_string(),
                 message_type: "text".to_string(),
@@ -253,7 +253,7 @@ fn search_cross_thread_messages_finds_hits_outside_excluded_thread() {
     store
         .append_message(
             "thread-a",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m-a-1".to_string(),
                 content: "Remember: my project is called Phoenix and uses Go and PostgreSQL."
                     .to_string(),
@@ -280,7 +280,7 @@ fn search_cross_thread_messages_finds_hits_outside_excluded_thread() {
     store
         .append_message(
             "thread-b",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m-b-1".to_string(),
                 content: "What database does my project use?".to_string(),
                 message_type: "text".to_string(),
@@ -321,7 +321,7 @@ fn search_cross_thread_messages_excludes_active_thread() {
     store
         .append_message(
             "thread-only",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m-1".to_string(),
                 content: "PostgreSQL deployment running on staging".to_string(),
                 message_type: "text".to_string(),
@@ -363,7 +363,7 @@ fn search_cross_thread_messages_skips_short_terms_and_empty_queries() {
     store
         .append_message(
             "t",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m".to_string(),
                 content: "Postgres".to_string(),
                 message_type: "text".to_string(),
@@ -406,7 +406,7 @@ fn search_cross_thread_messages_finds_polish_substring_without_diacritics() {
     store
         .append_message(
             "thread-pl",
-            ConversationMessage {
+            ThreadMessage {
                 id: "m1".to_string(),
                 content: "Lecę w piątek do Łodzi a potem Krakowa".to_string(),
                 message_type: "text".to_string(),

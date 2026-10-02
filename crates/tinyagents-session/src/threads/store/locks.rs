@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock, Weak};
 
 use parking_lot::{Mutex, RwLock};
 
-use super::super::types::ConversationMessage;
+use super::super::types::ThreadMessage;
 
 #[derive(Debug, Default)]
 pub(super) struct StoreLocks {
@@ -24,7 +24,7 @@ pub(super) struct StoreLocks {
     pub(super) threads: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     /// Appends completed while a cold scan is in flight. `None` means no scan
     /// is active, so the warm-cache path alone owns index maintenance.
-    pending_index_appends: Mutex<Option<Vec<(String, ConversationMessage)>>>,
+    pending_index_appends: Mutex<Option<Vec<(String, ThreadMessage)>>>,
 }
 
 impl StoreLocks {
@@ -44,13 +44,13 @@ impl StoreLocks {
         debug_assert!(previous.is_none(), "index builds must be serialized");
     }
 
-    pub(super) fn record_index_append(&self, thread_id: &str, message: &ConversationMessage) {
+    pub(super) fn record_index_append(&self, thread_id: &str, message: &ThreadMessage) {
         if let Some(pending) = self.pending_index_appends.lock().as_mut() {
             pending.push((thread_id.to_string(), message.clone()));
         }
     }
 
-    pub(super) fn finish_index_build(&self) -> Vec<(String, ConversationMessage)> {
+    pub(super) fn finish_index_build(&self) -> Vec<(String, ThreadMessage)> {
         self.pending_index_appends.lock().take().unwrap_or_default()
     }
 

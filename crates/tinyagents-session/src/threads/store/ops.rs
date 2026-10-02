@@ -6,8 +6,8 @@
 use std::fs;
 
 use super::super::types::{
-    ConversationMessage, ConversationMessagePatch, ConversationThread, CreateConversationThread,
-    CrossThreadHit, is_deterministic_message_id,
+    ConversationThread, CreateConversationThread, CrossThreadHit, ThreadMessage,
+    ThreadMessagePatch, is_deterministic_message_id,
 };
 use super::{
     CONVERSATION_INDEX_CACHE, ConversationPurgeStats, ConversationStore, THREADS_FILENAME,
@@ -51,7 +51,7 @@ impl ConversationStore {
     }
 
     /// Read every persisted message for a thread in append order.
-    pub fn get_messages(&self, thread_id: &str) -> Result<Vec<ConversationMessage>, String> {
+    pub fn get_messages(&self, thread_id: &str) -> Result<Vec<ThreadMessage>, String> {
         let _lifecycle = self.locks.lifecycle.read();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
@@ -65,7 +65,7 @@ impl ConversationStore {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        read_jsonl::<ConversationMessage>(&path)
+        read_jsonl::<ThreadMessage>(&path)
     }
 
     /// Substring-match messages across **every** thread in the workspace,
@@ -139,8 +139,8 @@ impl ConversationStore {
     pub fn append_message(
         &self,
         thread_id: &str,
-        message: ConversationMessage,
-    ) -> Result<ConversationMessage, String> {
+        message: ThreadMessage,
+    ) -> Result<ThreadMessage, String> {
         let _lifecycle = self.locks.lifecycle.read();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
@@ -257,14 +257,14 @@ impl ConversationStore {
         &self,
         thread_id: &str,
         message_id: &str,
-        patch: ConversationMessagePatch,
-    ) -> Result<ConversationMessage, String> {
+        patch: ThreadMessagePatch,
+    ) -> Result<ThreadMessage, String> {
         let _lifecycle = self.locks.lifecycle.read();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
         let path = self.thread_messages_path(thread_id);
-        let mut messages = read_jsonl::<ConversationMessage>(&path)?;
-        let mut updated: Option<ConversationMessage> = None;
+        let mut messages = read_jsonl::<ThreadMessage>(&path)?;
+        let mut updated: Option<ThreadMessage> = None;
         for message in &mut messages {
             if message.id == message_id {
                 if let Some(extra_metadata) = patch.extra_metadata.clone() {
@@ -305,7 +305,7 @@ impl ConversationStore {
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
         let path = self.thread_messages_path(thread_id);
-        let messages = read_jsonl::<ConversationMessage>(&path)?;
+        let messages = read_jsonl::<ThreadMessage>(&path)?;
         let Some(cut_at) = messages.iter().position(|m| m.id == message_id) else {
             return Ok(None);
         };
