@@ -689,8 +689,8 @@ async fn tool_schemas_projection_applies_to_wire_and_catalog() {
         .unwrap();
     assert!(answer.contains("\"name\": \"stock_quote\""));
 
-    // Regression: the intrinsic `tool_search`/`tool_call` bridge schemas used
-    // to be appended *after* provider preparation ran, so they reached the
+    // Regression: the intrinsic `tool_search` bridge schema used
+    // to be appended *after* provider preparation ran, so it reached the
     // wire unprojected — a `max_description_bytes` budget (or a Gemini
     // `minimum`/`maximum` strip) never applied to them even though the same
     // policy is configured for the whole run. `tool_search`'s description
@@ -707,30 +707,18 @@ async fn tool_schemas_projection_applies_to_wire_and_catalog() {
 }
 
 #[tokio::test]
-async fn tool_call_wrapping_a_non_deferred_name_emits_no_deferred_event() {
+async fn a_deferred_event_is_emitted_only_for_a_deferred_tool_called_by_name() {
     let listener = Arc::new(RecordingListener::new());
     let deferred = ExposedTool::new("stock_quote", "Quote.", ToolExposure::Deferred);
     let direct = ExposedTool::new("read_file", "Read.", ToolExposure::Direct);
     let hidden = ExposedTool::new("internal_step", "Host-only.", ToolExposure::Hidden);
     let model = RecordingModel::new(vec![
-        // A wrapped *direct* tool: runs, but is not a deferred call.
-        tool_call(
-            "c1",
-            TOOL_CALL_NAME,
-            json!({"name": "read_file", "arguments": {"symbol": "A"}}),
-        ),
-        // A wrapped *hidden* tool: rejected as unknown, not a deferred call.
-        tool_call(
-            "c2",
-            TOOL_CALL_NAME,
-            json!({"name": "internal_step", "arguments": {"symbol": "B"}}),
-        ),
-        // A wrapped deferred tool: the one case that is a deferred call.
-        tool_call(
-            "c3",
-            TOOL_CALL_NAME,
-            json!({"name": "stock_quote", "arguments": {"symbol": "C"}}),
-        ),
+        // A *direct* tool: runs, but is not a deferred call.
+        tool_call("c1", "read_file", json!({"symbol": "A"})),
+        // A *hidden* tool: rejected as unknown, not a deferred call.
+        tool_call("c2", "internal_step", json!({"symbol": "B"})),
+        // A deferred tool: the one case that is a deferred call.
+        tool_call("c3", "stock_quote", json!({"symbol": "C"})),
         text("done"),
     ]);
 
