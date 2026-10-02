@@ -22,10 +22,7 @@ mod embedding_ranker;
 mod manifest;
 mod types;
 
-pub use bridge::{
-    SearchAnswer, TOOL_CALL_NAME, TOOL_SEARCH_NAME, answer_tool_search, bridge_schemas,
-    unwrap_tool_call,
-};
+pub use bridge::{SearchAnswer, TOOL_SEARCH_NAME, answer_tool_search, bridge_schemas};
 pub use embedding_ranker::EmbeddingToolRanker;
 // The BM25 arithmetic lives in `tinytools::rank` now, so a host ranks with the
 // same index the bridge does; the old paths keep resolving.
