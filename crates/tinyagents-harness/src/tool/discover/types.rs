@@ -9,10 +9,10 @@ use tinytools::{Bm25Ranker, RankCandidate, RankContext, RankError, ToolRanker};
 /// How the agent loop exposes [`tinytools::ToolExposure::Deferred`] tools.
 ///
 /// Deferred tools stay out of the initial request's `tools` array. When a run has
-/// at least one, the loop appends two small bridge tools —
-/// `tool_search` (find a deferred tool by describing what you need) and
-/// `tool_call` (invoke one by name) — and answers both itself. A successful
-/// search promotes its matches into subsequent requests as typed declarations,
+/// at least one, the loop appends one small bridge tool,
+/// `tool_search` (find a deferred tool by describing what you need), and
+/// answers it itself. A deferred tool is invoked by its own name, with no
+/// wrapper. A successful search promotes its matches into subsequent requests as typed declarations,
 /// recorded in the transcript for resume. This changes the provider cache
 /// prefix once per newly discovered tool; requests without new discoveries
 /// retain a stable tool list.

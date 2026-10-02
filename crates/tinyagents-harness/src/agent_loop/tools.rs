@@ -304,11 +304,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
     /// Resolves the discovery bridge for one call, when it is one.
     ///
-    /// Returns `Some` with the answer for a `tool_search` call (no tool runs),
-    /// `None` after rewriting a `tool_call` in place to the real tool so
-    /// admission continues with it, and `None` untouched for any other name.
-    /// A malformed `tool_call` payload is answered with a tool error rather
-    /// than passed on, so the model can correct it.
+    /// Returns `Some` with the answer for a `tool_search` call (no tool runs)
+    /// and `None` untouched for any other name. A deferred tool is not
+    /// unwrapped from anything: the model calls it by its own name and
+    /// admission handles it like any registered tool.
     async fn answer_discovery_bridge(
         &self,
         ctx: &RunContext<Ctx>,
@@ -316,10 +315,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         call: &mut ToolCall,
         promoted_names: &mut std::collections::BTreeSet<String>,
     ) -> Result<Option<ResolvedToolCall<State, Ctx>>> {
-        use crate::tool::discover::{TOOL_CALL_NAME, TOOL_SEARCH_NAME};
-        if !self.policy.discovery.enabled
-            || (call.name != TOOL_SEARCH_NAME && call.name != TOOL_CALL_NAME)
-        {
+        use crate::tool::discover::TOOL_SEARCH_NAME;
+        if !self.policy.discovery.enabled || call.name != TOOL_SEARCH_NAME {
             return Ok(None);
         }
         // Reuses `resolve_tool_allowlist` (I-9's fail-closed allow-list
@@ -378,35 +375,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             status.set_last_event(record.id);
             return Ok(Some(ResolvedToolCall::Answered(answer.result)));
         }
-        match crate::tool::discover::unwrap_tool_call(&call.arguments) {
-            Ok((name, arguments)) => {
-                // `unwrap_tool_call` accepts any non-empty `name` — it only
-                // validates the wrapper's shape, not that `name` is actually
-                // in the deferred catalogue. A model can wrap a direct,
-                // hidden, or entirely fabricated name in a `tool_call`
-                // payload just as validly, and admission (via
-                // `model_dispatch`/the unknown-tool policy below) decides
-                // what happens to it next. Emitting `DeferredToolCall`
-                // unconditionally would misrepresent that outcome to an
-                // audit consumer — recording "a deferred call happened" for
-                // a call that admission is about to execute as a direct
-                // tool or reject as unknown/hidden. Only emit it when the
-                // target is actually in the catalogue this bridge searched.
-                if catalog.get(&name).is_some() {
-                    let record = ctx.emit(AgentEvent::DeferredToolCall {
-                        call_id: CallId::new(call.id.clone()),
-                        tool_name: name.clone(),
-                    });
-                    status.set_last_event(record.id);
-                }
-                call.name = name;
-                call.arguments = arguments;
-                Ok(None)
-            }
-            Err(message) => Ok(Some(ResolvedToolCall::Answered(
-                tinytools::ToolResult::error(message),
-            ))),
-        }
+        Ok(None)
     }
 
     /// Resolves this tool's own timeout policy. The separate run wall-clock
