@@ -337,7 +337,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // the call fall through to the unknown-tool policy.
             return Ok(None);
         }
-        if call.name == TOOL_SEARCH_NAME {
+        {
             let answer = crate::tool::discover::answer_tool_search(
                 &catalog,
                 &self.policy.discovery,
@@ -375,7 +375,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             status.set_last_event(record.id);
             return Ok(Some(ResolvedToolCall::Answered(answer.result)));
         }
-        Ok(None)
     }
 
     /// Resolves this tool's own timeout policy. The separate run wall-clock
@@ -514,13 +513,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Err(TinyAgentsError::LimitExceeded(err.to_string()));
         }
 
-        // Discovery bridge, resolved before any hook runs. `tool_call` is
-        // unwrapped here so every `before_tool` hook, allow-list, and the host
-        // authorization gate below see the *real* tool name and arguments —
-        // a deferred tool is admitted exactly as if the model had called it
-        // directly. `tool_search` is answered from the run's catalogue without
-        // running a tool. A host-registered tool under either name wins, and
-        // a call the provider could not parse is left for the recovery below.
+        // Discovery bridge, resolved before any hook runs. `tool_search` is
+        // answered from the run's catalogue without running a tool. A deferred
+        // tool is not bridged at all: the model calls it by its own name, so
+        // every `before_tool` hook, allow-list, and the host authorization gate
+        // below see the real tool name and arguments with nothing to unwrap. A
+        // host-registered tool under the `tool_search` name wins, and a call the
+        // provider could not parse is left for the recovery below.
         if call.invalid.is_none()
             && self.tools.dispatch(&call.name).is_none()
             && let Some(answered) = self
@@ -530,14 +529,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Ok(answered);
         }
         // Preserve the exact attacker-controlled provider payload for host
-        // authorization/audit, taken *after* discovery-bridge resolution:
-        // `answer_discovery_bridge` rewrites `call.name`/`call.arguments` in
-        // place when the call was a `tool_call` bridge wrapper (returning
-        // `None` so admission continues with the unwrapped call), so the
-        // snapshot here already reflects the real tool payload — not the
-        // stale `{"name", "arguments"}` wrapper the model actually sent.
-        // `call.arguments` is later canonicalized for execution and must not
-        // overwrite what the gate evaluates.
+        // authorization/audit. `call.arguments` is later canonicalized for
+        // execution and must not overwrite what the gate evaluates.
         let model_arguments = call.arguments.clone();
 
         // The slot is *reserved* above (cap-first, so a middleware hook never
@@ -644,6 +637,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         {
             Some(dispatch) => {
                 let tool = dispatch.tool();
+                // A deferred tool called by its own name: the model found it
+                // through `tool_search`, the manifest, or a replayed
+                // declaration. Reported so an audit consumer can tell a
+                // deferred call from a direct one; admission is unchanged.
+                if self.policy.discovery.enabled
+                    && tool.exposure() == tinytools::ToolExposure::Deferred
+                {
+                    let record = ctx.emit(AgentEvent::DeferredToolCall {
+                        call_id: CallId::new(call.id.clone()),
+                        tool_name: call.name.clone(),
+                    });
+                    status.set_last_event(record.id);
+                }
                 (dispatch, tool)
             }
             None => {
