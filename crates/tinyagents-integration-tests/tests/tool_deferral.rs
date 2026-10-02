@@ -396,10 +396,12 @@ async fn deferred_tool_is_promoted_after_search_and_restored_on_resume() {
     // Each by-name call to a deferred tool is reported once.
     let deferred_calls = events
         .iter()
-        .filter(|event| matches!(
-            event,
-            AgentEvent::DeferredToolCall { tool_name, .. } if tool_name == "stock_quote"
-        ))
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::DeferredToolCall { tool_name, .. } if tool_name == "stock_quote"
+            )
+        })
         .count();
     assert_eq!(deferred_calls, 2);
 }
