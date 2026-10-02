@@ -8,15 +8,15 @@ this file is the map of the module.
 |---------------|----------------------------------------------------------------------|
 | `types.rs`    | `ToolDiscoveryPolicy` (the knobs, the host `ranker` and `DiscoveryRankMode`), `DeferredCatalog` (a run's deferred schemas, BM25-indexed, name-sorted, ranked through the policy), `DeferredTool`, `RankedSearch` |
 | `manifest.rs` | `render_manifest` — the budgeted listing inside `tool_search`'s description: full → names → count |
-| `bridge.rs`   | The two intrinsic tools: `bridge_schemas`, `answer_tool_search` (async; returns a `SearchAnswer`), `unwrap_tool_call` |
+| `bridge.rs`   | The one intrinsic tool, `tool_search`: `bridge_schemas`, `answer_tool_search` (async; returns a `SearchAnswer`) |
 | `embedding_ranker.rs` | `EmbeddingToolRanker` — a semantic `tinytools::ToolRanker` over any `EmbeddingModel`, cached in memory and optionally on disk by embedding-space signature |
 | `test.rs`     | Unit tests for all of the above                                      |
 
 The agent loop (`agent_loop/run_loop.rs`, `agent_loop/tools.rs`) is the only
-consumer: it builds the catalogue once per run, appends the bridge schemas
-after the name-sorted direct set, answers `tool_search` from the catalogue
-without running a tool, and rewrites a `tool_call` to its target *before*
-`before_tool` so every gate sees the real tool.
+consumer: it builds the catalogue once per run, appends the `tool_search`
+schema after the name-sorted direct set, and answers `tool_search` from the
+catalogue without running a tool. There is no call wrapper: a deferred tool is
+called by its own name, so every `before_tool` gate sees the real tool as is.
 
 Invariants worth keeping:
 
