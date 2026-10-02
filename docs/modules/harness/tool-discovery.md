@@ -15,7 +15,7 @@ the rest.**
 | Exposure   | In `tools` array | Callable by the model | Findable via `tool_search` |
 |------------|------------------|-----------------------|----------------------------|
 | `Direct`   | yes              | yes                   | n/a                        |
-| `Deferred` | **no**           | yes (by name or via `tool_call`) | yes            |
+| `Deferred` | **no**           | yes (by name) | yes            |
 | `Hidden`   | no               | **no** — answered as an unknown tool | no          |
 
 `ToolRegistry::schemas()` returns only `Direct` tools (name-sorted, as before);
@@ -35,7 +35,7 @@ a tool it does not know it needs.
 ## The bridge
 
 When a run has at least one deferred tool (after the host allow-list), the
-agent loop appends two intrinsic tools **after** the name-sorted direct set:
+agent loop appends one intrinsic tool **after** the name-sorted direct set:
 
 - `tool_search { query, limit }` — ranks the catalogue's name, split
   identifier, description, top-level property names and `Tool::family`.
@@ -45,14 +45,15 @@ agent loop appends two intrinsic tools **after** the name-sorted direct set:
   `- name: first sentence (≤ 60 chars)`, degrading to names only, then to a
   bare count, until it fits `ToolDiscoveryPolicy::manifest_token_budget`
   (default 4,000 tokens).
-- `tool_call { name, arguments }` — invokes a deferred tool. The loop
-  **unwraps it before admission**, so every `before_tool` hook, allow-list,
-  policy middleware and the host authorization gate see the real name and
-  arguments; `ToolStarted` names the real tool. A revealed tool is also
-  callable directly by its own name — the registry already holds it.
 
-Neither is a registered tool; a host that registers its own `tool_search` or
-`tool_call` keeps it. Both are governed by `RunPolicy::discovery`
+There is no call wrapper. A revealed tool is invoked by its own name — the
+registry already holds it — so every `before_tool` hook, allow-list, policy
+middleware and the host authorization gate see the real name and arguments,
+and `ToolStarted` names the real tool. The loop emits `DeferredToolCall` for
+each such call so a deferred call is distinguishable from a direct one.
+
+`tool_search` is not a registered tool; a host that registers its own
+`tool_search` keeps it. Discovery is governed by `RunPolicy::discovery`
 (`ToolDiscoveryPolicy { enabled, manifest_token_budget, default_limit,
 max_limit }`). With `enabled: false` deferred tools are neither advertised nor
 searchable, but a direct call by name still runs: deferral only ever subtracts
@@ -95,17 +96,17 @@ allow-list. Exposure-only middleware (`ContextualToolSelectionMiddleware`,
 `DynamicToolSelectionMiddleware`, `ToolPolicyMiddleware::before_model`) shapes
 `request.tools` per turn and therefore never sees a deferred tool. Execution-
 time gates (`before_tool`, `ToolAllowlistMiddleware`, host authorization) do,
-because `tool_call` is unwrapped first. A host that needs per-turn exposure
+because a deferred tool is admitted by its own name. A host that needs per-turn exposure
 narrowing of deferred tools should apply it at registration or via the
 allow-list.
 
 ### Using `ToolPolicyMiddleware::strict` with discovery
 
-The bridge tools (`tool_search`/`tool_call`) are never registered, so a
-fail-closed `ToolPolicyMiddleware::strict(policies)` rejects them by default
+The bridge tool (`tool_search`) is never registered, so a
+fail-closed `ToolPolicyMiddleware::strict(policies)` rejects it by default
 like any other unclassified name — which would make every deferred tool
 undiscoverable. Call
-`.exempt_discovery_bridge(true)` to exempt the two reserved names from
+`.exempt_discovery_bridge(true)` to exempt the reserved name from
 classification/side-effect checks:
 
 ```rust,ignore
@@ -117,8 +118,8 @@ This is opt-in rather than automatic because it is only safe when `policies`
 is the *complete* registry snapshot (as `ToolRegistry::policies()` is): the
 exemption only fires for a name with no entry in `policies`, so an incomplete
 or stale snapshot could otherwise let a real, side-effecting host tool that
-happens to be registered under `tool_search`/`tool_call` bypass strict mode's
-fail-closed checks. A host-registered tool under either name always wins over
+happens to be registered under `tool_search` bypass strict mode's
+fail-closed checks. A host-registered tool under that name always wins over
 the intrinsic bridge and is evaluated by its own policy entry regardless of
 this flag.
 
@@ -176,8 +177,8 @@ For models without native tool calling the tool list is rendered into the
 system prompt by `tinytools-agent` (see [tool-dialect.md](tool-dialect.md)),
 not by this crate: the JSON-in-tag dialect lists each tool's parameter
 schema, and the P-Format dialect lists a compact positional call signature
-(`read_file[0|<path>|1|<limit>]`). The bridge schemas above go through the same
-renderer as any other tool, so `tool_search` / `tool_call` are callable from
+(`read_file[0|<path>|1|<limit>]`). The bridge schema above goes through the same
+renderer as any other tool, so `tool_search` is callable from
 either text dialect. `tool::type_signature` / `tool::argument_notes` remain
 available as compact TypeScript-style formatters
 (`{path: string, limit?: integer}`) for hosts that build their own prompt
@@ -199,7 +200,7 @@ a typed declaration. The earlier baseline measured over OpenRouter (2026-09-19):
 
 Schema bytes on the wire went from 24,725 (41 tools) to 3,791 (3 tools + a
 40-entry manifest). "Route" is how the model reached the tool: through
-`tool_search`, or straight off the manifest via `tool_call` (Haiku read the
+`tool_search`, or straight off the manifest by name (Haiku read the
 name in the description and skipped the search). A 2026-09-25 live run of
 `openai/gpt-4.1-mini` after typed promotion used 3,814 → 904 first-call
 tokens and about 3,600 total deferred-run tokens. The separate live promotion case
