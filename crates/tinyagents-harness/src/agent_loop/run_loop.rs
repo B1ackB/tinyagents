@@ -297,7 +297,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // intrinsic bridge only fills a name nobody registered. Check the
             // full registry (`self.tools.dispatch`), not just the direct set
             // collected into `tool_schemas` above — a `Hidden` or `Deferred`
-            // registration under either name must also suppress the intrinsic
+            // registration under that name must also suppress the intrinsic
             // schema, because admission's own collision rule
             // (`self.tools.dispatch(&call.name).is_none()` in
             // `answer_discovery_bridge`) checks the same full registry. Using
