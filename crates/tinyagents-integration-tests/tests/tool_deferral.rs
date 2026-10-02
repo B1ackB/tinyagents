@@ -533,10 +533,10 @@ async fn host_registered_tool_search_wins_over_the_intrinsic_bridge() {
         .await
         .expect("run succeeds");
 
-    // The host's `tool_search` keeps its slot and its description; only the
-    // intrinsic `tool_call` half of the bridge is added.
+    // The host's `tool_search` keeps its slot and its description, and the
+    // intrinsic bridge adds nothing: it has no other tool to advertise.
     let tools = model.tools_seen()[0].clone();
-    assert_eq!(tool_names(&tools), vec![TOOL_SEARCH_NAME, TOOL_CALL_NAME]);
+    assert_eq!(tool_names(&tools), vec![TOOL_SEARCH_NAME]);
     assert!(tools.contains("The host's own search tool."));
     assert!(!tools.contains("deferred tool(s) are searchable"));
     // …and the call went to the host's tool, not the intrinsic answer.
@@ -605,11 +605,7 @@ async fn hidden_registration_suppresses_the_matching_bridge_schema() {
         ToolExposure::Hidden,
     );
     let model = RecordingModel::new(vec![
-        tool_call(
-            "c1",
-            TOOL_CALL_NAME,
-            json!({"name": "stock_quote", "arguments": {"symbol": "ACME"}}),
-        ),
+        tool_call("c1", "stock_quote", json!({"symbol": "ACME"})),
         text("done"),
     ]);
 
@@ -627,12 +623,12 @@ async fn hidden_registration_suppresses_the_matching_bridge_schema() {
     assert_eq!(run.text(), Some("done".to_string()));
 
     // The intrinsic `tool_search` schema is suppressed (the registry already
-    // owns that name, even though it is Hidden and unreachable itself); only
-    // `tool_call` is advertised.
+    // owns that name, even though it is Hidden and unreachable itself), and it
+    // was the only bridge schema, so nothing is advertised.
     let tools = model.tools_seen()[0].clone();
-    assert_eq!(tool_names(&tools), vec![TOOL_CALL_NAME]);
-    // The deferred tool is still reachable directly through `tool_call`, and
-    // the hidden registration never ran.
+    assert!(tool_names(&tools).is_empty(), "{tools}");
+    // The deferred tool is still reachable directly by its own name, and the
+    // hidden registration never ran.
     assert_eq!(deferred.calls.lock().unwrap().len(), 1);
     assert!(hidden_search.calls.lock().unwrap().is_empty());
 }
