@@ -304,11 +304,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
     /// Resolves the discovery bridge for one call, when it is one.
     ///
-    /// Returns `Some` with the answer for a `tool_search` call (no tool runs),
-    /// `None` after rewriting a `tool_call` in place to the real tool so
-    /// admission continues with it, and `None` untouched for any other name.
-    /// A malformed `tool_call` payload is answered with a tool error rather
-    /// than passed on, so the model can correct it.
+    /// Returns `Some` with the answer for a `tool_search` call (no tool runs)
+    /// and `None` untouched for any other name. A deferred tool is not
+    /// unwrapped from anything: the model calls it by its own name and
+    /// admission handles it like any registered tool.
     async fn answer_discovery_bridge(
         &self,
         ctx: &RunContext<Ctx>,
@@ -316,10 +315,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         call: &mut ToolCall,
         promoted_names: &mut std::collections::BTreeSet<String>,
     ) -> Result<Option<ResolvedToolCall<State, Ctx>>> {
-        use crate::tool::discover::{TOOL_CALL_NAME, TOOL_SEARCH_NAME};
-        if !self.policy.discovery.enabled
-            || (call.name != TOOL_SEARCH_NAME && call.name != TOOL_CALL_NAME)
-        {
+        use crate::tool::discover::TOOL_SEARCH_NAME;
+        if !self.policy.discovery.enabled || call.name != TOOL_SEARCH_NAME {
             return Ok(None);
         }
         // Reuses `resolve_tool_allowlist` (I-9's fail-closed allow-list
@@ -340,7 +337,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // the call fall through to the unknown-tool policy.
             return Ok(None);
         }
-        if call.name == TOOL_SEARCH_NAME {
+        {
             let answer = crate::tool::discover::answer_tool_search(
                 &catalog,
                 &self.policy.discovery,
@@ -376,36 +373,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 latency_ms: ranking.as_ref().map_or(0, |r| r.latency_ms),
             });
             status.set_last_event(record.id);
-            return Ok(Some(ResolvedToolCall::Answered(answer.result)));
-        }
-        match crate::tool::discover::unwrap_tool_call(&call.arguments) {
-            Ok((name, arguments)) => {
-                // `unwrap_tool_call` accepts any non-empty `name` — it only
-                // validates the wrapper's shape, not that `name` is actually
-                // in the deferred catalogue. A model can wrap a direct,
-                // hidden, or entirely fabricated name in a `tool_call`
-                // payload just as validly, and admission (via
-                // `model_dispatch`/the unknown-tool policy below) decides
-                // what happens to it next. Emitting `DeferredToolCall`
-                // unconditionally would misrepresent that outcome to an
-                // audit consumer — recording "a deferred call happened" for
-                // a call that admission is about to execute as a direct
-                // tool or reject as unknown/hidden. Only emit it when the
-                // target is actually in the catalogue this bridge searched.
-                if catalog.get(&name).is_some() {
-                    let record = ctx.emit(AgentEvent::DeferredToolCall {
-                        call_id: CallId::new(call.id.clone()),
-                        tool_name: name.clone(),
-                    });
-                    status.set_last_event(record.id);
-                }
-                call.name = name;
-                call.arguments = arguments;
-                Ok(None)
-            }
-            Err(message) => Ok(Some(ResolvedToolCall::Answered(
-                tinytools::ToolResult::error(message),
-            ))),
+            Ok(Some(ResolvedToolCall::Answered(answer.result)))
         }
     }
 
@@ -545,13 +513,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Err(TinyAgentsError::LimitExceeded(err.to_string()));
         }
 
-        // Discovery bridge, resolved before any hook runs. `tool_call` is
-        // unwrapped here so every `before_tool` hook, allow-list, and the host
-        // authorization gate below see the *real* tool name and arguments —
-        // a deferred tool is admitted exactly as if the model had called it
-        // directly. `tool_search` is answered from the run's catalogue without
-        // running a tool. A host-registered tool under either name wins, and
-        // a call the provider could not parse is left for the recovery below.
+        // Discovery bridge, resolved before any hook runs. `tool_search` is
+        // answered from the run's catalogue without running a tool. A deferred
+        // tool is not bridged at all: the model calls it by its own name, so
+        // every `before_tool` hook, allow-list, and the host authorization gate
+        // below see the real tool name and arguments with nothing to unwrap. A
+        // host-registered tool under the `tool_search` name wins, and a call the
+        // provider could not parse is left for the recovery below.
         if call.invalid.is_none()
             && self.tools.dispatch(&call.name).is_none()
             && let Some(answered) = self
@@ -561,14 +529,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Ok(answered);
         }
         // Preserve the exact attacker-controlled provider payload for host
-        // authorization/audit, taken *after* discovery-bridge resolution:
-        // `answer_discovery_bridge` rewrites `call.name`/`call.arguments` in
-        // place when the call was a `tool_call` bridge wrapper (returning
-        // `None` so admission continues with the unwrapped call), so the
-        // snapshot here already reflects the real tool payload — not the
-        // stale `{"name", "arguments"}` wrapper the model actually sent.
-        // `call.arguments` is later canonicalized for execution and must not
-        // overwrite what the gate evaluates.
+        // authorization/audit. `call.arguments` is later canonicalized for
+        // execution and must not overwrite what the gate evaluates.
         let model_arguments = call.arguments.clone();
 
         // The slot is *reserved* above (cap-first, so a middleware hook never
@@ -675,6 +637,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         {
             Some(dispatch) => {
                 let tool = dispatch.tool();
+                // A deferred tool called by its own name: the model found it
+                // through `tool_search`, the manifest, or a replayed
+                // declaration. Reported so an audit consumer can tell a
+                // deferred call from a direct one; admission is unchanged.
+                if self.policy.discovery.enabled
+                    && tool.exposure() == tinytools::ToolExposure::Deferred
+                {
+                    let record = ctx.emit(AgentEvent::DeferredToolCall {
+                        call_id: CallId::new(call.id.clone()),
+                        tool_name: call.name.clone(),
+                    });
+                    status.set_last_event(record.id);
+                }
                 (dispatch, tool)
             }
             None => {

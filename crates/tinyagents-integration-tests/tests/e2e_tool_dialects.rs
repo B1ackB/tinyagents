@@ -137,7 +137,7 @@ impl ChatModel<()> for EmailContinuationModel {
                 if latest_user.contains("fetch my latest email")
                     && latest_user.contains("GMAIL_FETCH_EMAILS")
                 {
-                    "<tool_call>tool_call(name=\"GMAIL_FETCH_EMAILS\", arguments=\"{}\")</tool_call>"
+                    "<tool_call>GMAIL_FETCH_EMAILS()</tool_call>"
                 } else {
                     "Hey! What's up?"
                 }

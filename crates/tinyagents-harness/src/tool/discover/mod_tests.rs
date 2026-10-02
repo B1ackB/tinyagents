@@ -121,18 +121,23 @@ fn first_sentence_clips_and_ignores_inline_dots() {
 }
 
 #[test]
-fn bridge_schemas_are_search_then_call_and_embed_manifest() {
+fn the_bridge_is_tool_search_alone_and_embeds_the_manifest() {
     let policy = ToolDiscoveryPolicy::default();
-    let [search, call] = bridge_schemas(&catalog(), &policy);
+    // One schema, not two: a tool a search reveals is called by its own name,
+    // so there is no `tool_call` wrapper to advertise.
+    let [search] = bridge_schemas(&catalog(), &policy);
     assert_eq!(search.name, TOOL_SEARCH_NAME);
-    assert_eq!(call.name, TOOL_CALL_NAME);
+    assert!(search.description.contains("by its own name"));
+    assert!(
+        !search.description.contains("tool_call"),
+        "the description must not point at a wrapper that no longer exists"
+    );
     assert!(
         search
             .description
             .contains("- pdf_read: Read the text of a PDF file on disk")
     );
     assert_eq!(search.parameters["required"], json!(["query"]));
-    assert_eq!(call.parameters["required"], json!(["name", "arguments"]));
     assert_eq!(
         search.parameters["properties"]["limit"]["maximum"],
         json!(20)
@@ -430,94 +435,4 @@ fn tool_search_schema_normalizes_inconsistent_limits() {
     let maximum = limit["maximum"].as_u64().unwrap();
     assert!(minimum <= maximum, "minimum must not exceed maximum");
     assert!(maximum >= 1);
-}
-
-#[test]
-fn unwrap_tool_call_accepts_object_string_and_missing_arguments() {
-    let (name, args) =
-        unwrap_tool_call(&json!({"name": "pdf_read", "arguments": {"path": "a.pdf"}})).unwrap();
-    assert_eq!(name, "pdf_read");
-    assert_eq!(args, json!({"path": "a.pdf"}));
-
-    let (_, args) =
-        unwrap_tool_call(&json!({"name": "pdf_read", "arguments": "{\"path\":\"b\"}"})).unwrap();
-    assert_eq!(args, json!({"path": "b"}));
-
-    let (_, args) = unwrap_tool_call(&json!({"name": " pdf_read "})).unwrap();
-    assert_eq!(args, json!({}));
-}
-
-#[test]
-fn unwrap_tool_call_rejects_malformed_payloads() {
-    assert!(unwrap_tool_call(&json!({"arguments": {}})).is_err());
-    assert!(unwrap_tool_call(&json!({"name": ""})).is_err());
-    assert!(unwrap_tool_call(&json!({"name": "x", "arguments": 3})).is_err());
-    assert!(unwrap_tool_call(&json!({"name": "x", "arguments": "not json"})).is_err());
-}
-
-/// `tool_call.arguments` is a JSON string so it reaches the model intact under
-/// every schema projection. As an open object it was answered `{}` by a
-/// schema-constrained provider, and the strict, conservative and Gemini
-/// projections rewrite or strip `additionalProperties`, so no object spelling
-/// survives all of them.
-#[test]
-fn tool_call_arguments_is_a_string_under_every_schema_projection() {
-    use crate::tool::schema_prepare::{SchemaPreparation, prepare_tool_schema};
-
-    let policy = ToolDiscoveryPolicy::default();
-    let [_, call] = bridge_schemas(&catalog(), &policy);
-    assert_eq!(
-        call.parameters["properties"]["arguments"]["type"],
-        json!("string")
-    );
-
-    for (label, preparation) in [
-        ("gemini", SchemaPreparation::gemini()),
-        ("anthropic", SchemaPreparation::anthropic()),
-        ("openai", SchemaPreparation::openai()),
-        ("conservative", SchemaPreparation::conservative()),
-        ("openai strict", SchemaPreparation::openai().with_strict()),
-        (
-            "conservative strict",
-            SchemaPreparation::conservative().with_strict(),
-        ),
-    ] {
-        let prepared = prepare_tool_schema(&call, &preparation);
-        let arguments = &prepared.parameters["properties"]["arguments"];
-        assert_eq!(
-            arguments["type"],
-            json!("string"),
-            "{label}: `arguments` must stay a string, got {arguments}"
-        );
-        let required = prepared.parameters["required"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{label}: `required` must stay an array"));
-        assert!(
-            required.contains(&json!("name")) && required.contains(&json!("arguments")),
-            "{label}: `name` and `arguments` must stay required, got {required:?}"
-        );
-    }
-}
-
-#[test]
-fn unwrap_tool_call_decodes_the_string_arguments_the_schema_asks_for() {
-    // The exact shape the Sail Research route returned once `arguments` was a
-    // string: nested quotes and an escaped newline inside the encoded object.
-    let payload = json!({
-        "name": "GMAIL_SEND_EMAIL",
-        "arguments": "{\"recipient_email\":\"a@b.c\",\"subject\":\"AAPL\",\"body\":\"line 1\\nline 2\"}"
-    });
-    let (name, args) = unwrap_tool_call(&payload).unwrap();
-    assert_eq!(name, "GMAIL_SEND_EMAIL");
-    assert_eq!(
-        args,
-        json!({"recipient_email": "a@b.c", "subject": "AAPL", "body": "line 1\nline 2"})
-    );
-
-    let (_, none) = unwrap_tool_call(&json!({"name": "x", "arguments": "{}"})).unwrap();
-    assert_eq!(none, json!({}));
-    assert!(
-        unwrap_tool_call(&json!({"name": "x", "arguments": "[1,2]"})).is_err(),
-        "a JSON string that is not an object must be refused"
-    );
 }

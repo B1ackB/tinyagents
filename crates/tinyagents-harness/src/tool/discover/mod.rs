@@ -9,8 +9,8 @@
 //! - [`ToolDiscoveryPolicy`] — the knobs, carried on
 //!   [`crate::runtime::RunPolicy::discovery`], including the ranker and the
 //!   [`DiscoveryRankMode`] that says how it is used.
-//! - [`bridge_schemas`] / [`answer_tool_search`] / [`unwrap_tool_call`] — the
-//!   two intrinsic bridge tools the agent loop advertises and answers.
+//! - [`bridge_schemas`] / [`answer_tool_search`] — the intrinsic `tool_search`
+//!   bridge tool the agent loop advertises and answers.
 //! - [`EmbeddingToolRanker`] — a semantic [`tinytools::ToolRanker`] over any
 //!   [`tinyinference_embeddings::EmbeddingModel`], with an in-memory and
 //!   optional on-disk embedding cache.
@@ -22,10 +22,7 @@ mod embedding_ranker;
 mod manifest;
 mod types;
 
-pub use bridge::{
-    SearchAnswer, TOOL_CALL_NAME, TOOL_SEARCH_NAME, answer_tool_search, bridge_schemas,
-    unwrap_tool_call,
-};
+pub use bridge::{SearchAnswer, TOOL_SEARCH_NAME, answer_tool_search, bridge_schemas};
 pub use embedding_ranker::EmbeddingToolRanker;
 // The BM25 arithmetic lives in `tinytools::rank` now, so a host ranks with the
 // same index the bridge does; the old paths keep resolving.

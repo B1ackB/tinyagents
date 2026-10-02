@@ -284,7 +284,7 @@ impl tinytools::Tool for DeferredStockQuote {
 
 /// Regression: the collision check used to compare the structured-output
 /// schema name only against `self.tools.names()` (the registry), so a name
-/// colliding with the *intrinsic* `tool_search`/`tool_call` discovery bridge
+/// colliding with the *intrinsic* `tool_search` discovery bridge
 /// — which has no registry entry — slipped through. With a deferred tool
 /// present, request construction would then append a second `tool_search`
 /// function declaration alongside the intrinsic one, the exact

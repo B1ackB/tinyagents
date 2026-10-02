@@ -120,9 +120,9 @@ model; only the enclosing run wall-clock deadline aborts the run.
 
 Tool schemas are advertised by exposure, not by registration. Initially only
 `ToolExposure::Direct` tools appear in a request's `tools` array; `Deferred`
-tools are indexed per run and reached through the intrinsic `tool_search` /
-`tool_call` bridge, whose `tool_call` is unwrapped to the real tool before
-admission so policy and authorization see the true name. Search matches gain
+tools are indexed per run and reached through the intrinsic `tool_search`
+bridge; a revealed tool is called by its own name, so policy and authorization
+see the true name with nothing to unwrap. Search matches gain
 typed declarations on later requests and are recorded in the transcript for
 resume. The `tools` array stays stable between discoveries when no per-turn
 exposure middleware changes the advertised set.
