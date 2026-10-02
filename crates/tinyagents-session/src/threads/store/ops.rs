@@ -6,13 +6,12 @@
 use std::fs;
 
 use super::super::types::{
-    is_deterministic_message_id, ConversationMessage, ConversationMessagePatch, ConversationThread,
-    CreateConversationThread, CrossThreadHit,
+    ConversationMessage, ConversationMessagePatch, ConversationThread, CreateConversationThread,
+    CrossThreadHit, is_deterministic_message_id,
 };
 use super::{
-    append_jsonl, find_message_by_id, normalize_labels, read_jsonl, rewrite_jsonl,
-    ConversationPurgeStats, ConversationStore, ThreadLogEntry, CONVERSATION_INDEX_CACHE,
-    THREADS_FILENAME,
+    CONVERSATION_INDEX_CACHE, ConversationPurgeStats, ConversationStore, THREADS_FILENAME,
+    ThreadLogEntry, append_jsonl, find_message_by_id, normalize_labels, read_jsonl, rewrite_jsonl,
 };
 
 impl ConversationStore {

@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use super::super::inverted_index::InvertedIndex;
 use super::super::types::{ConversationMessage, ConversationThread};
 use super::{
-    append_jsonl, hex_encode, infer_labels, normalize_labels, read_jsonl, ConversationPurgeStats,
-    ConversationStore, ThreadIndexEntry, ThreadLogEntry, CONVERSATION_INDEX_CACHE,
-    THREADS_FILENAME, THREAD_MESSAGES_DIR,
+    CONVERSATION_INDEX_CACHE, ConversationPurgeStats, ConversationStore, THREAD_MESSAGES_DIR,
+    THREADS_FILENAME, ThreadIndexEntry, ThreadLogEntry, append_jsonl, hex_encode, infer_labels,
+    normalize_labels, read_jsonl,
 };
 
 impl ConversationStore {

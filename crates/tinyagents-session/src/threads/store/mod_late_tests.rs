@@ -433,10 +433,12 @@ fn delete_during_cold_prime_cannot_republish_stale_messages() {
     );
     release_tx.send(()).unwrap();
     prime.join().unwrap().unwrap();
-    assert!(delete_rx
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap()
-        .unwrap());
+    assert!(
+        delete_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+    );
 
     let hits = store
         .search_cross_thread_messages("hello", 10, None)
@@ -562,7 +564,7 @@ fn prime_index_cold_build_works_on_legacy_workspace_without_stats() {
 /// used instead (header-only) so the append proceeds concurrently.
 #[test]
 fn legacy_workspace_cold_rebuild_does_not_block_concurrent_append() {
-    use std::sync::{mpsc, Arc, Barrier};
+    use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -708,9 +710,11 @@ fn delete_error_still_evicts_tombstoned_thread_from_warm_index() {
     let transcript = store.thread_messages_path("delete-error");
     std::fs::remove_file(&transcript).unwrap();
     std::fs::create_dir(&transcript).unwrap();
-    assert!(store
-        .delete_thread("delete-error", "2026-04-10T12:02:00Z")
-        .is_err());
+    assert!(
+        store
+            .delete_thread("delete-error", "2026-04-10T12:02:00Z")
+            .is_err()
+    );
 
     let hits = store
         .search_cross_thread_messages("disappear after tombstone", 10, None)

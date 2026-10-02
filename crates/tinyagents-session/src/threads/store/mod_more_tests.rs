@@ -375,15 +375,19 @@ fn search_cross_thread_messages_skips_short_terms_and_empty_queries() {
         .unwrap();
 
     // All terms < 3 chars → empty
-    assert!(store
-        .search_cross_thread_messages("a is on", 10, None)
-        .unwrap()
-        .is_empty());
+    assert!(
+        store
+            .search_cross_thread_messages("a is on", 10, None)
+            .unwrap()
+            .is_empty()
+    );
     // Empty query → empty
-    assert!(store
-        .search_cross_thread_messages("", 10, None)
-        .unwrap()
-        .is_empty());
+    assert!(
+        store
+            .search_cross_thread_messages("", 10, None)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

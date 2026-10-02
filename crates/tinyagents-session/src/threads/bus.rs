@@ -28,8 +28,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::{
-    append_message, ensure_thread, get_messages, list_threads, ConversationMessage,
-    CreateConversationThread,
+    ConversationMessage, CreateConversationThread, append_message, ensure_thread, get_messages,
+    list_threads,
 };
 
 static CONVERSATION_PERSISTENCE_WORKSPACE: OnceLock<Arc<RwLock<PathBuf>>> = OnceLock::new();
