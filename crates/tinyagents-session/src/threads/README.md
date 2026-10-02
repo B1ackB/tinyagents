@@ -107,9 +107,9 @@ coordinated.
 `search_cross_thread_messages(query, limit, exclude_thread_id)` answers from
 an in-memory inverted index over message content:
 
-- **Tokenizing** (`tokenize.rs`): normalize (fold full-width ASCII, strip
-  combining marks, lowercase), then index character trigrams for Latin-like
-  text and bigrams for CJK.
+- **Tokenizing** (`tokenize.rs`): normalize (lowercase, strip combining
+  marks and Latin diacritics, fold full-width ASCII), then index character
+  bigrams for runs of CJK text and trigrams for everything else.
 - **Querying** (`inverted_index.rs`): intersect the posting lists of each
   query term's n-grams to get candidates, then verify each candidate with an
   exact substring match on the normalized content. Score is
