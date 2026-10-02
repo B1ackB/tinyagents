@@ -7,7 +7,7 @@
 //! OpenHuman's version implemented `crate::core::event_bus::EventHandler` and
 //! reacted to `DomainEvent::ChannelMessage*` variants, and derived the thread
 //! id via `crate::openhuman::channels::context::conversation_history_key`.
-//! Those types live outside the memory engine, so this port replaces the
+//! Those types live outside this library, so this port replaces the
 //! hard dependency with two small local contracts:
 //!
 //! - [`ChannelEvent`] — a self-contained description of an inbound/processed
@@ -235,9 +235,18 @@ impl ChannelEventHandler for ConversationPersistenceSubscriber {
             }
         };
         // Persistence failures are non-fatal: a dropped channel turn must not
-        // crash the bus handler. (OpenHuman logged here; this crate has no
-        // logging facade, so the error is intentionally swallowed.)
-        let _ = persist_channel_turn(&my_workspace, descriptor);
+        // crash the bus handler, so the error is logged (without message
+        // content) and swallowed.
+        let channel = descriptor.channel.to_string();
+        let source = descriptor.source;
+        if let Err(error) = persist_channel_turn(&my_workspace, descriptor) {
+            tracing::warn!(
+                channel = %channel,
+                source_event = source,
+                error = %error,
+                "[threads::bus] failed to persist channel turn"
+            );
+        }
     }
 }
 
