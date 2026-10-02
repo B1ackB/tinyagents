@@ -373,7 +373,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 latency_ms: ranking.as_ref().map_or(0, |r| r.latency_ms),
             });
             status.set_last_event(record.id);
-            return Ok(Some(ResolvedToolCall::Answered(answer.result)));
+            Ok(Some(ResolvedToolCall::Answered(answer.result)))
         }
     }
 
