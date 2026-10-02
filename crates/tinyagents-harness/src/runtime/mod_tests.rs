@@ -2193,9 +2193,8 @@ async fn security_gate_sees_raw_provider_arguments_while_tools_receive_prepared_
     );
 }
 
-/// A deferred tool that echoes its argument, used to exercise the
-/// `tool_call` discovery bridge's argument unwrapping under host
-/// authorization.
+/// A deferred tool that echoes its argument, used to exercise a by-name
+/// deferred call under host authorization.
 struct DeferredEchoTool;
 
 #[async_trait]
@@ -2225,23 +2224,19 @@ impl Tool for DeferredEchoTool {
     }
 }
 
-/// Regression: `admit_tool_call` used to snapshot `model_arguments` for host
-/// authorization *before* the `tool_call` discovery bridge unwrapped the
-/// call, so the host's `SecurityGate` saw the stale `{"name", "arguments"}`
-/// wrapper the model literally sent instead of the real tool's arguments
-/// that validation and execution actually use — an argument-sensitive
-/// authorization decision could approve a different payload than the one it
-/// reviewed. The gate must see the unwrapped real arguments.
+/// A deferred tool is called by its own name, with no bridge wrapper, so the
+/// host's `SecurityGate` must see exactly the arguments the model sent and
+/// validation and execution use.
 #[tokio::test]
-async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
+async fn security_gate_sees_the_arguments_of_a_deferred_call_by_its_own_name() {
     let mut tool_response = ModelResponse::assistant("");
     tool_response
         .message
         .tool_calls
         .push(tinyinference_llm::tool::ToolCall::new(
             "real-call",
-            crate::tool::discover::TOOL_CALL_NAME,
-            json!({"name": "quote", "arguments": {"symbol": "ACME"}}),
+            "quote",
+            json!({"symbol": "ACME"}),
         ));
     let model = Arc::new(ScriptedModel::new(vec![
         tool_response,
@@ -2269,7 +2264,7 @@ async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
                     "helper",
                     vec![tinyinference_llm::message::Message::user("go")],
                 ),
-                RunContext::new(RunConfig::new("bridged-args"), ()),
+                RunContext::new(RunConfig::new("deferred-by-name-args"), ()),
             ),
             &(),
         )
@@ -2279,8 +2274,7 @@ async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
     assert_eq!(
         *gate.seen.lock().expect("gate lock"),
         vec![json!({"symbol": "ACME"})],
-        "the host must authorize the unwrapped real-tool arguments, not the \
-         stale `tool_call` bridge wrapper"
+        "the host must authorize the real arguments of the deferred call"
     );
 }
 
