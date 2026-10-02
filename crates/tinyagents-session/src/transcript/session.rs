@@ -346,5 +346,5 @@ fn bounded_parent_stem(parent: &SessionRef) -> String {
 }
 
 #[cfg(test)]
-#[path = "session_test.rs"]
+#[path = "session_tests.rs"]
 mod test;

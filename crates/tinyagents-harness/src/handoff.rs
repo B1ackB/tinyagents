@@ -360,5 +360,5 @@ pub fn chunk_content(content: &str, budget: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[path = "handoff_test.rs"]
+#[path = "handoff_tests.rs"]
 mod tests;

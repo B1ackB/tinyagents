@@ -163,4 +163,5 @@ pub fn plan_shared_workspace_dispatch(claims: &[WorkspaceClaim]) -> DispatchPlan
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

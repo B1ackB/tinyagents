@@ -37,6 +37,8 @@ pub use required_output::{
 pub use types::*;
 
 #[cfg(test)]
+#[path = "required_output_tests.rs"]
 mod required_output_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

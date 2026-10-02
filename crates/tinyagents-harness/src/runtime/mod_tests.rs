@@ -237,13 +237,7 @@ struct TaggedSecurity {
 #[async_trait]
 impl SecurityGate for TaggedSecurity {
     async fn authorize_tool(&self, call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             self.trace
                 .mark("security", format!("deny:{}", call.tool_name));
             Ok(GateDecision::deny("tagged approval denied"))
@@ -713,13 +707,7 @@ impl SecurityGate for DenyToolGate {
 #[async_trait]
 impl SecurityGate for DenyThenAllowGate {
     async fn authorize_tool(&self, _call: &ToolCallRequest) -> crate::error::Result<GateDecision> {
-        if self
-            .denials_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if take_one(&self.denials_remaining) {
             Ok(GateDecision::deny("approval declined"))
         } else {
             Ok(GateDecision::Allow)
@@ -1063,6 +1051,7 @@ async fn initial_host_model_resolution_is_cancelled_while_the_resolver_is_pendin
         result = &mut invocation => panic!("pending resolver unexpectedly finished: {result:?}"),
     };
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Cancelled);
+    assert_eq!(error.timeout_bound, None);
 }
 
 #[tokio::test]
@@ -1103,6 +1092,11 @@ async fn policy_only_deadline_bounds_initial_host_resolution_with_a_timeout_erro
     // text is still available on the run's internal `TinyAgentsError` (see
     // the non-hosted equivalents of this test), just not leaked here.
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::Run),
+        "the run's own budget is the run bound"
+    );
 }
 
 #[tokio::test]
@@ -1140,6 +1134,95 @@ async fn per_model_call_limit_bounds_initial_host_resolution() {
         .await
         .expect_err("per-model-call cap must bound host resolution");
     assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
+}
+
+#[test]
+fn hosted_timeout_round_trip_preserves_the_bound() {
+    use crate::error::TinyAgentsError;
+    use crate::runtime::{HostedError, HostedErrorKind, TimeoutBound};
+    let hosted = |bound| HostedError {
+        kind: HostedErrorKind::Timeout,
+        message: "timed out".to_string(),
+        timeout_bound: bound,
+        run: None,
+    };
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::PerModelCall))),
+        TinyAgentsError::CallTimeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(Some(TimeoutBound::Run))),
+        TinyAgentsError::Timeout(_)
+    ));
+    assert!(matches!(
+        TinyAgentsError::from(hosted(None)),
+        TinyAgentsError::Timeout(_)
+    ));
+}
+
+/// A model whose every call (streaming included) never answers.
+struct StalledModel;
+
+#[async_trait]
+impl ChatModel<()> for StalledModel {
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        std::future::pending().await
+    }
+}
+
+/// The public hosted stream sanitizes every terminal failure to one fixed
+/// string, so a host draining it cannot tell a wedged call from a provider
+/// failure. `invoke_agent_streaming` keeps the typed kind: a per-model-call
+/// ceiling that stops a stalled streaming call must come back as
+/// [`crate::runtime::HostedErrorKind::Timeout`].
+#[tokio::test]
+async fn invoke_agent_streaming_preserves_the_timeout_kind_of_a_stalled_model_call() {
+    let host = crate::host::HostCapabilities::new(
+        Arc::new(StaticContextComposer::empty()),
+        Arc::new(InMemoryDefinitionRegistry::new(vec![AgentDefinition::new(
+            "helper",
+            "Helper",
+            "test helper",
+        )])),
+        Arc::new(AllowAllSecurityGate),
+        Arc::new(FixedModelResolver::new(Arc::new(StalledModel))),
+    );
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.with_policy(RunPolicy {
+        limits: RunLimits::default().with_max_model_call_ms(Some(20)),
+        // One attempt: the point is the kind of the terminal error.
+        retry: RetryPolicy::default().with_max_attempts(1),
+        ..RunPolicy::default()
+    });
+
+    let error = harness
+        .invoke_agent_streaming(
+            AgentInvocation::new(
+                host,
+                AgentTurnRequest::new(
+                    "helper",
+                    vec![tinyinference_llm::message::Message::user("go")],
+                ),
+                RunContext::new(RunConfig::new("streaming-call-timeout"), ()),
+            ),
+            &(),
+        )
+        .await
+        .expect_err("a stalled model call must hit the per-model-call ceiling");
+    assert_eq!(error.kind, crate::runtime::HostedErrorKind::Timeout);
+    assert_eq!(error.message, "hosted agent invocation timed out");
+    assert_eq!(
+        error.timeout_bound,
+        Some(crate::runtime::TimeoutBound::PerModelCall)
+    );
 }
 
 async fn assert_rebound_host_resolution_stops(
@@ -2110,9 +2193,8 @@ async fn security_gate_sees_raw_provider_arguments_while_tools_receive_prepared_
     );
 }
 
-/// A deferred tool that echoes its argument, used to exercise the
-/// `tool_call` discovery bridge's argument unwrapping under host
-/// authorization.
+/// A deferred tool that echoes its argument, used to exercise a by-name
+/// deferred call under host authorization.
 struct DeferredEchoTool;
 
 #[async_trait]
@@ -2142,23 +2224,19 @@ impl Tool for DeferredEchoTool {
     }
 }
 
-/// Regression: `admit_tool_call` used to snapshot `model_arguments` for host
-/// authorization *before* the `tool_call` discovery bridge unwrapped the
-/// call, so the host's `SecurityGate` saw the stale `{"name", "arguments"}`
-/// wrapper the model literally sent instead of the real tool's arguments
-/// that validation and execution actually use — an argument-sensitive
-/// authorization decision could approve a different payload than the one it
-/// reviewed. The gate must see the unwrapped real arguments.
+/// A deferred tool is called by its own name, with no bridge wrapper, so the
+/// host's `SecurityGate` must see exactly the arguments the model sent and
+/// validation and execution use.
 #[tokio::test]
-async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
+async fn security_gate_sees_the_arguments_of_a_deferred_call_by_its_own_name() {
     let mut tool_response = ModelResponse::assistant("");
     tool_response
         .message
         .tool_calls
         .push(tinyinference_llm::tool::ToolCall::new(
             "real-call",
-            crate::tool::discover::TOOL_CALL_NAME,
-            json!({"name": "quote", "arguments": {"symbol": "ACME"}}),
+            "quote",
+            json!({"symbol": "ACME"}),
         ));
     let model = Arc::new(ScriptedModel::new(vec![
         tool_response,
@@ -2186,7 +2264,7 @@ async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
                     "helper",
                     vec![tinyinference_llm::message::Message::user("go")],
                 ),
-                RunContext::new(RunConfig::new("bridged-args"), ()),
+                RunContext::new(RunConfig::new("deferred-by-name-args"), ()),
             ),
             &(),
         )
@@ -2196,8 +2274,7 @@ async fn security_gate_sees_unwrapped_arguments_for_a_bridged_deferred_call() {
     assert_eq!(
         *gate.seen.lock().expect("gate lock"),
         vec![json!({"symbol": "ACME"})],
-        "the host must authorize the unwrapped real-tool arguments, not the \
-         stale `tool_call` bridge wrapper"
+        "the host must authorize the real arguments of the deferred call"
     );
 }
 
@@ -3440,4 +3517,21 @@ fn child_with_data_never_propagates_host_authority() {
         .child_with_data(RunConfig::new("different-ctx"), "child-data")
         .unwrap();
     assert!(different_ctx_child.host_authority.is_none());
+}
+
+/// Atomically decrement `counter` if it is non-zero, returning whether it was.
+///
+/// A compare-exchange loop rather than `fetch_update`: that method was renamed
+/// `try_update` on newer toolchains (deprecating the old name, which clippy
+/// `-D warnings` rejects) while `try_update` does not exist at the workspace
+/// MSRV, so neither spelling compiles cleanly on both.
+fn take_one(counter: &AtomicUsize) -> bool {
+    let mut current = counter.load(Ordering::SeqCst);
+    while let Some(next) = current.checked_sub(1) {
+        match counter.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
 }

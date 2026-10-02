@@ -302,5 +302,5 @@ fn covered_usage(batch: &[Value]) -> CoveredUsage {
 }
 
 #[cfg(test)]
-#[path = "journal_export_test.rs"]
+#[path = "journal_export_tests.rs"]
 mod tests;

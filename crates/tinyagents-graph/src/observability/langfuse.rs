@@ -640,4 +640,5 @@ fn pop<K: std::hash::Hash + Eq>(
 }
 
 #[cfg(test)]
+#[path = "langfuse/langfuse_tests.rs"]
 mod test;

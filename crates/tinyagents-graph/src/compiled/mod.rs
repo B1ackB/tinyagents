@@ -690,14 +690,20 @@ impl<State, Update> CompiledGraph<State, Update> {
 }
 
 #[cfg(test)]
+#[path = "drain_tests.rs"]
 mod drain_test;
 #[cfg(test)]
+#[path = "durable_task_tests.rs"]
 mod durable_task_test;
 #[cfg(test)]
+#[path = "durable_tests.rs"]
 mod durable_test;
 #[cfg(test)]
+#[path = "interrupt_selectors_tests.rs"]
 mod interrupt_selectors_test;
 #[cfg(test)]
+#[path = "policy_tests.rs"]
 mod policy_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

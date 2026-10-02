@@ -398,4 +398,5 @@ fn contains_whole_word(haystack: &str, needle: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

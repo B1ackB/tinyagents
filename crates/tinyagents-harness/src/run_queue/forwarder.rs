@@ -438,5 +438,5 @@ impl<T: QueuedMessage> Drop for SteeringForwarderGuard<T> {
 }
 
 #[cfg(test)]
-#[path = "forwarder_test.rs"]
+#[path = "forwarder_tests.rs"]
 mod tests;

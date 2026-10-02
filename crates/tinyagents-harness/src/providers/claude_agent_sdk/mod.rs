@@ -411,5 +411,5 @@ fn coalesce_system_prompt(messages: &[Message]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "test.rs"]
+#[path = "mod_tests.rs"]
 mod tests;

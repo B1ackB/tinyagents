@@ -30,7 +30,7 @@ use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::run_queue::QueueMode;
 use crate::tool::{ToolRegistry, ToolTimeoutSettings};
 use tinyinference_llm::cache::CachePolicy;
-use tinyinference_llm::model::ResponseFormat;
+use tinyinference_llm::model::{ReasoningConfig, ResponseFormat};
 
 /// Model and identity selected by one live host-driven invocation.
 ///
@@ -209,6 +209,8 @@ impl PayloadCapture {
 /// - `default_response_format`: when set, attached to every [`tinyinference_llm::model::ModelRequest`]
 ///   the loop builds; a [`ResponseFormat::JsonSchema`] also drives structured
 ///   output extraction on the final response.
+/// - `default_reasoning`: when set, attached to every model request that does
+///   not already carry a reasoning config.
 ///
 /// [`RunPolicy::default`] yields the crate-default limits and retry policy, no
 /// fallback chain, no response format, and a [`CachePolicy`] whose response
@@ -230,6 +232,17 @@ pub struct RunPolicy {
     pub fallback: Option<FallbackPolicy>,
     /// Response format attached to every model request when set.
     pub default_response_format: Option<ResponseFormat>,
+    /// Reasoning configuration attached to every model request that does not
+    /// already carry one.
+    ///
+    /// This is how a host turns a user's "thinking level" choice into the
+    /// provider-neutral [`ReasoningConfig`] each call sends. A request that
+    /// already has `reasoning` set (by middleware or the caller) keeps its own.
+    /// After it is attached, the resolved model's
+    /// [`ModelProfile::thinking_level_map`](tinyinference_llm::model::ModelProfile::thinking_level_map)
+    /// may still rewrite a named effort into a model-tuned config. `None`
+    /// (the default) leaves reasoning to the provider's own default.
+    pub default_reasoning: Option<ReasoningConfig>,
     /// Whether the loop captures model/tool payloads onto completion events.
     ///
     /// Defaults to [`PayloadCapture::default`] (payload-free), preserving the
@@ -326,7 +339,7 @@ pub struct RunPolicy {
     pub empty_response_retries: u32,
     /// How [`tinytools::ToolExposure::Deferred`] tools are surfaced: never in
     /// the request's `tools` array, but findable through the intrinsic
-    /// `tool_search` / `tool_call` bridge. See
+    /// `tool_search` bridge, then called by their own name. See
     /// [`crate::tool::discover::ToolDiscoveryPolicy`].
     pub discovery: crate::tool::discover::ToolDiscoveryPolicy,
     /// Optional projection applied to every advertised tool schema before it
@@ -548,6 +561,7 @@ impl Default for RunPolicy {
             retry: RetryPolicy::default(),
             fallback: None,
             default_response_format: None,
+            default_reasoning: None,
             capture: PayloadCapture::default(),
             // Caching defaults ON, but is gated by an attached `ResponseCache`,
             // so a harness with no cache never caches regardless of this flag.

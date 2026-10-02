@@ -96,7 +96,7 @@ impl ToolPolicyMiddleware {
         }
     }
 
-    /// Exempts the intrinsic `tool_search`/`tool_call` discovery-bridge names
+    /// Exempts the intrinsic `tool_search` discovery-bridge name
     /// from classification/side-effect checks whenever `policies` has no
     /// entry for them. See the field doc on
     /// [`ToolPolicyMiddleware::exempt_discovery_bridge`] for why this is
@@ -163,26 +163,23 @@ impl ToolPolicyMiddleware {
     /// of why it is blocked. Used by both the exposure and execution hooks so a
     /// hidden tool cannot be executed by a divergent decision.
     fn evaluate(&self, name: &str) -> std::result::Result<(), String> {
-        // The intrinsic `tool_search`/`tool_call` discovery bridge is never a
-        // registered tool (see `crate::tool::discover`), so it never has a
-        // policy entry. Exempting it here is opt-in
-        // (`exempt_discovery_bridge`), not automatic even under `strict()`:
-        // unconditionally treating every policy-less tool sharing these two
-        // magic names as the safe intrinsic bridge would let a real,
-        // side-effecting host tool bypass `strict()`'s fail-closed checks
-        // whenever the caller's `policies` snapshot is incomplete or stale.
-        // When enabled, this is still safe: the bridge itself has no side
-        // effects (search only reads the run's catalogue), and a `tool_call`
-        // payload is unwrapped to the real tool name/arguments *before*
-        // `before_tool` runs, so the real call is still evaluated against its
-        // own policy at execution time. A host that registers its own tool
-        // under either name still wins (the bridge only fills a name nobody
-        // registered), and that registration is evaluated normally since it
-        // hits the `self.policies.get` lookup below like any other name.
+        // The intrinsic `tool_search` discovery bridge is never a registered
+        // tool (see `crate::tool::discover`), so it never has a policy entry.
+        // Exempting it here is opt-in (`exempt_discovery_bridge`), not
+        // automatic even under `strict()`: unconditionally treating every
+        // policy-less tool sharing this magic name as the safe intrinsic
+        // bridge would let a real, side-effecting host tool bypass `strict()`'s
+        // fail-closed checks whenever the caller's `policies` snapshot is
+        // incomplete or stale. When enabled, this is still safe: the bridge
+        // itself has no side effects (search only reads the run's catalogue),
+        // and a deferred tool is called by its own name, so the real call is
+        // evaluated against its own policy like any other. A host that
+        // registers its own tool under this name still wins (the bridge only
+        // fills a name nobody registered), and that registration is evaluated
+        // normally since it hits the `self.policies.get` lookup below.
         if self.exempt_discovery_bridge
             && !self.policies.contains_key(name)
-            && (name == crate::tool::discover::TOOL_SEARCH_NAME
-                || name == crate::tool::discover::TOOL_CALL_NAME)
+            && name == crate::tool::discover::TOOL_SEARCH_NAME
         {
             return Ok(());
         }

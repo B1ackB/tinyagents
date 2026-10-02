@@ -171,5 +171,5 @@ pub fn is_active(status: &HarnessRunStatus) -> bool {
 }
 
 #[cfg(test)]
-#[path = "file_status_test.rs"]
+#[path = "file_status_tests.rs"]
 mod tests;

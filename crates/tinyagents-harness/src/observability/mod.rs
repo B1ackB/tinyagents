@@ -788,4 +788,5 @@ fn poisoned<E: std::fmt::Display>(what: &str, err: E) -> crate::error::TinyAgent
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

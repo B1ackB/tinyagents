@@ -435,4 +435,5 @@ pub fn reduce_frames(frames: &[AssistantFrame]) -> PartialAssistantMessage {
 }
 
 #[cfg(test)]
+#[path = "frame/frame_tests.rs"]
 mod test;

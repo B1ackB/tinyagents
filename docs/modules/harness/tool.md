@@ -116,8 +116,8 @@ budgets (see [tool-discovery.md](tool-discovery.md#schema-budgets)).
 ## Exposure and Discovery
 
 `ToolExposure::Direct` tools go on the initial wire request. `Deferred` tools are indexed
-into a per-run catalogue and reached through the intrinsic `tool_search` /
-`tool_call` bridge; searched matches are promoted into later typed requests.
+into a per-run catalogue and reached through the intrinsic `tool_search`
+bridge and called by their own name; searched matches are promoted into later typed requests.
 `Hidden` tools are host-only. See [tool-discovery.md](tool-discovery.md).
 
 ## Tool Call Formats

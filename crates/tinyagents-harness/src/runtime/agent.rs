@@ -96,6 +96,23 @@ pub enum HostedErrorKind {
     Internal,
 }
 
+/// Which wall-clock bound fired for a [`HostedErrorKind::Timeout`].
+///
+/// The two are different triage paths: a wedged single call (the per-model-call
+/// ceiling) versus a run that spent its whole budget. The hosted `message` is
+/// sanitized and carries neither, so a host reads this field instead of
+/// parsing text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TimeoutBound {
+    /// One call exceeded the per-model-call ceiling
+    /// ([`TinyAgentsError::CallTimeout`]); the run itself had time left.
+    PerModelCall,
+    /// The run's own wall-clock budget or deadline was exhausted
+    /// ([`TinyAgentsError::Timeout`]).
+    Run,
+}
+
 /// The typed failure returned by the hosted entry points
 /// ([`AgentHarness::invoke_agent`] and its streaming counterpart) in place of
 /// a generic `TinyAgentsError::Model("hosted agent invocation failed")`.
@@ -114,6 +131,9 @@ pub struct HostedError {
     /// Fixed, sanitized message selected by `kind` — never raw provider,
     /// middleware, or budget error text.
     pub message: String,
+    /// Which bound fired, set exactly when `kind` is
+    /// [`HostedErrorKind::Timeout`] and `None` otherwise.
+    pub timeout_bound: Option<TimeoutBound>,
     /// The accumulated transcript, usage, and executed-tool summary as far as
     /// the run got before failing, when available.
     pub run: Option<Box<AgentRun>>,
@@ -142,6 +162,15 @@ fn classify_hosted_error(error: &TinyAgentsError) -> HostedErrorKind {
     }
 }
 
+/// The wall-clock bound a timeout error hit, or `None` for any other error.
+fn classify_timeout_bound(error: &TinyAgentsError) -> Option<TimeoutBound> {
+    match error {
+        TinyAgentsError::CallTimeout(_) => Some(TimeoutBound::PerModelCall),
+        TinyAgentsError::Timeout(_) => Some(TimeoutBound::Run),
+        _ => None,
+    }
+}
+
 /// The fixed, sanitized message for each [`HostedErrorKind`]. Never derived
 /// from the underlying error's own text.
 fn hosted_error_message(kind: HostedErrorKind) -> &'static str {
@@ -162,6 +191,7 @@ fn hosted_error(error: &TinyAgentsError, run: AgentRun) -> HostedError {
     HostedError {
         kind,
         message: hosted_error_message(kind).to_string(),
+        timeout_bound: classify_timeout_bound(error),
         run: Some(Box::new(run)),
     }
 }
@@ -170,7 +200,8 @@ fn hosted_error(error: &TinyAgentsError, run: AgentRun) -> HostedError {
 /// internal callers (recursive hosted delegation) that must keep propagating
 /// through the ordinary `Result<T>` = `Result<T, TinyAgentsError>` surface.
 /// This is a lossless-enough round trip for control flow: `Cancelled` and
-/// `Timeout` map back to their own variants (so cancellation/deadline
+/// `Timeout` map back to their own variants (`CallTimeout` when
+/// [`HostedError::timeout_bound`] is [`TimeoutBound::PerModelCall`]) (so cancellation/deadline
 /// semantics upstream keep working, e.g. the fallback gate in
 /// `invoke_model_resolving`), and the rest become typed but message-generic
 /// variants — never worse than what this boundary already returned before
@@ -179,7 +210,12 @@ impl From<HostedError> for TinyAgentsError {
     fn from(error: HostedError) -> Self {
         match error.kind {
             HostedErrorKind::Cancelled => TinyAgentsError::Cancelled,
-            HostedErrorKind::Timeout => TinyAgentsError::Timeout(error.message),
+            HostedErrorKind::Timeout => match error.timeout_bound {
+                // Keep the per-call ceiling distinct so a parent treats a
+                // wedged child call as retryable, not as an exhausted run.
+                Some(TimeoutBound::PerModelCall) => TinyAgentsError::CallTimeout(error.message),
+                _ => TinyAgentsError::Timeout(error.message),
+            },
             HostedErrorKind::LimitExceeded => TinyAgentsError::LimitExceeded(error.message),
             HostedErrorKind::Policy => TinyAgentsError::Validation(error.message),
             HostedErrorKind::Provider | HostedErrorKind::Internal => {
@@ -631,6 +667,32 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> AgentHarness<Stat
             None => Ok(outcome.run),
             Some(error) => Err(hosted_error(&error, outcome.run)),
         }
+    }
+
+    /// Runs an agent through this invocation's host-capability bundle on the
+    /// streaming model path, and returns the finished run.
+    ///
+    /// Behaves like [`AgentHarness::invoke_agent`] (typed [`HostedError`] on
+    /// failure, with its closed [`HostedErrorKind`] and the partial run), but
+    /// drives every model call through `ChatModel::stream`, so model deltas
+    /// and delta middleware still run and reach the host's progress sink.
+    ///
+    /// Prefer this over draining [`AgentHarness::invoke_agent_stream`] when a
+    /// host only wants the terminal outcome: the public stream's terminal
+    /// `Failed` item is sanitized to one fixed string for every failure, so a
+    /// per-model-call timeout, a limit, and a provider failure become
+    /// indistinguishable. This entry point keeps the kind.
+    pub async fn invoke_agent_streaming(
+        &self,
+        invocation: AgentInvocation<State, Ctx>,
+        state: &State,
+    ) -> std::result::Result<AgentRun, HostedError>
+    where
+        Ctx: 'static,
+        State: 'static,
+    {
+        self.invoke_agent_streaming_with_capabilities(invocation, state)
+            .await
     }
 
     /// Collects a hosted turn through the streaming driver while preserving the
@@ -1356,83 +1418,5 @@ async fn screen_stored<State: Send + Sync>(
 /// contract: a saturated stream of nonterminal progress events must never
 /// crowd out the one reserved terminal slot.
 #[cfg(test)]
-mod progress_dispatcher_tests {
-    use std::sync::{Arc, Mutex};
-
-    use async_trait::async_trait;
-
-    use super::start_progress_dispatcher;
-    use crate::host::{ProgressEvent, ProgressSink};
-    use crate::ids::RunId;
-
-    struct BlockingProgressSink {
-        entered: Arc<tokio::sync::Notify>,
-        release: Arc<tokio::sync::Semaphore>,
-        events: Mutex<Vec<ProgressEvent>>,
-    }
-
-    #[async_trait]
-    impl ProgressSink for BlockingProgressSink {
-        async fn emit(&self, event: ProgressEvent) {
-            self.entered.notify_one();
-            self.release
-                .acquire()
-                .await
-                .expect("test progress sink remains open")
-                .forget();
-            self.events.lock().expect("progress lock").push(event);
-        }
-    }
-
-    #[tokio::test]
-    async fn terminal_progress_is_delivered_after_nonterminal_slots_are_saturated() {
-        let sink = Arc::new(BlockingProgressSink {
-            entered: Arc::new(tokio::sync::Notify::new()),
-            release: Arc::new(tokio::sync::Semaphore::new(0)),
-            events: Mutex::new(Vec::new()),
-        });
-        let sender = start_progress_dispatcher(Some(sink.clone()))
-            .expect("Tokio test runtime provides a dispatcher");
-        let run = RunId::new("saturated-progress");
-        sender.send_nonterminal(ProgressEvent::Token {
-            run: run.clone(),
-            text: "first".to_string(),
-        });
-        sink.entered.notified().await;
-
-        for slot in 0..128 {
-            sender.send_nonterminal(ProgressEvent::Token {
-                run: run.clone(),
-                text: format!("queued-{slot}"),
-            });
-        }
-        sender.send_terminal(ProgressEvent::Finished { run, usage: None });
-
-        // The sink holds the receiver on the first item, so all 128 ordinary
-        // slots are occupied. Finished therefore proves the reserved terminal
-        // slot was still available after nonterminal backpressure saturated.
-        sink.release.add_permits(130);
-        for _ in 0..256 {
-            if sink
-                .events
-                .lock()
-                .expect("progress lock")
-                .iter()
-                .any(ProgressEvent::is_terminal)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            sink.events
-                .lock()
-                .expect("progress lock")
-                .iter()
-                .filter(|event| event.is_terminal())
-                .count(),
-            1,
-            "the terminal event cannot be dropped behind 128 progress updates"
-        );
-    }
-}
+#[path = "agent_progress_dispatcher_tests.rs"]
+mod progress_dispatcher_tests;

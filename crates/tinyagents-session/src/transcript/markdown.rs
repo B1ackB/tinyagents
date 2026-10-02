@@ -84,7 +84,7 @@ pub(super) fn render_markdown(
         }
 
         buf.push('\n');
-        buf.push_str(&msg.content);
+        buf.push_str(&msg.legacy_content());
         buf.push('\n');
     }
 

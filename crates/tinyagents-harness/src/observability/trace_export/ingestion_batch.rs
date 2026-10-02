@@ -48,5 +48,5 @@ pub fn split_ingestion_batch(payload: Value, max: usize) -> Vec<Value> {
 }
 
 #[cfg(test)]
-#[path = "ingestion_batch_test.rs"]
+#[path = "ingestion_batch_tests.rs"]
 mod tests;

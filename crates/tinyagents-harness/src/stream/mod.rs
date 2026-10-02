@@ -183,4 +183,5 @@ pub fn stream(chunks: &[StreamChunk], modes: &[StreamMode]) -> Vec<StreamChunk> 
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

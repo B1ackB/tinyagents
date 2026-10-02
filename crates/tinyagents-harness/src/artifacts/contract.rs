@@ -59,5 +59,5 @@ Rules:\n\
 }
 
 #[cfg(test)]
-#[path = "contract_test.rs"]
+#[path = "contract_tests.rs"]
 mod tests;

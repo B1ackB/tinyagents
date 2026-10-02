@@ -233,4 +233,5 @@ impl<State: Send + Sync> Default for ModelRegistry<State> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

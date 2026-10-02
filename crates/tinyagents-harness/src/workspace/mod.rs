@@ -105,4 +105,5 @@ impl WorkspaceIsolation for SharedRootWorkspace {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

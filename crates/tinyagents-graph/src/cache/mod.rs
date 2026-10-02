@@ -23,4 +23,5 @@ pub(crate) use types::CachedNode;
 pub use types::{TaskCache, TaskCacheKey};
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

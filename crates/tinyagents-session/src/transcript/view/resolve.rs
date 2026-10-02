@@ -222,7 +222,7 @@ fn discover_subagent_files(
 }
 
 /// Identity of one message row for cross-generation de-duplication.
-type RowKey = (String, String, Option<String>, Option<String>);
+type RowKey = (String, String, Option<String>, Option<String>, String);
 
 fn row_key(msg: &DisplayMessage) -> RowKey {
     (
@@ -230,6 +230,14 @@ fn row_key(msg: &DisplayMessage) -> RowKey {
         msg.message.content.clone(),
         msg.message.id.clone(),
         msg.request_id.clone(),
+        // The typed structure moved out of `content`, so it is part of the
+        // row's identity (as in `TranscriptMessage::same_row_as`).
+        serde_json::to_string(&(
+            &msg.message.tool_calls,
+            &msg.message.tool_call_id,
+            &msg.message.parts,
+        ))
+        .unwrap_or_default(),
     )
 }
 
@@ -273,3 +281,7 @@ pub(super) fn drop_retained_rows(
     }
     (kept, retained)
 }
+
+#[cfg(test)]
+#[path = "resolve_tests.rs"]
+mod tests;

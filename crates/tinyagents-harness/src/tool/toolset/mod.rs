@@ -53,6 +53,7 @@ mod renamed;
 mod types;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 pub(crate) mod test;
 
 use std::any::Any;

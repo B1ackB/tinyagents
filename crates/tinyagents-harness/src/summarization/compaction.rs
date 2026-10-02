@@ -491,4 +491,5 @@ fn extract_numbers(text: &str) -> Vec<u64> {
 }
 
 #[cfg(test)]
+#[path = "compaction/compaction_tests.rs"]
 mod test;

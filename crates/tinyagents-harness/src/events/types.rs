@@ -112,15 +112,14 @@ pub enum AgentEvent {
     /// request actually sent.
     ToolsAdvertised {
         /// Count of `Direct`-exposure tool schemas assembled before per-turn
-        /// middleware runs. Does **not** include the two intrinsic
-        /// `tool_search`/`tool_call` bridge schemas added to the wire set
-        /// when `deferred > 0` — those are implied by `deferred` being
-        /// nonzero, not double-counted here.
+        /// middleware runs. Does **not** include the intrinsic `tool_search`
+        /// bridge schema added to the wire set when `deferred > 0` — it is
+        /// implied by `deferred` being nonzero, not double-counted here.
         direct: usize,
-        /// Tools reachable only through `tool_search` / `tool_call`.
+        /// Tools reachable only through `tool_search` (called by their own name).
         deferred: usize,
         /// Compact-JSON size of the actual pre-middleware wire schema set
-        /// (the `direct` schemas plus the two bridge schemas when
+        /// (the `direct` schemas plus the bridge schema when
         /// `deferred > 0`), not of whatever a specific request's
         /// `before_model` pass narrows or grows it to.
         schema_bytes: usize,
@@ -159,13 +158,13 @@ pub enum AgentEvent {
         latency_ms: u64,
     },
 
-    /// The model invoked a deferred tool through the intrinsic `tool_call`
-    /// bridge; the call was unwrapped to `tool_name` before admission, so the
-    /// following `ToolStarted` names the real tool.
+    /// The model called a deferred tool by its own name (it was reachable
+    /// only through `tool_search`, never on the request's `tools`). Emitted at
+    /// admission, before the `ToolStarted` for the same call.
     DeferredToolCall {
-        /// Identifier of the bridge call (shared with the unwrapped call).
+        /// Identifier of the model's tool call.
         call_id: CallId,
-        /// The real tool the call was unwrapped to.
+        /// The deferred tool that was called.
         tool_name: String,
     },
 

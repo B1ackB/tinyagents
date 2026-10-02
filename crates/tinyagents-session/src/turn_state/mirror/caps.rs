@@ -117,5 +117,5 @@ pub fn cap_persisted_args(arguments: &serde_json::Value) -> Option<serde_json::V
 }
 
 #[cfg(test)]
-#[path = "caps_test.rs"]
+#[path = "caps_tests.rs"]
 mod tests;

@@ -1097,11 +1097,11 @@ async fn tool_policy_strict_hides_and_rejects_unclassified() {
     assert!(matches!(err, TinyAgentsError::Validation(_)));
 }
 
-/// Regression for the intrinsic `tool_search`/`tool_call` discovery bridge
-/// under a fail-closed `ToolPolicyMiddleware::strict()`: the bridge tools are
-/// never registered, so `require_classification` used to reject them as
-/// unclassified in `before_model`, stripping both schemas from every request
-/// and making every deferred tool undiscoverable in a strict deployment.
+/// Regression for the intrinsic `tool_search` discovery bridge under a
+/// fail-closed `ToolPolicyMiddleware::strict()`: the bridge tool is never
+/// registered, so `require_classification` used to reject it as unclassified
+/// in `before_model`, stripping its schema from every request and making every
+/// deferred tool undiscoverable in a strict deployment.
 #[tokio::test]
 async fn tool_policy_strict_preserves_the_discovery_bridge() {
     let (mut ctx, _recorder) = ctx_with_recorder();
@@ -1124,7 +1124,6 @@ async fn tool_policy_strict_preserves_the_discovery_bridge() {
     let mut request = ModelRequest::new(Vec::new()).with_tools(vec![
         schema("safe"),
         schema(crate::tool::discover::TOOL_SEARCH_NAME),
-        schema(crate::tool::discover::TOOL_CALL_NAME),
     ]);
     stack
         .run_before_model(&mut ctx, &(), &mut request)
@@ -1134,16 +1133,15 @@ async fn tool_policy_strict_preserves_the_discovery_bridge() {
         request.tools.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains("safe"));
     assert!(names.contains(crate::tool::discover::TOOL_SEARCH_NAME));
-    assert!(names.contains(crate::tool::discover::TOOL_CALL_NAME));
 }
 
 /// Regression: without `exempt_discovery_bridge(true)`, `strict()` must keep
-/// rejecting an unclassified name sharing `tool_search`/`tool_call` exactly
+/// rejecting an unclassified name sharing `tool_search` exactly
 /// like any other unclassified tool. This is the safety property the opt-in
-/// flag protects: a real, side-effecting host tool registered under one of
-/// these reserved names (with an incomplete/stale `policies` snapshot that
+/// flag protects: a real, side-effecting host tool registered under the
+/// reserved name (with an incomplete/stale `policies` snapshot that
 /// omits its entry) must not silently bypass `strict()`'s fail-closed checks
-/// just because its name happens to match the bridge's reserved names.
+/// just because its name happens to match the bridge's reserved name.
 #[tokio::test]
 async fn tool_policy_strict_without_the_opt_in_still_rejects_the_reserved_names() {
     let (mut ctx, _recorder) = ctx_with_recorder();
@@ -1163,7 +1161,6 @@ async fn tool_policy_strict_without_the_opt_in_still_rejects_the_reserved_names(
     let mut request = ModelRequest::new(Vec::new()).with_tools(vec![
         schema("safe"),
         schema(crate::tool::discover::TOOL_SEARCH_NAME),
-        schema(crate::tool::discover::TOOL_CALL_NAME),
     ]);
     stack
         .run_before_model(&mut ctx, &(), &mut request)
@@ -1177,7 +1174,6 @@ async fn tool_policy_strict_without_the_opt_in_still_rejects_the_reserved_names(
         "an unclassified `tool_search` must be rejected like any other unclassified tool \
          when the opt-in exemption is not enabled"
     );
-    assert!(!names.contains(crate::tool::discover::TOOL_CALL_NAME));
 
     let mut call = tool_call(crate::tool::discover::TOOL_SEARCH_NAME);
     let err = stack

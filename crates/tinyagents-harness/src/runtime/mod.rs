@@ -31,7 +31,9 @@ mod types;
 
 #[cfg(test)]
 pub(crate) use agent::HostInvocationAuthority;
-pub use agent::{AgentInvocation, AgentStream, AgentTurnRequest, HostedError, HostedErrorKind};
+pub use agent::{
+    AgentInvocation, AgentStream, AgentTurnRequest, HostedError, HostedErrorKind, TimeoutBound,
+};
 pub(crate) use agent::{ErasedHostAuthority, emit_host_progress, host_invocation_binding};
 pub use types::*;
 
@@ -411,4 +413,5 @@ impl<State: Send + Sync, Ctx: Send + Sync> Default for AgentHarness<State, Ctx> 
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

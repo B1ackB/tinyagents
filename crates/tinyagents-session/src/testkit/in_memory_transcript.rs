@@ -44,6 +44,16 @@ struct InMemoryTranscriptState {
     written: bool,
 }
 
+/// Rows as the file backend returns them: a legacy string row is lifted into
+/// its typed form on read, so the in-memory logical view does the same on
+/// write and the two backends agree.
+fn normalized_rows(rows: &[TranscriptMessage]) -> Vec<TranscriptMessage> {
+    rows.iter()
+        .cloned()
+        .map(TranscriptMessage::normalized)
+        .collect()
+}
+
 impl InMemoryTranscriptHistory {
     /// Creates a fresh, empty history. `label` only affects the diagnostic
     /// [`TranscriptRead::path`] value (`memory://{label}`); it is never used
@@ -86,7 +96,7 @@ impl TranscriptRead for InMemoryTranscriptHistory {
 impl TranscriptHistory for InMemoryTranscriptHistory {
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.messages = turn.next.to_vec();
+        state.messages = normalized_rows(turn.next);
         state.meta = turn.meta.clone();
         // `None` means this logical turn does not replace the last durable
         // snapshot, matching the file writer which emits no tools record.
@@ -111,7 +121,7 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .messages
-            .push(message);
+            .push(message.normalized());
         self.mark_written();
         Ok(())
     }
@@ -120,7 +130,7 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .messages = messages.to_vec();
+            .messages = normalized_rows(messages);
         self.mark_written();
         Ok(())
     }

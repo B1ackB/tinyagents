@@ -23,4 +23,5 @@ pub use types::{
 };
 
 #[cfg(test)]
+#[path = "shape_tests.rs"]
 mod shape_test;

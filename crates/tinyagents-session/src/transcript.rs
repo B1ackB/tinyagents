@@ -50,6 +50,29 @@
 //! requirement and is logged+skipped) rather than crashing. The `_meta`
 //! carries a `version` field (`TRANSCRIPT_SCHEMA_VERSION`) for future readers.
 //!
+//! ### Typed rows (`"v":2`)
+//!
+//! The in-memory [`TranscriptMessage`] is typed: `content` is plain text, and a
+//! native tool-call round or an image is carried in fields
+//! (`tool_calls`, `tool_call_id`, `parts`) instead of a string envelope or an
+//! `[OH_IMAGE:..]` marker inside `content`. The stored line mirrors it:
+//! `{"v":2,"shape":"assistant_calls","content":"<text>","tool_calls":[..]}`,
+//! `{"v":2,"shape":"tool_result","tool_call_id":"..","content":"<output>"}` or
+//! `{"v":2,"shape":"user_parts","parts":[{"type":"text",..},{"type":"image",..}]}`.
+//!
+//! **Read-both.** Every row written before typed rows keeps its envelope or
+//! marker in `content`; both readers lift it into the typed fields
+//! ([`TranscriptMessage::normalized`], lenient: any well-formed native envelope,
+//! a tool-result envelope, `[OH_IMAGE:..]` markers). A line the reader cannot
+//! type stays a plain text row. Existing bytes are never rewritten; a file may
+//! hold both generations. A host that still builds string rows gets the same
+//! typed lines for any canonical envelope/marker string.
+//!
+//! [`TranscriptMessage::legacy_content`] rebuilds the old string for the places
+//! that must keep it (a journal, a host file shared with older binaries).
+//! **Downgrade is unsupported:** a reader that predates `"v"` would see a typed
+//! row's plain `content` without its tool calls or images.
+//!
 //! ## Storage layout
 //!
 //! ```text
@@ -139,9 +162,9 @@ pub use thread_lookup::{
     find_root_transcripts_for_thread, read_thread_usage_summary,
 };
 pub use types::{
-    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, MessageUsage,
-    SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta, TranscriptToolCall,
-    TurnUsage,
+    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, LegacyText,
+    MessageUsage, SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta,
+    TranscriptPart, TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,
@@ -152,4 +175,8 @@ pub use writer::{
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "transcript/transcript_tests.rs"]
 mod test;
+#[cfg(test)]
+#[path = "transcript/typed_rows_tests.rs"]
+mod typed_rows_test;

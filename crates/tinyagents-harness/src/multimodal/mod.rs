@@ -74,6 +74,7 @@ pub mod resolve;
 pub mod stash;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 pub use config::{ALLOWED_IMAGE_MIME_TYPES, FileLimits, ImageLimits};

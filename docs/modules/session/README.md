@@ -103,17 +103,25 @@ rows for the tip, and falls back to a live `parent_id` walk otherwise — see
 
 ### `TranscriptMessage` → `Message` conversion
 
-`transcript::TranscriptMessage` has no structured content blocks, tool-call
-id, or typed role beyond a bare string, so the conversion is intentionally
-lossy at the edges: `system`/`user`/`assistant` map to their typed
-counterparts as one text content block (an assistant entry's `tool_calls`
-are always empty — a durable transcript row does not currently carry them
-structurally). Any other role, including `tool` (no `tool_call_id` is
-recoverable from a bare row), is carried through as
-`Message::Custom{kind: "legacy:{role}", payload: {"content": ...}, display:
-Some(content)}` so no content is silently dropped. A host that needs full
-tool-call fidelity in a projected context should keep the tool call id on
-the entry itself via `EntryKind::Custom` instead of `EntryKind::Message`.
+`transcript::TranscriptMessage` is a typed row: `content` is plain text and
+the structure lives in fields. An assistant row's `tool_calls` carries its
+native tool calls, a tool row's `tool_call_id` names the call it answers, and
+a user row's `parts` holds ordered text and image parts. Rows read from older
+transcripts (an envelope or `[OH_IMAGE:]` marker inside `content`) are
+normalized into the same fields by the readers, so a host that still builds
+string rows keeps working.
+
+The `Message` conversion for entry-tree context is still deliberately lossy:
+it maps each row to one text content block holding
+`TranscriptMessage::legacy_content()` (the old envelope or marker string, so
+the structure is preserved inside the text), and an assistant entry's
+`tool_calls` stay empty. `system`/`user`/`assistant` map to their typed
+counterparts; any other role, including `tool`, is carried through as
+`Message::Custom{kind: "legacy:{role}", payload: {"content": ...},
+display: Some(content)}` so no content is silently dropped. A host that needs
+typed tool-call fidelity in a projected context should read the typed fields
+of the `TranscriptMessage` directly, or keep the call id on the entry via
+`EntryKind::Custom`.
 
 ## Fork semantics
 

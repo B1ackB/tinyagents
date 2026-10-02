@@ -324,15 +324,15 @@ fn entry_to_message(kind: &EntryKind) -> Option<Message> {
 /// [`crate::transcript::TranscriptMessage`] to an inference [`Message`].
 ///
 /// `system`/`user`/`assistant` map directly to their typed counterparts as a
-/// single text content block (transcript rows do not carry structured
-/// content blocks, tool calls, or a `tool_call_id`, so richer providers'
-/// round trip is necessarily lossy here — callers that need full fidelity
-/// should keep their own typed message alongside the transcript row). Any
-/// other role, including `tool` (no `tool_call_id` is recoverable from a
-/// bare transcript row), is carried through as `Message::Custom` tagged
-/// `legacy:{role}` so no content is silently dropped.
+/// single text content block holding the row's
+/// [`legacy_content`](crate::transcript::TranscriptMessage::legacy_content),
+/// so typed tool calls, tool-result ids and image parts are kept inside the
+/// text rather than as structured blocks. The round trip for richer providers
+/// is therefore lossy here; callers that need typed fidelity should read the
+/// row's own fields. Any other role, including `tool`, is carried through as
+/// `Message::Custom` tagged `legacy:{role}` so no content is silently dropped.
 fn transcript_message_to_message(message: &crate::transcript::TranscriptMessage) -> Message {
-    let text = message.content.clone();
+    let text = message.legacy_content();
     match message.role.as_str() {
         "system" => Message::System(SystemMessage {
             content: vec![ContentBlock::Text(text)],
@@ -359,4 +359,5 @@ fn transcript_message_to_message(message: &crate::transcript::TranscriptMessage)
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

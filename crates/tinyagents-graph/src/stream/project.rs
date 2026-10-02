@@ -299,4 +299,5 @@ impl ProjectedSince {
 }
 
 #[cfg(test)]
+#[path = "project/project_tests.rs"]
 mod test;

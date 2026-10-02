@@ -33,6 +33,7 @@
 mod types;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 use std::sync::Arc;

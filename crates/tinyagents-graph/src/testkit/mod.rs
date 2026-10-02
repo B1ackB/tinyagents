@@ -637,4 +637,5 @@ impl<State> GraphAssertions<'_, State> {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

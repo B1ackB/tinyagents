@@ -372,5 +372,5 @@ fn lock_token() -> String {
 }
 
 #[cfg(test)]
-#[path = "adoption_test.rs"]
+#[path = "adoption_tests.rs"]
 mod test;

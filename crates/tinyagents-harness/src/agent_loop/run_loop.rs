@@ -192,7 +192,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         //
         // Only *direct* tools go on the initial wire request. Deferred tools
         // are indexed into the run's catalogue and reached through the
-        // `tool_search` / `tool_call` bridge. Search matches are promoted on
+        // `tool_search` bridge. Search matches are promoted on
         // the next request; the bridge schemas follow the direct set.
         // The same host allow-list gates both halves: deferral only ever
         // subtracts from what the host admitted. `resolve_tool_allowlist`
@@ -250,7 +250,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
         // Captured before the bridge schemas are appended below, so
         // `ToolsAdvertised.direct` reports the actual `Direct`-exposure
-        // count. Otherwise it would silently include the two intrinsic
+        // count. Otherwise it would silently include the intrinsic
         // bridge schemas whenever discovery is enabled, double-counting
         // relative to `deferred` and making `direct` mean different things
         // depending on whether any tool happens to be deferred.
@@ -293,11 +293,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             promoted_schemas.keys().cloned().collect();
         let mut recorded_promotions = promoted_names.clone();
         if !deferred_catalog.is_empty() {
-            // A host-registered `tool_search`/`tool_call` keeps its slot: the
+            // A host-registered `tool_search` keeps its slot: the
             // intrinsic bridge only fills a name nobody registered. Check the
             // full registry (`self.tools.dispatch`), not just the direct set
             // collected into `tool_schemas` above — a `Hidden` or `Deferred`
-            // registration under either name must also suppress the intrinsic
+            // registration under that name must also suppress the intrinsic
             // schema, because admission's own collision rule
             // (`self.tools.dispatch(&call.name).is_none()` in
             // `answer_discovery_bridge`) checks the same full registry. Using
@@ -333,7 +333,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // the real tool?" unanswerable for every returned call. Two checks,
         // because neither alone covers every name that ends up on the wire:
         // `self.tools.names()` covers every registered tool (Direct, Deferred,
-        // Hidden), but not the intrinsic `tool_search`/`tool_call` bridge,
+        // Hidden), but not the intrinsic `tool_search` bridge,
         // which has no registry entry; `tool_schemas` covers the bridge (and
         // the Direct set) but never contains a Deferred tool's own name.
         if let Some(name) = self
@@ -766,6 +766,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // actually maps and only when the caller has not already pinned
             // an explicit `budget_tokens` — an explicit budget is the
             // caller's own override and must win over the profile default.
+            // The run policy's reasoning default (a host's "thinking level")
+            // fills in only where nothing upstream already chose one, and is
+            // attached before the profile mapping below so a named effort
+            // still gets the resolved model's tuned config.
+            apply_default_reasoning(&mut request, self.policy.default_reasoning.as_ref());
             if let Some(profile) = binding.model.profile()
                 && let Some(reasoning) = request.reasoning.as_ref()
                 && reasoning.budget_tokens.is_none()
@@ -2505,112 +2510,24 @@ fn reset_truncated_empty_recovery(
 }
 
 #[cfg(test)]
-mod recovery_tests {
-    use std::sync::Arc;
+#[path = "run_loop_recovery_tests.rs"]
+mod recovery_tests;
 
-    use super::recover_text_dialect_calls;
-    use crate::agent_loop::dialect::TextRecovery;
-    use crate::context::{RunConfig, RunContext};
-    use crate::ids::CallId;
-    use tinyinference_llm::model::ModelResponse;
-    use tinyinference_llm::tool::ToolSchema;
-
-    fn offered(names: &[&str]) -> TextRecovery {
-        TextRecovery {
-            offered: Arc::new(
-                names
-                    .iter()
-                    .map(|name| ToolSchema::new(*name, "", serde_json::json!({"type": "object"})))
-                    .collect(),
-            ),
-            registry: None,
-            dropped: Arc::default(),
-        }
-    }
-
-    #[test]
-    fn text_dialect_markup_is_not_recovered_when_the_request_offered_no_tools() {
-        let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
-        let mut response = ModelResponse::assistant(
-            "<tool_call><name>shell</name><arguments>{\"command\":\"id\"}</arguments></tool_call>",
+/// Attaches `default` to `request` when the request carries no reasoning
+/// config of its own. A request-level config always wins.
+pub(crate) fn apply_default_reasoning(
+    request: &mut ModelRequest,
+    default: Option<&tinyinference_llm::model::ReasoningConfig>,
+) {
+    if request.reasoning.is_none()
+        && let Some(reasoning) = default
+        && !reasoning.is_empty()
+    {
+        tracing::debug!(
+            effort = ?reasoning.effort,
+            budget_tokens = ?reasoning.budget_tokens,
+            "[agent_loop] applying run-policy default reasoning"
         );
-
-        recover_text_dialect_calls(
-            &ctx,
-            &mut response,
-            &CallId::new("model-1"),
-            &TextRecovery::default(),
-        );
-
-        assert!(response.message.tool_calls.is_empty());
-        assert!(response.text().contains("<tool_call>"));
-    }
-
-    /// I-2 regression: `RunPolicy::text_dialect_recovery` resolving to off
-    /// (what `Auto` yields for a model whose profile reports native tool
-    /// calling) is represented as an empty `TextRecovery`, exactly like a
-    /// turn that offered no tools — so `<tool_call>` markup the model merely
-    /// quoted must not be executed.
-    #[test]
-    fn text_dialect_markup_is_not_recovered_when_the_policy_disables_it() {
-        let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
-        let mut response = ModelResponse::assistant(
-            r#"<tool_call>{"name": "shell", "arguments": {"command": "id"}}</tool_call>"#,
-        );
-
-        recover_text_dialect_calls(
-            &ctx,
-            &mut response,
-            &CallId::new("model-1"),
-            &TextRecovery::default(),
-        );
-
-        assert!(response.message.tool_calls.is_empty());
-        assert!(response.text().contains("<tool_call>"));
-    }
-
-    /// I-2 regression: a final answer that quotes `<tool_call>` markup inside
-    /// a language-tagged fenced code block must never be executed, even when
-    /// recovery is otherwise enabled and tools were offered. (A *bare* fence
-    /// is not protected: `tinytools-agent` treats it as a wrapped call.)
-    #[test]
-    fn text_dialect_markup_inside_a_fenced_code_block_is_never_recovered() {
-        let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
-        let mut response = ModelResponse::assistant(
-            "Here is the format:\n```xml\n<tool_call>{\"name\": \"shell\", \"arguments\": {}}</tool_call>\n```\n",
-        );
-
-        recover_text_dialect_calls(
-            &ctx,
-            &mut response,
-            &CallId::new("model-1"),
-            &offered(&["shell"]),
-        );
-
-        assert!(
-            response.message.tool_calls.is_empty(),
-            "markup quoted inside a fenced code block must not become a real call"
-        );
-        assert!(response.text().contains("<tool_call>"));
-    }
-
-    /// Sanity check for the fence policy: markup outside any fence is still
-    /// recovered when the policy and tool offer both allow it.
-    #[test]
-    fn text_dialect_markup_outside_a_fenced_code_block_is_recovered() {
-        let ctx: RunContext<()> = RunContext::new(RunConfig::new("recovery-test"), ());
-        let mut response = ModelResponse::assistant(
-            r#"<tool_call>{"name": "shell", "arguments": {"command": "id"}}</tool_call>"#,
-        );
-
-        recover_text_dialect_calls(
-            &ctx,
-            &mut response,
-            &CallId::new("model-1"),
-            &offered(&["shell"]),
-        );
-
-        assert_eq!(response.message.tool_calls.len(), 1);
-        assert_eq!(response.message.tool_calls[0].name, "shell");
+        request.reasoning = Some(reasoning.clone());
     }
 }

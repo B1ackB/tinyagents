@@ -566,3 +566,29 @@ fn retained_rows_in_a_successor_generation_are_not_counted_twice() {
     assert_eq!(after.root.input_tokens, 4_000, "retained row counted twice");
     assert_eq!(after.root.turns, 1);
 }
+
+#[test]
+fn carried_from_compares_typed_structure() {
+    use crate::transcript::TranscriptToolCall;
+    let call = |id: &str| TranscriptToolCall {
+        id: id.into(),
+        name: "shell".into(),
+        arguments: "{}".into(),
+        extra_content: None,
+    };
+    let prior = TranscriptMessage::assistant_with_calls("on it", vec![call("c1")]);
+    assert!(carried_from(&prior, &prior.clone()));
+    // Same role, text and usage, different calls: not the carried-over row.
+    let other_calls = TranscriptMessage::assistant_with_calls("on it", vec![call("c2")]);
+    assert!(!carried_from(&prior, &other_calls));
+    assert!(!carried_from(
+        &prior,
+        &TranscriptMessage::assistant("on it")
+    ));
+    let tool = TranscriptMessage::tool_result("c1", "ok");
+    assert!(!carried_from(
+        &tool,
+        &TranscriptMessage::tool_result("c2", "ok")
+    ));
+    assert!(!carried_from(&tool, &TranscriptMessage::tool("ok")));
+}

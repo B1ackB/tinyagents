@@ -144,4 +144,5 @@ impl std::fmt::Debug for CancellationToken {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

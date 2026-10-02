@@ -256,5 +256,5 @@ impl MemoryProtocolTracker {
 }
 
 #[cfg(test)]
-#[path = "memory_protocol_test.rs"]
+#[path = "memory_protocol_tests.rs"]
 mod tests;

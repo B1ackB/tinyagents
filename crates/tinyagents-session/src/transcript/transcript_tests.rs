@@ -262,6 +262,10 @@ fn file_history_never_converts_or_drops_durable_fields() {
         id: Some("assistant-id".into()),
         role: "assistant".into(),
         content: r#"{"tool_calls":[{"id":"call-1"}]}"#.into(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        parts: None,
+        legacy: Default::default(),
         extra_metadata: Some(serde_json::json!({
             "trusted_verbatim": true,
             "artifacts": ["artifact-1"],
@@ -1138,8 +1142,8 @@ fn a_turn_stamps_iteration_and_ts_on_every_step_it_appends() {
         vec![
             // An earlier turn written without usage stays unstamped.
             ("earlier answer".to_string(), None, None),
-            (r#"{"content":"step"#.to_string(), Some(1), ts.clone()),
-            (r#"{"content":"","t"#.to_string(), Some(2), ts.clone()),
+            ("step one".to_string(), Some(1), ts.clone()),
+            (String::new(), Some(2), ts.clone()),
             ("done".to_string(), Some(3), ts),
         ]
     );
@@ -1190,4 +1194,33 @@ fn thread_scan_orders_a_generation_chain_by_generation() {
         "g10",
         "newest-wins resolves the head generation"
     );
+}
+
+#[test]
+fn role_constructors_build_bare_rows() {
+    for (row, role) in [
+        (TranscriptMessage::system("s"), "system"),
+        (TranscriptMessage::user("u"), "user"),
+        (TranscriptMessage::assistant("a"), "assistant"),
+        (TranscriptMessage::tool("t"), "tool"),
+    ] {
+        assert_eq!(row, TranscriptMessage::new(role, row.content.clone()));
+        assert!(row.id.is_none() && row.extra_metadata.is_none());
+    }
+    assert_eq!(
+        TranscriptMessage::tool("ok")
+            .with_id("call-1")
+            .id
+            .as_deref(),
+        Some("call-1")
+    );
+}
+
+/// A host that persisted only `{role, content}` rows (a checkpoint written
+/// before the row type was shared) must still load as a bare row.
+#[test]
+fn role_content_only_json_deserializes_to_a_bare_row() {
+    let row: TranscriptMessage =
+        serde_json::from_str(r#"{"role":"assistant","content":"hello"}"#).unwrap();
+    assert_eq!(row, TranscriptMessage::assistant("hello"));
 }
