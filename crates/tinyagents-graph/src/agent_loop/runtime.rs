@@ -249,6 +249,12 @@ where
     if let Some(format) = &harness.policy().default_response_format {
         request.response_format = Some(format.clone());
     }
+    // Same run-policy reasoning default the direct loop attaches.
+    if let Some(reasoning) = harness.policy().default_reasoning.as_ref()
+        && !reasoning.is_empty()
+    {
+        request.reasoning = Some(reasoning.clone());
+    }
 
     // The structured plan depends on the resolved model's profile, but the
     // model is not resolved until the `model` node (mirroring the direct

@@ -766,6 +766,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // actually maps and only when the caller has not already pinned
             // an explicit `budget_tokens` — an explicit budget is the
             // caller's own override and must win over the profile default.
+            // The run policy's reasoning default (a host's "thinking level")
+            // fills in only where nothing upstream already chose one, and is
+            // attached before the profile mapping below so a named effort
+            // still gets the resolved model's tuned config.
+            apply_default_reasoning(&mut request, self.policy.default_reasoning.as_ref());
             if let Some(profile) = binding.model.profile()
                 && let Some(reasoning) = request.reasoning.as_ref()
                 && reasoning.budget_tokens.is_none()
@@ -2507,3 +2512,22 @@ fn reset_truncated_empty_recovery(
 #[cfg(test)]
 #[path = "run_loop_recovery_tests.rs"]
 mod recovery_tests;
+
+/// Attaches `default` to `request` when the request carries no reasoning
+/// config of its own. A request-level config always wins.
+pub(crate) fn apply_default_reasoning(
+    request: &mut ModelRequest,
+    default: Option<&tinyinference_llm::model::ReasoningConfig>,
+) {
+    if request.reasoning.is_none()
+        && let Some(reasoning) = default
+        && !reasoning.is_empty()
+    {
+        tracing::debug!(
+            effort = ?reasoning.effort,
+            budget_tokens = ?reasoning.budget_tokens,
+            "[agent_loop] applying run-policy default reasoning"
+        );
+        request.reasoning = Some(reasoning.clone());
+    }
+}
