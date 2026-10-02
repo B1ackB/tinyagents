@@ -448,3 +448,7 @@ pub fn delete_thread(
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mod_compat_tests.rs"]
+mod compat_tests;

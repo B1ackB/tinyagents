@@ -1,13 +1,13 @@
 use super::*;
 
-//! On-disk compatibility with workspaces written by TinyMemory's
-//! `tinymemory-conversations` crate, which this module was moved from.
-//!
-//! The fixture below is the exact byte layout that crate wrote: the same root
-//! (`<workspace>/memory/conversations`), the same `threads.jsonl` log entries,
-//! and per-thread message files named by the lowercase hex of the thread id.
-//! The paths are spelled out as literals on purpose so a change to the
-//! filename derivation fails here rather than silently orphaning transcripts.
+// On-disk compatibility with workspaces written by TinyMemory's
+// `tinymemory-conversations` crate, which this module was moved from.
+//
+// The fixture below is the exact byte layout that crate wrote: the same root
+// (`<workspace>/memory/conversations`), the same `threads.jsonl` log entries,
+// and per-thread message files named by the lowercase hex of the thread id.
+// The paths are spelled out as literals on purpose so a change to the
+// filename derivation fails here rather than silently orphaning transcripts.
 
 use tempfile::TempDir;
 
@@ -71,7 +71,11 @@ fn loads_threads_written_by_tinymemory_conversations() {
     // Newest `last_message_at` first; the tombstoned thread is gone.
     assert_eq!(
         ids,
-        ["default:child", "proactive:morning_briefing", "default:chat-1"]
+        [
+            "default:child",
+            "proactive:morning_briefing",
+            "default:chat-1"
+        ]
     );
 
     let child = &threads[0];
@@ -108,7 +112,10 @@ fn legacy_messages_round_trip_byte_for_byte() {
         .expect("read legacy messages");
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].message_type, "text");
-    assert_eq!(messages[0].extra_metadata, serde_json::json!({"scope": "web"}));
+    assert_eq!(
+        messages[0].extra_metadata,
+        serde_json::json!({"scope": "web"})
+    );
     assert_eq!(messages[1].extra_metadata, serde_json::Value::Null);
     for (message, legacy_line) in messages.iter().zip(LEGACY_CHAT_MESSAGES) {
         let reencoded = serde_json::to_string(message).expect("encode message");
