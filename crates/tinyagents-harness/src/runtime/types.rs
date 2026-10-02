@@ -339,7 +339,7 @@ pub struct RunPolicy {
     pub empty_response_retries: u32,
     /// How [`tinytools::ToolExposure::Deferred`] tools are surfaced: never in
     /// the request's `tools` array, but findable through the intrinsic
-    /// `tool_search` / `tool_call` bridge. See
+    /// `tool_search` bridge, then called by their own name. See
     /// [`crate::tool::discover::ToolDiscoveryPolicy`].
     pub discovery: crate::tool::discover::ToolDiscoveryPolicy,
     /// Optional projection applied to every advertised tool schema before it

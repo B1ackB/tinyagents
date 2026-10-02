@@ -9,8 +9,8 @@
 //! - [`ToolDiscoveryPolicy`] — the knobs, carried on
 //!   [`crate::runtime::RunPolicy::discovery`], including the ranker and the
 //!   [`DiscoveryRankMode`] that says how it is used.
-//! - [`bridge_schemas`] / [`answer_tool_search`] / [`unwrap_tool_call`] — the
-//!   two intrinsic bridge tools the agent loop advertises and answers.
+//! - [`bridge_schemas`] / [`answer_tool_search`] — the intrinsic `tool_search`
+//!   bridge tool the agent loop advertises and answers.
 //! - [`EmbeddingToolRanker`] — a semantic [`tinytools::ToolRanker`] over any
 //!   [`tinyinference_embeddings::EmbeddingModel`], with an in-memory and
 //!   optional on-disk embedding cache.
