@@ -37,7 +37,7 @@ static CONVERSATION_PERSISTENCE_REGISTERED: OnceLock<()> = OnceLock::new();
 
 /// A channel turn the persistence subscriber knows how to mirror into the
 /// conversation store. Decoupled from any concrete event-bus event type so the
-/// memory engine carries no dependency on the host's channel layer.
+/// store carries no dependency on the host's channel layer.
 #[derive(Debug, Clone)]
 pub enum ChannelEvent {
     /// An inbound message received from a channel (persisted as role `user`).
@@ -100,7 +100,7 @@ pub trait ChannelEventHandler: Send + Sync {
     async fn handle(&self, event: &ChannelEvent);
 }
 
-/// The host's event bus, abstracted so the memory engine does not depend on a
+/// The host's event bus, abstracted so this store does not depend on a
 /// concrete bus implementation. A host wires the persistence subscriber by
 /// implementing this trait over its real bus and forwarding channel events as
 /// [`ChannelEvent`]s.
