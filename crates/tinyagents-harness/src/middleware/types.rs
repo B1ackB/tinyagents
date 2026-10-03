@@ -975,7 +975,7 @@ pub(crate) struct RunCompaction {
 pub(crate) struct CompactionPressure {
     /// Message count and tool-schema token estimate of the last request this
     /// middleware let through, waiting for that call's usage.
-    pub(crate) pending: Option<(usize, u64)>,
+    pub(crate) pending: Option<(Vec<Message>, u64)>,
     /// Provider-reported prompt tokens of the last answered call, with the
     /// message count and schema tokens of the request that produced it.
     pub(crate) measured: Option<MeasuredPrompt>,
@@ -988,12 +988,14 @@ pub(crate) struct CompactionPressure {
 }
 
 /// A provider-measured prompt size and the request shape it was measured on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MeasuredPrompt {
     /// Provider-reported input tokens of the call.
     pub(crate) prompt_tokens: u64,
     /// Messages the request carried (as this middleware left it).
     pub(crate) messages: usize,
+    /// Exact request prefix to verify before reusing provider usage.
+    pub(crate) prefix: Vec<Message>,
     /// Estimated tokens of the tool declarations it carried.
     pub(crate) schema_tokens: u64,
 }

@@ -55,6 +55,7 @@ impl CompactionPressure {
     ) -> (u64, PromptSource) {
         if let Some(measured) = self.measured
             && measured.messages <= messages.len()
+            && measured.prefix == messages[..measured.messages]
         {
             let appended =
                 crate::token_estimation::estimate_slice_tokens(&messages[measured.messages..]);
@@ -72,8 +73,8 @@ impl CompactionPressure {
 
     /// Records the shape of the request this middleware let through, so the
     /// usage reported for it can be attributed in [`Self::observe`].
-    pub(crate) fn note_request(&mut self, messages: usize, schema_tokens: u64) {
-        self.pending = Some((messages, schema_tokens));
+    pub(crate) fn note_request(&mut self, messages: &[Message], schema_tokens: u64) {
+        self.pending = Some((messages.to_vec(), schema_tokens));
     }
 
     /// Marks that a compaction just ran, so the next reported usage judges
@@ -95,7 +96,7 @@ impl CompactionPressure {
         strike_limit: u32,
         cooldown_calls: u32,
     ) -> bool {
-        let Some((messages, schema_tokens)) = self.pending.take() else {
+        let Some((prefix, schema_tokens)) = self.pending.take() else {
             return false;
         };
         let Some(usage) = usage.filter(|usage| usage.input_tokens > 0) else {
@@ -104,7 +105,8 @@ impl CompactionPressure {
         let prompt_tokens = usage.input_tokens;
         self.measured = Some(MeasuredPrompt {
             prompt_tokens,
-            messages,
+            messages: prefix.len(),
+            prefix,
             schema_tokens,
         });
         if !std::mem::take(&mut self.awaiting_verdict) {
