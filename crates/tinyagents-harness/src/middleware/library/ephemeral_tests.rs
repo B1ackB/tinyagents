@@ -59,8 +59,10 @@ fn a_later_hoisting_selection_rehomes_earlier_ephemeral_system_text() {
 
 #[test]
 fn a_mid_conversation_non_hoisting_selection_keeps_ephemeral_system_text() {
-    let mut profile = ModelProfile::default();
-    profile.mid_conversation_system_messages = true;
+    let profile = ModelProfile {
+        mid_conversation_system_messages: true,
+        ..ModelProfile::default()
+    };
     let mut req = request(vec![Message::system("persona"), Message::user("question")]);
     push_ephemeral_instruction(&mut req, "check your work", None);
 
