@@ -144,10 +144,7 @@ impl InvertedIndex {
         let created_at_ms = chrono::DateTime::parse_from_rfc3339(&created_at)
             .map(|value| value.timestamp_millis())
             .unwrap_or(i64::MIN);
-        let doc_id = self
-            .free_doc_ids
-            .pop()
-            .unwrap_or(self.docs.len() as u32);
+        let doc_id = self.free_doc_ids.pop().unwrap_or(self.docs.len() as u32);
         for ngram in ngrams(&normalized) {
             if let Some(posting) = self.postings.get_mut(ngram) {
                 posting.insert(doc_id);
