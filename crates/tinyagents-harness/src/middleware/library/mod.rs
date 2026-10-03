@@ -74,6 +74,7 @@ mod repeat_progress;
 mod resilience;
 mod tool_policy;
 mod turn_clock;
+mod verify_before_finish;
 mod wrap_up;
 
 pub use arg_recovery::ArgRecoveryMiddleware;
@@ -105,6 +106,10 @@ pub use repeat_progress::{
 };
 pub(crate) use turn_clock::is_json_document;
 pub use turn_clock::{TurnClock, TurnClockMiddleware};
+pub use verify_before_finish::{
+    DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
+    MIN_REMAINING_MODEL_CALLS, VerifyBeforeFinishMiddleware,
+};
 pub use wrap_up::{
     CapturedOutcomes, DEFAULT_CLEARED_PLACEHOLDER, FinalCallWrapUpMiddleware, OutcomesUnavailable,
 };
