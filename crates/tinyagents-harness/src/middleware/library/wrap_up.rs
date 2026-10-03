@@ -11,6 +11,7 @@ use crate::middleware::Middleware;
 use tinyinference_llm::message::{ContentBlock, Message as TaMessage};
 use tinyinference_llm::model::ModelRequest;
 
+use super::ephemeral::push_ephemeral_instruction;
 use super::image_trim::{estimate_message_tokens, estimate_text_tokens};
 
 /// The body microcompact swaps in for a cleared tool result, and therefore the
@@ -195,6 +196,15 @@ impl FinalCallWrapUpMiddleware {
         self.deliverable_tools.iter().any(|tool| tool == name)
     }
 
+    /// Whether a budget notice was announced in the run owning this context.
+    /// Lets other middleware (for example `VerifyBeforeFinishMiddleware`)
+    /// stay quiet once the model has been told how few calls remain.
+    pub fn budget_notice_announced<C>(&self, ctx: &RunContext<C>) -> bool {
+        self.budget_noticed
+            .lock()
+            .is_ok_and(|noticed| noticed.get(&ctx.instance_id()).is_some_and(|n| *n > 0))
+    }
+
     /// Whether the wrap-up injection fired for this run context.
     pub fn fired<C>(&self, ctx: &RunContext<C>) -> bool {
         self.fired_for(ctx.instance_id())
@@ -364,9 +374,11 @@ impl FinalCallWrapUpMiddleware {
             thresholds_crossed = crossed,
             "[tinyagents::mw] budget notice — telling the model how many calls are left"
         );
-        request
-            .messages
-            .push(TaMessage::user(budget_notice_text(remaining, max)));
+        push_ephemeral_instruction(
+            request,
+            budget_notice_text(remaining, max),
+            ctx.model_profile.as_ref(),
+        );
         true
     }
 
@@ -417,9 +429,11 @@ impl FinalCallWrapUpMiddleware {
         // this call is being asked to write the findings into a file, so it
         // needs to be able to read them.
         self.restore_cleared_outcomes(request, &self.final_write_instruction);
-        request
-            .messages
-            .push(TaMessage::user(self.final_write_instruction.clone()));
+        push_ephemeral_instruction(
+            request,
+            self.final_write_instruction.clone(),
+            ctx.model_profile.as_ref(),
+        );
         true
     }
 }
@@ -513,9 +527,11 @@ impl<C: Send + Sync> Middleware<(), C> for FinalCallWrapUpMiddleware {
         // before the request is built), and the earliest ones are most likely
         // already reflected in the compression summary above.
         self.restore_cleared_outcomes(request, &self.instruction);
-        request
-            .messages
-            .push(TaMessage::user(self.instruction.clone()));
+        push_ephemeral_instruction(
+            request,
+            self.instruction.clone(),
+            ctx.model_profile.as_ref(),
+        );
         if let Ok(mut fired) = self.fired.lock() {
             fired.insert(ctx.instance_id());
         }

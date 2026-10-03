@@ -497,8 +497,12 @@ async fn skips_when_the_wrap_up_already_announced_a_budget_notice() {
     use crate::middleware::library::{CapturedOutcomes, FinalCallWrapUpMiddleware};
     struct Nothing;
     impl CapturedOutcomes for Nothing {
-        fn content_for(&self, _: &str) -> Option<String> {
-            None
+        fn content_for(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Option<String>, crate::middleware::library::OutcomesUnavailable>
+        {
+            Ok(None)
         }
     }
     let wrap = Arc::new(
@@ -520,6 +524,10 @@ async fn skips_when_the_wrap_up_already_announced_a_budget_notice() {
         mw.after_model(&mut ctx, &(), &mut round).await.unwrap();
         let mut done = answer("draft");
         mw.after_model(&mut ctx, &(), &mut done).await.unwrap();
-        assert_eq!(done.continue_turn.is_some(), expect_check, "announce={announce}");
+        assert_eq!(
+            done.continue_turn.is_some(),
+            expect_check,
+            "announce={announce}"
+        );
     }
 }
