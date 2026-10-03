@@ -290,7 +290,9 @@ fn apply_tool_result_budget(content: String, budget_bytes: usize) -> (String, Bu
 
 /// Writes oversized tool results to disk: under
 /// `<action_dir>/artifacts/tool-results/` ([`Self::new`]), or under a storage
-/// directory outside the working tree ([`Self::detached`]).
+/// directory outside the working tree ([`Self::detached`]). Detached artifacts
+/// live in a dedicated `tool-results` child namespace so pruning cannot touch
+/// other host state.
 ///
 /// The host supplies what the crate cannot decide: the redactor every body
 /// passes through before it is stored (an artifact on disk is exactly as
@@ -386,8 +388,10 @@ impl ToolResultArtifactStore {
     /// turn's action directory changes, and a shell can open it as readily as
     /// the host's read tool can.
     ///
-    /// The host must let its read tool open paths under `storage_dir`; that
-    /// grant is policy and therefore the host's, not this crate's.
+    /// Artifacts are kept under `storage_dir/tool-results/`, an owned namespace
+    /// that pruning may remove stale session directories from. The host must
+    /// let its read tool open paths under that namespace; that grant is policy
+    /// and therefore the host's, not this crate's.
     pub fn detached(
         storage_dir: PathBuf,
         session_key: impl Into<String>,
@@ -396,7 +400,7 @@ impl ToolResultArtifactStore {
         max_readable_bytes: u64,
     ) -> Self {
         Self::try_detached(
-            storage_dir,
+            storage_dir.join("tool-results"),
             session_key,
             redactor,
             read_tool,
