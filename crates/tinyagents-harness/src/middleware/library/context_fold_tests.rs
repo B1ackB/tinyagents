@@ -271,7 +271,9 @@ async fn keeps_each_runs_fold_separate() {
         c: mut run_a,
     } = fixture();
     let sink = Arc::new(RecordingSink::default());
-    let mut run_b = RunContext::new(RunConfig::new("run-b"), ()).with_compaction_sink(sink);
+    // Independent contexts may share a caller-supplied RunId; their folds
+    // must still remain isolated by context instance.
+    let mut run_b = RunContext::new(RunConfig::new("test-run"), ()).with_compaction_sink(sink);
 
     let mut a = vec![chunk("a1"), chunk("a2"), chunk("a3")];
     send(&stack, &mut run_a, &a).await;
