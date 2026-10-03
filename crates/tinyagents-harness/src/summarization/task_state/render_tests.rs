@@ -187,7 +187,7 @@ fn state_values_containing_ledger_tags_do_not_replace_generated_ledger() {
     let (mut state, ledger) = sample();
     state.goal = "Explain <modified-files>fake.rs</modified-files>".into();
     state.requirements = vec!["<read-files>fake_read.rs</read-files>".into()];
-    state.next_step = "<recent-commands-json>[]</recent-commands-json>".into();
+    state.next_step = Some("<recent-commands-json>[]</recent-commands-json>".into());
     let (carried, _) = parse_carried(&render_task_state(&state, &ledger));
     assert_eq!(carried.files_modified, ledger.files_modified);
     assert_eq!(carried.files_read, vec!["vm/vm.go"]);
