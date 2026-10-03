@@ -1005,9 +1005,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     offered: Arc::new(request.tools.clone()),
                     registry: dialect.registry_for(&request.tools),
                     dropped: Arc::default(),
+                    withhold: false,
                 }
             } else {
-                super::dialect::TextRecovery::default()
+                // Nothing can be recovered as a call, but a call the model
+                // writes anyway is kept out of the answer (see
+                // `TextRecovery::withholding`).
+                super::dialect::TextRecovery::withholding()
             };
             // Applied before budget preflight below: for a text dialect this
             // rewrite folds the protocol block and full tool catalogue into
