@@ -114,6 +114,38 @@ impl TaskState {
     }
 }
 
+impl TaskState {
+    /// This state updated by a `later` one: lists union in order (earlier
+    /// items first), scalars take the later value unless it is empty. Used to
+    /// join the halves of a split compaction without losing either.
+    #[must_use]
+    fn merged_with(mut self, later: TaskState) -> Self {
+        fn union(into: &mut Vec<String>, from: Vec<String>) {
+            for item in from {
+                if !into.contains(&item) {
+                    into.push(item);
+                }
+            }
+        }
+        fn scalar(into: &mut String, from: String) {
+            if !from.trim().is_empty() {
+                *into = from;
+            }
+        }
+        scalar(&mut self.goal, later.goal);
+        union(&mut self.requirements, later.requirements);
+        union(&mut self.constraints, later.constraints);
+        union(&mut self.decisions, later.decisions);
+        union(&mut self.errors_and_fixes, later.errors_and_fixes);
+        union(&mut self.todos_done, later.todos_done);
+        union(&mut self.todos_open, later.todos_open);
+        scalar(&mut self.current_hypothesis, later.current_hypothesis);
+        scalar(&mut self.test_command, later.test_command);
+        scalar(&mut self.next_step, later.next_step);
+        self
+    }
+}
+
 impl TaskStateSummarizer {
     /// A task-state summarizer over `model` (its id pinned for provenance).
     pub fn new(model: Arc<dyn ChatModel<()>>, model_id: impl Into<String>) -> Self {
@@ -161,7 +193,15 @@ impl TaskStateSummarizer {
                 // Never strand a tool result from its call: move the cut back
                 // (or, failing that, keep the indivisible group whole).
                 let safe = start + find_safe_cutoff_point(&messages[start..], end - start);
-                end = if safe > start { safe } else { end };
+                if safe > start {
+                    end = safe;
+                } else {
+                    // One call whose results alone exceed the chunk: send the
+                    // whole group rather than orphan its results.
+                    while end < messages.len() && matches!(messages[end], Message::Tool(_)) {
+                        end += 1;
+                    }
+                }
             }
             out.push(&messages[start..end]);
             start = end;
@@ -332,11 +372,14 @@ impl Summarizer for TaskStateSummarizer {
         })
     }
 
-    /// Merges split halves by carrying the first half's ledger into the
-    /// second: file lists union in order, the later state wins.
+    /// Merges split halves field by field: file lists union in order, the
+    /// recent commands are concatenated and capped, list fields of the state
+    /// union in order, and a later scalar replaces an earlier one only when it
+    /// is not empty. The second half is summarized without the previous
+    /// checkpoint, so replacing the carried state wholesale would drop it.
     async fn merge(&self, summaries: &[SummaryRecord]) -> Result<SummaryRecord> {
         let mut ledger = TaskLedger::default();
-        let mut state = None;
+        let mut state: Option<TaskState> = None;
         for record in summaries {
             let (next, next_state) = parse_carried(&record.summary.text());
             if ledger.original_task.is_none() {
@@ -352,7 +395,16 @@ impl Summarizer for TaskStateSummarizer {
                     ledger.files_read.push(f);
                 }
             }
-            state = next_state.or(state);
+            ledger.commands.extend(next.commands);
+            state = match (state, next_state) {
+                (Some(earlier), Some(later)) => Some(earlier.merged_with(later)),
+                (earlier, later) => later.or(earlier),
+            };
+        }
+        if ledger.commands.len() > ledger::MAX_COMMANDS {
+            ledger
+                .commands
+                .drain(..ledger.commands.len() - ledger::MAX_COMMANDS);
         }
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {

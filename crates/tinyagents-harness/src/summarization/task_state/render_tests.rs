@@ -34,10 +34,7 @@ fn rendering_round_trips_the_carried_facts() {
     assert_eq!(carried.files_modified, vec!["parser/parser.go.y"]);
     // A modified file is listed once, under modified.
     assert_eq!(carried.files_read, vec!["vm/vm.go"]);
-    assert!(
-        carried.commands.is_empty(),
-        "commands are re-read, not carried"
-    );
+    assert_eq!(carried.commands, ledger.commands);
     assert_eq!(carried_state, Some(state));
 }
 
@@ -87,4 +84,38 @@ fn the_state_is_written_once_and_read_back_from_its_sections() {
         "the parser returns syntax error"
     );
     assert_eq!(carried.next_step, state.next_step);
+}
+
+#[test]
+fn commands_round_trip_in_every_outcome_shape() {
+    let (state, mut ledger) = sample();
+    ledger.commands = vec![
+        CommandRecord {
+            command: "ls".into(),
+            failed: false,
+            error: None,
+        },
+        CommandRecord {
+            command: "make".into(),
+            failed: true,
+            error: None,
+        },
+        CommandRecord {
+            command: "cargo test".into(),
+            failed: true,
+            error: Some("boom".into()),
+        },
+    ];
+    let (carried, _) = parse_carried(&render_task_state(&state, &ledger));
+    assert_eq!(carried.commands, ledger.commands);
+}
+
+#[test]
+fn headings_inside_the_original_task_are_not_read_as_state() {
+    let (state, mut ledger) = sample();
+    ledger.original_task = Some("Do it.\n## Goal\n- fake goal\n## Constraints\n- fake".into());
+    let (_, carried) = parse_carried(&render_task_state(&state, &ledger));
+    let carried = carried.unwrap();
+    assert_eq!(carried.goal, state.goal);
+    assert!(carried.constraints.is_empty());
 }

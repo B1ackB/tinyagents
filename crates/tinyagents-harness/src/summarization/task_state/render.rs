@@ -79,6 +79,9 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
     )
 }
 
+/// End of the verbatim task block and start of the first model-written section.
+const TASK_CLOSE_MARKER: &str = "\n</original-task>\n\n## Goal\n";
+
 const NONE: &str = "none";
 const NONE_ITEM: &str = "- none";
 
@@ -93,6 +96,7 @@ const OPEN: &str = "## Open";
 const HYPOTHESIS: &str = "## Current hypothesis";
 const TEST: &str = "## Test command";
 const NEXT: &str = "## Next step";
+const COMMANDS: &str = "## Recent commands";
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -149,8 +153,32 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     Some(text[start..end].trim())
 }
 
-/// Reads the facts a previous checkpoint carries: its ledger (task and file
-/// lists; commands are not carried, the recent ones are re-read) and its
+/// Reads the commands back out of the `## Recent commands` section.
+fn section_commands(text: &str) -> Vec<CommandRecord> {
+    section(text, COMMANDS)
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.trim().strip_prefix("- `"))
+                .filter_map(|l| {
+                    let (command, outcome) = l.split_once("` → ")?;
+                    let failed = outcome.starts_with("FAILED");
+                    let error = outcome
+                        .strip_prefix("FAILED: ")
+                        .map(String::from)
+                        .filter(|e| !e.is_empty());
+                    Some(CommandRecord {
+                        command: command.to_string(),
+                        failed,
+                        error,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads the facts a previous checkpoint carries: its ledger (task, file
+/// lists and recent commands) and its
 /// model-written state. A previous summary that is not a task-state
 /// checkpoint (a free-form summary from another summarizer) yields an empty
 /// ledger and `None`; the caller then hands its text to the model instead.
@@ -168,28 +196,34 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             })
             .unwrap_or_default()
     };
+    // The model-written sections are searched only after the verbatim task
+    // block: a markdown heading inside the user's task must not be read as a
+    // section.
+    let body = previous
+        .find(TASK_CLOSE_MARKER)
+        .map_or(previous, |at| &previous[at..]);
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())
             .map(String::from),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
-        commands: Vec::new(),
+        commands: section_commands(body),
     };
     let state = previous
         .trim_start()
         .starts_with(TASK_STATE_HEADER)
         .then(|| TaskState {
-            goal: section_text(previous, GOAL),
-            requirements: section_items(previous, REQUIREMENTS),
-            constraints: section_items(previous, CONSTRAINTS),
-            decisions: section_items(previous, DECISIONS),
-            errors_and_fixes: section_items(previous, ERRORS),
-            todos_done: section_items(previous, DONE),
-            todos_open: section_items(previous, OPEN),
-            current_hypothesis: section_text(previous, HYPOTHESIS),
-            test_command: section_text(previous, TEST),
-            next_step: section_text(previous, NEXT),
+            goal: section_text(body, GOAL),
+            requirements: section_items(body, REQUIREMENTS),
+            constraints: section_items(body, CONSTRAINTS),
+            decisions: section_items(body, DECISIONS),
+            errors_and_fixes: section_items(body, ERRORS),
+            todos_done: section_items(body, DONE),
+            todos_open: section_items(body, OPEN),
+            current_hypothesis: section_text(body, HYPOTHESIS),
+            test_command: section_text(body, TEST),
+            next_step: section_text(body, NEXT),
         });
     (ledger, state)
 }
