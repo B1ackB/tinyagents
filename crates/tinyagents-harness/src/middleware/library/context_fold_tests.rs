@@ -192,7 +192,7 @@ async fn drops_the_fold_when_the_transcript_no_longer_matches() {
     let Fixture {
         stack,
         seen,
-        sink,
+        sink: _sink,
         mut c,
     } = fixture();
     send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
@@ -215,7 +215,7 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
     let Fixture {
         stack,
         seen,
-        sink: _sink,
+        sink,
         mut c,
     } = fixture();
     let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
