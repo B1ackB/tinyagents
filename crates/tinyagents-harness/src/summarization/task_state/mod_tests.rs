@@ -163,7 +163,7 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     let body = merged.summary.text();
     assert!(body.contains("## Goal\nlater"));
     assert!(body.contains("second half requirement"));
-    assert!(body.contains("default arguments"));
+    assert!(body.contains("invalid default argument declaration"));
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
 }
