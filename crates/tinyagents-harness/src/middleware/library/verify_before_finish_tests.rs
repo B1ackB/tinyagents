@@ -9,7 +9,7 @@ use crate::limits::RunLimits;
 use crate::middleware::{AgentRun, Middleware};
 use crate::runtime::{AgentHarness, RunPolicy};
 use crate::testkit::{FakeTool, ScriptedModel};
-use tinyinference_llm::message::{AssistantMessage, Message};
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::tool::ToolCall;
 
@@ -17,22 +17,12 @@ const CHECK: &str = "CHECK: re-read the request";
 
 /// An assistant turn that requests one call of `name`.
 fn tool_round(id: &str, name: &str) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: Some(format!("msg-{id}")),
-            content: Vec::new(),
-            tool_calls: vec![ToolCall::new(id, name, serde_json::json!({}))],
-            usage: None,
-            origin: None,
-        },
-        usage: None,
-        finish_reason: Some("tool_calls".to_string()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-    }
+    let mut response = ModelResponse::assistant(String::new());
+    response.message.content = Vec::new();
+    response.message.id = Some(format!("msg-{id}"));
+    response.message.tool_calls = vec![ToolCall::new(id, name, serde_json::json!({}))];
+    response.finish_reason = Some("tool_calls".to_string());
+    response
 }
 
 fn answer(text: &str) -> ModelResponse {
