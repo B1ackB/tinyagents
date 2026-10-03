@@ -7,13 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use crate::context::RunContext;
-use crate::error::Result;
 use crate::middleware::Middleware;
-use crate::runtime::AgentHarness;
 use crate::testkit::ScriptedModel;
-use tinyinference_llm::message::Message;
-use tinyinference_llm::model::{ModelProfile, ModelRequest};
+use tinyinference_llm::model::ModelProfile;
 
 /// Records the profile each `before_model` call saw.
 struct SeenProfiles(Arc<Mutex<Vec<Option<ModelProfile>>>>);
