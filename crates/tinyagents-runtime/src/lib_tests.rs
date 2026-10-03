@@ -3983,3 +3983,207 @@ async fn a_locator_that_names_no_destination_matches_only_itself() {
         "without a destination key there is nothing to compare but the pointer"
     );
 }
+
+#[tokio::test]
+async fn explicit_prefix_refresh_preserves_history_and_survives_cold_resume() {
+    struct RefreshCodec;
+    impl TranscriptCodec for RefreshCodec {
+        fn decode_history(
+            &self,
+            transcript: &SessionTranscript,
+        ) -> Result<Vec<Message>, RuntimeError> {
+            Ok(transcript
+                .messages
+                .iter()
+                .map(|row| match row.role.as_str() {
+                    "system" => Message::system(&row.content),
+                    "assistant" => Message::assistant(&row.content),
+                    _ => Message::user(&row.content),
+                })
+                .collect())
+        }
+        fn reconcile(
+            &self,
+            prior: &[TranscriptMessage],
+            previous: &[Message],
+            next: &[Message],
+            _: &TranscriptTurnOptions,
+        ) -> Result<Vec<TranscriptMessage>, RuntimeError> {
+            Ok(next
+                .iter()
+                .map(|message| {
+                    if let Some(index) = previous.iter().position(|previous| previous == message)
+                        && let Some(row) = prior.get(index)
+                    {
+                        return row.clone();
+                    }
+                    TranscriptMessage::new(
+                        match message {
+                            Message::System(_) => "system",
+                            Message::Assistant(_) => "assistant",
+                            _ => "user",
+                        },
+                        message.text(),
+                    )
+                })
+                .collect())
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let locator = Arc::new(FileTranscriptLocator::new(directory.path().to_path_buf()));
+    let identity = SessionRef::scoped("managed", "agent-id");
+    let prefix = vec![Message::system("base"), Message::system("tools")];
+    let first = vec![
+        Message::system("base"),
+        Message::user("one"),
+        Message::assistant("first"),
+    ];
+    let mut second = prefix.clone();
+    second.extend(first[1..].iter().cloned());
+    second.extend([Message::user("two"), Message::assistant("second")]);
+    let mut third = second.clone();
+    third.extend([Message::user("three"), Message::assistant("third")]);
+    let mut fourth = vec![Message::system("base")];
+    fourth.extend(third[2..].iter().cloned());
+    fourth.extend([Message::user("four"), Message::assistant("fourth")]);
+    let driver = Arc::new(Driver::new(vec![
+        Ok(outcome(first)),
+        Ok(outcome(second)),
+        Ok(outcome(third)),
+        Ok(outcome(fourth.clone())),
+    ]));
+    let (hooks, _) = hook(vec![
+        TurnPreparation {
+            prefix: Some(PrefixSnapshot::new(vec![Message::system("base")])),
+            ..Default::default()
+        },
+        TurnPreparation {
+            prefix: Some(PrefixSnapshot::new(prefix.clone()).refreshing()),
+            ..Default::default()
+        },
+        TurnPreparation {
+            prefix: Some(PrefixSnapshot::new(prefix.clone()).refreshing()),
+            ..Default::default()
+        },
+        TurnPreparation {
+            prefix: Some(PrefixSnapshot::new(vec![Message::system("base")]).refreshing()),
+            ..Default::default()
+        },
+    ]);
+    let mut session = SessionBuilder::new(driver.clone())
+        .codec(Arc::new(RefreshCodec))
+        .hooks(hooks)
+        .prefix(PrefixSnapshot::new(vec![Message::system("base")]).refreshing())
+        .session(locator.clone(), identity.clone(), meta())
+        .build()
+        .unwrap();
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("one")),
+            session_turn_options(ResumeMode::Session, "managed"),
+        )
+        .await
+        .unwrap();
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("two")),
+            session_turn_options(ResumeMode::Session, "managed"),
+        )
+        .await
+        .unwrap();
+    {
+        let requests = driver.requests.lock().unwrap();
+        assert_eq!(
+            requests[1]
+                .history
+                .iter()
+                .map(Message::text)
+                .collect::<Vec<_>>(),
+            vec!["base", "tools", "one", "first", "two"]
+        );
+    }
+    assert_eq!(locator.head_generation(&identity).generation, 1);
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("three")),
+            session_turn_options(ResumeMode::Session, "managed"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        locator.head_generation(&identity).generation,
+        1,
+        "identical refresh must not create a generation"
+    );
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("four")),
+            session_turn_options(ResumeMode::Session, "managed"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(locator.head_generation(&identity).generation, 2);
+    let mut resumed = SessionBuilder::new(Arc::new(Driver::new(vec![])))
+        .codec(Arc::new(RefreshCodec))
+        .session(locator.clone(), identity.clone(), meta())
+        .build()
+        .unwrap();
+    resumed
+        .resume(&session_turn_options(ResumeMode::Session, "managed"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.prefix_snapshot().messages(),
+        &[Message::system("base")]
+    );
+    assert_eq!(resumed.history(), fourth);
+}
+
+#[tokio::test]
+async fn refreshing_initial_prefix_accepts_an_identical_frozen_preparation_after_commit() {
+    let prefix = vec![Message::system("base")];
+    let driver = Arc::new(Driver::new(vec![
+        Ok(outcome(vec![
+            Message::system("base"),
+            Message::user("one"),
+            Message::assistant("first"),
+        ])),
+        Ok(outcome(vec![
+            Message::system("base"),
+            Message::user("one"),
+            Message::assistant("first"),
+            Message::user("two"),
+            Message::assistant("second"),
+        ])),
+    ]));
+    let (hooks, _) = hook(vec![
+        TurnPreparation::default(),
+        TurnPreparation {
+            prefix: Some(PrefixSnapshot::new(prefix.clone())),
+            ..Default::default()
+        },
+    ]);
+    let mut session = SessionBuilder::new(driver)
+        .hooks(hooks)
+        .prefix(PrefixSnapshot::new(prefix).refreshing())
+        .build()
+        .unwrap();
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("one")),
+            TurnOptions::default(),
+        )
+        .await
+        .unwrap();
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("two")),
+            TurnOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session.prefix_snapshot().messages(),
+        &[Message::system("base")]
+    );
+}

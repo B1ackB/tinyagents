@@ -52,7 +52,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             codec,
             hooks,
             history: prefix.messages().to_vec(),
-            prefix,
+            prefix: prefix.frozen(),
             default_tools,
             persisted: Vec::new(),
             target,
@@ -514,6 +514,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 .before_turn(request, options, self.state_view(resumed)),
         )
         .await?;
+        let previous_history = self.history.clone();
         let (tools, prepared_prefix) = self.apply_preparation(preparation)?;
         if let Some(prefix) = prepared_prefix {
             self.apply_prefix(prefix)?;
@@ -572,7 +573,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                         return Err(RuntimeError::Cancelled);
                     }
                     let partial_history = self.with_prefix(partial.history);
-                    let raw = self.encode(&self.history, &partial_history, &codec_options)?;
+                    let raw = self.encode(&previous_history, &partial_history, &codec_options)?;
                     let turn_usage = self.turn_usage(&codec_options)?;
                     let receipt = self.persist(
                         &raw,
@@ -606,7 +607,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         if cancellation.is_cancelled() {
             return Err(RuntimeError::Cancelled);
         }
-        let raw = self.encode(&self.history, &candidate, &codec_options)?;
+        let raw = self.encode(&previous_history, &candidate, &codec_options)?;
         let turn_usage = self.turn_usage(&codec_options)?;
         let transcript = self.persist(
             &raw,
@@ -707,10 +708,12 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
     }
 
     fn apply_prefix(&mut self, prefix: PrefixSnapshot) -> Result<(), RuntimeError> {
+        let refresh = prefix.allows_refresh();
+        let prefix = prefix.frozen();
         if prefix == self.prefix {
             return Ok(());
         }
-        if self.committed_turns != 0 {
+        if self.committed_turns != 0 && !refresh {
             return Err(RuntimeError::InvalidSessionState(
                 "cannot change a session prefix after a committed turn".into(),
             ));

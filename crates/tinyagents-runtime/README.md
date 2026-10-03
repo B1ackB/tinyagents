@@ -76,3 +76,15 @@ resume/seed boundary; a host must not keep a second shadow history. Cancellation
 once it succeeds, the turn remains successful. `after_commit` and terminal
 hooks get the committed outcome, but their error or a cooperative cancellation
 cannot relabel it.
+
+## Explicit prefix refresh
+
+Prefixes are frozen by default. A host deliberately changing a managed system
+section may return `PrefixSnapshot::new(messages).refreshing()` from
+`before_turn`. This opt-in preserves conversation rows while allowing a new
+prefix after committed turns. Changed durable rows seal the existing transcript
+and create a successor generation; an identical prefix is a no-op. Cold resume
+restores the successor prefix. Preserve the original system messages when only
+one managed section needs updating. Codecs receive the history before the
+refresh beside its original raw rows, so unchanged durable metadata remains
+associated with the correct messages even when prefix length changes.
