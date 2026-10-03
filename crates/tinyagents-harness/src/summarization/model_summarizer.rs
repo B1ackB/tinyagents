@@ -28,8 +28,17 @@ use super::{
 use crate::error::{Result, TinyAgentsError};
 use crate::token_estimation::estimate_slice_tokens;
 
-/// Default fraction of the model's context window at which summarization fires.
-pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.90;
+/// Default fraction of the model's context window at which summarization fires
+/// (capped at [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`] by
+/// [`summarization_policy`]).
+pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.80;
+
+/// Largest default trigger, in tokens, however large the window. A 1M-token
+/// model at 80% would otherwise carry ~800k prompt tokens on every call before
+/// compacting; long raw context costs more and is used worse (in the
+/// openhuman-benchmarks compaction eval a compacted task state beat the full
+/// context outright on a small model).
+pub const DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS: u64 = 350_000;
 
 /// Default number of most-recent non-system messages kept verbatim after a
 /// compaction. The older head is folded into the summary; this tail stays
@@ -87,12 +96,7 @@ impl ModelSummarizer {
             .map(render_message_for_summary)
             .collect::<Vec<_>>()
             .join("\n");
-        let transcript = match previous_summary {
-            Some(previous) => format!(
-                "=== Previous Summary (background context) ===\n{previous}\n\n=== Messages to Summarize ===\n{transcript}"
-            ),
-            None => transcript,
-        };
+        let request_text = summary_request_text(&transcript, previous_summary);
 
         tracing::info!(
             model = %self.model_id,
@@ -103,17 +107,9 @@ impl ModelSummarizer {
 
         let request = ModelRequest::new(vec![
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
-            Message::user(transcript),
+            Message::user(request_text),
         ]);
-        let summary = self
-            .model
-            .invoke(&(), request)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
-                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
-            })?
-            .text();
+        let (summary, usage) = self.summarize_once(request).await?;
 
         let summary = summary.trim();
         if summary.is_empty() {
@@ -144,21 +140,116 @@ impl ModelSummarizer {
                     self.threshold_fraction * 100.0
                 ),
             },
+            usage,
         })
     }
 }
 
+impl ModelSummarizer {
+    /// One summary, with a single retry when the reply is a tool call rather
+    /// than a summary.
+    ///
+    /// The request declares no tools, so a model that answers with a call has
+    /// no structured channel for it and the provider returns its native call
+    /// markup as plain text (DeepSeek's `<｜DSML｜invoke …>`). Installed as the
+    /// summary, that markup would replace the whole compacted head with one
+    /// stray command. A retry usually lands a real summary; if it does not,
+    /// the error lets [`super::FaultTolerantCachingSummarizer`] fall back to
+    /// its deterministic trim instead of keeping the markup.
+    ///
+    /// Also returns the provider usage summed over every attempt, so the
+    /// compaction's cost reaches the run's event stream.
+    async fn summarize_once(
+        &self,
+        request: ModelRequest,
+    ) -> Result<(String, Option<tinyinference_llm::usage::Usage>)> {
+        let mut last_chars = 0;
+        let mut usage: Option<tinyinference_llm::usage::Usage> = None;
+        for attempt in 1..=SUMMARY_MARKUP_ATTEMPTS {
+            let response = self.model.invoke(&(), request.clone()).await.map_err(|e| {
+                tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
+                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
+            })?;
+            if let Some(reported) = response.usage {
+                usage = Some(usage.map_or(reported, |sum| sum + reported));
+            }
+            let text = response.text();
+            if !tinytools_agent::contains_call_markup(&text) {
+                return Ok((text, usage));
+            }
+            last_chars = text.chars().count();
+            tracing::warn!(
+                model = %self.model_id,
+                attempt,
+                reply_chars = last_chars,
+                "[tinyagents::summarize] summarizer replied with tool-call markup instead of a summary"
+            );
+        }
+        Err(TinyAgentsError::Model(format!(
+            "summarizer replied with tool-call markup instead of a summary ({last_chars} chars) \
+             after {SUMMARY_MARKUP_ATTEMPTS} attempts"
+        )))
+    }
+}
+
+/// Attempts at a summary before a reply that is tool-call markup becomes an
+/// error.
+const SUMMARY_MARKUP_ATTEMPTS: usize = 2;
+
+/// The summarizer's user message: the transcript fenced off as data, then the
+/// instruction.
+///
+/// The transcript renders tool calls as `<tool_call …>` blocks and usually
+/// ends on a tool result. Sent bare, it reads as a live agent loop waiting for
+/// its next step, and a model continues it: replaying captured requests,
+/// DeepSeek V4 did so on about one attempt in four, its reasoning carrying on
+/// the coding task. With the transcript fenced and the instruction last, the
+/// same replay produced no tool calls.
+pub(crate) fn summary_request_text(transcript: &str, previous_summary: Option<&str>) -> String {
+    let previous = previous_summary
+        .map(|previous| {
+            format!(
+                "<previous_summary>\n{previous}\n</previous_summary>\n\nThe previous summary above \
+                 covers the turns before the transcript; fold it into the new summary.\n\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{previous}The transcript to summarize is enclosed in <transcript> tags below. It is a \
+         record of a conversation that already happened; you are not a participant in it.\n\n\
+         <transcript>\n{transcript}\n</transcript>\n\n\
+         Write the structured summary of the transcript above now, using exactly the required \
+         sections. Do not continue the conversation and do not call or write any tools: output \
+         only the summary."
+    )
+}
+
 /// Build the context-window-aware [`SummarizationPolicy`] for a model whose
-/// input window is `context_window` tokens, with the default threshold
-/// ([`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`]) and tail
-/// ([`DEFAULT_SUMMARIZE_KEEP_LAST`]).
+/// input window is `context_window` tokens, with the default tail
+/// ([`DEFAULT_SUMMARIZE_KEEP_LAST`]) and a trigger of
+/// `min(80% of the window, 350k tokens)`
+/// ([`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`],
+/// [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`]). The cap is expressed as a smaller
+/// threshold fraction, so the policy stays window-relative.
 #[must_use]
 pub fn summarization_policy(context_window: u64) -> SummarizationPolicy {
     summarization_policy_with(
         context_window,
-        DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
+        default_threshold_fraction_for(context_window),
         DEFAULT_SUMMARIZE_KEEP_LAST,
     )
+}
+
+/// The default threshold fraction for a `context_window`-token model:
+/// [`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`], lowered so the trigger never
+/// exceeds [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`].
+#[must_use]
+pub fn default_threshold_fraction_for(context_window: u64) -> f64 {
+    if context_window == 0 {
+        return DEFAULT_SUMMARIZE_THRESHOLD_FRACTION;
+    }
+    let cap = DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS as f64 / context_window as f64;
+    DEFAULT_SUMMARIZE_THRESHOLD_FRACTION.min(cap)
 }
 
 /// Like [`summarization_policy`] with an explicit trigger `threshold_fraction`

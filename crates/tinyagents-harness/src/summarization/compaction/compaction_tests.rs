@@ -228,13 +228,18 @@ async fn iterative_summary_receives_the_previous_summary() {
 }
 
 #[tokio::test]
-async fn default_summarize_request_ignores_previous_summary() {
-    // `ConcatSummarizer` never overrides `summarize_request`, so the default
-    // trait method's back-compat delegation to `summarize` applies: the
-    // previous summary is accepted but not threaded into the (no-LLM) output.
-    let request = SummaryRequest::new(vec![Message::user("hi")])
-        .with_previous_summary("ignored by ConcatSummarizer");
-    let record = ConcatSummarizer.summarize_request(&request).await.unwrap();
+async fn default_summarize_request_preserves_previous_summary() {
+    struct DefaultOnly;
+    #[async_trait]
+    impl Summarizer for DefaultOnly {
+        async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
+            ConcatSummarizer.summarize(messages).await
+        }
+    }
+    let request =
+        SummaryRequest::new(vec![Message::user("hi")]).with_previous_summary("earlier facts");
+    let record = DefaultOnly.summarize_request(&request).await.unwrap();
+    assert!(record.summary.text().contains("earlier facts"));
     assert!(record.summary.text().contains("hi"));
 }
 

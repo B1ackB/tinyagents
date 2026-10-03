@@ -448,8 +448,10 @@ async fn context_compression_compresses_at_or_above_threshold() {
         .unwrap();
 
     // Compressed to: one summary message + the single kept recent message.
+    // The summary is a user-role, reference-only checkpoint by default.
     assert_eq!(request.messages.len(), 2);
-    assert!(matches!(request.messages[0], Message::System(_)));
+    assert!(matches!(request.messages[0], Message::User(_)));
+    assert!(crate::summarization::is_checkpoint(&request.messages[0]));
     assert_eq!(request.messages[1].text(), format!("{big}-3"));
 
     // Provenance recorded: the two oldest messages were the source.
@@ -770,15 +772,17 @@ async fn context_compression_records_are_bounded_by_max_records() {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push(mw.clone());
 
+    // The transcript grows by two messages a call, as an agent loop's does, so
+    // every call has new history past the fold to compact. (Re-sending an
+    // unchanged transcript re-applies the existing fold instead.)
     let big = "a".repeat(200);
     let mut c = ctx();
-    for _ in 0..10 {
+    let mut transcript = vec![user(&format!("{big}-0"))];
+    for i in 0..10 {
+        transcript.push(user(&format!("{big}-{i}a")));
+        transcript.push(user(&format!("{big}-{i}b")));
         let mut request = ModelRequest {
-            messages: vec![
-                user(&format!("{big}-1")),
-                user(&format!("{big}-2")),
-                user(&format!("{big}-3")),
-            ],
+            messages: transcript.clone(),
             ..Default::default()
         };
         stack
@@ -831,8 +835,9 @@ async fn context_compression_keeps_system_prompt_before_summary() {
         "the real system prompt must stay at position 0"
     );
     assert!(
-        matches!(request.messages[1], Message::System(_)),
-        "the summary follows the system prompt"
+        matches!(request.messages[1], Message::User(_))
+            && crate::summarization::is_checkpoint(&request.messages[1]),
+        "the summary follows the system prompt as a user-role checkpoint"
     );
     assert_ne!(
         request.messages[1].text(),
@@ -869,7 +874,7 @@ async fn context_compression_none_window_falls_back_to_trigger_tokens() {
 
     // Summary + the one kept recent message.
     assert_eq!(request.messages.len(), 2);
-    assert!(matches!(request.messages[0], Message::System(_)));
+    assert!(crate::summarization::is_checkpoint(&request.messages[0]));
     assert_eq!(request.messages[1].text(), "bbbbbbbbbbbbbbbb");
     assert_eq!(mw.records().len(), 1);
 }
