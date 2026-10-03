@@ -79,7 +79,7 @@ fn two_ineffective_compactions_suppress_for_the_cooldown() {
     for strike in 1..=2 {
         assert!(!pressure.begin_call());
         pressure.note_compaction();
-        pressure.note_request(&[Message::user("a"); 3], 0);
+        pressure.note_request(&vec![Message::user("a"); 3], 0);
         let engaged = pressure.observe(Some(&usage(2_000)), &policy, 2, 3);
         assert_eq!(engaged, strike == 2);
     }
@@ -95,13 +95,13 @@ fn an_effective_compaction_resets_the_strikes() {
     let mut pressure = CompactionPressure::default();
     pressure.begin_call();
     pressure.note_compaction();
-    pressure.note_request(&[Message::user("a"); 3], 0);
+    pressure.note_request(&vec![Message::user("a"); 3], 0);
     pressure.observe(Some(&usage(2_000)), &policy, 2, 10);
     assert_eq!(pressure.strikes, 1);
 
     pressure.begin_call();
     pressure.note_compaction();
-    pressure.note_request(&[Message::user("a"); 3], 0);
+    pressure.note_request(&vec![Message::user("a"); 3], 0);
     pressure.observe(Some(&usage(500)), &policy, 2, 10);
     assert_eq!(pressure.strikes, 0);
     assert!(!pressure.begin_call());
