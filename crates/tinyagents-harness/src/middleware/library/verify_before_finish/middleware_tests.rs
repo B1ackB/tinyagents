@@ -396,7 +396,7 @@ async fn interrupted_runs_cannot_grow_activity_map_without_bound() {
             .await
             .unwrap();
     }
-    assert_eq!(mw.runs.lock().unwrap().len(), 1_024);
+    assert_eq!(mw.runs.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
