@@ -487,11 +487,11 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
     let Some(pin) = messages
         .iter()
         .rposition(|m| matches!(m, Message::User(_)))
-        .map(|index| cap_pinned_message(&messages[index]))
+        .and_then(|index| fit_pinned_message(&messages[index], budget))
     else {
         return trim_messages(messages, &TrimStrategy::MaxTokens(budget));
     };
-    let reserved = crate::token_estimation::estimate_message_tokens(&pin);
+    let reserved = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&pin));
     let mut trimmed = trim_messages(
         messages,
         &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
@@ -510,6 +510,41 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
     );
     trimmed.insert(system_prefix, pin);
     trimmed
+}
+
+/// A pinned user message fitted to this fallback's residual budget.
+fn fit_pinned_message(message: &Message, budget: u64) -> Option<Message> {
+    let pin = cap_pinned_message(message);
+    let count = |message: &Message| {
+        crate::token_estimation::count_tokens_approximately(std::slice::from_ref(message))
+    };
+    if count(&pin) <= budget {
+        return Some(pin);
+    }
+    let text = pin.text();
+    let render = |keep: usize| {
+        let cut: String = text.chars().take(keep).collect();
+        Message::user(format!(
+            "{cut}\n[message truncated to fit the context window]"
+        ))
+    };
+    if count(&render(0)) > budget {
+        return None;
+    }
+    let mut low = 0;
+    let mut high = text
+        .chars()
+        .count()
+        .min(usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX));
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if count(&render(mid)) <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    Some(render(low))
 }
 
 /// `message`, or — when it estimates above [`PINNED_USER_MESSAGE_MAX_TOKENS`]

@@ -192,10 +192,10 @@ fn section_commands(text: &str) -> Vec<CommandRecord> {
                     let failed = outcome.starts_with("FAILED");
                     let error = outcome
                         .strip_prefix("FAILED: ")
-                        .map(String::from)
+                        .map(unescape_tagged)
                         .filter(|e| !e.is_empty());
                     Some(CommandRecord {
-                        command: command.to_string(),
+                        command: unescape_tagged(command),
                         failed,
                         error,
                     })
