@@ -785,8 +785,8 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
         })
         .unwrap();
     for (id, content) in [
-        ("keep", "retained searchable text"),
-        ("cut", "removed searchable text"),
+        ("keep", "orchid"),
+        ("cut", "quartz"),
     ] {
         store
             .append_message(
@@ -804,7 +804,7 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
     }
     assert_eq!(
         store
-            .search_cross_thread_messages("removed searchable", 10, None)
+            .search_cross_thread_messages("quartz", 10, None)
             .unwrap()
             .len(),
         1
@@ -817,13 +817,13 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
     );
     assert!(
         store
-            .search_cross_thread_messages("removed searchable", 10, None)
+        .search_cross_thread_messages("quartz", 10, None)
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .search_cross_thread_messages("retained searchable", 10, None)
+            .search_cross_thread_messages("orchid", 10, None)
             .unwrap()
             .len(),
         1
