@@ -87,12 +87,7 @@ impl ModelSummarizer {
             .map(render_message_for_summary)
             .collect::<Vec<_>>()
             .join("\n");
-        let transcript = match previous_summary {
-            Some(previous) => format!(
-                "=== Previous Summary (background context) ===\n{previous}\n\n=== Messages to Summarize ===\n{transcript}"
-            ),
-            None => transcript,
-        };
+        let request_text = summary_request_text(&transcript, previous_summary);
 
         tracing::info!(
             model = %self.model_id,
@@ -103,17 +98,9 @@ impl ModelSummarizer {
 
         let request = ModelRequest::new(vec![
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
-            Message::user(transcript),
+            Message::user(request_text),
         ]);
-        let summary = self
-            .model
-            .invoke(&(), request)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
-                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
-            })?
-            .text();
+        let summary = self.summarize_once(request).await?;
 
         let summary = summary.trim();
         if summary.is_empty() {
