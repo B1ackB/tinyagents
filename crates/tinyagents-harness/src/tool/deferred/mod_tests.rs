@@ -8,6 +8,7 @@ use tinytools::ToolResult;
 
 fn requests() -> DeferredToolRequests {
     DeferredToolRequests {
+        resume_metadata: BTreeMap::new(),
         calls: vec![ToolCall::new("ext-1", "external", json!({}))],
         approvals: vec![
             ToolCall::new("appr-1", "delete", json!({"path": "a"})),

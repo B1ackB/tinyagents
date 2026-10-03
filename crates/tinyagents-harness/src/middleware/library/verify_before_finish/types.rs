@@ -16,7 +16,7 @@ pub const MIN_REMAINING_MODEL_CALLS: usize = 3;
 pub const DEFAULT_MIN_REMAINING_WALL_CLOCK: Duration = Duration::from_secs(120);
 
 /// What a run did before its answer, as seen by a [`FinishCheckTrigger`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FinishActivity {
     /// Model responses in this run that requested at least one tool call.
     pub tool_rounds: usize,
