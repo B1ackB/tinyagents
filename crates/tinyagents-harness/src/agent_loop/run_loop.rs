@@ -405,6 +405,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // Consecutive "you said tool_calls but sent none" re-prompts
         // (see `RunPolicy::dropped_tool_call_nudges`).
         let mut dropped_tool_call_nudges_used: u32 = 0;
+        // Consecutive re-prompts after a call written on a turn with no
+        // callable tool (bounded by the same `dropped_tool_call_nudges`).
+        let mut withheld_call_nudges_used: u32 = 0;
         let mut boosted_max_tokens: Option<u32> = None;
         let mut truncation_base: Option<u32> = None;
 
