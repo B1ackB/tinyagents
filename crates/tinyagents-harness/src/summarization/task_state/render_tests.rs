@@ -160,3 +160,16 @@ fn task_file_tags_do_not_replace_carried_file_lists() {
     assert_eq!(carried.files_modified, vec!["parser/parser.go.y"]);
     assert_eq!(carried.files_read, vec!["vm/vm.go"]);
 }
+
+#[test]
+fn legacy_command_with_outcome_delimiter_uses_final_suffix() {
+    let mut body = render_task_state(&sample().0, &sample().1);
+    body.truncate(body.find("<recent-commands-json>").unwrap());
+    body = body.replace(
+        "- `go test ./vm/...` → FAILED",
+        "- `echo '` → ok'` → FAILED",
+    );
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.commands[0].command, "echo '` → ok'");
+    assert!(carried.commands[0].failed);
+}

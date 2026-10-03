@@ -188,7 +188,7 @@ fn section_commands(text: &str) -> Vec<CommandRecord> {
             body.lines()
                 .filter_map(|l| l.trim().strip_prefix("- `"))
                 .filter_map(|l| {
-                    let (command, outcome) = l.split_once("` → ")?;
+                    let (command, outcome) = l.rsplit_once("` → ")?;
                     let failed = outcome.starts_with("FAILED");
                     let error = outcome
                         .strip_prefix("FAILED: ")
