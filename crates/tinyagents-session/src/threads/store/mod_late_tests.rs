@@ -770,3 +770,62 @@ fn delete_error_still_evicts_tombstoned_thread_from_warm_index() {
 
 #[path = "mod_concurrency_tests.rs"]
 mod concurrency;
+
+#[test]
+fn truncation_refreshes_warm_search_without_losing_kept_messages() {
+    let (_temp, store) = make_store();
+    store
+        .ensure_thread(CreateConversationThread {
+            id: "truncate-search".to_string(),
+            title: "Search".to_string(),
+            created_at: "2026-04-10T12:00:00Z".to_string(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        })
+        .unwrap();
+    for (id, content) in [
+        ("keep", "retained searchable text"),
+        ("cut", "removed searchable text"),
+    ] {
+        store
+            .append_message(
+                "truncate-search",
+                ThreadMessage {
+                    id: id.to_string(),
+                    content: content.to_string(),
+                    message_type: "text".to_string(),
+                    extra_metadata: json!({}),
+                    sender: "user".to_string(),
+                    created_at: "2026-04-10T12:01:00Z".to_string(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .search_cross_thread_messages("removed searchable", 10, None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .delete_messages_from("truncate-search", "cut")
+            .unwrap(),
+        Some(1)
+    );
+    assert!(
+        store
+            .search_cross_thread_messages("removed searchable", 10, None)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .search_cross_thread_messages("retained searchable", 10, None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
