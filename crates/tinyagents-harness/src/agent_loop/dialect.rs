@@ -344,6 +344,11 @@ pub(super) struct TextRecovery {
     /// Call blocks the model attempted that produced no call, on the
     /// attempt whose response the loop is about to read.
     pub(super) dropped: Arc<DroppedBlocks>,
+    /// No tool could be called this turn (none offered, or an effective
+    /// `ToolChoice::None`), yet call markup is still scrubbed from the
+    /// visible text and counted in [`DroppedBlocks::withheld`] instead of
+    /// becoming a call. See [`TextRecovery::withholding`].
+    pub(super) withhold: bool,
 }
 
 /// Tool-call blocks a grammar recognised on one model attempt that did not
@@ -357,6 +362,9 @@ pub(super) struct DroppedBlocks {
     /// Openers with no closer at end of text (`UnterminatedBlock`); the raw
     /// markup is released as visible text.
     unterminated: AtomicUsize,
+    /// Complete calls the model wrote on a turn that could not take one;
+    /// scrubbed from the visible text and never dispatched.
+    withheld: AtomicUsize,
 }
 
 impl DroppedBlocks {
