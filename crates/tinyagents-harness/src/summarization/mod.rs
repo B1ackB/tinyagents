@@ -138,6 +138,24 @@ impl Summarizer for ConcatSummarizer {
             provenance,
         })
     }
+
+    /// Carries [`SummaryRequest::previous_summary`] forward verbatim ahead of
+    /// the newly concatenated messages.
+    ///
+    /// Compaction is incremental: once a transcript has been folded, the next
+    /// compaction hands the summarizer only the messages since that fold, plus
+    /// the prior summary. The trait default ignores the prior summary, which
+    /// for this deterministic stand-in would silently drop everything folded
+    /// before.
+    async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
+        let mut record = self.summarize(&request.messages).await?;
+        if let Some(previous) = request.previous_summary.as_deref() {
+            let text = format!("{previous}\n{}", record.summary.text());
+            record.provenance.summary_token_estimate = estimate_tokens(&text);
+            record.summary = Message::system(text);
+        }
+        Ok(record)
+    }
 }
 
 // ---------------------------------------------------------------------------
