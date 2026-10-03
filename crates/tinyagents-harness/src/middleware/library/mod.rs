@@ -118,6 +118,9 @@ mod context_fold_test;
 #[path = "context_loop_tests.rs"]
 mod context_loop_test;
 #[cfg(test)]
+#[path = "context_pin_tests.rs"]
+mod context_pin_test;
+#[cfg(test)]
 #[path = "context_task_state_tests.rs"]
 mod context_task_state_test;
 #[cfg(test)]
