@@ -1289,20 +1289,29 @@ impl ContextCompressionMiddleware {
         let trimmed = match checkpoint_at {
             Some(at) => {
                 let mut rest = request.messages.clone();
-                let mut checkpoint = rest.remove(at);
-                if crate::token_estimation::estimate_message_tokens(&checkpoint) >= message_budget {
-                    checkpoint = shrink_checkpoint(&checkpoint, message_budget / 2);
+                let checkpoint = rest.remove(at);
+                let checkpoint = if crate::token_estimation::estimate_message_tokens(&checkpoint)
+                    >= message_budget
+                {
+                    shrink_checkpoint(&checkpoint, message_budget / 2, message_budget)
+                } else {
+                    Some(checkpoint)
+                };
+                match checkpoint {
+                    Some(checkpoint) => {
+                        let budget = message_budget.saturating_sub(
+                            crate::token_estimation::estimate_message_tokens(&checkpoint),
+                        );
+                        let mut trimmed = trim_tail(&rest, budget);
+                        let insert = trimmed
+                            .iter()
+                            .take_while(|m| matches!(m, Message::System(_)))
+                            .count();
+                        trimmed.insert(insert, checkpoint);
+                        trimmed
+                    }
+                    None => trim_tail(&rest, message_budget),
                 }
-                let budget = message_budget.saturating_sub(
-                    crate::token_estimation::estimate_message_tokens(&checkpoint),
-                );
-                let mut trimmed = trim_tail(&rest, budget);
-                let insert = trimmed
-                    .iter()
-                    .take_while(|m| matches!(m, Message::System(_)))
-                    .count();
-                trimmed.insert(insert, checkpoint);
-                trimmed
             }
             None => trim_tail(&request.messages, message_budget),
         };
@@ -1324,26 +1333,57 @@ impl ContextCompressionMiddleware {
     }
 }
 
-/// `checkpoint` cut to about `tokens` estimated tokens (4 chars each), keeping
-/// the marker and a note that the body was truncated.
-fn shrink_checkpoint(checkpoint: &Message, tokens: u64) -> Message {
+/// Shrinks a checkpoint to `preferred_tokens`, including marker and
+/// truncation notice. If the framing alone exceeds that target, it may use
+/// up to `max_tokens`; a checkpoint that cannot fit even then is dropped.
+fn shrink_checkpoint(
+    checkpoint: &Message,
+    preferred_tokens: u64,
+    max_tokens: u64,
+) -> Option<Message> {
     let body = checkpoint_body(checkpoint).unwrap_or_default();
-    let keep = usize::try_from(tokens.saturating_mul(4)).unwrap_or(usize::MAX);
-    let cut: String = body.chars().take(keep).collect();
-    tracing::warn!(
-        from_chars = body.chars().count(),
-        to_chars = cut.chars().count(),
-        "[context_compression] checkpoint exceeds the trim budget; truncating it"
-    );
     let placement = if matches!(checkpoint, Message::System(_)) {
         crate::summarization::SummaryPlacement::System
     } else {
         crate::summarization::SummaryPlacement::User
     };
-    checkpoint_message(
-        placement,
-        &format!("{cut}\n[checkpoint truncated to fit the context budget]"),
-    )
+    let render = |keep: usize| {
+        let cut: String = body.chars().take(keep).collect();
+        checkpoint_message(
+            placement,
+            &format!("{cut}\n[checkpoint truncated to fit the context budget]"),
+        )
+    };
+    let minimum = render(0);
+    let framing_tokens = crate::token_estimation::estimate_message_tokens(&minimum);
+    if framing_tokens > max_tokens {
+        tracing::warn!(
+            framing_tokens,
+            max_tokens,
+            "[context_compression] checkpoint framing exceeds trim budget; dropping it"
+        );
+        return None;
+    }
+    let target = preferred_tokens.max(framing_tokens).min(max_tokens);
+    let mut low = 0;
+    let mut high = body
+        .chars()
+        .count()
+        .min(usize::try_from(target.saturating_mul(4)).unwrap_or(usize::MAX));
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if crate::token_estimation::estimate_message_tokens(&render(mid)) <= target {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    tracing::warn!(
+        from_chars = body.chars().count(),
+        to_chars = low,
+        "[context_compression] checkpoint exceeds trim budget; truncating it"
+    );
+    Some(render(low))
 }
 
 /// `messages` with `fold` applied, when the fold still matches them and covers
