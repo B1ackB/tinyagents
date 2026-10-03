@@ -83,8 +83,7 @@ impl ContextCompressionMiddleware {
             max_turn_tokens: None,
             overflow_classifier: OverflowClassifier::default(),
             before_compaction: None,
-            fold: std::sync::Mutex::new(None),
-            live_chain: std::sync::Mutex::new(Vec::new()),
+            runs: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -166,6 +165,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         self.label
     }
 
+    /// Drops the finished run's fold: it describes that run's transcript only.
+    async fn after_agent(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        _state: &State,
+        _run: &mut AgentRun,
+    ) -> Result<()> {
+        self.runs
+            .lock()
+            .expect("runs mutex poisoned")
+            .remove(ctx.run_id());
+        Ok(())
+    }
+
     async fn before_model(
         &self,
         ctx: &mut RunContext<Ctx>,
@@ -177,18 +190,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // anything (see `CompactionFold`). Without this, every call after the
         // first compaction re-crossed the threshold and re-summarized the
         // whole history.
-        let (system, live) = partition_messages_system(&request.messages);
+        let (mut system, live) = partition_messages_system(&request.messages);
         let chain = fingerprint_chain(&live);
-        let prior = self.validated_fold(&chain);
-        *self.live_chain.lock().expect("live_chain mutex poisoned") = chain.clone();
+        let check = self.check_fold(ctx.run_id(), &chain, &mut system);
+        let prior = match &check {
+            FoldCheck::Applies(fold) => Some(fold.clone()),
+            _ => None,
+        };
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
         if let Some(fold) = &prior {
             request.messages = splice_summary(
-                system
-                    .iter()
-                    .cloned()
-                    .chain(live[folded..].iter().cloned())
-                    .collect(),
+                system.iter().cloned().chain(live[folded..].iter().cloned()).collect(),
                 fold.summary.clone(),
             );
         }
@@ -242,7 +254,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                         reason: "before_compaction hook supplied the summary".to_string(),
                     },
                 };
-                self.remember_fold(first_kept_index, &chain, &record.summary);
+                self.remember_fold(ctx.run_id(), first_kept_index, &chain, &record.summary);
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
                 self.finish_compaction(
@@ -252,6 +264,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                     from_tokens,
                     to_tokens,
                     CompactionReason::Threshold,
+                    true,
                 );
                 request.messages = new_messages;
                 ctx.emit(AgentEvent::Compressed {
@@ -263,15 +276,23 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             CompactionDecision::Proceed => {}
         }
 
-        // The prior fold's summary is the one standing in for everything before
-        // `to_summarize`; fall back to the last summary this instance produced
-        // when the host already spliced that summary into the transcript itself.
-        let previous_summary = prior.as_ref().map(|fold| fold.summary.text()).or_else(|| {
-            self.last_summary
+        // What stands in for everything before `to_summarize`: this run's fold,
+        // or the same summary when the host spliced it into its transcript
+        // itself (it was lifted out of `system` above, so the new summary
+        // replaces it instead of sitting beside it). A transcript that no
+        // longer matches the fold gets no previous summary: that summary
+        // describes some other history. A run that never folded keeps the
+        // legacy fallback to the last summary this instance produced.
+        let previous_summary = match check {
+            FoldCheck::Applies(fold) => Some(fold.summary.text()),
+            FoldCheck::HostApplied(text) => Some(text),
+            FoldCheck::Stale => None,
+            FoldCheck::None => self
+                .last_summary
                 .lock()
                 .expect("last_summary mutex poisoned")
-                .clone()
-        });
+                .clone(),
+        };
         tracing::debug!(
             folded,
             to_summarize = to_summarize.len(),
@@ -347,7 +368,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // between the system prompt and the kept recent turns, in
         // chronological position. It replaces the prior fold's summary, which
         // it was built on.
-        self.remember_fold(first_kept_index, &chain, &record.summary);
+        self.remember_fold(ctx.run_id(), first_kept_index, &chain, &record.summary);
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
 
@@ -358,6 +379,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             from_tokens,
             to_tokens,
             CompactionReason::Threshold,
+            true,
         );
         request.messages = new_messages;
 
@@ -418,26 +440,32 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
 
         let (system, non_system) = partition_messages_system(&request.messages);
         let to_summarize = non_system[..cut.index].to_vec();
-        // The request already carries this instance's prior fold summary (see
-        // `before_model`); the new summary is built on it, so it replaces it.
-        let prior = self.fold.lock().expect("fold mutex poisoned").clone();
+        // This run's fold and the live transcript its `before_model` saw. The
+        // fold extends in live-transcript coordinates only when this request's
+        // non-system messages still line up one-to-one with that live
+        // remainder: a later middleware dropping messages would shift every
+        // index, and persisting a shifted boundary would corrupt a resumed
+        // session.
+        let (prior, live_chain) = self.run_state(ctx.run_id());
+        let folded = prior.as_ref().map_or(0, |fold| fold.folded);
+        let fold_extends = live_chain.len().checked_sub(folded) == Some(non_system.len());
+        // When aligned, the request's copy of the prior summary is superseded
+        // by the new one built on it. When not, keep it: the new summary is
+        // built without it and covers only the cut slice.
         let mut to_keep: Vec<Message> = system
             .into_iter()
-            .filter(|m| prior.as_ref().is_none_or(|fold| *m != fold.summary))
+            .filter(|m| !fold_extends || prior.as_ref().is_none_or(|fold| *m != fold.summary))
             .collect();
         to_keep.extend(non_system[cut.index..].iter().cloned());
         let from_tokens = cut.tokens_before + cut.tokens_after;
-        // Extend the fold in live-transcript coordinates, but only when this
-        // request's non-system messages still line up one-to-one with the live
-        // remainder `before_model` saw (a later trim step dropping messages
-        // would shift every index).
-        let live_chain = self
-            .live_chain
-            .lock()
-            .expect("live_chain mutex poisoned")
-            .clone();
-        let folded = prior.as_ref().map_or(0, |fold| fold.folded);
-        let fold_extends = live_chain.len().checked_sub(folded) == Some(non_system.len());
+        if !fold_extends {
+            tracing::debug!(
+                folded,
+                live = live_chain.len(),
+                request = non_system.len(),
+                "[context_compression] overflow request no longer aligns with the live transcript; compacting without extending the fold or persisting a boundary"
+            );
+        }
 
         match self.hook_decision(
             CompactionReason::Overflow,
@@ -459,7 +487,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 };
                 let mut retried = request.clone();
                 if fold_extends {
-                    self.remember_fold(folded + cut.index, &live_chain, &record.summary);
+                    self.remember_fold(ctx.run_id(), folded + cut.index, &live_chain, &record.summary);
                 }
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
@@ -470,18 +498,25 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
+                    fold_extends,
                 );
                 retried.messages = new_messages;
                 return next.run(ctx, state, retried).await;
             }
         }
 
-        let previous_summary = prior.as_ref().map(|fold| fold.summary.text()).or_else(|| {
-            self.last_summary
-                .lock()
-                .expect("last_summary mutex poisoned")
-                .clone()
-        });
+        // The prior summary only describes this request's history when the
+        // request still lines up with the live transcript.
+        let previous_summary = if fold_extends {
+            prior.as_ref().map(|fold| fold.summary.text()).or_else(|| {
+                self.last_summary
+                    .lock()
+                    .expect("last_summary mutex poisoned")
+                    .clone()
+            })
+        } else {
+            None
+        };
         let record = match summarize_with_split(
             self.summarizer.as_ref(),
             &to_summarize,
@@ -498,7 +533,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         };
 
         if fold_extends {
-            self.remember_fold(folded + cut.index, &live_chain, &record.summary);
+            self.remember_fold(ctx.run_id(), folded + cut.index, &live_chain, &record.summary);
         }
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
@@ -509,6 +544,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
+            fold_extends,
         );
 
         let mut retried = request;
@@ -552,6 +588,39 @@ fn partition_messages_system(messages: &[Message]) -> (Vec<Message>, Vec<Message
         .cloned()
         .collect();
     (system, non_system)
+}
+
+/// How a run's stored fold relates to the transcript of the current request.
+enum FoldCheck {
+    /// The run has no fold.
+    None,
+    /// The transcript still starts with the folded messages: re-apply it.
+    Applies(crate::middleware::types::CompactionFold),
+    /// The host replaced the folded messages with this summary itself.
+    HostApplied(String),
+    /// The transcript is some other history; the fold was dropped.
+    Stale,
+}
+
+/// `run`'s state, created if needed and stamped as most recently used. Evicts
+/// the least recently used run once [`MAX_TRACKED_COMPACTION_RUNS`] are held.
+fn touch_run<'a>(
+    runs: &'a mut std::collections::HashMap<RunId, crate::middleware::types::RunCompaction>,
+    run: &RunId,
+) -> &'a mut crate::middleware::types::RunCompaction {
+    let stamp = runs.values().map(|state| state.touched).max().unwrap_or(0) + 1;
+    if !runs.contains_key(run)
+        && runs.len() >= crate::middleware::types::MAX_TRACKED_COMPACTION_RUNS
+        && let Some(oldest) = runs
+            .iter()
+            .min_by_key(|(_, state)| state.touched)
+            .map(|(id, _)| id.clone())
+    {
+        runs.remove(&oldest);
+    }
+    let state = runs.entry(run.clone()).or_default();
+    state.touched = stamp;
+    state
 }
 
 /// Chained fingerprints of `messages`: entry `i` identifies the whole prefix
@@ -599,38 +668,55 @@ impl ContextCompressionMiddleware {
         }
     }
 
-    /// The prior fold, when the live transcript (as `chain`) still starts with
-    /// the messages it summarized. A transcript that no longer matches — a
-    /// rewritten history, or one the host already compacted itself — drops
-    /// the fold rather than splicing its summary over the wrong messages.
-    fn validated_fold(&self, chain: &[u64]) -> Option<crate::middleware::types::CompactionFold> {
-        let mut slot = self.fold.lock().expect("fold mutex poisoned");
-        let fold = slot.as_ref()?;
-        let matches = fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint);
-        if matches {
-            return Some(fold.clone());
+    /// Records `chain` as `run`'s live transcript and classifies its fold.
+    ///
+    /// When the fold no longer matches but `system` carries its summary, the
+    /// host spliced the summary into its own transcript: the summary is lifted
+    /// out of `system` and returned so the next compaction replaces it.
+    fn check_fold(&self, run: &RunId, chain: &[u64], system: &mut Vec<Message>) -> FoldCheck {
+        let mut runs = self.runs.lock().expect("runs mutex poisoned");
+        let state = touch_run(&mut runs, run);
+        state.live_chain = chain.to_vec();
+        let Some(fold) = state.fold.clone() else {
+            return FoldCheck::None;
+        };
+        if fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint) {
+            return FoldCheck::Applies(fold);
+        }
+        state.fold = None;
+        if let Some(at) = system.iter().position(|m| *m == fold.summary) {
+            system.remove(at);
+            tracing::debug!("[context_compression] host carries the fold summary itself");
+            return FoldCheck::HostApplied(fold.summary.text());
         }
         tracing::debug!(
             folded = fold.folded,
             live = chain.len(),
             "[context_compression] transcript no longer matches the fold; dropping it"
         );
-        *slot = None;
-        None
+        FoldCheck::Stale
     }
 
-    /// Records that `summary` now stands in for the first `folded` live
+    /// `run`'s fold and the live transcript its last `before_model` saw.
+    fn run_state(&self, run: &RunId) -> (Option<crate::middleware::types::CompactionFold>, Vec<u64>) {
+        let runs = self.runs.lock().expect("runs mutex poisoned");
+        runs.get(run)
+            .map(|state| (state.fold.clone(), state.live_chain.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Records that `summary` now stands in for `run`'s first `folded` live
     /// non-system messages, whose chained fingerprints are `chain`.
-    fn remember_fold(&self, folded: usize, chain: &[u64], summary: &Message) {
+    fn remember_fold(&self, run: &RunId, folded: usize, chain: &[u64], summary: &Message) {
         let Some(fingerprint) = folded.checked_sub(1).and_then(|i| chain.get(i)).copied() else {
             return;
         };
-        *self.fold.lock().expect("fold mutex poisoned") =
-            Some(crate::middleware::types::CompactionFold {
-                folded,
-                fingerprint,
-                summary: summary.clone(),
-            });
+        let mut runs = self.runs.lock().expect("runs mutex poisoned");
+        touch_run(&mut runs, run).fold = Some(crate::middleware::types::CompactionFold {
+            folded,
+            fingerprint,
+            summary: summary.clone(),
+        });
     }
 
     /// Finalizes a successful compaction: records `record` in the in-process
@@ -647,6 +733,7 @@ impl ContextCompressionMiddleware {
         tokens_before: u64,
         tokens_after: u64,
         reason: CompactionReason,
+        persist: bool,
     ) {
         *self
             .last_summary
@@ -663,7 +750,11 @@ impl ContextCompressionMiddleware {
             reason,
         };
 
-        if let Some(sink) = &ctx.compaction_sink
+        // `persist` is false when `first_kept_index` cannot be trusted as a
+        // live-transcript position (see the overflow path); a durable boundary
+        // there would restore or duplicate the wrong messages on resume.
+        if persist
+            && let Some(sink) = &ctx.compaction_sink
             && let Err(err) = sink.persist(&compaction_record)
         {
             tracing::debug!("[context_compression] compaction sink persist failed: {err}");

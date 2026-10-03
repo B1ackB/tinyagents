@@ -894,13 +894,31 @@ pub struct ContextCompressionMiddleware {
     /// overflow-triggered) that can decline it or substitute a summary. See
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
-    /// The compaction this instance already performed, re-applied to every
-    /// later request. See [`CompactionFold`].
-    pub(crate) fold: Mutex<Option<CompactionFold>>,
-    /// Chained fingerprints of the live (pre-fold) non-system transcript the
-    /// last `before_model` saw, so the overflow path can extend the fold in
-    /// live-transcript coordinates. Empty until the first call.
-    pub(crate) live_chain: Mutex<Vec<u64>>,
+    /// Per-run compaction state: the fold each in-flight run has made and the
+    /// live transcript its last `before_model` saw. Keyed by run so two
+    /// invocations sharing this middleware never read each other's fold, and
+    /// dropped in `after_agent`. See [`RunCompaction`].
+    pub(crate) runs: Mutex<std::collections::HashMap<crate::ids::RunId, RunCompaction>>,
+}
+
+/// Most runs [`ContextCompressionMiddleware`] tracks at once. A run whose
+/// `after_agent` never fires (an aborted invocation) would otherwise stay in
+/// the map forever on a long-lived shared harness; past this many, the least
+/// recently used run is evicted, which only costs it a re-compaction.
+pub(crate) const MAX_TRACKED_COMPACTION_RUNS: usize = 256;
+
+/// One run's compaction state inside [`ContextCompressionMiddleware`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunCompaction {
+    /// The compaction this run already performed, re-applied to every later
+    /// request. See [`CompactionFold`].
+    pub(crate) fold: Option<CompactionFold>,
+    /// Chained fingerprints of the live (pre-fold) non-system transcript this
+    /// run's last `before_model` saw, so the overflow path can extend the fold
+    /// in live-transcript coordinates.
+    pub(crate) live_chain: Vec<u64>,
+    /// Monotonic touch stamp for least-recently-used eviction.
+    pub(crate) touched: u64,
 }
 
 /// A compaction this middleware already performed, remembered so it is
