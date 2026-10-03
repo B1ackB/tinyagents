@@ -215,10 +215,11 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         // Interrupted runs can bypass both lifecycle hooks. Evict the oldest
         // process-unique ID before retaining another run in a shared instance.
         const MAX_RETAINED_RUNS: usize = 1_024;
-        if !runs.contains_key(&ctx.instance_id()) && runs.len() >= MAX_RETAINED_RUNS {
-            if let Some(oldest) = runs.keys().copied().min() {
-                runs.remove(&oldest);
-            }
+        if !runs.contains_key(&ctx.instance_id())
+            && runs.len() >= MAX_RETAINED_RUNS
+            && let Some(oldest) = runs.keys().copied().min()
+        {
+            runs.remove(&oldest);
         }
         let run = runs.entry(ctx.instance_id()).or_default();
 
