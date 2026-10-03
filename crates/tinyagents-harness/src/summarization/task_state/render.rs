@@ -197,8 +197,13 @@ fn section_commands(text: &str) -> Vec<CommandRecord> {
 /// ledger and `None`; the caller then hands its text to the model instead.
 #[must_use]
 pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
+    // Ledger tags follow the verbatim task. Task text may itself contain
+    // examples of these delimiters and must not become carried file state.
+    let body = previous
+        .find(TASK_CLOSE_MARKER)
+        .map_or(previous, |at| &previous[at..]);
     let lines = |tag: &str| -> Vec<String> {
-        tagged(previous, tag)
+        tagged(body, tag)
             .map(|block| {
                 block
                     .lines()
@@ -209,12 +214,6 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             })
             .unwrap_or_default()
     };
-    // The model-written sections are searched only after the verbatim task
-    // block: a markdown heading inside the user's task must not be read as a
-    // section.
-    let body = previous
-        .find(TASK_CLOSE_MARKER)
-        .map_or(previous, |at| &previous[at..]);
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())

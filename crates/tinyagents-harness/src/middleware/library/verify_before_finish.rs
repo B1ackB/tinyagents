@@ -46,7 +46,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::context::RunContext;
-use crate::error::Result;
+use crate::error::{Result, TinyAgentsError};
 use crate::events::AgentEvent;
 use crate::middleware::{AgentRun, Middleware};
 use tinyinference_llm::model::ModelResponse;
@@ -212,6 +212,14 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
             tracing::warn!("[tinyagents::mw] verify_before_finish state poisoned; not checking");
             return Ok(());
         };
+        // Interrupted runs can bypass both lifecycle hooks. Evict the oldest
+        // process-unique ID before retaining another run in a shared instance.
+        const MAX_RETAINED_RUNS: usize = 1_024;
+        if !runs.contains_key(&ctx.instance_id()) && runs.len() >= MAX_RETAINED_RUNS {
+            if let Some(oldest) = runs.keys().copied().min() {
+                runs.remove(&oldest);
+            }
+        }
         let run = runs.entry(ctx.instance_id()).or_default();
 
         let calls = response.tool_calls();
@@ -258,6 +266,13 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
                  request"
             ),
         });
+        Ok(())
+    }
+
+    async fn on_error(&self, ctx: &mut RunContext<C>, _error: &TinyAgentsError) -> Result<()> {
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.remove(&ctx.instance_id());
+        }
         Ok(())
     }
 

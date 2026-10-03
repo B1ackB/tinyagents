@@ -25,7 +25,7 @@ const MAX_COMMAND_CHARS: usize = 200;
 
 impl TaskLedger {
     /// Folds the facts in `messages` into this ledger (which may carry facts
-    /// from earlier checkpoints). Files keep first-seen order; commands keep
+    /// from earlier checkpoints). Files keep most-recent order; commands keep
     /// the most recent [`MAX_COMMANDS`].
     pub fn absorb(&mut self, messages: &[Message]) {
         if self.original_task.is_none() {
@@ -402,9 +402,10 @@ fn clean_path(raw: &str) -> Option<String> {
 }
 
 fn push_unique(list: &mut Vec<String>, value: String) {
-    if !list.contains(&value) {
-        list.push(value);
+    if let Some(at) = list.iter().position(|existing| existing == &value) {
+        list.remove(at);
     }
+    list.push(value);
 }
 
 pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
@@ -421,18 +422,15 @@ pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
 /// (SIGPIPE from `| head`) is a success.
 pub(crate) fn failure_of(result: &str) -> Option<&str> {
     let lower = result.to_ascii_lowercase();
-    for anchor in [
-        "exit code",
-        "exit_code\":",
-        "exited with code",
-        "exit status",
-    ] {
-        if let Some(at) = lower.find(anchor) {
-            let code: String = lower[at + anchor.len()..]
-                .chars()
-                .skip_while(|c| !c.is_ascii_digit() && *c != '-')
-                .take_while(|c| c.is_ascii_digit() || *c == '-')
-                .collect();
+    for line in lower.lines().rev() {
+        for anchor in ["exit code", "exit_code\":", "exited with code", "exit status"] {
+            let Some(at) = line.rfind(anchor) else {
+                continue;
+            };
+            let rest = line[at + anchor.len()..].trim_start_matches(|c: char| {
+                c.is_ascii_whitespace() || matches!(c, ':' | '=' | '(')
+            });
+            let code: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
             if let Ok(code) = code.parse::<i64>() {
                 return (code != 0 && code != 141).then_some(result);
             }
