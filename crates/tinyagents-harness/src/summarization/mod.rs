@@ -136,6 +136,7 @@ impl Summarizer for ConcatSummarizer {
         Ok(SummaryRecord {
             summary,
             provenance,
+            usage: None,
         })
     }
 

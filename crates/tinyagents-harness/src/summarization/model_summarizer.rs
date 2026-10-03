@@ -100,7 +100,7 @@ impl ModelSummarizer {
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
             Message::user(request_text),
         ]);
-        let summary = self.summarize_once(request).await?;
+        let (summary, usage) = self.summarize_once(request).await?;
 
         let summary = summary.trim();
         if summary.is_empty() {
@@ -131,6 +131,7 @@ impl ModelSummarizer {
                     self.threshold_fraction * 100.0
                 ),
             },
+            usage,
         })
     }
 }
@@ -146,20 +147,30 @@ impl ModelSummarizer {
     /// stray command. A retry usually lands a real summary; if it does not,
     /// the error lets [`super::FaultTolerantCachingSummarizer`] fall back to
     /// its deterministic trim instead of keeping the markup.
-    async fn summarize_once(&self, request: ModelRequest) -> Result<String> {
+    ///
+    /// Also returns the provider usage summed over every attempt, so the
+    /// compaction's cost reaches the run's event stream.
+    async fn summarize_once(
+        &self,
+        request: ModelRequest,
+    ) -> Result<(String, Option<tinyinference_llm::usage::Usage>)> {
         let mut last_chars = 0;
+        let mut usage: Option<tinyinference_llm::usage::Usage> = None;
         for attempt in 1..=SUMMARY_MARKUP_ATTEMPTS {
-            let text = self
+            let response = self
                 .model
                 .invoke(&(), request.clone())
                 .await
                 .map_err(|e| {
                     tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
                     TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
-                })?
-                .text();
+                })?;
+            if let Some(reported) = response.usage {
+                usage = Some(usage.map_or(reported, |sum| sum + reported));
+            }
+            let text = response.text();
             if !contains_tool_call_markup(&text) {
-                return Ok(text);
+                return Ok((text, usage));
             }
             last_chars = text.chars().count();
             tracing::warn!(

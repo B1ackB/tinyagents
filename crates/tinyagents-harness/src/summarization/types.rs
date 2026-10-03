@@ -281,6 +281,12 @@ pub struct SummaryRecord {
 
     /// Provenance metadata linking this summary back to its source messages.
     pub provenance: CompressionProvenance,
+
+    /// Provider-reported usage of the summarization call(s) that produced
+    /// [`Self::summary`], when the summarizer made a model call and the
+    /// provider reported it. `None` for deterministic summarizers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<tinyinference_llm::usage::Usage>,
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +361,10 @@ pub trait Summarizer: Send + Sync {
                 summary_token_estimate,
                 reason: "merged split-turn summaries (default concatenation)".to_string(),
             },
+            usage: summaries
+                .iter()
+                .filter_map(|record| record.usage)
+                .reduce(|sum, usage| sum + usage),
         })
     }
 }
@@ -489,6 +499,61 @@ impl Default for SummarizationPolicy {
             threshold_fraction: default_threshold_fraction(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Summary placement and loop commit
+// ---------------------------------------------------------------------------
+
+/// Where a compaction summary is placed in the rebuilt transcript.
+///
+/// Either way the summary sits *after* the leading system prompt and *before*
+/// the kept recent messages; the variants differ only in the role it carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryPlacement {
+    /// A `user`-role message opening with
+    /// [`crate::summarization::CHECKPOINT_PREFIX`], a reference-only marker
+    /// telling the model the content is background data, not instructions.
+    ///
+    /// The default: the system prompt and tool declarations stay
+    /// byte-identical across a compaction, so the provider's prefix cache
+    /// for them survives, and the summary cannot be mistaken for a new
+    /// system instruction.
+    #[default]
+    User,
+    /// A `system`-role message (the original placement). Kept for hosts
+    /// that relied on it; it adds a second system message after the prompt,
+    /// which churns the cacheable prefix on every compaction.
+    System,
+}
+
+/// A compaction the agent loop must apply to its **working transcript**,
+/// deposited on the run context by
+/// [`crate::middleware::ContextCompressionMiddleware`] through
+/// [`crate::context::RunContext::commit_compaction`].
+///
+/// Middleware only ever sees the per-call [`tinyinference_llm::model::ModelRequest`];
+/// without a commit the loop would rebuild the next request from the
+/// uncompacted transcript, so every later call would compact again. The loop
+/// drains the commit right after the lifecycle `before_model` hooks and after
+/// the model-wrap onion, and replaces everything after the leading system
+/// messages with `[summary, kept tail...]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionCommit {
+    /// The checkpoint message that replaces the folded history.
+    pub summary: Message,
+    /// How many trailing **non-system** messages of the transcript stay
+    /// verbatim. Counting from the tail keeps the commit valid when an
+    /// earlier middleware rewrote message bodies (or the loop's own request
+    /// differs from the transcript only in its system head).
+    pub kept_tail: usize,
+    /// Why the compaction ran.
+    pub reason: CompactionReason,
+    /// Estimated tokens of the request before compaction.
+    pub tokens_before: u64,
+    /// Estimated tokens of the request after compaction.
+    pub tokens_after: u64,
 }
 
 // ---------------------------------------------------------------------------
