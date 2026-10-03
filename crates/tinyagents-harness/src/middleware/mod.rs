@@ -268,6 +268,58 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
             .before_model_control(ctx, state, request))
     }
 
+    /// Runs `before_model` while refreshing the selected profile before each
+    /// hook. Earlier hooks may change the model or required capabilities.
+    pub async fn run_before_model_with_profile<P, F>(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        state: &State,
+        request: &mut ModelRequest,
+        provider: &P,
+        resolve_profile: F,
+    ) -> Result<()>
+    where
+        F: for<'a> Fn(
+            &'a P,
+            &'a RunContext<Ctx>,
+            &'a ModelRequest,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<Option<tinyinference_llm::model::ModelProfile>>,
+        >,
+    {
+        let mut winning: Option<MiddlewareControl> = None;
+        for mw in &self.middlewares {
+            if winning.is_some() && !mw.is_observer() {
+                continue;
+            }
+            ctx.model_profile = resolve_profile(provider, ctx, request).await?;
+            let name = mw.name().to_string();
+            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            let result = mw.before_model_control(ctx, state, request).await;
+            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            match result {
+                Ok(control) => {
+                    if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
+                        winning = Some(control);
+                    }
+                }
+                Err(error) => {
+                    ctx.emit(AgentEvent::MiddlewareFailed {
+                        name,
+                        error: error.to_string(),
+                    });
+                    self.fan_out_on_error(ctx, &error).await;
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(control) = winning {
+            ctx.request_control(control);
+        }
+        Ok(())
+    }
+
     /// Runs every middleware's [`Middleware::on_model_delta`] in registration
     /// order for one streamed delta.
     ///

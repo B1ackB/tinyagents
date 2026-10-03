@@ -78,6 +78,49 @@ fn search_cross_thread_messages_rebuilds_index_from_jsonl_after_reopen() {
 }
 
 #[test]
+fn cold_index_retries_after_transcript_read_failure() {
+    let (_temp, store) = make_store();
+    store
+        .ensure_thread(CreateConversationThread {
+            id: "unreadable".into(),
+            title: "Unreadable".into(),
+            created_at: "2026-04-10T12:00:00Z".into(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        })
+        .unwrap();
+    let path = store.thread_messages_path("unreadable");
+    std::fs::create_dir_all(&path).unwrap();
+    assert!(
+        store
+            .search_cross_thread_messages("recoverable", 10, None)
+            .is_err()
+    );
+    std::fs::remove_dir(&path).unwrap();
+    store
+        .append_message(
+            "unreadable",
+            ThreadMessage {
+                id: "m1".into(),
+                content: "recoverable content".into(),
+                message_type: "text".into(),
+                extra_metadata: json!({}),
+                sender: "user".into(),
+                created_at: "2026-04-10T12:01:00Z".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .search_cross_thread_messages("recoverable", 10, None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn update_thread_labels_missing_thread_returns_error() {
     let (_temp, store) = make_store();
     let err = store

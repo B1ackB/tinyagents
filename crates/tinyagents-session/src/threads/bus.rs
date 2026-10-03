@@ -325,10 +325,9 @@ fn persist_channel_turn(
         descriptor.reply_target,
         descriptor.thread_ts,
     );
+    let existing_threads = list_threads(workspace_dir.to_path_buf())?;
     let legacy_matches = legacy_id != collision_safe_id
-        && list_threads(workspace_dir.to_path_buf())?
-            .iter()
-            .any(|thread| thread.id == legacy_id)
+        && existing_threads.iter().any(|thread| thread.id == legacy_id)
         && get_messages(workspace_dir.to_path_buf(), &legacy_id)?
             .iter()
             .any(|message| {
@@ -345,12 +344,18 @@ fn persist_channel_turn(
     } else {
         collision_safe_id
     };
-    let title = channel_thread_title(
-        descriptor.channel,
-        descriptor.sender,
-        descriptor.reply_target,
-        descriptor.thread_ts,
-    );
+    let title = existing_threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .map(|thread| thread.title.clone())
+        .unwrap_or_else(|| {
+            channel_thread_title(
+                descriptor.channel,
+                descriptor.sender,
+                descriptor.reply_target,
+                descriptor.thread_ts,
+            )
+        });
     let created_at = Utc::now().to_rfc3339();
 
     ensure_thread(

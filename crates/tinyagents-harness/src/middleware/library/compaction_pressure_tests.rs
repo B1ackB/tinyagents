@@ -55,13 +55,29 @@ fn a_shorter_request_than_the_measured_one_falls_back() {
 }
 
 #[test]
-fn changed_measured_prefix_falls_back_to_whole_request_estimate() {
+fn changed_prefix_uses_full_request_estimate() {
     let mut pressure = CompactionPressure::default();
-    pressure.note_request(&[Message::user("short")], 0);
-    pressure.observe(Some(&usage(5_000)), &policy(100_000), 2, 10);
-    let messages = [Message::user("a much longer replacement")];
+    pressure.begin_call();
+    pressure.note_request(&[Message::user("small")], 0);
+    pressure.observe(Some(&usage(2)), &policy(100_000), 2, 10);
+    let messages = vec![Message::user("large".repeat(1_000))];
     let (tokens, source) = pressure.prompt_tokens(&messages, 0);
     assert_eq!(source, PromptSource::Estimated);
+    assert_eq!(
+        tokens,
+        crate::token_estimation::estimate_slice_tokens(&messages)
+    );
+}
+
+#[test]
+fn measured_usage_never_understates_the_full_request_estimate() {
+    let mut pressure = CompactionPressure::default();
+    let messages = vec![Message::user("large".repeat(1_000))];
+    pressure.begin_call();
+    pressure.note_request(&messages, 0);
+    pressure.observe(Some(&usage(2)), &policy(100_000), 2, 10);
+    let (tokens, source) = pressure.prompt_tokens(&messages, 0);
+    assert_eq!(source, PromptSource::Measured);
     assert_eq!(
         tokens,
         crate::token_estimation::estimate_slice_tokens(&messages)
@@ -110,7 +126,7 @@ fn usage_without_a_pending_request_is_ignored() {
     pressure.begin_call();
     assert!(!pressure.observe(Some(&usage(2_000)), &policy, 2, 10));
     assert!(pressure.measured.is_none());
-    pressure.note_request(&vec![Message::user("x"); 1], 0);
+    pressure.note_request(&[Message::user("x")], 0);
     assert!(!pressure.observe(None, &policy, 2, 10));
     assert!(pressure.measured.is_none());
 }

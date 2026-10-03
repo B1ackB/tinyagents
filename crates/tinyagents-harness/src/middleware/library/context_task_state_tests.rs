@@ -4,6 +4,8 @@
 //! lists survive repeated compactions, and later compactions update the
 //! previous state instead of re-summarizing it.
 
+use super::*;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -15,7 +17,7 @@ use crate::summarization::{
     SummarizationPolicy, TaskStateSummarizer, is_checkpoint, task_state::TASK_STATE_HEADER,
 };
 use crate::testkit::{FakeTool, ScriptedModel};
-use tinyinference_llm::message::{AssistantMessage, Message};
+use tinyinference_llm::message::AssistantMessage;
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::tool::ToolCall;
 

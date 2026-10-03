@@ -16,7 +16,7 @@ use crate::host::{
     UnlimitedBudgetGate,
 };
 use crate::limits::RunLimits;
-use crate::middleware::{LoggingMiddleware, ModelFallbackMiddleware};
+use crate::middleware::{LoggingMiddleware, Middleware, ModelFallbackMiddleware};
 use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::runtime::{AgentHarness, AgentInvocation, AgentTurnRequest, RunPolicy};
 use crate::testkit::ScriptedModel;
@@ -80,6 +80,29 @@ struct BorrowedStateModel;
 struct SecretRecordBudget;
 
 struct SecretAfterModelMiddleware;
+
+struct FallbackGuidance;
+
+#[async_trait]
+impl Middleware<()> for FallbackGuidance {
+    fn name(&self) -> &str {
+        "fallback_guidance"
+    }
+
+    async fn before_model(
+        &self,
+        ctx: &mut RunContext<()>,
+        _state: &(),
+        request: &mut ModelRequest,
+    ) -> crate::error::Result<()> {
+        crate::middleware::push_ephemeral_instruction(
+            request,
+            "fallback guidance",
+            ctx.model_profile.as_ref(),
+        );
+        Ok(())
+    }
+}
 
 struct RecordingArgumentGate {
     seen: Mutex<Vec<serde_json::Value>>,
@@ -1308,7 +1331,14 @@ async fn middleware_rebinding_applies_the_host_resolution_deadline() {
 
 #[tokio::test]
 async fn hosted_model_fallback_rebinds_through_the_host_resolver_not_the_local_registry() {
-    let host_backup = Arc::new(ScriptedModel::replies(vec!["host authority won"]));
+    let host_backup = Arc::new(
+        ScriptedModel::replies(vec!["host authority won"]).with_profile(
+            tinyinference_llm::model::ModelProfile {
+                hoists_system_messages: true,
+                ..Default::default()
+            },
+        ),
+    );
     let resolver = Arc::new(HostFallbackResolver {
         primary: Arc::new(RetryableFailingModel),
         fallback: host_backup.clone(),
@@ -1326,6 +1356,7 @@ async fn hosted_model_fallback_rebinds_through_the_host_resolver_not_the_local_r
     );
     let mut harness: AgentHarness<()> = AgentHarness::new();
     harness.register_model("host-backup", Arc::new(MockModel::constant("local bypass")));
+    harness.push_middleware(Arc::new(FallbackGuidance));
     harness.push_model_middleware(Arc::new(ModelFallbackMiddleware::new(["host-backup"])));
 
     let run = harness
@@ -1344,6 +1375,17 @@ async fn hosted_model_fallback_rebinds_through_the_host_resolver_not_the_local_r
         .expect("host fallback resolves and succeeds");
     assert_eq!(run.text().as_deref(), Some("host authority won"));
     assert_eq!(host_backup.requests().len(), 1);
+    let fallback_request = host_backup.requests().pop().unwrap();
+    assert!(
+        fallback_request
+            .messages
+            .iter()
+            .any(|message| message.text().contains("fallback guidance"))
+    );
+    assert!(fallback_request.messages.iter().all(|message| {
+        !matches!(message, tinyinference_llm::message::Message::System(_))
+            || !message.text().contains("fallback guidance")
+    }));
     assert_eq!(
         *resolver.requested_pins.lock().expect("resolver lock"),
         vec![None, Some("host-backup".to_string())],
@@ -1777,7 +1819,9 @@ async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
         Arc::new(AllowAllSecurityGate),
         resolver.clone(),
     );
-    let harness: AgentHarness<()> = AgentHarness::new();
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.push_middleware(Arc::new(LoggingMiddleware::new()));
+    harness.push_middleware(Arc::new(LoggingMiddleware::with_label("second")));
 
     harness
         .invoke_agent(
@@ -1815,7 +1859,8 @@ async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
 
     assert_eq!(
         *resolver.team_lead_flags.lock().expect("resolver lock"),
-        vec![true, false]
+        vec![true, false],
+        "each hosted model call resolves once despite multiple middleware hooks"
     );
 }
 

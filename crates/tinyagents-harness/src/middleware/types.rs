@@ -28,7 +28,6 @@ use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{CallId, RunId};
 use crate::summarization::{SummarizationPolicy, Summarizer, SummaryRecord, TrimStrategy};
-use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ModelDelta, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::{ToolCall, ToolDelta};
 use tinyinference_llm::usage::UsageTotals;
@@ -976,7 +975,7 @@ pub(crate) struct RunCompaction {
 pub(crate) struct CompactionPressure {
     /// Message count and tool-schema token estimate of the last request this
     /// middleware let through, waiting for that call's usage.
-    pub(crate) pending: Option<(Vec<Message>, u64)>,
+    pub(crate) pending: Option<(usize, u64, u64)>,
     /// Provider-reported prompt tokens of the last answered call, with the
     /// message count and schema tokens of the request that produced it.
     pub(crate) measured: Option<MeasuredPrompt>,
@@ -995,10 +994,10 @@ pub(crate) struct MeasuredPrompt {
     pub(crate) prompt_tokens: u64,
     /// Messages the request carried (as this middleware left it).
     pub(crate) messages: usize,
-    /// Exact request prefix to verify before reusing provider usage.
-    pub(crate) prefix: Vec<Message>,
     /// Estimated tokens of the tool declarations it carried.
     pub(crate) schema_tokens: u64,
+    /// Fingerprint of the messages this middleware handed to later layers.
+    pub(crate) prefix_fingerprint: u64,
 }
 
 /// A compaction this middleware already performed, remembered so it is

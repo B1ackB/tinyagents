@@ -97,6 +97,36 @@ async fn later_channel_turn_preserves_user_assigned_labels() {
 }
 
 #[tokio::test]
+async fn later_channel_turn_preserves_custom_title() {
+    let temp = TempDir::new().unwrap();
+    let subscriber = ConversationPersistenceSubscriber::new(temp.path().to_path_buf());
+    let event = |message_id: &str| ChannelEvent::Received {
+        channel: "slack".into(),
+        message_id: message_id.into(),
+        sender: "alice".into(),
+        reply_target: "general".into(),
+        content: "hello".into(),
+        thread_ts: None,
+        workspace_dir: temp.path().to_path_buf(),
+    };
+    subscriber.handle(&event("m1")).await;
+    super::super::update_thread_title(
+        temp.path().to_path_buf(),
+        "channel:slack_alice_general",
+        "Custom title",
+        "2026-07-14T00:00:00Z",
+    )
+    .unwrap();
+    subscriber.handle(&event("m2")).await;
+    let thread = super::super::list_threads(temp.path().to_path_buf())
+        .unwrap()
+        .into_iter()
+        .find(|thread| thread.id == "channel:slack_alice_general")
+        .unwrap();
+    assert_eq!(thread.title, "Custom title");
+}
+
+#[tokio::test]
 async fn telegram_thread_ts_does_not_split_persisted_thread() {
     let temp = TempDir::new().expect("tempdir");
     let subscriber = ConversationPersistenceSubscriber::new(temp.path().to_path_buf());

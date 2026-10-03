@@ -207,3 +207,50 @@ fn folded_patch_changes_the_leading_prefix_fingerprint_but_stays_correct() {
         vec!["browse"]
     );
 }
+
+fn profile(mid_conversation: bool, hoists: bool) -> tinyinference_llm::model::ModelProfile {
+    tinyinference_llm::model::ModelProfile {
+        mid_conversation_system_messages: mid_conversation,
+        hoists_system_messages: hoists,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn placement_follows_the_profile() {
+    // No profile previewed: fold, which is always correct.
+    assert!(!patch_inserts_in_place(None));
+    assert!(patch_inserts_in_place(Some(&profile(true, false))));
+    assert!(!patch_inserts_in_place(Some(&profile(false, false))));
+    // A model that hoists system turns must never get its leading message
+    // rewritten by a fold, whatever the wire accepts (#6962).
+    assert!(patch_inserts_in_place(Some(&profile(false, true))));
+    assert!(patch_inserts_in_place(Some(&profile(true, true))));
+}
+
+/// On a hoisting model the leading system message (the cached prefix) stays
+/// byte-identical; the patch is kept as a transcript record so replay still
+/// reconstructs the tool set. The OpenAI-compatible wire drops record-only
+/// system messages for a hoisting route, so no new system turn is sent.
+#[test]
+fn hoisting_profile_keeps_the_leading_system_message_byte_identical() {
+    let leading = Message::system("baseline persona");
+    let mut messages = vec![
+        leading.clone(),
+        Message::user("hi"),
+        Message::tool("call-1", "found it"),
+    ];
+    let patch = diff_tool_set(&[], &[tool("browse")]).expect("tool set changed");
+
+    let insert = patch_inserts_in_place(Some(&profile(false, true)));
+    apply_tool_change_patch(&mut messages, patch, insert);
+
+    assert_eq!(messages[0], leading, "leading system message untouched");
+    let Some(Message::System(record)) = messages.last() else {
+        panic!("the patch is recorded at the tail");
+    };
+    assert!(record.content.is_empty(), "record renders no wire text");
+    let (_, tools) = replay_system_state(&messages);
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "browse");
+}

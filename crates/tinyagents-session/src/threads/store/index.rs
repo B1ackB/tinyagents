@@ -70,10 +70,15 @@ impl ConversationStore {
             if !path.exists() {
                 continue;
             }
-            if let Ok(messages) = read_jsonl::<ThreadMessage>(&path) {
-                for msg in messages {
-                    idx.insert(thread_id, msg);
+            let messages = match read_jsonl::<ThreadMessage>(&path) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    self.locks.cancel_index_build();
+                    return Err(error);
                 }
+            };
+            for msg in messages {
+                idx.insert(thread_id, msg);
             }
         }
         after_scan();

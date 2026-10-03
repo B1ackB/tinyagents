@@ -161,7 +161,15 @@ impl TaskStateSummarizer {
                 // Never strand a tool result from its call: move the cut back
                 // (or, failing that, keep the indivisible group whole).
                 let safe = start + find_safe_cutoff_point(&messages[start..], end - start);
-                end = if safe > start { safe } else { end };
+                if safe > start {
+                    end = safe;
+                } else if safe == start {
+                    // The first call/result group alone exceeds the budget.
+                    // Keep its consecutive results with the call.
+                    while end < messages.len() && matches!(messages[end], Message::Tool(_)) {
+                        end += 1;
+                    }
+                }
             }
             out.push(&messages[start..end]);
             start = end;
@@ -332,7 +340,8 @@ impl Summarizer for TaskStateSummarizer {
         })
     }
 
-    /// Merges independently summarized halves, retaining facts from both.
+    /// Merges split halves by carrying the first half's ledger into the
+    /// second: file lists and durable state fields union in order.
     async fn merge(&self, summaries: &[SummaryRecord]) -> Result<SummaryRecord> {
         let mut ledger = TaskLedger::default();
         let mut state = None;
@@ -351,39 +360,15 @@ impl Summarizer for TaskStateSummarizer {
                     ledger.files_read.push(f);
                 }
             }
+            ledger.commands.extend(next.commands);
             if let Some(next_state) = next_state {
-                let current = state.get_or_insert_with(TaskState::default);
-                if !next_state.goal.is_empty() {
-                    current.goal = next_state.goal;
-                }
-                for (target, additions) in [
-                    (&mut current.requirements, next_state.requirements),
-                    (&mut current.constraints, next_state.constraints),
-                    (&mut current.decisions, next_state.decisions),
-                    (&mut current.errors_and_fixes, next_state.errors_and_fixes),
-                    (&mut current.todos_done, next_state.todos_done),
-                    (&mut current.todos_open, next_state.todos_open),
-                ] {
-                    for item in additions {
-                        if !target.contains(&item) {
-                            target.push(item);
-                        }
-                    }
-                }
-                current
-                    .todos_open
-                    .retain(|item| !current.todos_done.contains(item));
-                if !next_state.current_hypothesis.is_empty() {
-                    current.current_hypothesis = next_state.current_hypothesis;
-                }
-                if !next_state.test_command.is_empty() {
-                    current.test_command = next_state.test_command;
-                }
-                if !next_state.next_step.is_empty() {
-                    current.next_step = next_state.next_step;
-                }
+                state = Some(match state {
+                    Some(previous) => merge_state(previous, next_state),
+                    None => next_state,
+                });
             }
         }
+        ledger.absorb(&[]);
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
             provenance: CompressionProvenance {
@@ -412,6 +397,34 @@ fn ledger_is_empty(ledger: &TaskLedger) -> bool {
         && ledger.files_modified.is_empty()
         && ledger.files_read.is_empty()
         && ledger.commands.is_empty()
+}
+
+/// Merge independently summarized halves, retaining facts that appear only
+/// in the first half while taking the later live status fields.
+fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
+    fn extend_unique(into: &mut Vec<String>, from: Vec<String>) {
+        for item in from {
+            if !into.contains(&item) {
+                into.push(item);
+            }
+        }
+    }
+    if !second.goal.is_empty() {
+        first.goal = second.goal;
+    }
+    extend_unique(&mut first.requirements, second.requirements);
+    extend_unique(&mut first.constraints, second.constraints);
+    extend_unique(&mut first.decisions, second.decisions);
+    extend_unique(&mut first.errors_and_fixes, second.errors_and_fixes);
+    extend_unique(&mut first.todos_done, second.todos_done);
+    extend_unique(&mut first.todos_open, second.todos_open);
+    first
+        .todos_open
+        .retain(|item| !first.todos_done.contains(item));
+    first.current_hypothesis = second.current_hypothesis;
+    first.test_command = second.test_command;
+    first.next_step = second.next_step;
+    first
 }
 
 #[cfg(test)]
