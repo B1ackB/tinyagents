@@ -255,17 +255,18 @@ fn strip_heredoc_bodies(command: &str) -> String {
             continue;
         }
         if let Some(at) = line.find("<<") {
-            let tag: String = line[at + 2..]
-                .trim_start_matches('-')
-                .trim()
-                .trim_matches(|c| c == '\'' || c == '"')
+            // `cat <<'EOF' > path`: the tag, then the rest of the command line.
+            let after = line[at + 2..].trim_start_matches('-').trim_start();
+            let after = after.trim_start_matches(['\'', '"']);
+            let tag: String = after
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
+            let rest = after[tag.len()..].trim_start_matches(['\'', '"']);
             if !tag.is_empty() {
                 terminator = Some(tag);
             }
-            out.push(line[..at].to_string());
+            out.push(format!("{} {rest}", &line[..at]));
             continue;
         }
         out.push(line.to_string());
