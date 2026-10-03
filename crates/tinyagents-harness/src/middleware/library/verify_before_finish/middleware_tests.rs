@@ -377,3 +377,40 @@ async fn interrupted_runs_cannot_grow_activity_map_without_bound() {
     }
     assert_eq!(mw.runs.lock().unwrap().len(), 1_024);
 }
+
+#[tokio::test]
+async fn deferred_resume_restores_tool_activity_from_transcript() {
+    let mw =
+        VerifyBeforeFinishMiddleware::new(CHECK).with_trigger(|activity| activity.called("lookup"));
+    let mut ctx = RunContext::new(RunConfig::new("resumed").with_max_model_calls(10), ())
+        .with_deferred_results(crate::tool::DeferredToolResults::new().approve("c1"));
+    mw.before_agent(&mut ctx, &()).await.unwrap();
+    let mut request = tinyinference_llm::model::ModelRequest {
+        messages: vec![
+            Message::user("do the task"),
+            Message::Assistant(tool_round("c1", "lookup").message),
+            Message::tool("c1", "approved"),
+        ],
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    let mut draft = answer("done");
+    mw.after_model(&mut ctx, &(), &mut draft).await.unwrap();
+    assert_eq!(draft.continue_turn.as_deref(), Some(CHECK));
+}
+
+#[tokio::test]
+async fn deferred_resume_does_not_repeat_an_existing_check() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    let mut ctx = RunContext::new(RunConfig::new("resumed").with_max_model_calls(10), ())
+        .with_deferred_results(crate::tool::DeferredToolResults::new().approve("c1"));
+    mw.before_agent(&mut ctx, &()).await.unwrap();
+    let mut request = tinyinference_llm::model::ModelRequest {
+        messages: vec![Message::user("do the task"), Message::user(CHECK)],
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    let mut draft = answer("done");
+    mw.after_model(&mut ctx, &(), &mut draft).await.unwrap();
+    assert!(draft.continue_turn.is_none());
+}
