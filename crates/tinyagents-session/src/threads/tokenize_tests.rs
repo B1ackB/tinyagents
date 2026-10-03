@@ -44,6 +44,8 @@ fn normalize_unifies_cjk_halfwidth_fullwidth() {
     assert_eq!(normalize(halfwidth), normalize(fullwidth));
     assert_eq!(normalize("ｶﾞｲﾄﾞ"), normalize("ガイド"));
     assert_eq!(normalize("ﾊﾟﾝ"), normalize("パン"));
+    assert_eq!(normalize("ｶﾀ･ｶﾅ"), normalize("カタ・カナ"));
+    assert_eq!(normalize("｡｢ｶﾅ｣､"), normalize("。「カナ」、"));
 }
 
 #[test]

@@ -110,6 +110,9 @@ pub trait ChannelEventHandler: Send + Sync {
 /// a channel thread before dispatching the next one. Concurrent handler calls
 /// carry no source sequence number, so the subscriber cannot infer their
 /// original order.
+/// The registration helper supports one long-lived bus per process. A host
+/// replacing its bus must subscribe a new [`ConversationPersistenceSubscriber`]
+/// directly instead of calling the helper again.
 pub trait ConversationEventBus {
     /// Register `handler` to receive channel events. Returns `true` if the
     /// subscription was installed.
@@ -123,7 +126,8 @@ pub trait ConversationEventBus {
 /// conversation store so non-web channels persist alongside UI threads. The
 /// workspace binding is shared and rebindable: calling this again with a new
 /// `workspace_dir` repoints the already-registered subscriber without
-/// double-subscribing.
+/// double-subscribing. Re-registration requires the same long-lived bus;
+/// passing a different bus will not install a subscriber on it.
 pub fn register_conversation_persistence_subscriber(
     bus: &dyn ConversationEventBus,
     workspace_dir: PathBuf,
@@ -423,7 +427,7 @@ fn persisted_channel_thread_id(
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         for component in [channel, sender, reply_target] {
-            hasher.update(component.len().to_be_bytes());
+            hasher.update((component.len() as u64).to_be_bytes());
             hasher.update(component.as_bytes());
         }
         let suffix = hasher.finalize()[..6]

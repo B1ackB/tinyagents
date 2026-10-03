@@ -147,6 +147,9 @@ the thread `channel:{channel}_{sender}_{reply_target}[_thread:{ts}]`, with a
 hash suffix when a component contains `_`. Redelivered events are dropped by
 the `{role}:{message_id}` id. Calling register again rebinds the workspace
 without subscribing twice; events for another workspace are ignored.
+The registration helper assumes one long-lived event bus per process. Hosts
+that replace a bus or run multiple independent buses must subscribe separate
+`ConversationPersistenceSubscriber` instances through their bus implementations.
 Failures are logged with `tracing::warn!` (no message content) and swallowed.
 
 ## Public surface

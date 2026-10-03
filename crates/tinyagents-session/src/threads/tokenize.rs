@@ -253,9 +253,10 @@ fn is_combining_mark(c: char) -> bool {
 }
 
 /// Map a half-width katakana code point to its full-width equivalent so the
-/// two encodings hash identically. Returns `None` for anything outside the
-/// half-width katakana letter block.
+/// two encodings hash identically. Includes the half-width Japanese
+/// punctuation block; returns `None` for anything outside these blocks.
 fn halfwidth_to_fullwidth(c: char) -> Option<char> {
+    const HW_PUNCTUATION: [u32; 5] = [0x3002, 0x300C, 0x300D, 0x3001, 0x30FB];
     // Full-width katakana targets for U+FF66..=U+FF9D, in order.
     const HW_KATAKANA: [u32; 56] = [
         0x30F2, 0x30A1, 0x30A3, 0x30A5, 0x30A7, 0x30A9, 0x30E3, 0x30E5, 0x30E7, 0x30C3, 0x30FC,
@@ -266,6 +267,9 @@ fn halfwidth_to_fullwidth(c: char) -> Option<char> {
         0x30F3,
     ];
     let u = c as u32;
+    if (0xFF61..=0xFF65).contains(&u) {
+        return char::from_u32(HW_PUNCTUATION[(u - 0xFF61) as usize]);
+    }
     if (0xFF66..=0xFF9D).contains(&u) {
         return char::from_u32(HW_KATAKANA[(u - 0xFF66) as usize]);
     }

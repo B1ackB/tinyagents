@@ -194,6 +194,7 @@ fn persisted_channel_thread_ids_do_not_alias_underscore_components() {
     let left = persisted_channel_thread_id("slack", "a_b", "c", None);
     let right = persisted_channel_thread_id("slack", "a", "b_c", None);
     assert_ne!(left, right);
+    assert_eq!(left, "channel:slack_a_b_c__92cd78e07ee9");
 }
 
 #[test]
