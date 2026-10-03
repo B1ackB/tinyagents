@@ -158,7 +158,7 @@ impl ModelSummarizer {
                     TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
                 })?
                 .text();
-            if !contains_tool_call_markup(&text) {
+            if !tinytools_agent::contains_call_markup(&text) {
                 return Ok(text);
             }
             last_chars = text.chars().count();
