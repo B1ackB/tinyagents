@@ -117,6 +117,7 @@ fn state_for<'a, C>(runs: &'a mut HashMap<u64, RunState>, ctx: &RunContext<C>) -
         runs.retain(|_, run| run.lifecycle.upgrade().is_some());
     }
     let run = runs.entry(ctx.instance_id()).or_default();
+    run.run_id = Some(ctx.run_id().clone());
     run.lifecycle = Arc::downgrade(&ctx.lifecycle);
     run
 }
@@ -135,11 +136,35 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         if ctx.deferred_results.is_some()
             && let Ok(mut runs) = self.runs.lock()
         {
-            let run = state_for(&mut runs, ctx);
-            // A deferred leg necessarily contained a tool round, even when
-            // compaction later hides the original tool-call message.
-            run.activity.tool_rounds = 1;
-            run.restore_deferred = true;
+            // A resumed context gets a new instance id. Reattach the state
+            // retained by the deferred leg using the durable run id, so
+            // compaction cannot erase its tool names, rounds, or fired flag.
+            let prior = runs
+                .iter()
+                .find(|(id, run)| {
+                    **id != ctx.instance_id()
+                        && run.run_id.as_ref() == Some(ctx.run_id())
+                        && run.restore_deferred
+                })
+                .map(|(id, _)| *id);
+            let restored = prior.is_some();
+            let run = if let Some(prior) = prior {
+                let mut run = runs.remove(&prior).expect("state found above");
+                run.lifecycle = Arc::downgrade(&ctx.lifecycle);
+                runs.insert(ctx.instance_id(), run);
+                runs.get_mut(&ctx.instance_id())
+                    .expect("state inserted above")
+            } else {
+                let run = state_for(&mut runs, ctx);
+                // A deferred leg necessarily contained a tool round, even
+                // when compaction later hides the original tool-call message.
+                run.activity.tool_rounds = 1;
+                run.restore_deferred = true;
+                run
+            };
+            if restored {
+                run.restore_deferred = false;
+            }
         }
         Ok(())
     }
@@ -156,6 +181,7 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         {
             run.restore_deferred = false;
             let mut rounds = 0;
+            let mut saw_user = false;
             for message in &request.messages {
                 if let Message::Assistant(assistant) = message
                     && !assistant.tool_calls.is_empty()
@@ -165,8 +191,11 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
                         .tools_called
                         .extend(assistant.tool_calls.iter().map(|call| call.name.clone()));
                 }
-                if matches!(message, Message::User(_)) && message.text() == self.check {
-                    run.fired = true;
+                if matches!(message, Message::User(_)) {
+                    if saw_user && message.text() == self.check {
+                        run.fired = true;
+                    }
+                    saw_user = true;
                 }
             }
             run.activity.tool_rounds = run.activity.tool_rounds.max(rounds);
@@ -244,10 +273,16 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         &self,
         ctx: &mut RunContext<C>,
         _state: &S,
-        _run: &mut AgentRun,
+        run: &mut AgentRun,
     ) -> Result<()> {
         if let Ok(mut runs) = self.runs.lock() {
-            runs.remove(&ctx.instance_id());
+            if run.deferred.is_some() {
+                if let Some(state) = runs.get_mut(&ctx.instance_id()) {
+                    state.restore_deferred = true;
+                }
+            } else {
+                runs.remove(&ctx.instance_id());
+            }
         }
         Ok(())
     }
