@@ -1294,11 +1294,19 @@ impl ContextCompressionMiddleware {
             Some(at) => {
                 let mut rest = request.messages.clone();
                 let checkpoint = rest.remove(at);
+                let system_tokens = crate::token_estimation::count_tokens_approximately(
+                    &rest
+                        .iter()
+                        .filter(|message| matches!(message, Message::System(_)))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+                let checkpoint_budget = message_budget.saturating_sub(system_tokens);
                 let checkpoint = if crate::token_estimation::count_tokens_approximately(
                     std::slice::from_ref(&checkpoint),
-                ) >= message_budget
+                ) >= checkpoint_budget
                 {
-                    shrink_checkpoint(&checkpoint, message_budget / 2, message_budget)
+                    shrink_checkpoint(&checkpoint, checkpoint_budget / 2, checkpoint_budget)
                 } else {
                     Some(checkpoint)
                 };

@@ -739,6 +739,22 @@ fn deterministic_trim_keeps_a_system_role_checkpoint() {
 }
 
 #[test]
+fn deterministic_trim_reserves_system_prompt_before_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let system = Message::system("core instructions ".repeat(14));
+    let mut request = ModelRequest {
+        messages: vec![system.clone(), cp(&"history ".repeat(200)), chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(request.messages.contains(&system));
+    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 100);
+}
+
+#[test]
 fn deterministic_trim_charges_checkpoint_framing() {
     let policy = SummarizationPolicy::default().with_trigger_override(50);
     let mw =
