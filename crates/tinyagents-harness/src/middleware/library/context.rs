@@ -1055,7 +1055,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         request: &mut ModelRequest,
     ) -> Result<()> {
         let layout = PromptCacheLayout::from_request(request);
-        let run_id = &ctx.instance_id().clone();
+        let run_id = ctx.run_id();
         let mut previous = self.previous.lock().expect("previous mutex poisoned");
         // Only compare within one run. See the field docs on
         // `PromptCacheGuardMiddleware::previous`: a prefix cache is scoped to a
