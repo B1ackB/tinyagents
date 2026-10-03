@@ -266,7 +266,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         {
             state
                 .pressure
-                .note_request(request.messages.len(), schema_tokens);
+                .note_request(&request.messages, schema_tokens);
         }
         result
     }
@@ -870,7 +870,7 @@ fn touch_run(
 /// `messages[..=i]`, so one comparison checks that a remembered prefix is still
 /// intact. Hashes each message's serialized form, so any edit to an earlier
 /// message changes every later entry.
-fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
+pub(super) fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
     fingerprint_chain_from(0, messages)
 }
 

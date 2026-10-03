@@ -975,7 +975,7 @@ pub(crate) struct RunCompaction {
 pub(crate) struct CompactionPressure {
     /// Message count and tool-schema token estimate of the last request this
     /// middleware let through, waiting for that call's usage.
-    pub(crate) pending: Option<(usize, u64)>,
+    pub(crate) pending: Option<(usize, u64, u64)>,
     /// Provider-reported prompt tokens of the last answered call, with the
     /// message count and schema tokens of the request that produced it.
     pub(crate) measured: Option<MeasuredPrompt>,
@@ -996,6 +996,9 @@ pub(crate) struct MeasuredPrompt {
     pub(crate) messages: usize,
     /// Estimated tokens of the tool declarations it carried.
     pub(crate) schema_tokens: u64,
+    /// Chained fingerprint of those messages, so a later request is only
+    /// treated as extending this one when its prefix is identical.
+    pub(crate) fingerprint: u64,
 }
 
 /// A compaction this middleware already performed, remembered so it is
