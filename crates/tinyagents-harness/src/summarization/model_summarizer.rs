@@ -28,8 +28,17 @@ use super::{
 use crate::error::{Result, TinyAgentsError};
 use crate::token_estimation::estimate_slice_tokens;
 
-/// Default fraction of the model's context window at which summarization fires.
-pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.90;
+/// Default fraction of the model's context window at which summarization fires
+/// (capped at [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`] by
+/// [`summarization_policy`]).
+pub const DEFAULT_SUMMARIZE_THRESHOLD_FRACTION: f64 = 0.80;
+
+/// Largest default trigger, in tokens, however large the window. A 1M-token
+/// model at 80% would otherwise carry ~800k prompt tokens on every call before
+/// compacting; long raw context costs more and is used worse (in the
+/// openhuman-benchmarks compaction eval a compacted task state beat the full
+/// context outright on a small model).
+pub const DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS: u64 = 350_000;
 
 /// Default number of most-recent non-system messages kept verbatim after a
 /// compaction. The older head is folded into the summary; this tail stays
@@ -216,16 +225,31 @@ pub(crate) fn summary_request_text(transcript: &str, previous_summary: Option<&s
 }
 
 /// Build the context-window-aware [`SummarizationPolicy`] for a model whose
-/// input window is `context_window` tokens, with the default threshold
-/// ([`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`]) and tail
-/// ([`DEFAULT_SUMMARIZE_KEEP_LAST`]).
+/// input window is `context_window` tokens, with the default tail
+/// ([`DEFAULT_SUMMARIZE_KEEP_LAST`]) and a trigger of
+/// `min(80% of the window, 350k tokens)`
+/// ([`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`],
+/// [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`]). The cap is expressed as a smaller
+/// threshold fraction, so the policy stays window-relative.
 #[must_use]
 pub fn summarization_policy(context_window: u64) -> SummarizationPolicy {
     summarization_policy_with(
         context_window,
-        DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
+        default_threshold_fraction_for(context_window),
         DEFAULT_SUMMARIZE_KEEP_LAST,
     )
+}
+
+/// The default threshold fraction for a `context_window`-token model:
+/// [`DEFAULT_SUMMARIZE_THRESHOLD_FRACTION`], lowered so the trigger never
+/// exceeds [`DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS`].
+#[must_use]
+pub fn default_threshold_fraction_for(context_window: u64) -> f64 {
+    if context_window == 0 {
+        return DEFAULT_SUMMARIZE_THRESHOLD_FRACTION;
+    }
+    let cap = DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS as f64 / context_window as f64;
+    DEFAULT_SUMMARIZE_THRESHOLD_FRACTION.min(cap)
 }
 
 /// Like [`summarization_policy`] with an explicit trigger `threshold_fraction`
