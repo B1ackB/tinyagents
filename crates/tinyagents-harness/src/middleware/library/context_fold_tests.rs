@@ -258,9 +258,11 @@ async fn keeps_recognizing_a_host_spliced_summary_until_it_is_replaced() {
     // ...then over it. The old summary is still recognized and replaced.
     transcript.extend([chunk("m4"), chunk("m5")]);
     let sent = send(&stack, &mut c, &transcript).await;
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    }
     assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
 
     // Until the host persists summary #2, it still sends summary #1. The
