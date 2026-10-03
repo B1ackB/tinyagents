@@ -266,7 +266,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         {
             state
                 .pressure
-                .note_request(request.messages.len(), schema_tokens);
+                .note_request(&request.messages, schema_tokens);
         }
         result
     }
@@ -1214,6 +1214,7 @@ impl ContextCompressionMiddleware {
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
+                placement: self.placement,
                 first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
