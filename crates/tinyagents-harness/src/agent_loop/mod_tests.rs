@@ -1302,11 +1302,14 @@ async fn truncated_empty_retry_budget_stays_unset_when_request_had_none() {
 
 #[tokio::test]
 async fn truncated_empty_retries_exhausted_returns_blank_by_default() {
-    // When every attempt truncates, the retry budget is exhausted and the
-    // historical behavior applies: a blank final success (the empty-response
-    // guard is off by default).
+    // When every attempt truncates — the original call, the boosted retry and
+    // the "stop deliberating" nudge — recovery is spent and a blank final
+    // success is returned (the empty-response guard is off by default). Before
+    // `truncated_empty_nudges` the run gave up after two calls; the third call
+    // is the nudge.
     let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
         truncated_empty_response(2048),
+        truncated_empty_response(4096),
         truncated_empty_response(4096),
     ]));
     let mut harness: AgentHarness<()> = AgentHarness::new();
@@ -1319,18 +1322,141 @@ async fn truncated_empty_retries_exhausted_returns_blank_by_default() {
     let run = harness
         .invoke_in_context(&(), ctx, vec![Message::user("hi")])
         .await
-        .expect("exhausted retries fall back to the blank-final behavior");
+        .expect("exhausted recovery falls back to the blank-final behavior");
 
     assert_eq!(run.text(), Some(String::new()));
-    assert_eq!(run.model_calls, 2, "one original attempt plus one retry");
+    assert_eq!(
+        run.model_calls, 3,
+        "one original attempt, one boosted retry, one nudge"
+    );
+}
+
+#[tokio::test]
+async fn truncated_empty_nudge_after_spent_retries_reaches_the_tool_call() {
+    // Bench regression (openhuman#6951): a reasoning model spent its output
+    // budget thinking twice in a row. The run used to finish on the blank
+    // reply and the host closed the turn without tools. Once the boosted retry
+    // is spent, the loop must tell the model plainly what happened and keep
+    // going, so the tool call it was deliberating about still happens.
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        truncated_empty_response(2048),
+        truncated_empty_response(4096),
+        tool_call_response("c1", "fake", json!({})),
+        text_response("done", 4, 3),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::new(FakeTool::new("fake", "tool output")));
+
+    let ctx = RunContext::new(
+        RunConfig::new("truncated-nudge").with_max_turn_output_tokens(2048),
+        (),
+    );
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("the nudged run reaches the tool call and finishes");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(run.model_calls, 4);
+    let requests = model.requests();
+    let nudged = &requests[2].messages;
+    let nudge = nudged.last().map(Message::text).unwrap_or_default();
+    assert!(
+        nudge.contains("ran out of output tokens") && nudge.contains("tool call"),
+        "the third request ends with the truncation nudge; got {nudge:?}"
+    );
+    assert!(
+        nudged.iter().all(|m| m.role() != crate::message::Role::Assistant),
+        "the blank assistant rows are not replayed"
+    );
+    assert!(
+        requests[3]
+            .messages
+            .iter()
+            .any(|m| m.text().contains("tool output")),
+        "the tool ran and its result reached the model"
+    );
+}
+
+#[tokio::test]
+async fn truncated_empty_nudge_is_skipped_when_no_model_call_remains() {
+    // The nudge is another model call. With the run's call budget spent it
+    // must not be attempted (that would fail the run with LimitExceeded); the
+    // blank final stands and the host decides how to close.
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        truncated_empty_response(2048),
+        truncated_empty_response(4096),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+    harness.with_policy(RunPolicy {
+        limits: RunLimits::default().with_max_model_calls(2),
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("no nudge is attempted past the model-call cap");
+    assert_eq!(run.text(), Some(String::new()));
+    assert_eq!(run.model_calls, 2);
+}
+
+#[tokio::test]
+async fn truncated_empty_retry_is_skipped_when_no_model_call_remains() {
+    // Same budget check for the boosted retry: on the run's last allowed call
+    // a truncated-empty reply is returned as the blank final rather than
+    // retried into a LimitExceeded error.
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        truncated_empty_response(2048),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+    harness.with_policy(RunPolicy {
+        limits: RunLimits::default().with_max_model_calls(1),
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("no retry is attempted past the model-call cap");
+    assert_eq!(run.text(), Some(String::new()));
+    assert_eq!(run.model_calls, 1);
+}
+
+#[tokio::test]
+async fn truncated_empty_nudge_disabled_by_zero_policy() {
+    // truncated_empty_nudges=0 keeps the pre-nudge behavior: after the boosted
+    // retry the blank reply is the final answer.
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        truncated_empty_response(2048),
+        truncated_empty_response(4096),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+    harness.with_policy(RunPolicy {
+        truncated_empty_nudges: 0,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("with nudges disabled the blank final is returned");
+    assert_eq!(run.model_calls, 2);
+    assert_eq!(run.text(), Some(String::new()));
 }
 
 #[tokio::test]
 async fn truncated_empty_retries_exhausted_errors_when_guard_enabled() {
-    // With the empty-response guard on, exhausting the retries surfaces the
-    // typed EmptyResponse error rather than a blank success.
+    // With the empty-response guard on, exhausting the retries and the nudge
+    // surfaces the typed EmptyResponse error rather than a blank success.
     let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
         truncated_empty_response(2048),
+        truncated_empty_response(4096),
         truncated_empty_response(4096),
     ]));
     let mut harness: AgentHarness<()> = AgentHarness::new();
@@ -1352,8 +1478,8 @@ async fn truncated_empty_retries_exhausted_errors_when_guard_enabled() {
 
 #[tokio::test]
 async fn truncated_empty_retry_disabled_by_zero_policy() {
-    // truncated_empty_retries=0 restores exact-replay behavior: no retry, a
-    // single model call, blank final.
+    // truncated_empty_retries=0 with truncated_empty_nudges=0 restores
+    // exact-replay behavior: no retry, a single model call, blank final.
     let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
         truncated_empty_response(2048),
     ]));
@@ -1361,6 +1487,7 @@ async fn truncated_empty_retry_disabled_by_zero_policy() {
     harness.register_model("mock", Arc::clone(&model) as _);
     harness.with_policy(RunPolicy {
         truncated_empty_retries: 0,
+        truncated_empty_nudges: 0,
         ..RunPolicy::default()
     });
 
