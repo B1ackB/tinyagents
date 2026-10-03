@@ -252,16 +252,17 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         _state: &S,
         run: &mut AgentRun,
     ) -> Result<()> {
-        if let Ok(mut runs) = self.runs.lock() {
-            if let Some(state) = runs.remove(&ctx.instance_id())
-                && let Some(deferred) = run.deferred.as_mut()
-            {
-                deferred.resume_metadata.insert(
-                    RESUME_KEY.to_string(),
-                    serde_json::to_value((&state.activity, state.fired))
-                        .expect("finish activity is serializable"),
-                );
-            }
+        let state = self
+            .runs
+            .lock()
+            .ok()
+            .and_then(|mut runs| runs.remove(&ctx.instance_id()));
+        if let (Some(state), Some(deferred)) = (state, run.deferred.as_mut()) {
+            deferred.resume_metadata.insert(
+                RESUME_KEY.to_string(),
+                serde_json::to_value((&state.activity, state.fired))
+                    .expect("finish activity is serializable"),
+            );
         }
         Ok(())
     }

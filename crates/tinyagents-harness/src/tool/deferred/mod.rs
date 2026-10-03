@@ -43,8 +43,10 @@ impl DeferredToolRequests {
     /// External `calls` are left unresolved (the host must still supply
     /// them). Mirrors Pydantic AI's `build_results(approve_all=True)`.
     pub fn approve_all(&self) -> DeferredToolResults {
-        let mut results = DeferredToolResults::default();
-        results.resume_metadata = self.resume_metadata.clone();
+        let mut results = DeferredToolResults {
+            resume_metadata: self.resume_metadata.clone(),
+            ..DeferredToolResults::default()
+        };
         for call in &self.approvals {
             results
                 .approvals
