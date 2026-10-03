@@ -268,6 +268,50 @@ fn nonexistent_relative_and_absolute_workspaces_share_store_identity() {
     assert_eq!(relative_store.root_dir(), absolute_store.root_dir());
 }
 
+#[test]
+fn missing_parent_components_share_store_identity() {
+    let temp = TempDir::new().unwrap();
+    let direct = ConversationStore::new(temp.path().join("workspace"));
+    let alias = ConversationStore::new(temp.path().join("missing/../workspace"));
+    assert_eq!(direct.root_dir(), alias.root_dir());
+    assert_eq!(
+        direct.lock_identity_for_test(),
+        alias.lock_identity_for_test()
+    );
+}
+
+#[test]
+fn long_thread_ids_use_bounded_transcript_filenames() {
+    let (_temp, store) = make_store();
+    let id = "a".repeat(125);
+    let path = store.thread_messages_path(&id);
+    assert!(path.file_name().unwrap().len() <= 255);
+    store
+        .ensure_thread(CreateConversationThread {
+            id: id.clone(),
+            title: "Long id".to_string(),
+            created_at: "2026-04-10T12:00:00Z".to_string(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        })
+        .unwrap();
+    store
+        .append_message(
+            &id,
+            ThreadMessage {
+                id: "m1".to_string(),
+                content: "stored".to_string(),
+                message_type: "text".to_string(),
+                extra_metadata: json!({}),
+                sender: "user".to_string(),
+                created_at: "2026-04-10T12:01:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    assert_eq!(store.get_messages(&id).unwrap().len(), 1);
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_workspace_paths_share_the_same_lock_registry_entry() {

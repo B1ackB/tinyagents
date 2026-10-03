@@ -4,6 +4,7 @@
 //! API in `ops.rs` (and the unit tests) can call it, but it stays out of
 //! the crate's public surface.
 
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::path::PathBuf;
@@ -132,11 +133,20 @@ impl ConversationStore {
     }
 
     /// Absolute path to a thread's per-thread messages JSONL file. The thread
-    /// id is hex-encoded so arbitrary ids map to filesystem-safe names.
+    /// Short ids are hex-encoded; longer ids use a SHA-256 digest so the
+    /// filename stays within common filesystem component limits.
     pub(super) fn thread_messages_path(&self, thread_id: &str) -> PathBuf {
+        let stem = if thread_id.len() <= 124 {
+            hex_encode(thread_id.as_bytes())
+        } else {
+            format!(
+                "sha256-{}",
+                hex_encode(&Sha256::digest(thread_id.as_bytes()))
+            )
+        };
         self.root_dir()
             .join(THREAD_MESSAGES_DIR)
-            .join(format!("{}.jsonl", hex_encode(thread_id.as_bytes())))
+            .join(format!("{stem}.jsonl"))
     }
 
     pub(super) fn list_threads_unlocked(&self) -> Result<Vec<ConversationThread>, String> {
