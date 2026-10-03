@@ -82,9 +82,11 @@ cannot relabel it.
 Prefixes are frozen by default. A host deliberately changing a managed system
 section may return `PrefixSnapshot::new(messages).refreshing()` from
 `before_turn`. This opt-in preserves conversation rows while allowing a new
-prefix after committed turns. Changed durable rows seal the existing transcript
-and create a successor generation; an identical prefix is a no-op. Cold resume
-restores the successor prefix. Preserve the original system messages when only
+prefix after committed turns. The replacement stays tentative until the turn
+commits, including a successfully persisted partial outcome. Changed durable rows
+seal the existing transcript and create a successor generation for session-bound
+targets. Stem targets record the changed rows through in-place compaction instead.
+An identical prefix is a no-op. Cold resume restores the committed prefix. Preserve the original system messages when only
 one managed section needs updating. Codecs receive the history before the
 refresh beside its original raw rows, so unchanged durable metadata remains
 associated with the correct messages even when prefix length changes.

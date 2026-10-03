@@ -4187,3 +4187,6 @@ async fn refreshing_initial_prefix_accepts_an_identical_frozen_preparation_after
         &[Message::system("base")]
     );
 }
+
+#[path = "lib_prefix_refresh_tests.rs"]
+mod prefix_refresh_tests;
