@@ -918,6 +918,8 @@ pub(crate) struct RunCompaction {
     /// so an iterative [`Summarizer`] refines rather than restarts, when no
     /// fold carries it (a host that spliced the summary into its transcript).
     pub(crate) last_summary: Option<String>,
+    /// A summary found in the host transcript that a subsequent fold replaces.
+    pub(crate) host_applied_summary: Option<tinyinference_llm::message::Message>,
     /// Once the host has persisted a compressed transcript, subsequent
     /// boundaries are in that shortened transcript's coordinates.
     pub(crate) boundary_unaligned: bool,
@@ -946,6 +948,9 @@ pub(crate) struct CompactionFold {
     pub(crate) fingerprint: u64,
     /// The summary message spliced in place of the folded messages.
     pub(crate) summary: tinyinference_llm::message::Message,
+    /// Summary previously spliced by the host and incorporated into this one.
+    /// Remove it when rebuilding requests from the host's unchanged transcript.
+    pub(crate) replaces: Option<tinyinference_llm::message::Message>,
 }
 
 // ── MicrocompactMiddleware ────────────────────────────────────────────────────
