@@ -308,22 +308,9 @@ impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
                         .to_string(),
                 ));
             }
-            Ok(tinyinference_llm::model::ModelResponse {
-                message: tinyinference_llm::message::AssistantMessage {
-                    id: None,
-                    content: vec![ContentBlock::Text("recovered".into())],
-                    tool_calls: Vec::new(),
-                    usage: None,
-                    origin: None,
-                },
-                usage: None,
-                finish_reason: None,
-                raw: None,
-                resolved_model: None,
-                continue_turn: None,
-                served_from_cache: false,
-                correlation: None,
-            })
+            Ok(tinyinference_llm::model::ModelResponse::assistant(
+                "recovered",
+            ))
         })
     }
 }
