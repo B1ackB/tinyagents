@@ -11,12 +11,13 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::context::{RunConfig, RunContext};
+use crate::middleware::ContextCompressionMiddleware;
 use crate::runtime::AgentHarness;
 use crate::summarization::{
     SummarizationPolicy, TaskStateSummarizer, is_checkpoint, task_state::TASK_STATE_HEADER,
 };
 use crate::testkit::{FakeTool, ScriptedModel};
-use tinyinference_llm::message::{AssistantMessage, Message};
+use tinyinference_llm::message::AssistantMessage;
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::tool::ToolCall;
 

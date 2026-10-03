@@ -13,16 +13,15 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::context::{RunConfig, RunContext};
-use crate::error::Result;
 use crate::events::AgentEvent;
-use crate::middleware::AgentRun;
+use crate::middleware::{AgentRun, ContextCompressionMiddleware};
 use crate::runtime::AgentHarness;
 use crate::summarization::{
     CompressionProvenance, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,
     SummaryRequest, checkpoint_message, is_checkpoint,
 };
 use crate::testkit::{EventRecorder, FakeTool, ScriptedModel};
-use tinyinference_llm::message::{AssistantMessage, Message};
+use tinyinference_llm::message::AssistantMessage;
 use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::ToolCall;
 use tinyinference_llm::usage::Usage;

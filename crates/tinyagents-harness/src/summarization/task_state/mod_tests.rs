@@ -169,7 +169,7 @@ async fn merge_unions_files_and_keeps_the_later_state() {
 
 #[test]
 fn oversized_tool_pair_stays_in_one_chunk() {
-    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::replies(vec![])), "m")
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m")
         .with_max_chunk_tokens(1);
     let messages = shell("large", "cat huge.log", &"x".repeat(1000));
     let chunks = summarizer.chunks(&messages);
