@@ -1381,6 +1381,36 @@ async fn truncated_empty_nudge_after_spent_retries_reaches_the_tool_call() {
 }
 
 #[tokio::test]
+async fn truncated_empty_nudge_asks_for_an_answer_when_no_tool_is_callable() {
+    // A turn with nothing to call (here: no tools registered) must not be told
+    // to "make the next tool call" — that only invites a call that cannot run.
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        truncated_empty_response(2048),
+        truncated_empty_response(4096),
+        text_response("short answer", 4, 3),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("the nudged run answers");
+
+    assert_eq!(run.text(), Some("short answer".to_string()));
+    let requests = model.requests();
+    let nudge = requests[2]
+        .messages
+        .last()
+        .map(Message::text)
+        .unwrap_or_default();
+    assert!(
+        nudge.contains("ran out of output tokens") && !nudge.contains("tool call"),
+        "a tool-less turn gets the answer nudge; got {nudge:?}"
+    );
+}
+
+#[tokio::test]
 async fn truncated_empty_nudge_is_skipped_when_no_model_call_remains() {
     // The nudge is another model call. With the run's call budget spent it
     // must not be attempted (that would fail the run with LimitExceeded); the
