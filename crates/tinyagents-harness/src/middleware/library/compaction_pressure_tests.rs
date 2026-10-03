@@ -26,9 +26,9 @@ fn falls_back_to_the_estimate_without_usage() {
 #[test]
 fn measured_prompt_adds_only_the_appended_messages_and_schema_growth() {
     let mut pressure = CompactionPressure::default();
-    pressure.begin_call(1);
+    pressure.begin_call();
     pressure.note_request(2, 10);
-    pressure.observe(1, Some(&usage(5_000)), &policy(100_000), 2, 10);
+    pressure.observe(Some(&usage(5_000)), &policy(100_000), 2, 10);
 
     let appended = Message::user("b".repeat(400));
     let messages = vec![
@@ -47,9 +47,9 @@ fn measured_prompt_adds_only_the_appended_messages_and_schema_growth() {
 #[test]
 fn a_shorter_request_than_the_measured_one_falls_back() {
     let mut pressure = CompactionPressure::default();
-    pressure.begin_call(1);
+    pressure.begin_call();
     pressure.note_request(5, 0);
-    pressure.observe(1, Some(&usage(5_000)), &policy(100_000), 2, 10);
+    pressure.observe(Some(&usage(5_000)), &policy(100_000), 2, 10);
     let (_, source) = pressure.prompt_tokens(&[Message::user("x")], 0);
     assert_eq!(source, PromptSource::Estimated);
 }
@@ -59,57 +59,44 @@ fn two_ineffective_compactions_suppress_for_the_cooldown() {
     let policy = policy(1_000);
     let mut pressure = CompactionPressure::default();
     for strike in 1..=2 {
-        assert!(!pressure.begin_call(9));
+        assert!(!pressure.begin_call());
         pressure.note_compaction();
         pressure.note_request(3, 0);
-        let engaged = pressure.observe(9, Some(&usage(2_000)), &policy, 2, 3);
+        let engaged = pressure.observe(Some(&usage(2_000)), &policy, 2, 3);
         assert_eq!(engaged, strike == 2);
     }
-    assert!(pressure.begin_call(9));
-    assert!(pressure.begin_call(9));
-    assert!(pressure.begin_call(9));
-    assert!(!pressure.begin_call(9), "the cooldown is three calls");
+    assert!(pressure.begin_call());
+    assert!(pressure.begin_call());
+    assert!(pressure.begin_call());
+    assert!(!pressure.begin_call(), "the cooldown is three calls");
 }
 
 #[test]
 fn an_effective_compaction_resets_the_strikes() {
     let policy = policy(1_000);
     let mut pressure = CompactionPressure::default();
-    pressure.begin_call(1);
+    pressure.begin_call();
     pressure.note_compaction();
     pressure.note_request(3, 0);
-    pressure.observe(1, Some(&usage(2_000)), &policy, 2, 10);
+    pressure.observe(Some(&usage(2_000)), &policy, 2, 10);
     assert_eq!(pressure.strikes, 1);
 
-    pressure.begin_call(1);
+    pressure.begin_call();
     pressure.note_compaction();
     pressure.note_request(3, 0);
-    pressure.observe(1, Some(&usage(500)), &policy, 2, 10);
+    pressure.observe(Some(&usage(500)), &policy, 2, 10);
     assert_eq!(pressure.strikes, 0);
-    assert!(!pressure.begin_call(1));
+    assert!(!pressure.begin_call());
 }
 
 #[test]
-fn a_new_run_resets_the_state() {
+fn usage_without_a_pending_request_is_ignored() {
     let policy = policy(1_000);
     let mut pressure = CompactionPressure::default();
-    pressure.begin_call(1);
-    pressure.note_compaction();
-    pressure.note_request(3, 0);
-    pressure.observe(1, Some(&usage(2_000)), &policy, 2, 10);
-    assert_eq!(pressure.strikes, 1);
-    pressure.begin_call(2);
-    assert_eq!(pressure.strikes, 0);
+    pressure.begin_call();
+    assert!(!pressure.observe(Some(&usage(2_000)), &policy, 2, 10));
     assert!(pressure.measured.is_none());
-}
-
-#[test]
-fn usage_without_a_pending_request_or_from_another_run_is_ignored() {
-    let policy = policy(1_000);
-    let mut pressure = CompactionPressure::default();
-    pressure.begin_call(1);
-    assert!(!pressure.observe(1, Some(&usage(2_000)), &policy, 2, 10));
     pressure.note_request(1, 0);
-    assert!(!pressure.observe(2, Some(&usage(2_000)), &policy, 2, 10));
+    assert!(!pressure.observe(None, &policy, 2, 10));
     assert!(pressure.measured.is_none());
 }

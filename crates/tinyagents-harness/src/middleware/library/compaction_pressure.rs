@@ -31,17 +31,9 @@ impl PromptSource {
 }
 
 impl CompactionPressure {
-    /// Starts a model call for run `instance`: resets the state when the
-    /// middleware moved on to a different run, then spends one call of an
-    /// active suppression window. Returns whether summarization is
-    /// suppressed for this call.
-    pub(crate) fn begin_call(&mut self, instance: u64) -> bool {
-        if self.run_instance != Some(instance) {
-            *self = CompactionPressure {
-                run_instance: Some(instance),
-                ..CompactionPressure::default()
-            };
-        }
+    /// Starts a model call: spends one call of an active suppression window.
+    /// Returns whether summarization is suppressed for this call.
+    pub(crate) fn begin_call(&mut self) -> bool {
         self.pending = None;
         if self.suppressed_for > 0 {
             self.suppressed_for -= 1;
@@ -98,15 +90,11 @@ impl CompactionPressure {
     /// the guard.
     pub(crate) fn observe(
         &mut self,
-        instance: u64,
         usage: Option<&Usage>,
         policy: &SummarizationPolicy,
         strike_limit: u32,
         cooldown_calls: u32,
     ) -> bool {
-        if self.run_instance != Some(instance) {
-            return false;
-        }
         let Some((messages, schema_tokens)) = self.pending.take() else {
             return false;
         };

@@ -886,11 +886,6 @@ pub struct ContextCompressionMiddleware {
     pub(crate) max_records: usize,
     /// Recovery behaviour when [`Summarizer::summarize`] returns `Err`.
     pub(crate) on_failure: CompressionFailurePolicy,
-    /// The most recently produced compaction summary text, threaded into the
-    /// next compaction's [`crate::summarization::SummaryRequest::previous_summary`]
-    /// so an iterative [`Summarizer`] refines rather than restarts. `None`
-    /// until the first compaction on this middleware instance.
-    pub(crate) last_summary: Mutex<Option<String>>,
     /// Token budget above which a single "turn" of messages handed to the
     /// summarizer is itself split into two halves and merged (see
     /// [`crate::summarization::summarize_with_split`]). `None` disables
@@ -905,18 +900,14 @@ pub struct ContextCompressionMiddleware {
     /// overflow-triggered) that can decline it or substitute a summary. See
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
-    /// The compaction this instance already performed, re-applied to every
-    /// later request. See [`CompactionFold`].
-    pub(crate) fold: Mutex<Option<CompactionFold>>,
-    /// Chained fingerprints of the live (pre-fold) non-system transcript the
-    /// last `before_model` saw, so the overflow path can extend the fold in
-    /// live-transcript coordinates. Empty until the first call.
-    pub(crate) live_chain: Mutex<Vec<u64>>,
+    /// Per-run compaction state: the fold each in-flight run has made and the
+    /// live transcript its last `before_model` saw. Keyed by run so two
+    /// invocations sharing this middleware never read each other's fold, and
+    /// dropped in `after_agent`. See [`RunCompaction`].
+    pub(crate) runs: Mutex<std::collections::HashMap<crate::ids::RunId, RunCompaction>>,
     /// Role the summary is written with. See
     /// [`crate::summarization::SummaryPlacement`].
     pub(crate) placement: crate::summarization::SummaryPlacement,
-    /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
-    pub(crate) pressure: Mutex<CompactionPressure>,
     /// Ineffective compactions in a row that engage the anti-thrash guard.
     pub(crate) thrash_strikes: u32,
     /// Model calls the guard suppresses summarization for once engaged.
@@ -931,7 +922,34 @@ pub const DEFAULT_THRASH_STRIKES: u32 = 2;
 /// summarization for once engaged; deterministic trim runs instead.
 pub const DEFAULT_THRASH_COOLDOWN_CALLS: u32 = 10;
 
-/// Per-run measurement state for [`ContextCompressionMiddleware`]'s trigger
+/// Most runs [`ContextCompressionMiddleware`] tracks at once. A run whose
+/// `after_agent` never fires (an aborted invocation) would otherwise stay in
+/// the map forever on a long-lived shared harness; past this many, the least
+/// recently used run is evicted, which only costs it a re-compaction.
+pub(crate) const MAX_TRACKED_COMPACTION_RUNS: usize = 256;
+
+/// One run's compaction state inside [`ContextCompressionMiddleware`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunCompaction {
+    /// The compaction this run already performed, re-applied to every later
+    /// request. See [`CompactionFold`].
+    pub(crate) fold: Option<CompactionFold>,
+    /// Chained fingerprints of the live (pre-fold) non-system transcript this
+    /// run's last `before_model` saw, so the overflow path can extend the fold
+    /// in live-transcript coordinates.
+    pub(crate) live_chain: Vec<u64>,
+    /// The most recent summary this run produced, threaded into its next
+    /// compaction's [`crate::summarization::SummaryRequest::previous_summary`]
+    /// so an iterative [`Summarizer`] refines rather than restarts, when no
+    /// fold carries it (a host that spliced the summary into its transcript).
+    pub(crate) last_summary: Option<String>,
+    /// Monotonic touch stamp for least-recently-used eviction.
+    pub(crate) touched: u64,
+    /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
+    pub(crate) pressure: CompactionPressure,
+}
+
+/// One run's measurement state for [`ContextCompressionMiddleware`]'s trigger
 /// and anti-thrash guard.
 ///
 /// The trigger prefers what the provider actually measured: the previous
@@ -945,9 +963,6 @@ pub const DEFAULT_THRASH_COOLDOWN_CALLS: u32 = 10;
 /// deterministically instead of paying for summaries that do not help.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CompactionPressure {
-    /// [`RunContext::instance_id`] this state belongs to; a different run
-    /// resets it.
-    pub(crate) run_instance: Option<u64>,
     /// Message count and tool-schema token estimate of the last request this
     /// middleware let through, waiting for that call's usage.
     pub(crate) pending: Option<(usize, u64)>,
