@@ -31,9 +31,10 @@ pub(super) fn append_duration(message: &mut ToolMessage, duration_ms: u64) {
         );
         return;
     }
-    message
-        .content
-        .push(ContentBlock::Text(format!("\n{}", duration_suffix(duration_ms))));
+    message.content.push(ContentBlock::Text(format!(
+        "\n{}",
+        duration_suffix(duration_ms)
+    )));
 }
 
 #[cfg(test)]

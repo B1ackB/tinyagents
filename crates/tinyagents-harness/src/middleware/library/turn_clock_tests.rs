@@ -38,7 +38,11 @@ fn remaining_saturates_once_the_budget_is_spent() {
 #[test]
 fn no_band_before_half_the_budget_is_used() {
     let budget = 60 * MINUTE;
-    for elapsed in [Duration::ZERO, 10 * MINUTE, 29 * MINUTE + Duration::from_secs(59)] {
+    for elapsed in [
+        Duration::ZERO,
+        10 * MINUTE,
+        29 * MINUTE + Duration::from_secs(59),
+    ] {
         let clock = TurnClock { elapsed, budget };
         assert_eq!(clock.band(), None, "elapsed {elapsed:?}");
     }
@@ -59,7 +63,11 @@ fn bands_advance_every_tenth_of_the_budget_past_half() {
     assert_eq!(band(36), Some(6));
     assert_eq!(band(54), Some(9));
     assert_eq!(band(60), Some(10));
-    assert_eq!(band(90), Some(10), "past the deadline the band stops moving");
+    assert_eq!(
+        band(90),
+        Some(10),
+        "past the deadline the band stops moving"
+    );
 }
 
 #[test]
@@ -87,10 +95,7 @@ fn result_text(result: &ToolResult) -> String {
     result.output()
 }
 
-async fn run_after_tool(
-    middleware: &TurnClockMiddleware,
-    ctx: &mut RunContext<()>,
-) -> ToolResult {
+async fn run_after_tool(middleware: &TurnClockMiddleware, ctx: &mut RunContext<()>) -> ToolResult {
     let mut result = ToolResult::success("output");
     let identity = ToolInvocationIdentity::new("call-1", "shell");
     Middleware::<(), ()>::after_tool(middleware, ctx, &(), &identity, &mut result)

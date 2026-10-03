@@ -47,7 +47,10 @@ fn append_duration_leaves_verbatim_results_untouched() {
     let mut message = tool_message(vec![ContentBlock::Text("exact".to_string())]);
     message.trusted_verbatim = true;
     append_duration(&mut message, 1_500);
-    assert_eq!(message.content, vec![ContentBlock::Text("exact".to_string())]);
+    assert_eq!(
+        message.content,
+        vec![ContentBlock::Text("exact".to_string())]
+    );
 }
 
 struct EchoTool;
