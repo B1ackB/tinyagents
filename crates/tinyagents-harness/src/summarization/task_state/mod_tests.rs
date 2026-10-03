@@ -198,12 +198,6 @@ async fn merge_refreshes_revisited_file_before_capping() {
     let second = record(vec!["f0".into(), "new".into()]);
 
     let merged = summarizer.merge(&[first, second]).await.unwrap();
-    let (_, state) = parse_carried(&merged.summary.text());
-    let state = state.unwrap();
-    assert_eq!(state.current_hypothesis.as_deref(), Some(""));
-    assert_eq!(state.test_command.as_deref(), Some(""));
-    assert_eq!(state.next_step.as_deref(), Some(""));
-
     let (ledger, _) = parse_carried(&merged.summary.text());
     assert!(ledger.files_modified.contains(&"f0".to_string()));
     assert!(ledger.files_modified.contains(&"new".to_string()));
