@@ -150,7 +150,7 @@ fn changed_prefix_uses_full_request_estimate() {
 }
 
 #[test]
-fn measured_usage_never_understates_the_full_request_estimate() {
+fn matching_measured_usage_uses_provider_count() {
     let mut pressure = CompactionPressure::default();
     let messages = vec![Message::user("large".repeat(1_000))];
     pressure.begin_call();
@@ -158,8 +158,5 @@ fn measured_usage_never_understates_the_full_request_estimate() {
     pressure.observe(Some(&usage(2)), &policy(100_000), 2, 10);
     let (tokens, source) = pressure.prompt_tokens(&messages, 0);
     assert_eq!(source, PromptSource::Measured);
-    assert_eq!(
-        tokens,
-        crate::token_estimation::estimate_slice_tokens(&messages)
-    );
+    assert_eq!(tokens, 2);
 }

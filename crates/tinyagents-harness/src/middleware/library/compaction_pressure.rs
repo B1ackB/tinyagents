@@ -75,7 +75,7 @@ impl CompactionPressure {
                 crate::token_estimation::estimate_slice_tokens(&messages[measured.messages..]);
             let schema_growth = schema_tokens.saturating_sub(measured.schema_tokens);
             return (
-                (measured.prompt_tokens + appended + schema_growth).max(full_estimate),
+                measured.prompt_tokens + appended + schema_growth,
                 PromptSource::Measured,
             );
         }
