@@ -197,6 +197,52 @@ fn persisted_channel_thread_ids_do_not_alias_underscore_components() {
     assert_eq!(left, "channel:slack_a_b_c__92cd78e07ee9");
 }
 
+#[tokio::test]
+async fn telegram_redelivery_with_new_thread_ts_stays_on_legacy_thread() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().to_path_buf();
+    let legacy_id = legacy_channel_thread_id("telegram", "alice_one", "chat", Some("100"));
+    ensure_thread(
+        workspace.clone(),
+        CreateConversationThread {
+            id: legacy_id.clone(),
+            title: "legacy".into(),
+            created_at: Utc::now().to_rfc3339(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        },
+    )
+    .unwrap();
+    append_message(
+        workspace.clone(),
+        &legacy_id,
+        ThreadMessage {
+            id: "user:old".into(),
+            content: "old".into(),
+            message_type: "text".into(),
+            extra_metadata: json!({"scope":"channel", "channel":"telegram", "channelSender":"alice_one", "replyTarget":"chat", "threadTs":"100"}),
+            sender: "user".into(),
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .unwrap();
+    let subscriber = ConversationPersistenceSubscriber::new(workspace.clone());
+    subscriber
+        .handle(&ChannelEvent::Received {
+            channel: "telegram".into(),
+            message_id: "new".into(),
+            sender: "alice_one".into(),
+            reply_target: "chat".into(),
+            content: "new".into(),
+            thread_ts: Some("200".into()),
+            workspace_dir: workspace.clone(),
+        })
+        .await;
+    assert_eq!(list_threads(workspace.clone()).unwrap().len(), 1);
+    assert_eq!(get_messages(workspace, &legacy_id).unwrap().len(), 2);
+}
+
 #[test]
 fn channel_thread_title_uses_thread_suffix_only_for_non_telegram_threads() {
     assert_eq!(
