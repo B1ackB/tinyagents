@@ -26,12 +26,13 @@ pub struct TaskState {
     pub todos_done: Vec<String>,
     /// Work still open.
     pub todos_open: Vec<String>,
-    /// What the agent currently believes about the problem.
-    pub current_hypothesis: String,
-    /// The exact command used to run the tests, or empty.
-    pub test_command: String,
-    /// The very next concrete action (tool and argument).
-    pub next_step: String,
+    /// What the agent currently believes about the problem. `None` means a
+    /// partial model reply omitted the field; `Some("")` explicitly clears it.
+    pub current_hypothesis: Option<String>,
+    /// The exact command used to run the tests, or empty. `None` means omitted.
+    pub test_command: Option<String>,
+    /// The very next concrete action (tool and argument). `None` means omitted.
+    pub next_step: Option<String>,
 }
 
 /// The deterministic half of a checkpoint, read from tool calls and results

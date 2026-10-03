@@ -106,10 +106,15 @@ impl TaskState {
         clip(&mut self.todos_done, MAX_LIST_ITEMS, true);
         clip(&mut self.todos_open, MAX_LIST_ITEMS, false);
         self.goal = ledger::truncate_chars(self.goal.trim(), MAX_ITEM_CHARS * 2);
-        self.current_hypothesis =
-            ledger::truncate_chars(self.current_hypothesis.trim(), MAX_HYPOTHESIS_CHARS);
-        self.test_command = ledger::truncate_chars(self.test_command.trim(), MAX_ITEM_CHARS);
-        self.next_step = ledger::truncate_chars(self.next_step.trim(), MAX_ITEM_CHARS);
+        self.current_hypothesis = self
+            .current_hypothesis
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_HYPOTHESIS_CHARS));
+        self.test_command = self
+            .test_command
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_ITEM_CHARS));
+        self.next_step = self
+            .next_step
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_ITEM_CHARS));
         self
     }
 }
@@ -421,9 +426,15 @@ fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
     first
         .todos_open
         .retain(|item| !first.todos_done.contains(item));
-    first.current_hypothesis = second.current_hypothesis;
-    first.test_command = second.test_command;
-    first.next_step = second.next_step;
+    if second.current_hypothesis.is_some() {
+        first.current_hypothesis = second.current_hypothesis;
+    }
+    if second.test_command.is_some() {
+        first.test_command = second.test_command;
+    }
+    if second.next_step.is_some() {
+        first.next_step = second.next_step;
+    }
     first
 }
 
