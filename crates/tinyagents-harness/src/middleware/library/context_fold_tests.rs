@@ -235,6 +235,34 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
 }
 
 #[tokio::test]
+async fn keeps_recognizing_a_host_spliced_summary_until_it_is_replaced() {
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
+    let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
+
+    // The host feeds the compacted request back, first below the threshold...
+    let mut transcript = first.clone();
+    transcript.push(user("ok"));
+    let sent = send(&stack, &mut c, &transcript).await;
+    assert_eq!(
+        sent, transcript,
+        "below the threshold the request is left alone"
+    );
+
+    // ...then over it. The old summary is still recognized and replaced.
+    transcript.extend([chunk("m4"), chunk("m5")]);
+    let sent = send(&stack, &mut c, &transcript).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
+}
+
+#[tokio::test]
 async fn keeps_each_runs_fold_separate() {
     let Fixture {
         stack,
@@ -316,13 +344,19 @@ impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
     }
 }
 
-/// Drops the oldest non-system message, as a later trim step would.
-struct DropOldest;
+/// A later `before_model` step that alters the oldest non-system message.
+#[derive(Clone, Copy)]
+enum LaterStep {
+    /// Drops it, as a trim step would.
+    DropOldest,
+    /// Rewrites it in place, as microcompact blanking a tool body would.
+    RewriteOldest,
+}
 
 #[async_trait]
-impl Middleware<()> for DropOldest {
+impl Middleware<()> for LaterStep {
     fn name(&self) -> &str {
-        "drop_oldest"
+        "later_step"
     }
 
     async fn before_model(
@@ -336,7 +370,12 @@ impl Middleware<()> for DropOldest {
             .iter()
             .position(|m| !matches!(m, Message::System(_)))
         {
-            request.messages.remove(at);
+            match self {
+                LaterStep::DropOldest => {
+                    request.messages.remove(at);
+                }
+                LaterStep::RewriteOldest => request.messages[at] = user("[cleared]"),
+            }
         }
         Ok(())
     }
@@ -344,7 +383,7 @@ impl Middleware<()> for DropOldest {
 
 /// Runs one call through `before_model` and the overflow-recovering model
 /// wrap, with threshold compaction declined so only the overflow path fires.
-async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
+async fn overflow_call(later: Option<LaterStep>) -> Vec<CompactionRecord> {
     let mw = Arc::new(
         ContextCompressionMiddleware::new(
             SummarizationPolicy::default()
@@ -360,8 +399,8 @@ async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
     );
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push(mw.clone());
-    if drop_oldest {
-        stack.push(Arc::new(DropOldest));
+    if let Some(step) = later {
+        stack.push(Arc::new(step));
     }
     stack.push_model_middleware(mw);
     let sink = Arc::new(RecordingSink::default());
@@ -390,7 +429,7 @@ async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
 
 #[tokio::test]
 async fn overflow_persists_a_boundary_when_the_request_is_aligned() {
-    let persisted = overflow_call(false).await;
+    let persisted = overflow_call(None).await;
     assert_eq!(persisted.len(), 1);
     assert_eq!(
         persisted[0].reason,
@@ -403,7 +442,18 @@ async fn overflow_persists_a_boundary_when_the_request_is_aligned() {
 async fn overflow_skips_persistence_when_a_later_step_dropped_messages() {
     // The boundary would be shifted by the dropped message; a resumed session
     // would restore or duplicate the wrong history from it.
-    assert!(overflow_call(true).await.is_empty());
+    assert!(overflow_call(Some(LaterStep::DropOldest)).await.is_empty());
+}
+
+#[tokio::test]
+async fn overflow_skips_persistence_when_a_later_step_rewrote_a_message() {
+    // Same count, different content: the summary would describe the rewritten
+    // placeholder, not what the persisted boundary would fold away.
+    assert!(
+        overflow_call(Some(LaterStep::RewriteOldest))
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]

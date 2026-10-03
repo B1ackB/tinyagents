@@ -456,7 +456,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             .run_state(ctx.run_id())
             .unwrap_or_else(|| (None, fingerprint_chain(&non_system)));
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
-        let fold_extends = live_chain.len().checked_sub(folded) == Some(non_system.len());
+        // Content, not just count: a later step that rewrites messages in place
+        // (microcompact blanking tool bodies) keeps the count but changes what
+        // a summary of this request would describe.
+        let seed = folded
+            .checked_sub(1)
+            .and_then(|i| live_chain.get(i))
+            .copied()
+            .unwrap_or(0);
+        let fold_extends = live_chain.len() >= folded
+            && fingerprint_chain_from(seed, &non_system) == live_chain[folded..];
         // When aligned, the request's copy of the prior summary is superseded
         // by the new one built on it. When not, keep it: the new summary is
         // built without it and covers only the cut slice.
@@ -646,8 +655,15 @@ fn touch_run<'a>(
 /// intact. Hashes each message's serialized form, so any edit to an earlier
 /// message changes every later entry.
 fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
+    fingerprint_chain_from(0, messages)
+}
+
+/// [`fingerprint_chain`] continued from `seed`, the chain value of whatever
+/// precedes `messages`. `fingerprint_chain_from(chain[k - 1], &m[k..])` equals
+/// `chain[k..]` exactly when `m[k..]` is unchanged.
+fn fingerprint_chain_from(seed: u64, messages: &[Message]) -> Vec<u64> {
     use std::hash::{Hash, Hasher};
-    let mut prev = 0u64;
+    let mut prev = seed;
     messages
         .iter()
         .map(|message| {
@@ -701,13 +717,17 @@ impl ContextCompressionMiddleware {
         if fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint) {
             return FoldCheck::Applies(Box::new(fold));
         }
-        state.fold = None;
         if let Some(at) = system.iter().position(|m| *m == fold.summary) {
+            // Keep the fold: every later call carrying this summary must be
+            // recognized too, until a compaction replaces it, or a below-
+            // threshold call here would forget it and a later compaction would
+            // send the old summary beside the new one built on it.
             system.remove(at);
             state.boundary_unaligned = true;
             tracing::debug!("[context_compression] host carries the fold summary itself");
             return FoldCheck::HostApplied(fold.summary.text());
         }
+        state.fold = None;
         state.last_summary = None;
         tracing::debug!(
             folded = fold.folded,
