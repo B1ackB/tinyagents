@@ -213,3 +213,72 @@ async fn the_fallback_front_drops_oldest_messages_to_fit_its_budget() {
     assert!(record.summary.text().contains("older message(s) dropped"));
     assert!(record.summary.text().contains("m39"));
 }
+
+/// What DeepSeek V4 returned as a "summary" in the replayed bench captures: its
+/// native tool-call markup, with no tools declared on the request.
+const DSML_REPLY: &str = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"shell\">\n\
+<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /app && cat src/lib.rs</｜｜DSML｜｜ parameter>\n\
+</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
+
+#[test]
+fn tool_call_markup_is_detected_but_quoted_json_and_prose_are_not() {
+    assert!(super::contains_tool_call_markup(DSML_REPLY));
+    assert!(super::contains_tool_call_markup(
+        "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
+    ));
+    assert!(!super::contains_tool_call_markup(
+        "## Goal\nShip the parser.\n\n## Active State\nConfig is {\"retries\": 3}."
+    ));
+    assert!(!super::contains_tool_call_markup(
+        "{\"name\":\"shell\",\"arguments\":{}}"
+    ));
+}
+
+#[tokio::test]
+async fn the_transcript_is_fenced_as_data_with_the_instruction_last() {
+    let model = Arc::new(ScriptedModel::replies(vec!["## Goal\nx"]));
+    let summarizer = ModelSummarizer::new(model.clone(), "m");
+    let request = SummaryRequest::new(tool_call_messages(json!({"query": "q"})))
+        .with_previous_summary("Earlier result: 4 issues");
+    summarizer.summarize_request(&request).await.unwrap();
+
+    let sent = model.requests()[0].messages[1].text();
+    let opens = sent.find("<transcript>").expect("transcript is fenced");
+    let closes = sent.find("</transcript>").expect("transcript fence closes");
+    assert!(sent.find("<previous_summary>").unwrap() < opens);
+    assert!(sent[opens..closes].contains("<tool_call id=\"lookup-1\" name=\"lookup\">"));
+    // The last thing the model reads is the instruction, not a tool result.
+    assert!(sent.trim_end().ends_with("output only the summary."));
+}
+
+#[tokio::test]
+async fn a_tool_call_reply_is_retried_once_and_a_real_summary_kept() {
+    let model = Arc::new(ScriptedModel::replies(vec![DSML_REPLY, "## Goal\nShip it."]));
+    let summarizer = ModelSummarizer::new(model.clone(), "m");
+    let record = summarizer.summarize(&[Message::user("x")]).await.unwrap();
+
+    assert_eq!(model.requests().len(), 2);
+    assert!(record.summary.text().contains("Ship it."));
+    assert!(!record.summary.text().contains("DSML"));
+}
+
+#[tokio::test]
+async fn a_summarizer_that_keeps_calling_tools_fails_so_the_fallback_trims() {
+    let model = Arc::new(ScriptedModel::replies(vec![DSML_REPLY, DSML_REPLY]));
+    let summarizer = ModelSummarizer::new(model.clone(), "m");
+    let err = summarizer
+        .summarize(&[Message::user("x")])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("tool-call markup"));
+    assert_eq!(model.requests().len(), 2);
+
+    // Wrapped as hosts do, the markup never becomes the summary.
+    let model = Arc::new(ScriptedModel::replies(vec![DSML_REPLY, DSML_REPLY]));
+    let policy = SummarizationPolicy::default().with_context_window(1_000);
+    let guarded =
+        FaultTolerantCachingSummarizer::new(Box::new(ModelSummarizer::new(model, "m")), &policy);
+    let record = guarded.summarize(&long_slice()).await.unwrap();
+    assert!(record.summary.text().contains("deterministic trim"));
+    assert!(!record.summary.text().contains("DSML"));
+}
