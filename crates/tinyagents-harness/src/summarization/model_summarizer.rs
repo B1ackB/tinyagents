@@ -109,19 +109,16 @@ impl ModelSummarizer {
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
             Message::user(request_text),
         ]);
-        let (summary, usage) = self
-            .summarize_once(request)
-            .await
-            .map_err(|failure| {
-                let (error, usage) = *failure;
-                match usage {
-                    Some(usage) => TinyAgentsError::SummarizationUsage {
-                        error: Box::new(error),
-                        usage,
-                    },
-                    None => error,
-                }
-            })?;
+        let (summary, usage) = self.summarize_once(request).await.map_err(|failure| {
+            let (error, usage) = *failure;
+            match usage {
+                Some(usage) => TinyAgentsError::SummarizationUsage {
+                    error: Box::new(error),
+                    usage,
+                },
+                None => error,
+            }
+        })?;
 
         let summary = summary.trim();
         if summary.is_empty() {
