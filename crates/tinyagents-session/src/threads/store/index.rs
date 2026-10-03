@@ -122,7 +122,7 @@ impl ConversationStore {
     }
 
     /// Absolute path to this workspace's `memory/conversations` root.
-    pub(super) fn root_dir(&self) -> PathBuf {
+    pub(crate) fn root_dir(&self) -> PathBuf {
         self.root_dir.clone()
     }
 
