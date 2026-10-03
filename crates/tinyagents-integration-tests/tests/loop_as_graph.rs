@@ -558,7 +558,7 @@ async fn before_model_sees_the_model_profile_in_direct_and_graph() {
         let model = Arc::new(MockModel::with_responses(vec![ModelResponse::assistant(
             "done",
         )]));
-        let expected = model.profile().cloned();
+        let expected = ChatModel::<()>::profile(model.as_ref()).cloned();
         assert!(expected.is_some(), "the mock advertises a profile");
         let mut harness = harness_for(execution, model);
         let seen = Arc::new(Mutex::new(Vec::new()));
