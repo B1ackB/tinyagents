@@ -302,6 +302,7 @@ impl<Ctx> RunContext<Ctx> {
             config,
             data,
             frozen_system_prefix_len: None,
+            model_profile: None,
             stores: StoreRegistry::new(),
             namespaced_store: None,
             state_view: None,
