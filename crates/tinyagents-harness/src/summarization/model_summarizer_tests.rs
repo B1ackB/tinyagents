@@ -73,7 +73,10 @@ fn default_trigger_is_capped_for_large_windows() {
             "window {window}: trigger {budget}, want {trigger}"
         );
     }
-    assert_eq!(super::default_threshold_fraction_for(0), DEFAULT_SUMMARIZE_THRESHOLD_FRACTION);
+    assert_eq!(
+        super::default_threshold_fraction_for(0),
+        DEFAULT_SUMMARIZE_THRESHOLD_FRACTION
+    );
 }
 
 #[test]
