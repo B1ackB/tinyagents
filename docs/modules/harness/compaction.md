@@ -74,17 +74,22 @@ into both the threshold and overflow compaction paths; leaving it unset
 ## Iterative summaries
 
 `Summarizer::summarize_request(&SummaryRequest) -> Result<SummaryRecord>` is a
-default trait method delegating to `summarize` (ignoring
-`SummaryRequest::previous_summary`), so every existing `Summarizer` keeps
-compiling. An LLM-backed implementation overrides it directly to thread the
-previous compaction's summary text into its prompt and *refine* rather than
-re-derive from scratch.
+default trait method. When `SummaryRequest::previous_summary` is set, the
+default prepends it as a system message to the messages it hands `summarize`,
+so a summarizer that only implements `summarize` still folds the prior summary
+in; with none set it delegates unchanged. Compaction is incremental (below), so
+dropping the previous summary would lose everything folded before.
 
-`ContextCompressionMiddleware` keeps each run's most recent summary text and
-passes it as `SummaryRequest::previous_summary` on that run's next compaction —
-proactive or overflow-triggered. `ConcatSummarizer`
-overrides `summarize_request` to carry that previous summary forward verbatim,
-because compaction is incremental (below) and would otherwise drop it.
+Override `summarize_request` *instead of* relying on that default when the
+prior summary belongs somewhere specific in your prompt (an LLM-backed
+summarizer that asks the model to *refine* it): the override replaces the
+default, so forward it exactly once. `ConcatSummarizer` overrides it to put the
+previous summary verbatim ahead of its concatenation.
+
+`ContextCompressionMiddleware` keeps the summary attached to each run's current
+fold and passes it as `SummaryRequest::previous_summary` on that run's next
+compaction — proactive or overflow-triggered. A summary from an overflow
+compaction that could not extend the fold (below) is not kept.
 
 ## The fold: compaction carries across calls
 
@@ -108,8 +113,10 @@ host-carried summary keeps being recognized on every call until a compaction
 replaces it, and boundaries for that run are not persisted (the host's
 transcript no longer maps one-to-one onto the session's).
 
-All of this state is per run, keyed by `RunId`, so invocations sharing one
-middleware instance never read each other's fold or summary. `after_agent`
+All of this state is per run, keyed by the context's process-unique
+`RunContext::instance_id` (a `RunId` is a caller label two concurrent runs may
+share), so invocations sharing one middleware instance never read each other's
+fold or summary. `after_agent`
 drops a finished run's state; a run that never reaches it is evicted
 least-recently-used once 256 runs are tracked.
 
