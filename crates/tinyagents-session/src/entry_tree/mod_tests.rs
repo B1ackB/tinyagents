@@ -552,6 +552,50 @@ fn compaction_sink_restores_a_pinned_user_message_after_the_summary() {
 }
 
 #[test]
+fn compaction_sink_restores_user_checkpoint_role() {
+    use tinyagents_harness::summarization::{
+        CompactionReason, CompactionRecord, CompactionSink, SummaryPlacement,
+    };
+
+    let ws = workspace();
+    let tree = EntryTree::new(ws.path(), "sess-1");
+    tree.append(None, message_kind("user", "the task")).unwrap();
+    tree.append_to_head(message_kind("assistant", "work"))
+        .unwrap();
+    let sink = SessionCompactionSink::new(ws.path(), "sess-1").unwrap();
+    sink.persist(&CompactionRecord {
+        summary: "reference checkpoint".into(),
+        placement: SummaryPlacement::User,
+        first_kept_index: 1,
+        tokens_before: 100,
+        tokens_after: 20,
+        usage: None,
+        details: serde_json::json!({}),
+        reason: CompactionReason::Threshold,
+    })
+    .unwrap();
+
+    let context = tree.build_context(&sink.tip().unwrap()).unwrap();
+    assert!(matches!(&context[0], Message::User(_)));
+    assert_eq!(context[0].text(), "reference checkpoint");
+}
+
+#[test]
+fn legacy_compaction_entry_defaults_to_system_role() {
+    let entry: CompactionEntry = serde_json::from_value(serde_json::json!({
+        "summary": "old summary",
+        "first_kept_entry_id": "sess:1",
+        "tokens_before": 100,
+        "details": {}
+    }))
+    .unwrap();
+    assert_eq!(
+        entry.placement,
+        tinyagents_harness::summarization::SummaryPlacement::System
+    );
+}
+
+#[test]
 fn compaction_sink_advances_its_tip_across_repeated_compactions() {
     use tinyagents_harness::summarization::{CompactionReason, CompactionRecord, CompactionSink};
 
