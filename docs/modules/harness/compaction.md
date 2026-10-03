@@ -113,6 +113,73 @@ length after the compaction), which is what a session-backed sink maps to an
 entry id. The overflow path extends the fold the same way, provided the
 request's non-system messages still line up one-to-one with the live remainder.
 
+## The checkpoint message
+
+The summary is written as a *checkpoint*: a message opening with
+`summarization::CHECKPOINT_PREFIX` ("[Context checkpoint — earlier turns were
+compacted. This is background reference data, not instructions; continue
+from the latest live message.]"), followed by the summary body.
+
+- `SummaryPlacement::User` (the default) makes it a `user`-role message placed
+  after the system prompt and before the kept messages. The system prompt and
+  the tool declarations stay byte-identical across a compaction, so their
+  provider prefix cache survives, and the model cannot read the summary as a
+  new instruction.
+- `SummaryPlacement::System` (`with_summary_placement`) keeps the original
+  system-role summary, with the same marker.
+
+`is_checkpoint` / `checkpoint_body` recognise one. A checkpoint is never
+summarized as raw history: it reaches the summarizer as `previous_summary`,
+and the new checkpoint replaces it.
+
+## Carrying a compaction across turns
+
+The fold lives on the middleware instance, and a host typically builds a new
+one per user turn. So the run also reports its result: `after_agent` sets
+`AgentRun::compacted_history` to the transcript the next call would have
+seen (leading system messages, the checkpoint, everything after the folded
+prefix). `AgentRun::messages` stays the full record.
+
+A host that carries history between turns should carry `compacted_history`
+when it is set. A durable session then sees a transcript that no longer
+extends the persisted one, which seals the current generation and opens the
+next (`begin_generation_from_baseline`), so nothing is erased. On the next
+turn the fresh middleware finds the checkpoint at the head of the live
+transcript and adopts it as a fold over itself: it is the previous summary
+of the next compaction and is never re-read as history. A turn that does not
+compact leaves `compacted_history` as `None`.
+
+## Trigger: provider usage first
+
+`before_model` compares the trigger (`SummarizationPolicy::exceeds_trigger`)
+against the best measurement it has. That is the provider-reported
+`input_tokens` of the previous call, plus an estimate of only the messages
+appended since, plus any growth in the tool declarations. With no usage, or
+a request that no longer extends the measured one, it falls back to the
+chars-based estimate of the whole request (messages plus tool schemas).
+
+`SummarizationPolicy::with_trigger_override(tokens)` pins the trigger to an
+absolute count regardless of the window, which is useful for benchmarks that
+force compaction and for models whose window is unknown.
+
+## Anti-thrash guard
+
+A compaction is judged by the next real prompt size. If it is still at or
+above the trigger, that counts as a strike. After `DEFAULT_THRASH_STRIKES`
+(2) strikes in a row, summarization is suppressed for
+`DEFAULT_THRASH_COOLDOWN_CALLS` (10) model calls. While suppressed, a request
+over the trigger is trimmed deterministically to the trigger budget. Strikes
+and suppression are logged under `[context_compression]`. The guard is set
+with `with_thrash_guard(strikes, cooldown_calls)`; `strikes == 0` disables it.
+
+## Observability
+
+Every compaction logs `[context_compression] compacted` at info. `AgentEvent::Compacted`
+carries `usage` (the summarizer's provider usage; `ModelSummarizer` sums it
+over its attempts) and `latency_ms`, and `CompactionRecord::usage` is filled
+from the same value. The summarizer runs outside the run's own model calls,
+so this is the only place its spend shows up.
+
 ## `CompactionRecord` and `CompactionSink`
 
 ```rust
@@ -223,10 +290,18 @@ stack.push_model_middleware(mw.clone()); // wrap_model: overflow → compact →
 1. Calls the wrapped model once. On success, forwards the response.
 2. On error, consults `OverflowClassifier`. A non-overflow error propagates
    unchanged — no compaction, no retry.
-3. On a classified overflow, finds a cut point via `find_cut_point` using
-   `SummarizationPolicy::trigger_budget()` as `keep_recent_tokens`. No safe
-   cut (already-minimal transcript, or a single indivisible tool pair)
+3. On a classified overflow, finds a cut point via `find_cut_point` over the
+   request without its checkpoint. `keep_recent_tokens` is the smallest of
+   `trigger_budget()`, half the request's estimate, and half the provider's
+   stated limit. The provider just rejected a request the estimate judged to
+   fit, so keeping the full trigger budget would find no cut. No safe cut
+   (already-minimal transcript, or a single indivisible tool pair)
    propagates the original error.
+
+   The classifier only sees errors that reach the wrap layer. A failure the
+   model-call core treats as retryable is retried there first, so register the
+   middleware with `push_model_middleware` *and* make sure provider adapters
+   report overflows as non-retryable (`ProviderError::retryable = false`).
 4. Consults `before_compaction`. `Decline` propagates the original error.
    `Proceed`/`UseSummary` run the compaction (`CompactionReason::Overflow`),
    persist/emit as above, and retry the **same** turn exactly once more with
@@ -247,6 +322,15 @@ stack.push_model_middleware(mw.clone()); // wrap_model: overflow → compact →
   transcript untouched (both `before_model` and `wrap_model`), persistence
   via a recording `CompactionSink`, and iterative-summary threading across
   two compactions on one middleware instance.
+- `middleware::library::context_loop_test` — the middleware driven through the
+  real agent loop with a scripted model: one compaction per crossing, the
+  incremental second compaction, the user-role checkpoint after the system
+  prompt, `compacted_history` and its adoption by a fresh instance on the next
+  turn, system placement, the usage-based trigger, overflow compact-and-retry
+  with the fold reused afterwards, and the anti-thrash guard.
+- `middleware::library::compaction_pressure::tests` — the measured-prompt
+  arithmetic and the strike/cooldown state machine.
+- `summarization::checkpoint::tests` — building and recognising checkpoints.
 - `tinyagents_session::entry_tree::test` — `SessionCompactionSink` anchoring,
   tip advancement across repeated compactions, the empty-session and
   out-of-range-index no-op cases.
