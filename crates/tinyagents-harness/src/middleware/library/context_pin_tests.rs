@@ -21,9 +21,14 @@ use crate::summarization::{
 use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
 
-/// ~30 estimated tokens of assistant work tagged with `tag`.
+/// ~60 estimated tokens of assistant work tagged with `tag`.
 fn step(tag: &str) -> Message {
-    Message::assistant(format!("{tag}:{}", "x".repeat(116)))
+    Message::assistant(format!("{tag}:{}", "x".repeat(236)))
+}
+
+/// The user-role checkpoint the middleware splices in for `summary`.
+fn cp(summary: &str) -> Message {
+    crate::summarization::checkpoint_message(crate::summarization::SummaryPlacement::User, summary)
 }
 
 fn task() -> Message {
@@ -54,6 +59,7 @@ impl Summarizer for ShortSummarizer {
                 summary_token_estimate: 0,
                 reason: "test".into(),
             },
+            usage: None,
         })
     }
 }
@@ -77,7 +83,7 @@ struct Fixture {
     c: RunContext,
 }
 
-/// A 50-token trigger keeping the newest message, with pinning on.
+/// A 150-token trigger keeping the newest message, with pinning on.
 /// `decline_threshold_after` declines threshold compactions once that many
 /// have been offered, so a later call reaches the overflow path.
 fn fixture(decline_threshold_after: Option<usize>) -> Fixture {
@@ -86,7 +92,7 @@ fn fixture(decline_threshold_after: Option<usize>) -> Fixture {
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(100)
+    .with_context_window(300)
     .with_threshold_fraction(0.5);
     let summarizer = ShortSummarizer::default();
     let seen = summarizer.seen.clone();
@@ -163,7 +169,7 @@ async fn a_threshold_compaction_keeps_the_turn_user_message_verbatim() {
 
     assert_eq!(
         sent,
-        vec![Message::system("summary #1"), task(), step("a3")],
+        vec![cp("summary #1"), task(), step("a3")],
         "the assignment must follow the summary verbatim"
     );
     assert_eq!(
@@ -193,7 +199,7 @@ async fn the_fold_reapplies_the_pinned_message() {
     assert_eq!(
         sent,
         vec![
-            Message::system("summary #1"),
+            cp("summary #1"),
             task(),
             step("a3"),
             Message::assistant("ok")
@@ -219,10 +225,7 @@ async fn a_second_compaction_keeps_the_pin_and_summarizes_only_new_history() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].messages, vec![step("a3"), step("a4")]);
     assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
-    assert_eq!(
-        sent,
-        vec![Message::system("summary #2"), task(), step("a5")]
-    );
+    assert_eq!(sent, vec![cp("summary #2"), task(), step("a5")]);
     assert_eq!(first_kept(&sink), vec![3, 5]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(0)]);
 }
@@ -247,10 +250,7 @@ async fn a_later_user_message_takes_over_the_pin() {
         seen.lock().unwrap()[1].messages,
         vec![task(), step("a3"), step("a4")]
     );
-    assert_eq!(
-        sent,
-        vec![Message::system("summary #2"), change, step("a5")]
-    );
+    assert_eq!(sent, vec![cp("summary #2"), change, step("a5")]);
     // live: task 0, a1 1, a2 2, a3 3, change 4, a4 5, a5 6
     assert_eq!(first_kept(&sink), vec![3, 6]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(4)]);
@@ -278,8 +278,8 @@ impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
             };
             if first {
                 return Err(crate::error::TinyAgentsError::Model(
-                    "This model's maximum context length is 100 tokens. However, your \
-                     messages resulted in 900 tokens."
+                    "This model's maximum context length is 1000 tokens. However, your \
+                     messages resulted in 9000 tokens."
                         .to_string(),
                 ));
             }
@@ -314,10 +314,7 @@ async fn an_overflow_after_a_pinned_fold_extends_it_and_keeps_the_pin() {
         .unwrap();
 
     let retried = base.calls.lock().unwrap()[1].messages.clone();
-    assert_eq!(
-        retried,
-        vec![Message::system("summary #2"), task(), step("a5")]
-    );
+    assert_eq!(retried, vec![cp("summary #2"), task(), step("a5")]);
     assert_eq!(
         seen.lock().unwrap()[1].messages,
         vec![step("a3"), step("a4")]
@@ -346,7 +343,7 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(100)
+    .with_context_window(300)
     .with_threshold_fraction(0.5);
     let mw = Arc::new(ContextCompressionMiddleware::with_summarizer(
         policy,
@@ -372,4 +369,31 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         "the front-drop must keep the turn's assignment: {sent:?}"
     );
     assert_eq!(sent.last(), Some(&step("a3")));
+}
+
+#[tokio::test]
+async fn the_compacted_history_handed_to_the_host_keeps_the_pinned_message() {
+    let Fixture {
+        stack,
+        seen: _seen,
+        sink: _sink,
+        mut c,
+    } = fixture(None);
+    let transcript = vec![
+        Message::system("sys"),
+        task(),
+        step("a1"),
+        step("a2"),
+        step("a3"),
+    ];
+    send(&stack, &mut c, &transcript).await;
+
+    let mut run = crate::middleware::AgentRun::new();
+    run.messages = transcript;
+    stack.run_after_agent(&mut c, &(), &mut run).await.unwrap();
+
+    assert_eq!(
+        run.compacted_history.expect("compacted history"),
+        vec![Message::system("sys"), cp("summary #1"), task(), step("a3")]
+    );
 }

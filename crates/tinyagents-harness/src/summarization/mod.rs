@@ -17,24 +17,30 @@
 //! - [`SummarizationPolicy`] — decides when to summarize and how to split the slice.
 //! - [`ModelSummarizer`] / [`FaultTolerantCachingSummarizer`] — LLM-backed summarization
 //!   that never aborts a turn on a summarizer outage.
+//! - [`TaskStateSummarizer`] — typed task-state checkpoints: facts copied from tool
+//!   records plus one structured state-update call (see [`task_state`]).
 //!
 //! All policy decisions are explicit data types, never hidden behaviour. Callers
 //! choose when to call, what to pass, and how to handle the result.
 
+mod checkpoint;
 pub mod compaction;
 mod model_summarizer;
 pub mod pairing;
 mod render;
 mod resilient;
+pub mod task_state;
 mod trim;
 mod types;
 
+pub use checkpoint::{CHECKPOINT_PREFIX, checkpoint_body, checkpoint_message, is_checkpoint};
 pub use compaction::{
     CompactionContext, CompactionDecision, CutPoint, OverflowClassifier, OverflowInfo,
     OverflowProbe, find_cut_point, summarize_with_split,
 };
 pub use model_summarizer::{
-    DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION, summarization_policy,
+    DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
+    DEFAULT_SUMMARIZE_TRIGGER_CAP_TOKENS, default_threshold_fraction_for, summarization_policy,
     summarization_policy_with, summarization_policy_with_tail,
 };
 pub use pairing::{
@@ -43,6 +49,7 @@ pub use pairing::{
 };
 pub use render::render_message_for_summary;
 pub use resilient::FaultTolerantCachingSummarizer;
+pub use task_state::{DEFAULT_TASK_STATE_CHUNK_TOKENS, TaskLedger, TaskState, TaskStateSummarizer};
 pub use trim::{trim_messages, trim_messages_to_token_budget_with, trim_messages_with};
 pub use types::*;
 
@@ -136,6 +143,7 @@ impl Summarizer for ConcatSummarizer {
         Ok(SummaryRecord {
             summary,
             provenance,
+            usage: None,
         })
     }
 
@@ -239,10 +247,34 @@ impl SummarizationPolicy {
                 tools,
                 &crate::token_estimation::TokenCountOptions::default(),
             );
+        self.exceeds_trigger(tokens)
+    }
+
+    /// Whether a request of `tokens` total input tokens (messages plus tool
+    /// declarations, however they were measured) reaches the trigger.
+    ///
+    /// The same comparison [`Self::should_summarize_with_tools`] applies to
+    /// its own estimate, exposed so a caller holding a better measurement —
+    /// the provider-reported prompt size of the previous call, say — can use
+    /// it instead: at or above [`Self::trigger_budget`] when a context window
+    /// is set, strictly above [`Self::trigger_tokens`] otherwise.
+    pub fn exceeds_trigger(&self, tokens: u64) -> bool {
         match self.context_window {
             Some(_) => tokens >= self.trigger_budget(),
             None => tokens > self.trigger_tokens,
         }
+    }
+
+    /// Pins the trigger to an absolute token count, ignoring any context
+    /// window: the policy then compacts once a request exceeds `tokens`.
+    ///
+    /// For forcing compaction early (benchmarks, tests) and for models whose
+    /// window is unknown. Clears [`Self::context_window`], which only ever
+    /// fed the trigger.
+    pub fn with_trigger_override(mut self, tokens: u64) -> Self {
+        self.context_window = None;
+        self.trigger_tokens = tokens;
+        self
     }
 
     /// Split `messages` into `(to_summarize, to_keep)`.
@@ -360,15 +392,9 @@ pub(crate) fn split_at_cut(
     pin: bool,
 ) -> CompactionPlan {
     let cut = cut.min(non_system.len());
-    let tail_has_user = non_system[cut..]
-        .iter()
-        .any(|m| matches!(m, Message::User(_)));
+    let tail_has_user = non_system[cut..].iter().any(is_turn_user_message);
     let pinned = (pin && !tail_has_user)
-        .then(|| {
-            non_system[..cut]
-                .iter()
-                .rposition(|m| matches!(m, Message::User(_)))
-        })
+        .then(|| non_system[..cut].iter().rposition(is_turn_user_message))
         .flatten();
 
     let to_summarize: Vec<Message> = non_system[..cut]
@@ -404,7 +430,7 @@ pub(crate) fn split_at_cut(
 pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) -> Vec<Message> {
     let Some(pin) = messages
         .iter()
-        .rposition(|m| matches!(m, Message::User(_)))
+        .rposition(is_turn_user_message)
         .map(|index| cap_pinned_message(&messages[index]))
     else {
         return trim_messages(messages, &TrimStrategy::MaxTokens(budget));
@@ -414,7 +440,7 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         messages,
         &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
     );
-    if trimmed.iter().any(|m| matches!(m, Message::User(_))) {
+    if trimmed.iter().any(is_turn_user_message) {
         return trimmed;
     }
     let system_prefix = trimmed
@@ -428,6 +454,12 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
     );
     trimmed.insert(system_prefix, pin);
     trimmed
+}
+
+/// Whether `message` is a user message a person (or host) wrote — not a
+/// user-role compaction checkpoint, which is a summary, not an assignment.
+fn is_turn_user_message(message: &Message) -> bool {
+    matches!(message, Message::User(_)) && !is_checkpoint(message)
 }
 
 /// `message`, or — when it estimates above [`PINNED_USER_MESSAGE_MAX_TOKENS`]
@@ -451,6 +483,66 @@ fn cap_pinned_message(message: &Message) -> Message {
         "{kept}\n[… message truncated to fit the context window: the original was about \
          {tokens} tokens]"
     ))
+}
+
+impl SummarizationPolicy {
+    /// [`Self::plan`] with a token-budgeted tail: keep the most recent
+    /// `keep_recent_tokens` of non-system messages verbatim (capped at half
+    /// the trigger budget, so the compacted request lands well under the
+    /// trigger) and summarize the rest.
+    ///
+    /// The tail starts at a user or assistant message: a cut that would land
+    /// on a tool result moves back to the assistant turn that called it (see
+    /// [`find_safe_cutoff_point`]). The most recent message group is always
+    /// kept, even when it alone exceeds the budget.
+    pub fn plan_recent_tokens(
+        &self,
+        messages: &[Message],
+        keep_recent_tokens: u64,
+    ) -> (Vec<Message>, Vec<Message>) {
+        let plan = self.plan_split_recent_tokens(messages, keep_recent_tokens);
+        (plan.to_summarize, plan.to_keep)
+    }
+
+    /// [`Self::plan_recent_tokens`], also reporting where the split was
+    /// taken, and pinning the turn's user message when
+    /// [`pin_turn_user_message`][Self::pin_turn_user_message] is set (see
+    /// [`CompactionPlan::pinned`]).
+    pub fn plan_split_recent_tokens(
+        &self,
+        messages: &[Message],
+        keep_recent_tokens: u64,
+    ) -> CompactionPlan {
+        let (system, non_system) = partition_system(messages);
+        let budget = match self.trigger_budget() {
+            0 => keep_recent_tokens,
+            trigger => keep_recent_tokens.min(trigger / 2),
+        };
+        let mut kept = 0u64;
+        let mut start = non_system.len();
+        for (index, message) in non_system.iter().enumerate().rev() {
+            let tokens = crate::token_estimation::estimate_message_tokens(message);
+            if kept + tokens > budget {
+                break;
+            }
+            kept += tokens;
+            start = index;
+        }
+        if start == non_system.len() {
+            start = non_system.len().saturating_sub(1);
+        }
+        let split = find_safe_cutoff_point(&non_system, start);
+        tracing::debug!(
+            keep_recent_tokens,
+            budget,
+            kept_tokens = kept,
+            requested = start,
+            split,
+            total = non_system.len(),
+            "[summarization::plan_recent_tokens] token-budgeted split"
+        );
+        split_at_cut(system, &non_system, split, self.pin_turn_user_message)
+    }
 }
 
 #[cfg(test)]
