@@ -205,7 +205,217 @@ async fn drops_the_fold_when_the_transcript_no_longer_matches() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].messages, vec![chunk("n1"), chunk("n2")]);
+    // The old summary describes some other history: it is not handed on.
+    assert_eq!(seen[1].previous_summary, None);
     assert_eq!(sent, vec![Message::system("summary #2"), chunk("n3")]);
+}
+
+#[tokio::test]
+async fn replaces_a_summary_the_host_spliced_in_itself() {
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
+    let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
+
+    // A host that persists the compacted request as its transcript: the fold
+    // no longer matches, but its summary is right there. It must be built on
+    // and replaced, not kept beside the new one.
+    let mut transcript = first.clone();
+    transcript.extend([chunk("m4"), chunk("m5")]);
+    let sent = send(&stack, &mut c, &transcript).await;
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
+}
+
+#[tokio::test]
+async fn keeps_each_runs_fold_separate() {
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        c: mut run_a,
+    } = fixture();
+    let sink = Arc::new(RecordingSink::default());
+    let mut run_b = RunContext::new(RunConfig::new("run-b"), ()).with_compaction_sink(sink);
+
+    let mut a = vec![chunk("a1"), chunk("a2"), chunk("a3")];
+    send(&stack, &mut run_a, &a).await;
+    // Run B, on the same middleware, has its own history and its own fold.
+    let sent_b = send(&stack, &mut run_b, &[chunk("b1"), chunk("b2"), chunk("b3")]).await;
+    assert_eq!(sent_b, vec![Message::system("summary #2"), chunk("b3")]);
+    assert_eq!(seen.lock().unwrap()[1].previous_summary, None);
+
+    // Run A's fold survived B and still applies, with no new summarizer call.
+    a.push(user("ok"));
+    let sent_a = send(&stack, &mut run_a, &a).await;
+    assert_eq!(
+        sent_a,
+        vec![Message::system("summary #1"), chunk("a3"), user("ok")]
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn forgets_a_runs_fold_when_the_run_ends() {
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
+    let transcript = vec![chunk("m1"), chunk("m2"), chunk("m3")];
+    send(&stack, &mut c, &transcript).await;
+    stack
+        .run_after_agent(&mut c, &(), &mut crate::middleware::AgentRun::new())
+        .await
+        .unwrap();
+
+    // Nothing carried over: the same transcript is compacted afresh.
+    send(&stack, &mut c, &transcript).await;
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+// ── Overflow path ────────────────────────────────────────────────────────────
+
+/// Fails its first call with a classified context overflow, then answers.
+struct OverflowOnce {
+    calls: Mutex<usize>,
+}
+
+impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a mut RunContext,
+        _state: &'a (),
+        _request: ModelRequest,
+    ) -> crate::middleware::BoxModelFuture<'a> {
+        Box::pin(async move {
+            let first = {
+                let mut calls = self.calls.lock().unwrap();
+                *calls += 1;
+                *calls == 1
+            };
+            if first {
+                return Err(crate::error::TinyAgentsError::Model(
+                    "This model's maximum context length is 100 tokens. However, your \
+                     messages resulted in 900 tokens."
+                        .to_string(),
+                ));
+            }
+            Ok(tinyinference_llm::model::ModelResponse {
+                message: tinyinference_llm::message::AssistantMessage {
+                    id: None,
+                    content: vec![ContentBlock::Text("recovered".into())],
+                    tool_calls: Vec::new(),
+                    usage: None,
+                    origin: None,
+                },
+                usage: None,
+                finish_reason: None,
+                raw: None,
+                resolved_model: None,
+                continue_turn: None,
+                served_from_cache: false,
+                correlation: None,
+            })
+        })
+    }
+}
+
+/// Drops the oldest non-system message, as a later trim step would.
+struct DropOldest;
+
+#[async_trait]
+impl Middleware<()> for DropOldest {
+    fn name(&self) -> &str {
+        "drop_oldest"
+    }
+
+    async fn before_model(
+        &self,
+        _ctx: &mut RunContext,
+        _state: &(),
+        request: &mut ModelRequest,
+    ) -> Result<()> {
+        if let Some(at) = request
+            .messages
+            .iter()
+            .position(|m| !matches!(m, Message::System(_)))
+        {
+            request.messages.remove(at);
+        }
+        Ok(())
+    }
+}
+
+/// Runs one call through `before_model` and the overflow-recovering model
+/// wrap, with threshold compaction declined so only the overflow path fires.
+async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
+    let mw = Arc::new(
+        ContextCompressionMiddleware::new(
+            SummarizationPolicy::default()
+                .with_context_window(100)
+                .with_threshold_fraction(0.5),
+        )
+        .with_before_compaction(|c| match c.reason {
+            crate::summarization::CompactionReason::Threshold => {
+                crate::summarization::CompactionDecision::Decline
+            }
+            _ => crate::summarization::CompactionDecision::Proceed,
+        }),
+    );
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push(mw.clone());
+    if drop_oldest {
+        stack.push(Arc::new(DropOldest));
+    }
+    stack.push_model_middleware(mw);
+    let sink = Arc::new(RecordingSink::default());
+    let mut c = ctx().with_compaction_sink(sink.clone());
+
+    let big = "word ".repeat(60);
+    let mut request = ModelRequest {
+        messages: (1..=5).map(|i| user(&format!("{i} {big}"))).collect(),
+        ..Default::default()
+    };
+    stack
+        .run_before_model(&mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let base = OverflowOnce {
+        calls: Mutex::new(0),
+    };
+    let response = stack
+        .run_wrapped_model(&mut c, &(), request, &base)
+        .await
+        .unwrap()
+        .into_response();
+    assert_eq!(response.text(), "recovered");
+    sink.records.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn overflow_persists_a_boundary_when_the_request_is_aligned() {
+    let persisted = overflow_call(false).await;
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(
+        persisted[0].reason,
+        crate::summarization::CompactionReason::Overflow
+    );
+    assert!(persisted[0].first_kept_index > 0);
+}
+
+#[tokio::test]
+async fn overflow_skips_persistence_when_a_later_step_dropped_messages() {
+    // The boundary would be shifted by the dropped message; a resumed session
+    // would restore or duplicate the wrong history from it.
+    assert!(overflow_call(true).await.is_empty());
 }
 
 #[tokio::test]

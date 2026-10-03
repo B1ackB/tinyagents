@@ -202,7 +202,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
         if let Some(fold) = &prior {
             request.messages = splice_summary(
-                system.iter().cloned().chain(live[folded..].iter().cloned()).collect(),
+                system
+                    .iter()
+                    .cloned()
+                    .chain(live[folded..].iter().cloned())
+                    .collect(),
                 fold.summary.clone(),
             );
         }
@@ -494,7 +498,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 };
                 let mut retried = request.clone();
                 if fold_extends {
-                    self.remember_fold(ctx.run_id(), folded + cut.index, &live_chain, &record.summary);
+                    self.remember_fold(
+                        ctx.run_id(),
+                        folded + cut.index,
+                        &live_chain,
+                        &record.summary,
+                    );
                 }
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
@@ -540,7 +549,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         };
 
         if fold_extends {
-            self.remember_fold(ctx.run_id(), folded + cut.index, &live_chain, &record.summary);
+            self.remember_fold(
+                ctx.run_id(),
+                folded + cut.index,
+                &live_chain,
+                &record.summary,
+            );
         }
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
