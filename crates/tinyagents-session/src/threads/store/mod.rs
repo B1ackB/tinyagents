@@ -155,6 +155,8 @@ pub(super) enum ThreadLogEntry {
     MessageAppended {
         thread_id: String,
         last_message_at: String,
+        #[serde(default)]
+        message_bytes: Option<u64>,
     },
     /// Absolute stat snapshot — overrides the running count + timestamp.
     /// Used to backfill legacy threads whose messages were written before
@@ -163,6 +165,8 @@ pub(super) enum ThreadLogEntry {
         thread_id: String,
         message_count: usize,
         last_message_at: String,
+        #[serde(default)]
+        message_bytes: Option<u64>,
     },
 }
 
@@ -181,6 +185,7 @@ pub(super) struct ThreadIndexEntry {
     /// `Stats` history for this thread yet (legacy data) — `list_threads`
     /// backfills by doing a one-shot read of the per-thread messages file.
     pub(super) message_count: Option<usize>,
+    pub(super) message_bytes: Option<u64>,
     /// Timestamp of the newest message, or `None` if unknown (legacy).
     pub(super) last_message_at: Option<String>,
     /// Personality/persona id bound to this thread, if any.

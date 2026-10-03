@@ -141,7 +141,7 @@ impl ConversationStore {
         // than rescanning every message file.
         let thread_ids = index
             .iter()
-            .filter(|(_, entry)| entry.message_count.is_none() || entry.last_message_at.is_none())
+            .filter(|(id, entry)| self.stats_need_repair(id, entry))
             .map(|(thread_id, _)| thread_id.clone())
             .collect::<Vec<_>>();
         if !thread_ids.is_empty() {
@@ -173,6 +173,7 @@ impl ConversationStore {
                             thread_id: thread_id.clone(),
                             message_count: count,
                             last_message_at: resolved_last.clone(),
+                            message_bytes: fs::metadata(self.thread_messages_path(thread_id)).ok().map(|m| m.len()),
                         },
                     )?;
                 }
@@ -198,9 +199,7 @@ impl ConversationStore {
                 let index = self.thread_index_unlocked()?;
                 let missing = index
                     .iter()
-                    .filter(|(_, entry)| {
-                        entry.message_count.is_none() || entry.last_message_at.is_none()
-                    })
+                    .filter(|(id, entry)| self.stats_need_repair(id, entry))
                     .filter(|(thread_id, _)| !unreadable.contains(*thread_id))
                     .map(|(thread_id, _)| thread_id.clone())
                     .collect::<Vec<_>>();
@@ -218,7 +217,7 @@ impl ConversationStore {
                 let Some(entry) = index.get(&thread_id) else {
                     continue;
                 };
-                if entry.message_count.is_some() && entry.last_message_at.is_some() {
+                if !self.stats_need_repair(&thread_id, entry) {
                     continue;
                 }
                 let Ok((count, last_message_at)) = self.measure_messages_unlocked(&thread_id)
@@ -236,10 +235,18 @@ impl ConversationStore {
                         thread_id,
                         message_count: count,
                         last_message_at: resolved_last,
+                        message_bytes: fs::metadata(self.thread_messages_path(&thread_id)).ok().map(|m| m.len()),
                     },
                 )?;
             }
         }
+    }
+
+    fn stats_need_repair(&self, thread_id: &str, entry: &super::ThreadIndexEntry) -> bool {
+        let actual_bytes = fs::metadata(self.thread_messages_path(thread_id))
+            .map(|metadata| metadata.len()).unwrap_or(0);
+        entry.message_count.is_none() || entry.last_message_at.is_none()
+            || entry.message_bytes != Some(actual_bytes)
     }
 
     fn threads_from_index(index: BTreeMap<String, ThreadIndexEntry>) -> Vec<ConversationThread> {
@@ -389,6 +396,7 @@ impl ConversationStore {
                             parent_thread_id: parent_thread_id_value,
                             labels: labels_value,
                             message_count: message_count_value,
+                            message_bytes: existing.and_then(|entry| entry.message_bytes),
                             last_message_at: last_message_at_value,
                             personality_id: personality_id_value,
                         },

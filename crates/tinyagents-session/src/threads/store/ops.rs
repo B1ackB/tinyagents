@@ -182,6 +182,7 @@ impl ConversationStore {
                 &ThreadLogEntry::MessageAppended {
                     thread_id: thread_id.to_string(),
                     last_message_at: message.created_at.clone(),
+                    message_bytes: Some(fs::metadata(&path).map_err(|e| e.to_string())?.len()),
                 },
             )?;
         }
@@ -335,6 +336,7 @@ impl ConversationStore {
                     thread_id: thread_id.to_string(),
                     message_count: kept.len(),
                     last_message_at: resolved_last,
+                    message_bytes: Some(fs::metadata(&path).map_err(|e| e.to_string())?.len()),
                 },
             )?;
         }
