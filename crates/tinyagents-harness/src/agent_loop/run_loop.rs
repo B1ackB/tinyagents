@@ -652,15 +652,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             status.mark_running(HarnessPhase::Middleware);
             ctx.model_profile = self.preview_model_profile(&request);
             self.middleware
-                .run_before_model_with_profile(ctx, state, &mut request, |ctx, request| {
-                    Box::pin(async move {
-                        if let Some(binding) = self.resolve_host_model(ctx, request).await? {
-                            Ok(binding.model.profile().cloned())
-                        } else {
-                            Ok(self.preview_model_profile(request))
-                        }
-                    })
-                })
+                .run_before_model_with_profile(
+                    ctx,
+                    state,
+                    &mut request,
+                    self,
+                    |harness, ctx, request| {
+                        Box::pin(async move {
+                            if let Some(binding) = harness.resolve_host_model(ctx, request).await? {
+                                Ok(binding.model.profile().cloned())
+                            } else {
+                                Ok(harness.preview_model_profile(request))
+                            }
+                        })
+                    },
+                )
                 .await?;
 
             // A forced native dialect cannot silently select a model that

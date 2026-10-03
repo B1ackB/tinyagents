@@ -270,15 +270,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
 
     /// Runs `before_model` while refreshing the selected profile before each
     /// hook. Earlier hooks may change the model or required capabilities.
-    pub async fn run_before_model_with_profile<F>(
+    pub async fn run_before_model_with_profile<P, F>(
         &self,
         ctx: &mut RunContext<Ctx>,
         state: &State,
         request: &mut ModelRequest,
+        provider: &P,
         resolve_profile: F,
     ) -> Result<()>
     where
         F: for<'a> Fn(
+            &'a P,
             &'a RunContext<Ctx>,
             &'a ModelRequest,
         ) -> futures::future::BoxFuture<
@@ -291,7 +293,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
             if winning.is_some() && !mw.is_observer() {
                 continue;
             }
-            ctx.model_profile = resolve_profile(ctx, request).await?;
+            ctx.model_profile = resolve_profile(provider, ctx, request).await?;
             let name = mw.name().to_string();
             ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
             let result = mw.before_model_control(ctx, state, request).await;
