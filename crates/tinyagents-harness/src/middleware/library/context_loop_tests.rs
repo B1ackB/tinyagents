@@ -352,11 +352,19 @@ impl ChatModel<()> for OverflowOnce {
             *calls == 1
         };
         if first {
-            return Err(tinyinference_llm::Error::Model(
-                "This model's maximum context length is 1000 tokens. However, your messages \
-                 resulted in 2000 tokens."
-                    .to_string(),
-            ));
+            // What a provider adapter returns for a 400 overflow: a
+            // structured, non-retryable failure.
+            return Err(tinyinference_llm::Error::Provider(Box::new(
+                tinyinference_llm::model::ProviderError {
+                    provider: "mock".into(),
+                    status: Some(400),
+                    message: "This model's maximum context length is 1000 tokens. However, \
+                              your messages resulted in 2000 tokens."
+                        .into(),
+                    retryable: false,
+                    ..Default::default()
+                },
+            )));
         }
         self.inner.invoke(state, request).await
     }
