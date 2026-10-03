@@ -35,7 +35,9 @@
 //! Skipped when two or fewer model calls remain after the answer, so it never
 //! competes with a final-call wrap-up for the last calls, and when a configured
 //! wall-clock deadline is closer than
-//! [`with_min_remaining_wall_clock`](VerifyBeforeFinishMiddleware::with_min_remaining_wall_clock).
+//! [`with_min_remaining_wall_clock`](VerifyBeforeFinishMiddleware::with_min_remaining_wall_clock)
+//! (the run context's deadline, and the policy cap a host declares through
+//! [`with_wall_clock_limit`](VerifyBeforeFinishMiddleware::with_wall_clock_limit)).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -95,6 +97,7 @@ pub struct VerifyBeforeFinishMiddleware {
     check: String,
     trigger: FinishCheckTrigger,
     min_remaining_wall_clock: Duration,
+    wall_clock_limit: Option<Duration>,
     runs: Mutex<HashMap<u64, RunState>>,
 }
 
@@ -107,6 +110,7 @@ impl VerifyBeforeFinishMiddleware {
             check: check.into(),
             trigger: min_rounds_trigger(1),
             min_remaining_wall_clock: DEFAULT_MIN_REMAINING_WALL_CLOCK,
+            wall_clock_limit: None,
             runs: Mutex::default(),
         }
     }
@@ -135,8 +139,26 @@ impl VerifyBeforeFinishMiddleware {
         self
     }
 
-    pub fn with_wall_clock_limit(self, _limit: Duration) -> Self {
+    /// The run's policy-level wall-clock cap
+    /// ([`RunLimits::max_wall_clock_ms`](crate::limits::RunLimits::max_wall_clock_ms)),
+    /// measured from the run's start. A `RunPolicy` cap is enforced by the loop
+    /// but is not on the [`RunContext`] a middleware sees, so a host that sets
+    /// one passes it here too; the context's own deadline
+    /// ([`RunContext::remaining_wall_clock`]) is always honoured.
+    pub fn with_wall_clock_limit(mut self, limit: Duration) -> Self {
+        self.wall_clock_limit = Some(limit);
         self
+    }
+
+    /// The tighter of the context deadline and the declared policy cap.
+    fn remaining_wall_clock<C>(&self, ctx: &RunContext<C>) -> Option<Duration> {
+        let policy = self
+            .wall_clock_limit
+            .map(|limit| limit.saturating_sub(ctx.limits.elapsed()));
+        match (ctx.remaining_wall_clock(), policy) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Why this response must not be held for the check, or `None` when it may.
@@ -160,8 +182,8 @@ impl VerifyBeforeFinishMiddleware {
         if ctx.limits.remaining_model_calls() < MIN_REMAINING_MODEL_CALLS {
             return Some("model_call_budget");
         }
-        if ctx
-            .remaining_wall_clock()
+        if self
+            .remaining_wall_clock(ctx)
             .is_some_and(|left| left < self.min_remaining_wall_clock)
         {
             return Some("wall_clock");
