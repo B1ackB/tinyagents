@@ -61,6 +61,7 @@ use tinytools::ToolResult;
 mod arg_recovery;
 mod artifact_toc;
 mod budget;
+mod compaction_pressure;
 mod context;
 mod credential_scrub;
 mod image_trim;
