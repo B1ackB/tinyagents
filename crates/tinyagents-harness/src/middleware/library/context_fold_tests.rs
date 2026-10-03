@@ -749,5 +749,10 @@ fn deterministic_trim_charges_checkpoint_framing() {
     };
     let mut c = ctx();
     mw.trim_to_trigger(&mut c, &mut request, 0);
-    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 50);
+    assert!(
+        crate::token_estimation::count_tokens_approximately(&request.messages) <= 50,
+        "tokens={} messages={:?}",
+        crate::token_estimation::count_tokens_approximately(&request.messages),
+        request.messages,
+    );
 }
