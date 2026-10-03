@@ -781,7 +781,11 @@ mod plan_recent_tokens {
         let policy = summarization_policy(1_000_000);
         let (to_summarize, to_keep) = policy.plan_recent_tokens(&history(), 3_500);
         assert!(matches!(to_keep[0], Message::System(_)));
-        assert!(matches!(to_keep[1], Message::Assistant(_)), "tail opens on {:?}", to_keep[1]);
+        assert!(
+            matches!(to_keep[1], Message::Assistant(_)),
+            "tail opens on {:?}",
+            to_keep[1]
+        );
         let kept_turns = (to_keep.len() - 1) / 2;
         assert!((2..=4).contains(&kept_turns), "kept {kept_turns} turns");
         assert_eq!(to_summarize.len() + to_keep.len(), history().len());

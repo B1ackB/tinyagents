@@ -78,7 +78,10 @@ impl TaskLedger {
                 });
             }
             ToolKind::Edit => {
-                for path in argument_paths(arguments).into_iter().chain(patch_paths(arguments)) {
+                for path in argument_paths(arguments)
+                    .into_iter()
+                    .chain(patch_paths(arguments))
+                {
                     push_unique(&mut self.files_modified, path);
                 }
             }
@@ -114,8 +117,16 @@ pub(crate) enum ToolKind {
 impl ToolKind {
     pub(crate) fn of(lower_name: &str) -> Self {
         const SHELL: &[&str] = &[
-            "shell", "bash", "exec", "terminal", "run_command", "run_shell_command",
-            "execute_command", "command", "sh", "local_shell",
+            "shell",
+            "bash",
+            "exec",
+            "terminal",
+            "run_command",
+            "run_shell_command",
+            "execute_command",
+            "command",
+            "sh",
+            "local_shell",
         ];
         if SHELL.contains(&lower_name) {
             return Self::Shell;
@@ -154,11 +165,18 @@ fn shell_command(arguments: &Value) -> Option<String> {
 }
 
 fn argument_paths(arguments: &Value) -> Vec<String> {
-    ["path", "file_path", "filePath", "filename", "target_file", "file"]
-        .iter()
-        .filter_map(|k| arguments.get(*k).and_then(Value::as_str))
-        .filter_map(clean_path)
-        .collect()
+    [
+        "path",
+        "file_path",
+        "filePath",
+        "filename",
+        "target_file",
+        "file",
+    ]
+    .iter()
+    .filter_map(|k| arguments.get(*k).and_then(Value::as_str))
+    .filter_map(clean_path)
+    .collect()
 }
 
 /// Paths named by a patch carried in any string argument (`*** Update File:`
@@ -171,9 +189,15 @@ fn patch_paths(arguments: &Value) -> Vec<String> {
     for value in map.values() {
         let Some(text) = value.as_str() else { continue };
         for line in text.lines() {
-            let path = ["*** Update File:", "*** Add File:", "*** Delete File:", "+++ b/", "+++ "]
-                .iter()
-                .find_map(|prefix| line.strip_prefix(prefix));
+            let path = [
+                "*** Update File:",
+                "*** Add File:",
+                "*** Delete File:",
+                "+++ b/",
+                "+++ ",
+            ]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix));
             if let Some(path) = path.and_then(|p| clean_path(p.trim())) {
                 if path != "/dev/null" {
                     push_unique(&mut out, path);
@@ -200,7 +224,11 @@ pub(crate) fn shell_files(command: &str) -> (Vec<String>, Vec<String>) {
                 .or_else(|| token.strip_prefix('>'))
                 .or_else(|| token.strip_prefix("1>"))
             {
-                let target = if rest.is_empty() { iter.next().unwrap_or("") } else { rest };
+                let target = if rest.is_empty() {
+                    iter.next().unwrap_or("")
+                } else {
+                    rest
+                };
                 if let Some(path) = clean_path(target) {
                     push_unique(&mut writes, path);
                 }
@@ -220,8 +248,12 @@ pub(crate) fn shell_files(command: &str) -> (Vec<String>, Vec<String>) {
         let program = program.rsplit('/').next().unwrap_or(program);
         let operands = || args.iter().filter(|a| !a.starts_with('-')).copied();
         match program {
-            "tee" => operands().filter_map(clean_path).for_each(|p| push_unique(&mut writes, p)),
-            "touch" => operands().filter_map(clean_path).for_each(|p| push_unique(&mut writes, p)),
+            "tee" => operands()
+                .filter_map(clean_path)
+                .for_each(|p| push_unique(&mut writes, p)),
+            "touch" => operands()
+                .filter_map(clean_path)
+                .for_each(|p| push_unique(&mut writes, p)),
             "cp" | "mv" => {
                 if let Some(p) = operands().last().and_then(clean_path) {
                     push_unique(&mut writes, p);
@@ -235,7 +267,9 @@ pub(crate) fn shell_files(command: &str) -> (Vec<String>, Vec<String>) {
                 files.into_iter().for_each(|p| push_unique(target, p));
             }
             "cat" | "head" | "tail" | "nl" | "less" | "more" => {
-                operands().filter_map(clean_path).for_each(|p| push_unique(&mut reads, p));
+                operands()
+                    .filter_map(clean_path)
+                    .for_each(|p| push_unique(&mut reads, p));
             }
             _ => {}
         }
@@ -345,7 +379,9 @@ fn clean_path(raw: &str) -> Option<String> {
         && !path.starts_with('-')
         && !path.starts_with("/dev/")
         && !path.starts_with('&')
-        && !path.contains(['$', '*', '?', '`', '(', ')', '{', '}', '=', '\'', '"', '<', '>'])
+        && !path.contains([
+            '$', '*', '?', '`', '(', ')', '{', '}', '=', '\'', '"', '<', '>',
+        ])
         && (path.contains('/') || path.contains('.'))
         && path.len() <= 300;
     looks_like_file.then(|| path.to_string())
@@ -371,7 +407,12 @@ pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
 /// (SIGPIPE from `| head`) is a success.
 pub(crate) fn failure_of(result: &str) -> Option<&str> {
     let lower = result.to_ascii_lowercase();
-    for anchor in ["exit code", "exit_code\":", "exited with code", "exit status"] {
+    for anchor in [
+        "exit code",
+        "exit_code\":",
+        "exited with code",
+        "exit status",
+    ] {
         if let Some(at) = lower.find(anchor) {
             let code: String = lower[at + anchor.len()..]
                 .chars()

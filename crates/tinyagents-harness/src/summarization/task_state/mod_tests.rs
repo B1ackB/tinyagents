@@ -22,7 +22,11 @@ fn shell(id: &str, command: &str, output: &str) -> Vec<Message> {
 fn history() -> Vec<Message> {
     let mut m = vec![Message::user("Implement default arguments in anko.")];
     m.extend(shell("c1", "cat vm/vm.go", "package vm"));
-    m.extend(shell("c2", "go test ./vm/...", "FAIL\nvm_test.go:9: boom\nCommand failed (exit code 1)"));
+    m.extend(shell(
+        "c2",
+        "go test ./vm/...",
+        "FAIL\nvm_test.go:9: boom\nCommand failed (exit code 1)",
+    ));
     m
 }
 
@@ -93,7 +97,9 @@ async fn a_model_outage_with_nothing_to_fall_back_on_is_an_error() {
     // no user task gives the ledger nothing to carry.
     let model = Arc::new(ScriptedModel::replies(Vec::<&str>::new()));
     let summarizer = TaskStateSummarizer::new(model, "m");
-    let err = summarizer.summarize(&[Message::assistant("thinking")]).await;
+    let err = summarizer
+        .summarize(&[Message::assistant("thinking")])
+        .await;
     assert!(err.is_err());
 }
 
@@ -101,28 +107,52 @@ async fn a_model_outage_with_nothing_to_fall_back_on_is_an_error() {
 async fn long_histories_are_folded_in_sequential_chunks() {
     let mut messages = vec![Message::user("task")];
     for i in 0..6 {
-        messages.extend(shell(&format!("c{i}"), &format!("echo {i}"), &"x".repeat(400)));
+        messages.extend(shell(
+            &format!("c{i}"),
+            &format!("echo {i}"),
+            &"x".repeat(400),
+        ));
     }
-    let replies: Vec<String> = (0..10).map(|i| format!("{{\"goal\": \"step {i}\"}}")).collect();
+    let replies: Vec<String> = (0..10)
+        .map(|i| format!("{{\"goal\": \"step {i}\"}}"))
+        .collect();
     let model = Arc::new(ScriptedModel::replies(replies));
     let summarizer = TaskStateSummarizer::new(model.clone(), "m").with_max_chunk_tokens(250);
     let record = summarizer.summarize(&messages).await.unwrap();
 
     let requests = model.requests();
-    assert!(requests.len() > 1, "expected several chunks, got {}", requests.len());
+    assert!(
+        requests.len() > 1,
+        "expected several chunks, got {}",
+        requests.len()
+    );
     // Every chunk after the first updates the state the previous one wrote,
     // and no chunk opens on an orphaned tool result.
     for (i, request) in requests.iter().enumerate().skip(1) {
         let prompt = request.messages[1].text();
-        assert!(prompt.contains(&format!("\"goal\":\"step {}\"", i - 1)), "chunk {i}");
-        assert!(!prompt.contains("<transcript>\ntool:"), "chunk {i} starts on a tool result");
+        assert!(
+            prompt.contains(&format!("\"goal\":\"step {}\"", i - 1)),
+            "chunk {i}"
+        );
+        assert!(
+            !prompt.contains("<transcript>\ntool:"),
+            "chunk {i} starts on a tool result"
+        );
     }
-    assert!(record.summary.text().contains(&format!("step {}", requests.len() - 1)));
+    assert!(
+        record
+            .summary
+            .text()
+            .contains(&format!("step {}", requests.len() - 1))
+    );
 }
 
 #[tokio::test]
 async fn merge_unions_files_and_keeps_the_later_state() {
-    let model = Arc::new(ScriptedModel::replies(vec![STATE_REPLY, r#"{"goal": "later"}"#]));
+    let model = Arc::new(ScriptedModel::replies(vec![
+        STATE_REPLY,
+        r#"{"goal": "later"}"#,
+    ]));
     let summarizer = TaskStateSummarizer::new(model, "m");
     let a = summarizer.summarize(&history()).await.unwrap();
     let b = summarizer

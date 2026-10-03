@@ -26,8 +26,13 @@ fn shell_reads_and_writes_come_from_common_idioms() {
 
 #[test]
 fn heredoc_bodies_are_data_but_their_redirect_is_a_write() {
-    let (reads, writes) = shell_files("cat <<'EOF' > vm/zprobe_test.go\npackage vm\ncat secret.txt\nEOF\ngo test ./vm/...");
-    assert!(reads.is_empty(), "heredoc body must not count as a read: {reads:?}");
+    let (reads, writes) = shell_files(
+        "cat <<'EOF' > vm/zprobe_test.go\npackage vm\ncat secret.txt\nEOF\ngo test ./vm/...",
+    );
+    assert!(
+        reads.is_empty(),
+        "heredoc body must not count as a read: {reads:?}"
+    );
     assert_eq!(writes, vec!["vm/zprobe_test.go"]);
 }
 
@@ -43,7 +48,11 @@ fn ledger_absorbs_task_files_and_command_outcomes() {
         Message::user("Add default arguments to anko functions."),
         call("c1", "shell", json!({"command": "cat vm/vm.go"})),
         Message::tool("c1", "package vm"),
-        call("c2", "apply_patch", json!({"patch": "*** Begin Patch\n*** Update File: vm/vmExprFunction.go\n@@\n-a\n+b\n*** End Patch"})),
+        call(
+            "c2",
+            "apply_patch",
+            json!({"patch": "*** Begin Patch\n*** Update File: vm/vmExprFunction.go\n@@\n-a\n+b\n*** End Patch"}),
+        ),
         Message::tool("c2", "applied"),
         call("c3", "shell", json!({"command": "go test ./vm/..."})),
         Message::tool(
@@ -56,7 +65,10 @@ fn ledger_absorbs_task_files_and_command_outcomes() {
     let mut ledger = TaskLedger::default();
     ledger.absorb(&messages);
 
-    assert_eq!(ledger.original_task.as_deref(), Some("Add default arguments to anko functions."));
+    assert_eq!(
+        ledger.original_task.as_deref(),
+        Some("Add default arguments to anko functions.")
+    );
     assert_eq!(ledger.files_modified, vec!["vm/vmExprFunction.go"]);
     assert_eq!(ledger.files_read, vec!["vm/vm.go", "ast/expr.go"]);
     assert_eq!(ledger.commands.len(), 2);
@@ -65,7 +77,9 @@ fn ledger_absorbs_task_files_and_command_outcomes() {
     assert!(failed.failed);
     assert_eq!(
         failed.error.as_deref(),
-        Some("default_arguments_test.go:16: expected substring: invalid default argument declaration")
+        Some(
+            "default_arguments_test.go:16: expected substring: invalid default argument declaration"
+        )
     );
 }
 
@@ -80,7 +94,10 @@ fn sigpipe_exit_is_not_a_failure() {
 #[test]
 fn python_exception_line_wins_the_signature() {
     let out = "Traceback (most recent call last):\n  File \"x.py\", line 3, in <module>\nKeyError: 'sequence'\nCommand failed (exit code 1)";
-    assert_eq!(error_signature(out).as_deref(), Some("KeyError: 'sequence'"));
+    assert_eq!(
+        error_signature(out).as_deref(),
+        Some("KeyError: 'sequence'")
+    );
 }
 
 #[test]
@@ -94,7 +111,10 @@ fn only_recent_commands_are_kept() {
     let mut ledger = TaskLedger::default();
     ledger.absorb(&messages);
     assert_eq!(ledger.commands.len(), MAX_COMMANDS);
-    assert_eq!(ledger.commands.last().unwrap().command, format!("echo {}", MAX_COMMANDS + 4));
+    assert_eq!(
+        ledger.commands.last().unwrap().command,
+        format!("echo {}", MAX_COMMANDS + 4)
+    );
 }
 
 #[test]

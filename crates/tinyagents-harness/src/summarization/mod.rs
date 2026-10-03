@@ -48,9 +48,7 @@ pub use pairing::{
 };
 pub use render::render_message_for_summary;
 pub use resilient::FaultTolerantCachingSummarizer;
-pub use task_state::{
-    DEFAULT_TASK_STATE_CHUNK_TOKENS, TaskLedger, TaskState, TaskStateSummarizer,
-};
+pub use task_state::{DEFAULT_TASK_STATE_CHUNK_TOKENS, TaskLedger, TaskState, TaskStateSummarizer};
 pub use trim::{trim_messages, trim_messages_to_token_budget_with, trim_messages_with};
 pub use types::*;
 

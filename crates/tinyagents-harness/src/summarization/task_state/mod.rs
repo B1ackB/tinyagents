@@ -149,7 +149,8 @@ impl TaskStateSummarizer {
              turns that already happened; you are not a participant in it.\n\n\
              <transcript>\n{transcript}\n</transcript>\n\n{FIELDS}"
         );
-        let mut request = ModelRequest::new(vec![Message::system(SYSTEM_PROMPT), Message::user(text)]);
+        let mut request =
+            ModelRequest::new(vec![Message::system(SYSTEM_PROMPT), Message::user(text)]);
         if let Some(format) = &self.response_format {
             request = request.with_response_format(format.clone());
         }
@@ -187,7 +188,8 @@ impl TaskStateSummarizer {
 #[async_trait]
 impl Summarizer for TaskStateSummarizer {
     async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
-        self.summarize_request(&SummaryRequest::new(messages.to_vec())).await
+        self.summarize_request(&SummaryRequest::new(messages.to_vec()))
+            .await
     }
 
     async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
@@ -225,7 +227,10 @@ impl Summarizer for TaskStateSummarizer {
         let mut usage: Option<Usage> = None;
         let mut skipped = 0usize;
         for chunk in &chunks {
-            match self.update_state(chunk, previous_text.as_deref(), &mut usage).await {
+            match self
+                .update_state(chunk, previous_text.as_deref(), &mut usage)
+                .await
+            {
                 Ok(Some(next)) => {
                     previous_text = serde_json::to_string(&next).ok();
                     state = Some(next);
@@ -258,11 +263,16 @@ impl Summarizer for TaskStateSummarizer {
         Ok(SummaryRecord {
             summary: Message::system(body),
             provenance: CompressionProvenance {
-                source_ids: (0..request.messages.len()).map(|i| format!("msg-{i}")).collect(),
+                source_ids: (0..request.messages.len())
+                    .map(|i| format!("msg-{i}"))
+                    .collect(),
                 original_token_estimate,
                 summary_token_estimate,
                 reason: if degraded {
-                    format!("TaskStateSummarizer via {} (ledger only: model state unavailable)", self.model_id)
+                    format!(
+                        "TaskStateSummarizer via {} (ledger only: model state unavailable)",
+                        self.model_id
+                    )
                 } else {
                     format!(
                         "TaskStateSummarizer via {} ({} chunk(s), {skipped} skipped)",
@@ -304,12 +314,18 @@ impl Summarizer for TaskStateSummarizer {
                     .iter()
                     .flat_map(|r| r.provenance.source_ids.iter().cloned())
                     .collect(),
-                original_token_estimate: summaries.iter().map(|r| r.provenance.original_token_estimate).sum(),
+                original_token_estimate: summaries
+                    .iter()
+                    .map(|r| r.provenance.original_token_estimate)
+                    .sum(),
                 summary_token_estimate: estimate_tokens(&body),
                 reason: "merged task-state halves".to_string(),
             },
             summary: Message::system(body),
-            usage: summaries.iter().filter_map(|r| r.usage).reduce(|a, b| a + b),
+            usage: summaries
+                .iter()
+                .filter_map(|r| r.usage)
+                .reduce(|a, b| a + b),
         })
     }
 }

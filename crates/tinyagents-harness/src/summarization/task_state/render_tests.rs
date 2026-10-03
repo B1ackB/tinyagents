@@ -34,7 +34,10 @@ fn rendering_round_trips_the_carried_facts() {
     assert_eq!(carried.files_modified, vec!["parser/parser.go.y"]);
     // A modified file is listed once, under modified.
     assert_eq!(carried.files_read, vec!["vm/vm.go"]);
-    assert!(carried.commands.is_empty(), "commands are re-read, not carried");
+    assert!(
+        carried.commands.is_empty(),
+        "commands are re-read, not carried"
+    );
     assert_eq!(carried_state, Some(state));
 }
 

@@ -19,14 +19,29 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
         if items.is_empty() {
             "- none".to_string()
         } else {
-            items.iter().map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n")
+            items
+                .iter()
+                .map(|i| format!("- {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
     };
-    let or_none = |s: &str| if s.trim().is_empty() { "none".to_string() } else { s.to_string() };
+    let or_none = |s: &str| {
+        if s.trim().is_empty() {
+            "none".to_string()
+        } else {
+            s.to_string()
+        }
+    };
     let commands = if ledger.commands.is_empty() {
         "- none".to_string()
     } else {
-        ledger.commands.iter().map(render_command).collect::<Vec<_>>().join("\n")
+        ledger
+            .commands
+            .iter()
+            .map(render_command)
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let state_json = serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string());
     let task = ledger.original_task.as_deref().unwrap_or("");
@@ -88,11 +103,20 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
     let lines = |tag: &str| -> Vec<String> {
         tagged(previous, tag)
-            .map(|block| block.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+            .map(|block| {
+                block
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let ledger = TaskLedger {
-        original_task: tagged(previous, "original-task").filter(|t| !t.is_empty()).map(String::from),
+        original_task: tagged(previous, "original-task")
+            .filter(|t| !t.is_empty())
+            .map(String::from),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
         commands: Vec::new(),
