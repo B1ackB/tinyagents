@@ -195,7 +195,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         let chain = fingerprint_chain(&live);
         let check = self.check_fold(ctx.run_id(), &chain, &mut system);
         let prior = match &check {
-            FoldCheck::Applies(fold) => Some(fold.clone()),
+            FoldCheck::Applies(fold) => Some((**fold).clone()),
             _ => None,
         };
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
@@ -265,11 +265,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                 self.finish_compaction(
                     ctx,
                     record,
-                    first_kept_index,
+                    Some(first_kept_index),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Threshold,
-                    true,
                 );
                 request.messages = new_messages;
                 ctx.emit(AgentEvent::Compressed {
@@ -376,11 +375,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         self.finish_compaction(
             ctx,
             record,
-            first_kept_index,
+            Some(first_kept_index),
             from_tokens,
             to_tokens,
             CompactionReason::Threshold,
-            true,
         );
         request.messages = new_messages;
 
@@ -505,11 +503,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    folded + cut.index,
+                    fold_extends.then_some(folded + cut.index),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
-                    fold_extends,
                 );
                 retried.messages = new_messages;
                 return next.run(ctx, state, retried).await;
@@ -554,11 +551,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            folded + cut.index,
+            fold_extends.then_some(folded + cut.index),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
-            fold_extends,
         );
 
         let mut retried = request;
@@ -609,7 +605,7 @@ enum FoldCheck {
     /// The run has no fold.
     None,
     /// The transcript still starts with the folded messages: re-apply it.
-    Applies(crate::middleware::types::CompactionFold),
+    Applies(Box<crate::middleware::types::CompactionFold>),
     /// The host replaced the folded messages with this summary itself.
     HostApplied(String),
     /// The transcript is some other history; the fold was dropped.
@@ -695,7 +691,7 @@ impl ContextCompressionMiddleware {
             return FoldCheck::None;
         };
         if fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint) {
-            return FoldCheck::Applies(fold);
+            return FoldCheck::Applies(Box::new(fold));
         }
         state.fold = None;
         if let Some(at) = system.iter().position(|m| *m == fold.summary) {
@@ -753,11 +749,10 @@ impl ContextCompressionMiddleware {
         &self,
         ctx: &mut RunContext<Ctx>,
         record: SummaryRecord,
-        first_kept_index: usize,
+        boundary: Option<usize>,
         tokens_before: u64,
         tokens_after: u64,
         reason: CompactionReason,
-        persist: bool,
     ) {
         touch_run(
             &mut self.runs.lock().expect("runs mutex poisoned"),
@@ -765,24 +760,25 @@ impl ContextCompressionMiddleware {
         )
         .last_summary = Some(record.summary.text());
 
-        let compaction_record = CompactionRecord {
-            summary: record.summary.text(),
-            first_kept_index,
-            tokens_before,
-            tokens_after,
-            usage: None,
-            details: serde_json::json!({ "source_ids": record.provenance.source_ids }),
-            reason,
-        };
-
-        // `persist` is false when `first_kept_index` cannot be trusted as a
-        // live-transcript position (see the overflow path); a durable boundary
-        // there would restore or duplicate the wrong messages on resume.
-        if persist
+        // `boundary` is the first kept live-transcript position, or `None`
+        // when it cannot be trusted as one (see the overflow path): a durable
+        // boundary there would restore or duplicate the wrong messages on
+        // resume, so nothing is persisted.
+        if let Some(first_kept_index) = boundary
             && let Some(sink) = &ctx.compaction_sink
-            && let Err(err) = sink.persist(&compaction_record)
         {
-            tracing::debug!("[context_compression] compaction sink persist failed: {err}");
+            let compaction_record = CompactionRecord {
+                summary: record.summary.text(),
+                first_kept_index,
+                tokens_before,
+                tokens_after,
+                usage: None,
+                details: serde_json::json!({ "source_ids": record.provenance.source_ids }),
+                reason,
+            };
+            if let Err(err) = sink.persist(&compaction_record) {
+                tracing::debug!("[context_compression] compaction sink persist failed: {err}");
+            }
         }
 
         {
