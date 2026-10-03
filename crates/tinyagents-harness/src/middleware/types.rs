@@ -901,6 +901,65 @@ pub struct ContextCompressionMiddleware {
     /// last `before_model` saw, so the overflow path can extend the fold in
     /// live-transcript coordinates. Empty until the first call.
     pub(crate) live_chain: Mutex<Vec<u64>>,
+    /// Role the summary is written with. See
+    /// [`crate::summarization::SummaryPlacement`].
+    pub(crate) placement: crate::summarization::SummaryPlacement,
+    /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
+    pub(crate) pressure: Mutex<CompactionPressure>,
+    /// Ineffective compactions in a row that engage the anti-thrash guard.
+    pub(crate) thrash_strikes: u32,
+    /// Model calls the guard suppresses summarization for once engaged.
+    pub(crate) thrash_cooldown_calls: u32,
+}
+
+/// Default number of ineffective compactions in a row (the next real prompt
+/// still at or above the trigger) that engage the anti-thrash guard.
+pub const DEFAULT_THRASH_STRIKES: u32 = 2;
+
+/// Default number of model calls the anti-thrash guard suppresses
+/// summarization for once engaged; deterministic trim runs instead.
+pub const DEFAULT_THRASH_COOLDOWN_CALLS: u32 = 10;
+
+/// Per-run measurement state for [`ContextCompressionMiddleware`]'s trigger
+/// and anti-thrash guard.
+///
+/// The trigger prefers what the provider actually measured: the previous
+/// call's reported prompt tokens, plus an estimate of only the messages
+/// appended since (and of any growth in the tool declarations). The pure
+/// chars-based estimate is the fallback when no usage was reported.
+///
+/// The guard judges a compaction by the next *real* prompt size: still at or
+/// above the trigger is a strike, and enough strikes in a row suppress
+/// summarization for a cooldown during which the request is trimmed
+/// deterministically instead of paying for summaries that do not help.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CompactionPressure {
+    /// [`RunContext::instance_id`] this state belongs to; a different run
+    /// resets it.
+    pub(crate) run_instance: Option<u64>,
+    /// Message count and tool-schema token estimate of the last request this
+    /// middleware let through, waiting for that call's usage.
+    pub(crate) pending: Option<(usize, u64)>,
+    /// Provider-reported prompt tokens of the last answered call, with the
+    /// message count and schema tokens of the request that produced it.
+    pub(crate) measured: Option<MeasuredPrompt>,
+    /// Set by a compaction; the next reported usage decides whether it helped.
+    pub(crate) awaiting_verdict: bool,
+    /// Ineffective compactions in a row.
+    pub(crate) strikes: u32,
+    /// Model calls left in the current suppression window.
+    pub(crate) suppressed_for: u32,
+}
+
+/// A provider-measured prompt size and the request shape it was measured on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MeasuredPrompt {
+    /// Provider-reported input tokens of the call.
+    pub(crate) prompt_tokens: u64,
+    /// Messages the request carried (as this middleware left it).
+    pub(crate) messages: usize,
+    /// Estimated tokens of the tool declarations it carried.
+    pub(crate) schema_tokens: u64,
 }
 
 /// A compaction this middleware already performed, remembered so it is
