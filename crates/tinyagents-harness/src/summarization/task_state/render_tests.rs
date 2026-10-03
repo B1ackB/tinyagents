@@ -173,3 +173,17 @@ fn legacy_command_with_outcome_delimiter_uses_final_suffix() {
     assert_eq!(carried.commands[0].command, "echo '` → ok'");
     assert!(carried.commands[0].failed);
 }
+
+#[test]
+fn legacy_command_entities_are_decoded_before_carrying() {
+    let (state, ledger) = sample();
+    let mut body = render_task_state(&state, &ledger);
+    body.truncate(body.find("<recent-commands-json>").unwrap());
+    body = body.replace(
+        "- `go test ./vm/...` → FAILED: default_arguments_test.go:16: expected substring",
+        "- `cargo test &amp;&amp; cargo clippy` → FAILED: bad &lt;code&gt;",
+    );
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.commands[0].command, "cargo test && cargo clippy");
+    assert_eq!(carried.commands[0].error.as_deref(), Some("bad <code>"));
+}
