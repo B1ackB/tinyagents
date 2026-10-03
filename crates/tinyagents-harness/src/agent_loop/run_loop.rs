@@ -651,6 +651,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             status.mark_running(HarnessPhase::Middleware);
+            ctx.model_profile = self.preview_model_profile(&request);
             self.middleware
                 .run_before_model(ctx, state, &mut request)
                 .await?;
