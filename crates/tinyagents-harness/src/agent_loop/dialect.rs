@@ -677,4 +677,9 @@ impl DeltaScrubber {
     pub(super) fn has_calls(&self) -> bool {
         !self.calls.is_empty()
     }
+
+    /// Whether any complete call was withheld during the stream.
+    pub(super) fn has_withheld(&self) -> bool {
+        self.withheld > 0
+    }
 }
