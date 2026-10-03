@@ -407,6 +407,22 @@ fn fallback_trim_counts_message_framing_against_the_final_budget() {
     assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
 }
 
+#[test]
+fn fallback_trim_preserves_a_system_prompt_before_fitting_the_user_pin() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
+
+    let system = Message::system("s".repeat(350));
+    let user = Message::user("u".repeat(100));
+    let budget = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&system))
+        + crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&user))
+        - 1;
+    let kept = trim_keeping_turn_user_message(&[system.clone(), user], budget);
+
+    assert_eq!(kept.first(), Some(&system));
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
 /// Regression tests for the structural repair of transcript cut points.
 ///
 /// Every test here is written against the concrete provider failure it

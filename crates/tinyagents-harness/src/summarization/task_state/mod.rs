@@ -394,14 +394,10 @@ impl Summarizer for TaskStateSummarizer {
                 ledger.original_task = next.original_task;
             }
             for f in next.files_modified {
-                if !ledger.files_modified.contains(&f) {
-                    ledger.files_modified.push(f);
-                }
+                ledger::push_unique(&mut ledger.files_modified, f);
             }
             for f in next.files_read {
-                if !ledger.files_read.contains(&f) {
-                    ledger.files_read.push(f);
-                }
+                ledger::push_unique(&mut ledger.files_read, f);
             }
             ledger.commands.extend(next.commands);
             state = match (state, next_state) {

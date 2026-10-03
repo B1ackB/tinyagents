@@ -426,7 +426,7 @@ fn escaped_path_len(path: &str) -> usize {
         .sum()
 }
 
-fn push_unique(list: &mut Vec<String>, value: String) {
+pub(super) fn push_unique(list: &mut Vec<String>, value: String) {
     if let Some(at) = list.iter().position(|existing| existing == &value) {
         list.remove(at);
     }

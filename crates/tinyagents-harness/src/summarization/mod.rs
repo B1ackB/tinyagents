@@ -484,10 +484,17 @@ pub(crate) fn split_at_cut(
 /// user message when it fits the residual budget. Its tokens are reserved
 /// from `budget` first, so the result still fits.
 pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) -> Vec<Message> {
+    let system_tokens = crate::token_estimation::count_tokens_approximately(
+        &messages
+            .iter()
+            .filter(|message| matches!(message, Message::System(_)))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let Some(pin) = messages
         .iter()
         .rposition(|m| matches!(m, Message::User(_)))
-        .and_then(|index| fit_pinned_message(&messages[index], budget))
+        .and_then(|index| fit_pinned_message(&messages[index], budget.saturating_sub(system_tokens)))
     else {
         return enforce_approximate_budget(
             trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
