@@ -502,7 +502,7 @@ impl Default for SummarizationPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Summary placement and loop commit
+// Summary placement
 // ---------------------------------------------------------------------------
 
 /// Where a compaction summary is placed in the rebuilt transcript.
@@ -515,6 +515,7 @@ pub enum SummaryPlacement {
     /// A `user`-role message opening with
     /// [`crate::summarization::CHECKPOINT_PREFIX`], a reference-only marker
     /// telling the model the content is background data, not instructions.
+    /// It sits after the system prompt and before the kept messages.
     ///
     /// The default: the system prompt and tool declarations stay
     /// byte-identical across a compaction, so the provider's prefix cache
@@ -522,38 +523,11 @@ pub enum SummaryPlacement {
     /// system instruction.
     #[default]
     User,
-    /// A `system`-role message (the original placement). Kept for hosts
-    /// that relied on it; it adds a second system message after the prompt,
-    /// which churns the cacheable prefix on every compaction.
+    /// A `system`-role message carrying the same marker (the original
+    /// placement). Kept for hosts that relied on it; it adds a second system
+    /// message after the prompt, which churns the cacheable prefix on every
+    /// compaction.
     System,
-}
-
-/// A compaction the agent loop must apply to its **working transcript**,
-/// deposited on the run context by
-/// [`crate::middleware::ContextCompressionMiddleware`] through
-/// [`crate::context::RunContext::commit_compaction`].
-///
-/// Middleware only ever sees the per-call [`tinyinference_llm::model::ModelRequest`];
-/// without a commit the loop would rebuild the next request from the
-/// uncompacted transcript, so every later call would compact again. The loop
-/// drains the commit right after the lifecycle `before_model` hooks and after
-/// the model-wrap onion, and replaces everything after the leading system
-/// messages with `[summary, kept tail...]`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CompactionCommit {
-    /// The checkpoint message that replaces the folded history.
-    pub summary: Message,
-    /// How many trailing **non-system** messages of the transcript stay
-    /// verbatim. Counting from the tail keeps the commit valid when an
-    /// earlier middleware rewrote message bodies (or the loop's own request
-    /// differs from the transcript only in its system head).
-    pub kept_tail: usize,
-    /// Why the compaction ran.
-    pub reason: CompactionReason,
-    /// Estimated tokens of the request before compaction.
-    pub tokens_before: u64,
-    /// Estimated tokens of the request after compaction.
-    pub tokens_after: u64,
 }
 
 // ---------------------------------------------------------------------------
