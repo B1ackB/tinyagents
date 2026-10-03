@@ -1442,6 +1442,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // otherwise receive fewer than the policy's configured number
                 // of consecutive re-prompts.
                 dropped_tool_call_nudges_used = 0;
+                withheld_call_nudges_used = 0;
                 empty_response_retries_used = 0;
                 reset_truncated_empty_recovery(
                     &mut truncated_empty_retries_used,
@@ -1609,6 +1610,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     continue;
                 }
                 dropped_tool_call_nudges_used = 0;
+                withheld_call_nudges_used = 0;
                 empty_response_retries_used = 0;
 
                 // This turn resolved without scheduling a truncated-empty
@@ -1723,6 +1725,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // recovery state before the tools run so the next turn starts from
             // the caller's configured cap and a full retry budget.
             dropped_tool_call_nudges_used = 0;
+            withheld_call_nudges_used = 0;
             empty_response_retries_used = 0;
             reset_truncated_empty_recovery(
                 &mut truncated_empty_retries_used,
