@@ -894,6 +894,36 @@ pub struct ContextCompressionMiddleware {
     /// overflow-triggered) that can decline it or substitute a summary. See
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
+    /// The compaction this instance already performed, re-applied to every
+    /// later request. See [`CompactionFold`].
+    pub(crate) fold: Mutex<Option<CompactionFold>>,
+    /// Chained fingerprints of the live (pre-fold) non-system transcript the
+    /// last `before_model` saw, so the overflow path can extend the fold in
+    /// live-transcript coordinates. Empty until the first call.
+    pub(crate) live_chain: Mutex<Vec<u64>>,
+}
+
+/// A compaction this middleware already performed, remembered so it is
+/// re-applied rather than recomputed.
+///
+/// The agent loop rebuilds every request from its own working transcript, and
+/// `before_model` only rewrites that outgoing copy: the loop never sees the
+/// summary. Without this record every call after the first compaction found
+/// the full history over the threshold again, so it compacted on every turn
+/// and handed the summarizer the whole, ever-growing history each time
+/// (101 summarizer calls in one 300-call SWE task, ~85% of its cost, with the
+/// agent seeing only the summary and a handful of recent messages).
+#[derive(Clone, Debug)]
+pub(crate) struct CompactionFold {
+    /// How many leading non-system messages of the live transcript the
+    /// summary stands in for.
+    pub(crate) folded: usize,
+    /// Chained fingerprint of those `folded` messages. A transcript whose
+    /// prefix no longer matches (rewritten or replaced history) drops the
+    /// fold instead of splicing a summary over the wrong messages.
+    pub(crate) fingerprint: u64,
+    /// The summary message spliced in place of the folded messages.
+    pub(crate) summary: tinyinference_llm::message::Message,
 }
 
 // ── MicrocompactMiddleware ────────────────────────────────────────────────────
