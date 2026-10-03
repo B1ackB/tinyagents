@@ -380,6 +380,15 @@ impl ToolResultArtifactStore {
         read_tool: impl Into<String>,
         max_readable_bytes: u64,
     ) -> Self {
+        // The pointer is this path, so it must be absolute: a relative one would
+        // resolve against whatever directory the reading tool works in.
+        let storage_dir = if storage_dir.is_absolute() {
+            storage_dir
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&storage_dir))
+                .unwrap_or(storage_dir)
+        };
         Self::with_layout(
             storage_dir,
             StoreLayout::Detached,
