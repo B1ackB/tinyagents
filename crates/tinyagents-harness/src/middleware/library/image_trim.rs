@@ -246,12 +246,6 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             }
         }
 
-        // Hoisting models carry per-call guidance on a user or tool turn.
-        // Keep that small guidance even when the turn itself is evicted.
-        for note in rescued_notes {
-            push_ephemeral_instruction(request, note, ctx.model_profile.as_ref());
-        }
-
         if removed > 0 {
             let final_tokens: u64 = messages.iter().map(estimate_message_tokens).sum();
             tracing::warn!(
@@ -263,6 +257,11 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
                 budget = self.budget,
                 "[tinyagents::mw] message_trim evicted oldest history to fit the token budget"
             );
+        }
+        // Hoisting models carry per-call guidance on a user or tool turn.
+        // Keep that small guidance even when the turn itself is evicted.
+        for note in rescued_notes {
+            push_ephemeral_instruction(request, note, ctx.model_profile.as_ref());
         }
         Ok(())
     }
