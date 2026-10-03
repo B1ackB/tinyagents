@@ -191,7 +191,7 @@ async fn persisted_preview_is_bounded_for_small_budget() {
         apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call"), 320).await;
 
     assert!(outcome.persisted);
-    assert!(outcome.final_bytes <= MIN_ENVELOPE_ALLOWANCE_BYTES);
+    assert!(outcome.final_bytes <= envelope_budget_floor(&out));
     assert_eq!(out.len(), outcome.final_bytes);
     assert!(out.contains("[tool_result_preview]"));
     assert!(
@@ -361,19 +361,21 @@ async fn aggregate_forces_budget_when_envelope_has_no_savings() {
 
     let total: usize = results.iter().map(|result| result.output.len()).sum();
     // #4469 item 6: the aggregate spill now floors each persisted envelope at
-    // MIN_ENVELOPE_ALLOWANCE_BYTES so the `[tool_result_preview]` header +
-    // `artifact_path` pointer always survives (previously an exhausted budget
-    // could blank a result to ""). That is a documented trade — the total may
-    // slightly overshoot the raw aggregate budget — so the invariant is now:
-    // (a) no envelope is blanked, and (b) the total stays bounded by the
-    // per-result floor rather than the raw budget.
+    // Each envelope is floored at the size needed to retain its complete
+    // rendered header and the truncation trailer reserve, so the total may
+    // slightly overshoot the raw aggregate budget.
     assert!(
         results.iter().all(|result| !result.output.is_empty()),
         "no persisted envelope may be blanked — the artifact pointer must survive"
     );
+    let floor_total: usize = results
+        .iter()
+        .filter(|result| looks_like_preview_envelope(&result.output))
+        .map(|result| envelope_budget_floor(&result.output))
+        .sum();
     assert!(
-        total <= results.len() * MIN_ENVELOPE_ALLOWANCE_BYTES,
-        "total={total} exceeds the per-result envelope floor bound"
+        total <= floor_total,
+        "total={total} exceeds floor={floor_total}"
     );
     assert!(
         tmp.path()
