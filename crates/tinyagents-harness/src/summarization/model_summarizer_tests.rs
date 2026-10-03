@@ -222,14 +222,14 @@ const DSML_REPLY: &str = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke nam
 
 #[test]
 fn tool_call_markup_is_detected_but_quoted_json_and_prose_are_not() {
-    assert!(super::contains_tool_call_markup(DSML_REPLY));
-    assert!(super::contains_tool_call_markup(
+    assert!(super::model_summarizer::contains_tool_call_markup(DSML_REPLY));
+    assert!(super::model_summarizer::contains_tool_call_markup(
         "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
     ));
-    assert!(!super::contains_tool_call_markup(
+    assert!(!super::model_summarizer::contains_tool_call_markup(
         "## Goal\nShip the parser.\n\n## Active State\nConfig is {\"retries\": 3}."
     ));
-    assert!(!super::contains_tool_call_markup(
+    assert!(!super::model_summarizer::contains_tool_call_markup(
         "{\"name\":\"shell\",\"arguments\":{}}"
     ));
 }
