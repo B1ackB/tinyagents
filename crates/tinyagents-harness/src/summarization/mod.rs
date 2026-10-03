@@ -21,6 +21,7 @@
 //! All policy decisions are explicit data types, never hidden behaviour. Callers
 //! choose when to call, what to pass, and how to handle the result.
 
+mod checkpoint;
 pub mod compaction;
 mod model_summarizer;
 pub mod pairing;
@@ -29,6 +30,7 @@ mod resilient;
 mod trim;
 mod types;
 
+pub use checkpoint::{CHECKPOINT_PREFIX, checkpoint_body, checkpoint_message, is_checkpoint};
 pub use compaction::{
     CompactionContext, CompactionDecision, CutPoint, OverflowClassifier, OverflowInfo,
     OverflowProbe, find_cut_point, summarize_with_split,
@@ -237,10 +239,34 @@ impl SummarizationPolicy {
                 tools,
                 &crate::token_estimation::TokenCountOptions::default(),
             );
+        self.exceeds_trigger(tokens)
+    }
+
+    /// Whether a request of `tokens` total input tokens (messages plus tool
+    /// declarations, however they were measured) reaches the trigger.
+    ///
+    /// The same comparison [`Self::should_summarize_with_tools`] applies to
+    /// its own estimate, exposed so a caller holding a better measurement —
+    /// the provider-reported prompt size of the previous call, say — can use
+    /// it instead: at or above [`Self::trigger_budget`] when a context window
+    /// is set, strictly above [`Self::trigger_tokens`] otherwise.
+    pub fn exceeds_trigger(&self, tokens: u64) -> bool {
         match self.context_window {
             Some(_) => tokens >= self.trigger_budget(),
             None => tokens > self.trigger_tokens,
         }
+    }
+
+    /// Pins the trigger to an absolute token count, ignoring any context
+    /// window: the policy then compacts once a request exceeds `tokens`.
+    ///
+    /// For forcing compaction early (benchmarks, tests) and for models whose
+    /// window is unknown. Clears [`Self::context_window`], which only ever
+    /// fed the trigger.
+    pub fn with_trigger_override(mut self, tokens: u64) -> Self {
+        self.context_window = None;
+        self.trigger_tokens = tokens;
+        self
     }
 
     /// Split `messages` into `(to_summarize, to_keep)`.
