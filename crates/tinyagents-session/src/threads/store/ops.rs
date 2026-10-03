@@ -292,10 +292,8 @@ impl ConversationStore {
     ///
     /// Evicts the thread from the cross-thread search index the same way
     /// [`Self::delete_thread`] does: the index has no per-message removal, so
-    /// the conservative move is to drop the whole thread's postings rather
-    /// than search a stale truncated message back into a hit. The next
-    /// cross-thread search that touches this thread re-primes it from the
-    /// (now-truncated) file on disk.
+    /// the conservative move is to invalidate the cached index so the next
+    /// cross-thread search rebuilds it from the truncated file.
     pub fn delete_messages_from(
         &self,
         thread_id: &str,
@@ -341,9 +339,7 @@ impl ConversationStore {
         }
         {
             let mut cache = CONVERSATION_INDEX_CACHE.lock();
-            if let Some(idx) = cache.get_mut(&self.root_dir()) {
-                idx.remove_thread(thread_id);
-            }
+            cache.remove(&self.root_dir());
         }
         Ok(Some(removed))
     }

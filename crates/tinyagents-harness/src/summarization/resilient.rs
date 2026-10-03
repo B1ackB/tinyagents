@@ -204,7 +204,9 @@ impl Summarizer for FaultTolerantCachingSummarizer {
                 "[tinyagents::summarize] reusing cached summary (identical input slice; \
                  no summarizer LLM call)"
             );
-            return Ok(cached.record.clone());
+            let mut record = cached.record.clone();
+            record.usage = None;
+            return Ok(record);
         }
 
         // Circuit open from an earlier failure this turn: skip the known-bad LLM
