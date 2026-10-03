@@ -275,6 +275,7 @@ pub enum CompactionReason { Manual, Threshold, Overflow }
 
 pub struct CompactionRecord {
     pub summary: String,
+    pub placement: SummaryPlacement, // role to restore from durable storage
     pub first_kept_index: usize, // position in the non-system slice, matches CutPoint::index
     pub tokens_before: u64,
     pub tokens_after: u64,

@@ -48,7 +48,7 @@ pub struct Entry {
 | Kind             | Carries                                                        | Purpose |
 |------------------|-----------------------------------------------------------------|---------|
 | `Message`        | a `transcript::TranscriptMessage`                                | an ordinary conversation turn |
-| `Compaction`      | `summary`, `first_kept_entry_id`, `tokens_before`, `usage`, `details` | durable record of a context reduction |
+| `Compaction`      | `summary`, `placement`, `first_kept_entry_id`, `tokens_before`, `usage`, `details` | durable record of a context reduction |
 | `BranchSummary`   | `from_id`, `summary`                                             | a note on the abandoned path at a navigation point |
 | `Label`           | `name`                                                            | a named bookmark on a tip |
 | `Custom`          | `kind`, `payload`, `display`                                     | a host-defined out-of-band record |
@@ -86,11 +86,12 @@ list. The rule:
 1. Walk the chain looking for the **newest** `Compaction` entry on the path
    to `tip` (closest to the tip, since a chain may cross more than one
    compaction over its lifetime).
-2. If found: the result starts with **one synthesized `Message::System`**
-   whose text is the compaction's `summary`, followed by every entry from
+2. If found: the result starts with one message in the compaction's recorded
+   `placement` role whose text is its `summary`, followed by every entry from
    `first_kept_entry_id` (inclusive) to `tip`, in chronological order.
    Nothing older than the compaction is ever included — this is the "context
    never reads past a compaction" invariant from pi's harness design.
+   Older entries without `placement` restore as system messages.
 3. If not found: every entry from the root is kept.
 
 `Label` and `BranchSummary` entries are tree bookkeeping, not conversation
