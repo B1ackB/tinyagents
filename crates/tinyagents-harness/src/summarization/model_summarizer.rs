@@ -122,9 +122,14 @@ impl ModelSummarizer {
 
         let summary = summary.trim();
         if summary.is_empty() {
-            return Err(TinyAgentsError::Model(
-                "summarizer returned empty response".into(),
-            ));
+            let error = TinyAgentsError::Model("summarizer returned empty response".into());
+            return Err(match usage {
+                Some(usage) => TinyAgentsError::SummarizationUsage {
+                    error: Box::new(error),
+                    usage,
+                },
+                None => error,
+            });
         }
 
         let body = format!("=== Conversation Summary (compacted) ===\n{summary}");

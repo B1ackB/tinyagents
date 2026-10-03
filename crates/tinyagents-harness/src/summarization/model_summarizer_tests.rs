@@ -315,3 +315,19 @@ async fn fallback_reports_usage_from_failed_markup_attempts() {
     let record = guarded.summarize(&[Message::user("x")]).await.unwrap();
     assert_eq!(record.usage.unwrap().total_tokens, 30);
 }
+
+#[tokio::test]
+async fn fallback_reports_usage_from_empty_summary() {
+    let usage = Usage {
+        total_tokens: 15,
+        ..Usage::default()
+    };
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse::assistant("").with_usage(usage),
+    ]));
+    let policy = SummarizationPolicy::default().with_context_window(1_000);
+    let guarded =
+        FaultTolerantCachingSummarizer::new(Box::new(ModelSummarizer::new(model, "m")), &policy);
+    let record = guarded.summarize(&[Message::user("x")]).await.unwrap();
+    assert_eq!(record.usage, Some(usage));
+}
