@@ -28,6 +28,7 @@ use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{CallId, RunId};
 use crate::summarization::{SummarizationPolicy, Summarizer, SummaryRecord, TrimStrategy};
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ModelDelta, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::{ToolCall, ToolDelta};
 use tinyinference_llm::usage::UsageTotals;
