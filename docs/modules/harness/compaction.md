@@ -223,10 +223,19 @@ a typed task state instead of free-form prose. It has two halves:
   `next_step`). On a later compaction the call gets the previous state as
   `<previous_state>` and updates it.
 
-Both halves round-trip through tagged blocks (`<modified-files>`,
-`<read-files>`, `<task-state>`), so `parse_carried` reads them back from the
-previous summary and the next checkpoint carries them exactly rather than
-re-summarizing a summary. A free-form previous summary (from another
+The ledger round-trips through tagged blocks (`<original-task>`,
+`<modified-files>`, `<read-files>`), and the state through its one-line `## `
+sections. `parse_carried` reads both back from the previous summary, so the
+next checkpoint carries them exactly rather than re-summarizing a summary.
+The state is written once: a JSON copy beside the sections doubled every
+checkpoint in a live run.
+
+`TaskState::bounded` caps every list (requirements 40, others 12; history
+lists keep the most recent, open work keeps the oldest) and every item (400
+chars). Without it the lists only grow, because the model is told to keep
+what is still true. On a live DeepSWE run that took the checkpoint to about
+14k tokens, so each compaction freed almost nothing and fired again a few
+calls later. A free-form previous summary (from another
 summarizer) carries nothing and is handed to the model as the previous state.
 
 - **Chunking.** A history longer than `with_max_chunk_tokens` (default 100k)

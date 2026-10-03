@@ -176,18 +176,21 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
         files_read: lines("read-files"),
         commands: Vec::new(),
     };
-    let state = previous.trim_start().starts_with(TASK_STATE_HEADER).then(|| TaskState {
-        goal: section_text(previous, GOAL),
-        requirements: section_items(previous, REQUIREMENTS),
-        constraints: section_items(previous, CONSTRAINTS),
-        decisions: section_items(previous, DECISIONS),
-        errors_and_fixes: section_items(previous, ERRORS),
-        todos_done: section_items(previous, DONE),
-        todos_open: section_items(previous, OPEN),
-        current_hypothesis: section_text(previous, HYPOTHESIS),
-        test_command: section_text(previous, TEST),
-        next_step: section_text(previous, NEXT),
-    });
+    let state = previous
+        .trim_start()
+        .starts_with(TASK_STATE_HEADER)
+        .then(|| TaskState {
+            goal: section_text(previous, GOAL),
+            requirements: section_items(previous, REQUIREMENTS),
+            constraints: section_items(previous, CONSTRAINTS),
+            decisions: section_items(previous, DECISIONS),
+            errors_and_fixes: section_items(previous, ERRORS),
+            todos_done: section_items(previous, DONE),
+            todos_open: section_items(previous, OPEN),
+            current_hypothesis: section_text(previous, HYPOTHESIS),
+            test_command: section_text(previous, TEST),
+            next_step: section_text(previous, NEXT),
+        });
     (ledger, state)
 }
 

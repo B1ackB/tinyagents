@@ -59,3 +59,32 @@ fn state_replies_parse_through_fences_and_prose() {
     assert!(parse_state_reply("no json here").is_none());
     assert!(parse_state_reply("{\"goal\": [}").is_none());
 }
+
+#[test]
+fn the_state_is_written_once_and_read_back_from_its_sections() {
+    let (mut state, ledger) = sample();
+    state.decisions = vec!["use goyacc output as is — no network".into()];
+    state.current_hypothesis = "the parser\nreturns syntax error".into();
+    let body = render_task_state(&state, &ledger);
+    assert!(!body.contains("<task-state>"), "no JSON copy of the state");
+    assert_eq!(
+        body.matches("invalid default argument declaration").count(),
+        1
+    );
+
+    let (_, carried) = parse_carried(&body);
+    let carried = carried.expect("a task-state checkpoint carries its state");
+    assert_eq!(carried.decisions, state.decisions);
+    assert_eq!(carried.requirements, state.requirements);
+    assert_eq!(carried.todos_open, state.todos_open);
+    assert!(
+        carried.constraints.is_empty(),
+        "`- none` reads back as empty"
+    );
+    // Multi-line values are written on one line, so they read back whole.
+    assert_eq!(
+        carried.current_hypothesis,
+        "the parser returns syntax error"
+    );
+    assert_eq!(carried.next_step, state.next_step);
+}

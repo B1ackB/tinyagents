@@ -165,3 +165,70 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
 }
+
+#[test]
+fn bounded_caps_lists_and_items() {
+    let many = |n: usize| (0..n).map(|i| format!("item {i}")).collect::<Vec<_>>();
+    let state = TaskState {
+        requirements: many(60),
+        decisions: many(40),
+        todos_done: many(40),
+        todos_open: many(40),
+        errors_and_fixes: vec!["e".repeat(5_000)],
+        current_hypothesis: "h".repeat(5_000),
+        ..TaskState::default()
+    }
+    .bounded();
+    assert_eq!(state.requirements.len(), 40);
+    assert_eq!(
+        state.requirements[0], "item 0",
+        "requirements keep the first"
+    );
+    assert_eq!(state.decisions.len(), 12);
+    assert_eq!(
+        state.decisions[11], "item 39",
+        "history keeps the most recent"
+    );
+    assert_eq!(state.todos_done[0], "item 28");
+    assert_eq!(state.todos_open[0], "item 0", "open work keeps the oldest");
+    assert!(state.errors_and_fixes[0].chars().count() <= 401);
+    assert!(state.current_hypothesis.chars().count() <= 801);
+}
+
+#[tokio::test]
+async fn checkpoint_size_stays_bounded_across_many_compactions() {
+    // A model that only ever adds to its lists, as the live DeepSWE run did.
+    let replies: Vec<String> = (0..30)
+        .map(|i| {
+            let grow = |p: &str| (0..(i + 1) * 3).map(|j| format!("\"{p} {j}: {}\"", "x".repeat(200))).collect::<Vec<_>>().join(",");
+            format!(
+                "{{\"goal\": \"g\", \"decisions\": [{}], \"todos_done\": [{}], \"errors_and_fixes\": [{}]}}",
+                grow("decision"),
+                grow("done"),
+                grow("error")
+            )
+        })
+        .collect();
+    let model = Arc::new(ScriptedModel::replies(replies));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let mut previous: Option<String> = None;
+    let mut sizes = Vec::new();
+    for i in 0..30 {
+        let mut request =
+            SummaryRequest::new(shell(&format!("c{i}"), &format!("cat src/f{i}.rs"), "ok"));
+        if let Some(p) = &previous {
+            request = request.with_previous_summary(p.clone());
+        }
+        let body = summarizer
+            .summarize_request(&request)
+            .await
+            .unwrap()
+            .summary
+            .text();
+        sizes.push(body.len());
+        previous = Some(body);
+    }
+    let last = *sizes.last().unwrap();
+    // 3 lists x 12 items x ~215 chars, plus the ledger: well under 12k chars.
+    assert!(last < 12_000, "checkpoint grew to {last} chars: {sizes:?}");
+}

@@ -297,7 +297,7 @@ impl Summarizer for TaskStateSummarizer {
                 "[tinyagents::task_state] no model state; checkpoint carries the ledger only"
             );
         }
-        let body = render_task_state(&state.unwrap_or_default(), &ledger);
+        let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         let summary_token_estimate = estimate_tokens(&body);
         tracing::info!(
             model = %self.model_id,
@@ -354,7 +354,7 @@ impl Summarizer for TaskStateSummarizer {
             }
             state = next_state.or(state);
         }
-        let body = render_task_state(&state.unwrap_or_default(), &ledger);
+        let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
             provenance: CompressionProvenance {
                 source_ids: summaries
