@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use super::*;
+use crate::middleware::ContextCompressionMiddleware;
 use crate::context::{RunConfig, RunContext};
 use crate::error::Result;
 use crate::middleware::{Middleware, MiddlewareStack};
