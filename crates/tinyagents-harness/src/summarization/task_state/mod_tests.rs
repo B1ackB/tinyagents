@@ -151,7 +151,7 @@ async fn long_histories_are_folded_in_sequential_chunks() {
 async fn merge_unions_files_and_keeps_the_later_state() {
     let model = Arc::new(ScriptedModel::replies(vec![
         STATE_REPLY,
-        r#"{"goal": "later"}"#,
+        r#"{"goal": "later", "requirements": ["second half requirement"]}"#,
     ]));
     let summarizer = TaskStateSummarizer::new(model, "m");
     let a = summarizer.summarize(&history()).await.unwrap();
@@ -162,6 +162,8 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     let merged = summarizer.merge(&[a, b]).await.unwrap();
     let body = merged.summary.text();
     assert!(body.contains("## Goal\nlater"));
+    assert!(body.contains("second half requirement"));
+    assert!(body.contains("invalid default argument declaration"));
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
     assert!(body.contains("invalid default argument declaration"));
