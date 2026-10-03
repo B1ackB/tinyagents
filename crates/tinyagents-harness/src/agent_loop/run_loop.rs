@@ -401,6 +401,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // records the original cap so growth stays clamped at 4x, and the counter
         // bounds how many times we re-issue the call.
         let mut truncated_empty_retries_used: u32 = 0;
+        // "Stop deliberating" re-prompts once the retries above are spent
+        // (see `RunPolicy::truncated_empty_nudges`). Same per-turn scope.
+        let mut truncated_empty_nudges_used: u32 = 0;
         let mut empty_response_retries_used: u32 = 0;
         // Consecutive "you said tool_calls but sent none" re-prompts
         // (see `RunPolicy::dropped_tool_call_nudges`).
@@ -513,6 +516,30 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 }
             }
 
+            // The tool-change patch must use the hosted model's placement
+            // rules. Keep this decision for middleware and dispatch while
+            // the routing inputs remain unchanged.
+            let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(
+                None::<(
+                    Option<String>,
+                    Option<tinyinference_llm::model::CapabilitySet>,
+                    crate::model_registry::ResolvedModelBinding<State>,
+                )>,
+            ));
+            let patch_request = ModelRequest::default();
+            let patch_profile =
+                if let Some(binding) = self.resolve_host_model(ctx, &patch_request).await? {
+                    let profile = binding.model.profile().cloned();
+                    *resolution_cache.lock().unwrap() = Some((
+                        patch_request.model.clone(),
+                        patch_request.required_capabilities.clone(),
+                        binding,
+                    ));
+                    profile
+                } else {
+                    self.preview_model_profile(&patch_request)
+                };
+
             // B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
             // re-consult the toolset chain (documented as "called once per
             // turn", `ToolSet::tools`) and diff its live set against what
@@ -549,19 +576,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 if let Some(patch) =
                     tool_changes::diff_tool_set(&declared_tool_schemas, &live_schemas)
                 {
-                    // A cheap, non-mutating preview resolution against the
-                    // transcript as it stands (pre-patch) decides fold vs.
-                    // insert. It is a pure registry lookup (no network call,
-                    // see `ModelRegistry::resolve_request`), so this stays
-                    // proportional to the diff it gates. An unresolved
-                    // preview conservatively folds (`false`): folding is
-                    // always correct, only less cache-friendly.
-                    let mid_conversation = self
-                        .models
-                        .resolve_request(&ModelRequest::new(messages.clone()), None, None)
-                        .and_then(|binding| binding.model.profile().cloned())
-                        .is_some_and(|profile| profile.mid_conversation_system_messages);
-                    tool_changes::apply_tool_change_patch(messages, patch, mid_conversation);
+                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
+                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
                     declared_tool_schemas = live_schemas.clone();
                     direct_tool_schemas = live_schemas;
                 }
@@ -576,12 +592,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .collect();
             if !newly_promoted.is_empty() {
                 if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
-                    let mid_conversation = self
-                        .models
-                        .resolve_request(&ModelRequest::new(messages.clone()), None, None)
-                        .and_then(|binding| binding.model.profile().cloned())
-                        .is_some_and(|profile| profile.mid_conversation_system_messages);
-                    tool_changes::apply_tool_change_patch(messages, patch, mid_conversation);
+                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
+                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
                 }
                 recorded_promotions.extend(newly_promoted.iter().map(|schema| schema.name.clone()));
                 promoted_schemas.extend(
@@ -650,9 +662,52 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 request.max_tokens = Some(boost);
             }
 
+            // Known tool requirements must shape the hosted profile seen by
+            // middleware. The later gate below still catches tools added by
+            // a before_model hook.
+            if matches!(
+                self.policy.tool_dialect,
+                crate::config::ToolDispatcher::Native
+            ) && (!request.tools.is_empty()
+                || matches!(request.response_format, Some(ResponseFormat::Auto { .. })))
+            {
+                request
+                    .required_capabilities
+                    .get_or_insert_default()
+                    .tool_calling = true;
+            }
+
             status.mark_running(HarnessPhase::Middleware);
+            ctx.model_profile = patch_profile;
+            let profile_cache = resolution_cache.clone();
             self.middleware
-                .run_before_model(ctx, state, &mut request)
+                .run_before_model_with_profile(
+                    ctx,
+                    state,
+                    &mut request,
+                    self,
+                    move |harness, ctx, request| {
+                        let resolution_cache = profile_cache.clone();
+                        Box::pin(async move {
+                            let key =
+                                (request.model.clone(), request.required_capabilities.clone());
+                            if let Some((cached_key, cached_capabilities, binding)) =
+                                resolution_cache.lock().unwrap().as_ref()
+                                && *cached_key == key.0
+                                && *cached_capabilities == key.1
+                            {
+                                return Ok(binding.model.profile().cloned());
+                            }
+                            if let Some(binding) = harness.resolve_host_model(ctx, request).await? {
+                                let profile = binding.model.profile().cloned();
+                                *resolution_cache.lock().unwrap() = Some((key.0, key.1, binding));
+                                Ok(profile)
+                            } else {
+                                Ok(harness.preview_model_profile(request))
+                            }
+                        })
+                    },
+                )
                 .await?;
 
             // A forced native dialect cannot silently select a model that
@@ -691,7 +746,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // `RunContext`; explicit-model SDK calls continue to resolve only
             // through the local registry. Context-instance identity keeps two
             // same-id concurrent runs from borrowing each other's model.
-            let binding = if let Some(binding) = self.resolve_host_model(ctx, &request).await? {
+            let cached = resolution_cache.lock().unwrap().take().and_then(
+                |(model, capabilities, binding)| {
+                    (model == request.model && capabilities == request.required_capabilities)
+                        .then_some(binding)
+                },
+            );
+            let hosted_binding = match cached {
+                Some(binding) => Some(binding),
+                None => self.resolve_host_model(ctx, &request).await?,
+            };
+            let binding = if let Some(binding) = hosted_binding {
                 binding
             } else {
                 self.models
@@ -705,6 +770,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         )
                     })?
             };
+            ctx.model_profile = binding.model.profile().cloned();
+            crate::middleware::library::rehome_ephemeral_system_instructions(
+                &mut request,
+                ctx.model_profile.as_ref(),
+            );
             let model_name = binding.resolved.name.clone();
 
             // An explicit request override that resolution skipped (unknown
@@ -1449,6 +1519,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 empty_response_retries_used = 0;
                 reset_truncated_empty_recovery(
                     &mut truncated_empty_retries_used,
+                    &mut truncated_empty_nudges_used,
                     &mut boosted_max_tokens,
                     &mut truncation_base,
                 );
@@ -1543,6 +1614,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && response.text().trim().is_empty();
                 if truncated_empty
                     && truncated_empty_retries_used < self.policy.truncated_empty_retries
+                    && ctx.limits.remaining_model_calls() > 0
                 {
                     // Drop the useless empty assistant row appended above so the
                     // retry re-sends the identical transcript.
@@ -1563,6 +1635,50 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     let record = ctx.emit(AgentEvent::RetryScheduled {
                         call_id: call_id.clone(),
                         attempt: truncated_empty_retries_used as usize,
+                    });
+                    status.set_last_event(record.id);
+                    continue;
+                }
+
+                // The boosted retry is spent and the model still deliberated
+                // past its output budget. Re-sending the same transcript keeps
+                // failing the same way (a high-effort reasoning model thinks
+                // as long as it is allowed to), and finishing here hands the
+                // host a blank reply it can only close as if the work were
+                // done. Say plainly what happened and ask for the next step,
+                // then carry on with the loop. The boosted cap stays in force.
+                if truncated_empty
+                    && truncated_empty_nudges_used < self.policy.truncated_empty_nudges
+                    && ctx.limits.remaining_model_calls() > 0
+                {
+                    messages.pop();
+                    truncated_empty_nudges_used += 1;
+                    let nudge = if tools_available_this_turn {
+                        TRUNCATED_EMPTY_TOOL_NUDGE
+                    } else {
+                        TRUNCATED_EMPTY_ANSWER_NUDGE
+                    };
+                    tracing::info!(
+                        target: "tinyagents::agent_loop",
+                        run_id = %ctx.run_id(),
+                        call_id = %call_id,
+                        attempt = truncated_empty_nudges_used,
+                        tools_available = tools_available_this_turn,
+                        max_tokens = ?boosted_max_tokens.or(attempt_max_tokens),
+                        "[agent_loop] truncated-empty retries spent; nudging model to act"
+                    );
+                    ctx.emit(AgentEvent::ControlApplied {
+                        control: "truncated_empty_nudge".to_string(),
+                        detail: format!(
+                            "model call `{call_id}` ran out of output tokens while reasoning \
+                             after {truncated_empty_retries_used} retry(ies); re-prompted to act"
+                        ),
+                    });
+                    messages.push(Message::user(nudge));
+                    let record = ctx.emit(AgentEvent::RetryScheduled {
+                        call_id: call_id.clone(),
+                        attempt: (truncated_empty_retries_used + truncated_empty_nudges_used)
+                            as usize,
                     });
                     status.set_last_event(record.id);
                     continue;
@@ -1665,6 +1781,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // counter would deny recovery to a later turn that needs it.
                 reset_truncated_empty_recovery(
                     &mut truncated_empty_retries_used,
+                    &mut truncated_empty_nudges_used,
                     &mut boosted_max_tokens,
                     &mut truncation_base,
                 );
@@ -1774,6 +1891,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             empty_response_retries_used = 0;
             reset_truncated_empty_recovery(
                 &mut truncated_empty_retries_used,
+                &mut truncated_empty_nudges_used,
                 &mut boosted_max_tokens,
                 &mut truncation_base,
             );
@@ -2505,6 +2623,23 @@ const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but
      available for this reply, so it did not run. Do not write tool calls. Answer now in plain \
      text from the results already gathered, and state any remaining uncertainty.";
 
+/// The re-prompt sent when a reply ran out of output tokens while reasoning,
+/// produced no tool call, and the boosted retry failed the same way (see
+/// [`crate::runtime::RunPolicy::truncated_empty_nudges`]). It names the cause
+/// and asks for the smallest next step: a model told only to "continue"
+/// deliberates again, and one writing a large file in a single call runs out
+/// again.
+const TRUNCATED_EMPTY_TOOL_NUDGE: &str = "Your last reply ran out of output tokens while \
+     reasoning and produced no tool call. Stop deliberating: make the next tool call now, and \
+     write files incrementally in small pieces.";
+
+/// [`TRUNCATED_EMPTY_TOOL_NUDGE`] for a turn with no callable tool (tools
+/// withdrawn for a concluding answer, or `ToolChoice::None`): asking for a
+/// tool call there would only get a call that cannot run.
+const TRUNCATED_EMPTY_ANSWER_NUDGE: &str = "Your last reply ran out of output tokens while \
+     reasoning and produced no answer. Stop deliberating and write a short answer now from \
+     what you already have.";
+
 /// The re-prompt sent when a text-dialect tool-call block could not be
 /// decoded: no tool ran, and the model should know why rather than assume
 /// its call went through.
@@ -2566,13 +2701,15 @@ fn resolve_call_cap(config_cap: Option<usize>, policy_cap: usize) -> usize {
 /// [`crate::runtime::RunPolicy::truncated_empty_retries`]).
 ///
 /// The state is scoped to a single logical turn: the boosted token cap and the
-/// retry counter must not carry over into the turns that follow a recovered one.
+/// retry and nudge counters must not carry over into the turns that follow a recovered one.
 fn reset_truncated_empty_recovery(
     retries_used: &mut u32,
+    nudges_used: &mut u32,
     boosted_max_tokens: &mut Option<u32>,
     truncation_base: &mut Option<u32>,
 ) {
     *retries_used = 0;
+    *nudges_used = 0;
     *boosted_max_tokens = None;
     *truncation_base = None;
 }

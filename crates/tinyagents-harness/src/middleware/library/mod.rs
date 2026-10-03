@@ -64,6 +64,7 @@ mod budget;
 mod compaction_pressure;
 mod context;
 mod credential_scrub;
+mod ephemeral;
 mod image_trim;
 mod memory_protocol;
 mod memory_protocol_middleware;
@@ -73,6 +74,7 @@ mod repeat_progress;
 mod resilience;
 mod tool_policy;
 mod verify_before_finish;
+mod turn_clock;
 mod wrap_up;
 
 pub use arg_recovery::ArgRecoveryMiddleware;
@@ -84,6 +86,8 @@ pub use credential_scrub::{
     CredentialScrubMiddleware, REDACTION_PLACEHOLDER, ToolScrubber, redaction_notice,
     scrub_with_notice,
 };
+pub(crate) use ephemeral::rehome_ephemeral_system_instructions;
+pub use ephemeral::{HARNESS_NOTE_HEADER, push_ephemeral_instruction};
 pub use image_trim::{
     IMAGE_MARKER_TOKEN_COST, ImageAwareMessageTrimMiddleware, estimate_message_tokens,
     estimate_text_tokens, legacy_max_input_tokens,
@@ -104,6 +108,8 @@ pub use verify_before_finish::{
     DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
     MIN_REMAINING_MODEL_CALLS, VerifyBeforeFinishMiddleware,
 };
+pub(crate) use turn_clock::is_json_document;
+pub use turn_clock::{TurnClock, TurnClockMiddleware};
 pub use wrap_up::{
     CapturedOutcomes, DEFAULT_CLEARED_PLACEHOLDER, FinalCallWrapUpMiddleware, OutcomesUnavailable,
 };
@@ -120,6 +126,9 @@ mod context_fold_test;
 #[cfg(test)]
 #[path = "context_loop_tests.rs"]
 mod context_loop_test;
+#[cfg(test)]
+#[path = "context_pin_tests.rs"]
+mod context_pin_test;
 #[cfg(test)]
 #[path = "context_task_state_tests.rs"]
 mod context_task_state_test;
