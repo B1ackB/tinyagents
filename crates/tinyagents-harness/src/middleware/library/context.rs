@@ -88,7 +88,20 @@ impl ContextCompressionMiddleware {
             placement: SummaryPlacement::default(),
             thrash_strikes: DEFAULT_THRASH_STRIKES,
             thrash_cooldown_calls: DEFAULT_THRASH_COOLDOWN_CALLS,
+            keep_recent_tokens: None,
         }
+    }
+
+    /// Keeps the most recent `tokens` of history verbatim at each compaction
+    /// (cut at a user or assistant message), instead of the policy's
+    /// `keep_last` message count. A fixed message count keeps almost nothing
+    /// when recent turns are large tool results and too much when they are
+    /// short; a token budget keeps a predictable working set. 20k is the
+    /// measured default for coding agents with large windows; scale it to
+    /// about a fifth of a small model's window.
+    pub fn with_keep_recent_tokens(mut self, tokens: u64) -> Self {
+        self.keep_recent_tokens = Some(tokens);
+        self
     }
 
     /// Sets the role the summary is written with. Defaults to
@@ -405,7 +418,10 @@ impl ContextCompressionMiddleware {
             .cloned()
             .chain(live[folded..].iter().cloned())
             .collect();
-        let (to_summarize, to_keep) = self.policy.plan(&unfolded);
+        let (to_summarize, to_keep) = match self.keep_recent_tokens {
+            Some(tokens) => self.policy.plan_recent_tokens(&unfolded, tokens),
+            None => self.policy.plan(&unfolded),
+        };
         // Nothing old enough to compress (e.g. keep_last covers everything):
         // keep the request as it stands rather than summarizing an empty set.
         if to_summarize.is_empty() {
@@ -413,7 +429,7 @@ impl ContextCompressionMiddleware {
         }
 
         let from_tokens = total_message_tokens(&request.messages);
-        // `plan` splits by count, so `to_summarize` is exactly the next
+        // Both plans split one contiguous range, so `to_summarize` is exactly the next
         // `to_summarize.len()` live messages after the existing fold. The
         // record's `first_kept_index` is in live-transcript coordinates — what
         // a session-backed `CompactionSink` maps to an entry id — see

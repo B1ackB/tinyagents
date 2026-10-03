@@ -913,6 +913,10 @@ pub struct ContextCompressionMiddleware {
     pub(crate) thrash_strikes: u32,
     /// Model calls the guard suppresses summarization for once engaged.
     pub(crate) thrash_cooldown_calls: u32,
+    /// When set, the verbatim tail is this many recent tokens instead of
+    /// the policy's `keep_last` messages (see
+    /// [`crate::summarization::SummarizationPolicy::plan_recent_tokens`]).
+    pub(crate) keep_recent_tokens: Option<u64>,
 }
 
 /// Default number of ineffective compactions in a row (the next real prompt
