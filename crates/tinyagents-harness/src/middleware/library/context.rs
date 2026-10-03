@@ -540,7 +540,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             Err(error) => error,
         };
 
-        let Some(_overflow) = self.overflow_classifier.classify(&first_error) else {
+        let Some(overflow) = self.overflow_classifier.classify(&first_error) else {
             return Err(first_error);
         };
 
@@ -549,7 +549,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         // raw history to summarize again.
         let mut stripped = request.messages.clone();
         let carried = take_checkpoints(&mut stripped);
-        let keep_recent_tokens = self.policy.trigger_budget();
+        // The provider just rejected a request `before_model` judged to fit, so
+        // the estimate cannot be trusted to size the kept tail: keep at most
+        // half of what the transcript estimates to (and half the provider's
+        // stated limit, when it gave one), never more than the trigger budget.
+        // Keeping the full trigger budget, as before, found no cut at all
+        // whenever the estimate was under the trigger, which is exactly the
+        // case where a provider overflow surprises us.
+        let estimated = total_message_tokens(&stripped);
+        let keep_recent_tokens = self
+            .policy
+            .trigger_budget()
+            .min(estimated / 2)
+            .min(overflow.limit.map_or(u64::MAX, |limit| limit / 2))
+            .max(1);
         let Some(cut) = find_cut_point(
             &stripped,
             keep_recent_tokens,
