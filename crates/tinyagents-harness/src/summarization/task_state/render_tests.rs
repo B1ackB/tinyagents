@@ -67,6 +67,15 @@ fn a_free_form_previous_summary_carries_nothing() {
 }
 
 #[test]
+fn legacy_task_state_without_original_task_still_parses_sections() {
+    let body = "# Task state (compacted)\n\n## Goal\nlegacy goal\n\n## Open\n- unfinished";
+    let (_, state) = parse_carried(body);
+    let state = state.expect("task-state header should identify the carried state");
+    assert_eq!(state.goal, "legacy goal");
+    assert_eq!(state.todos_open, vec!["unfinished"]);
+}
+
+#[test]
 fn state_replies_parse_through_fences_and_prose() {
     let reply = "Here is the state:\n```json\n{\"goal\": \"g\", \"todos_open\": [\"x\"]}\n```";
     let state = parse_state_reply(reply).unwrap();

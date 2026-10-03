@@ -131,7 +131,9 @@ fn one_line(text: &str) -> String {
 /// heading or tagged block.
 fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
     // Only search the generated sections, never Markdown in the original task.
-    let sections = text.split_once("</original-task>")?.1;
+    let sections = text
+        .split_once("</original-task>")
+        .map_or(text, |(_, sections)| sections);
     let at = sections.find(&format!("\n{heading}\n"))? + heading.len() + 2;
     let rest = &sections[at..];
     let end = rest
