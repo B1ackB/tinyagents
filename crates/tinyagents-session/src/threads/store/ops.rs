@@ -292,19 +292,16 @@ impl ConversationStore {
     /// should treat this as "nothing to truncate", not silently drop the
     /// whole log).
     ///
-    /// Evicts the thread from the cross-thread search index the same way
-    /// [`Self::delete_thread`] does: the index has no per-message removal, so
-    /// the conservative move is to invalidate the cached index so the next
-    /// cross-thread search rebuilds it from the truncated file.
+    /// Rebuilds any cached postings for this thread from the kept messages
+    /// immediately after the file rewrite.
     pub fn delete_messages_from(
         &self,
         thread_id: &str,
         message_id: &str,
     ) -> Result<Option<usize>, String> {
-        let _lifecycle = self.locks.lifecycle.read();
-        // A cold builder may already have scanned this thread. Wait for its
-        // publication before rewriting and evicting the cached index.
-        let _build = self.locks.index_build.lock();
+        // Exclude cold index builds and readers across the rewrite and cache
+        // refresh so removed content cannot be published after truncation.
+        let _lifecycle = self.locks.lifecycle.write();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
         let path = self.thread_messages_path(thread_id);
@@ -315,6 +312,15 @@ impl ConversationStore {
         let removed = messages.len() - cut_at;
         let kept = &messages[..cut_at];
         rewrite_jsonl(&path, kept)?;
+        {
+            let mut cache = CONVERSATION_INDEX_CACHE.lock();
+            if let Some(idx) = cache.get_mut(&self.root_dir()) {
+                idx.remove_thread(thread_id);
+                for message in kept {
+                    idx.insert(thread_id, message.clone());
+                }
+            }
+        }
         // The compact stat trail in `threads.jsonl` (`MessageAppended`/
         // `Stats`) only ever grows via `append_message`'s increment — it has
         // no notion of a truncation. Append an authoritative `Stats` snapshot
@@ -342,10 +348,6 @@ impl ConversationStore {
                     message_bytes: Some(fs::metadata(&path).map_err(|e| e.to_string())?.len()),
                 },
             )?;
-        }
-        {
-            let mut cache = CONVERSATION_INDEX_CACHE.lock();
-            cache.remove(&self.root_dir());
         }
         Ok(Some(removed))
     }
