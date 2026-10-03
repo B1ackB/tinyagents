@@ -135,6 +135,10 @@ impl VerifyBeforeFinishMiddleware {
         self
     }
 
+    pub fn with_wall_clock_limit(self, _limit: Duration) -> Self {
+        self
+    }
+
     /// Why this response must not be held for the check, or `None` when it may.
     fn skip_reason<C>(
         &self,
