@@ -117,6 +117,16 @@ loop.
   `Message::text()`**, specifically so a tool-driven run's compacted history
   keeps its tool calls/results/reasoning instead of collapsing to empty
   strings.
+- **`ModelSummarizer` fences the transcript and asks last.** Its user message
+  is `<transcript>…</transcript>` (after any `<previous_summary>`), then the
+  instruction. A bare transcript that ends on a tool result reads as a live
+  agent loop, and a model continues it with its next tool call. The request
+  declares no tools, so that call arrives as plain-text markup (DeepSeek V4:
+  `<｜DSML｜invoke …>`).
+- **A tool call is never accepted as a summary.** A reply the tool-call
+  grammars parse as a call is retried once, then returned as an error, so
+  `FaultTolerantCachingSummarizer` falls back to its deterministic trim
+  instead of installing one stray command as the whole compacted history.
 - This module never calls into the agent loop or decides *when* to invoke a
   `Summarizer` on its own — `should_summarize`/`plan` are pure decisions the
   caller (the agent loop, a middleware) acts on.
