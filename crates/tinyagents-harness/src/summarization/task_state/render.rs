@@ -47,7 +47,11 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let task = ledger.original_task.as_deref().unwrap_or("");
+    // Escape delimiters so a task cannot close its block and forge ledger tags.
+    let task = ledger.original_task.as_deref().unwrap_or("")
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     format!(
         "{TASK_STATE_HEADER}\n\n\
          <original-task>\n{task}\n</original-task>\n\n\
@@ -101,8 +105,10 @@ fn one_line(text: &str) -> String {
 /// The body of the `heading` section: the lines up to the next `## `
 /// heading or tagged block.
 fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
-    let at = text.find(&format!("\n{heading}\n"))? + heading.len() + 2;
-    let rest = &text[at..];
+    // Only search the generated sections, never Markdown in the original task.
+    let sections = text.split_once("</original-task>")?.1;
+    let at = sections.find(&format!("\n{heading}\n"))? + heading.len() + 2;
+    let rest = &sections[at..];
     let end = rest
         .find("\n## ")
         .into_iter()
@@ -171,7 +177,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())
-            .map(String::from),
+            .map(|t| t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
         commands: Vec::new(),

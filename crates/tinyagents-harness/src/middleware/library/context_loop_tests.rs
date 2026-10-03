@@ -5,6 +5,8 @@
 //! trigger follows provider usage, overflow recovers once, and the
 //! anti-thrash guard stops paying for summaries that do not help.
 
+use super::*;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,7 +15,7 @@ use serde_json::json;
 use crate::context::{RunConfig, RunContext};
 use crate::error::Result;
 use crate::events::AgentEvent;
-use crate::middleware::{AgentRun, ContextCompressionMiddleware};
+use crate::middleware::AgentRun;
 use crate::runtime::AgentHarness;
 use crate::summarization::{
     CompressionProvenance, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,

@@ -4,12 +4,13 @@
 //! lists survive repeated compactions, and later compactions update the
 //! previous state instead of re-summarizing it.
 
+use super::*;
+
 use std::sync::Arc;
 
 use serde_json::json;
 
 use crate::context::{RunConfig, RunContext};
-use crate::middleware::ContextCompressionMiddleware;
 use crate::runtime::AgentHarness;
 use crate::summarization::{
     SummarizationPolicy, TaskStateSummarizer, is_checkpoint, task_state::TASK_STATE_HEADER,
