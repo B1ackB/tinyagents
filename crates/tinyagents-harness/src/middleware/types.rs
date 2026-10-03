@@ -146,6 +146,17 @@ pub struct AgentRun {
     /// [`AgentEvent::ToolCompleted`][crate::events::AgentEvent::ToolCompleted];
     /// neither copy is ever rendered into [`Self::messages`].
     pub tool_metadata: Vec<ToolResultMetadata>,
+    /// The transcript the next model call would have seen: [`Self::messages`]
+    /// with this run's context compaction applied (leading system messages, the
+    /// compaction checkpoint, then the messages kept verbatim). `None` when no
+    /// compaction ran.
+    ///
+    /// [`Self::messages`] stays the full record of the run. A host that
+    /// carries history into its next turn should carry *this* one when set:
+    /// the next turn then starts from the checkpoint instead of re-reading
+    /// (and re-summarizing) everything the compaction already folded. Set by
+    /// [`ContextCompressionMiddleware`]'s `after_agent` hook.
+    pub compacted_history: Option<Vec<tinyinference_llm::message::Message>>,
 }
 
 /// Host-only metadata one tool call returned, as recorded on
