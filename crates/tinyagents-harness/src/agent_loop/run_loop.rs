@@ -1178,6 +1178,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             if forced_text_dialect || text_dialect_recovery_enabled {
                 recover_text_dialect_calls(ctx, &mut response, &call_id, &recovery);
             }
+            // A turn that could not take a call: whatever call markup the
+            // model wrote is scrubbed from the answer and never run. Applied
+            // whatever `text_dialect_recovery` says — that policy decides
+            // whether prose can *become* a call, and here none can. A
+            // streamed reply was already scrubbed delta by delta; this
+            // catches a unary one.
+            if recovery.withhold {
+                super::dialect::withhold_text_calls(&mut response, &call_id, &recovery.dropped);
+            }
 
             // Account for the completed provider response before fallible
             // response middleware. A middleware rejection must not erase
