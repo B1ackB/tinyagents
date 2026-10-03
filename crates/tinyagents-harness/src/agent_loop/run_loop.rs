@@ -524,19 +524,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 )>,
             ));
             let patch_request = ModelRequest::default();
-            let patch_profile = if let Some(binding) =
-                self.resolve_host_model(ctx, &patch_request).await?
-            {
-                let profile = binding.model.profile().cloned();
-                *resolution_cache.lock().unwrap() = Some((
-                    patch_request.model.clone(),
-                    patch_request.required_capabilities.clone(),
-                    binding,
-                ));
-                profile
-            } else {
-                self.preview_model_profile(&patch_request)
-            };
+            let patch_profile =
+                if let Some(binding) = self.resolve_host_model(ctx, &patch_request).await? {
+                    let profile = binding.model.profile().cloned();
+                    *resolution_cache.lock().unwrap() = Some((
+                        patch_request.model.clone(),
+                        patch_request.required_capabilities.clone(),
+                        binding,
+                    ));
+                    profile
+                } else {
+                    self.preview_model_profile(&patch_request)
+                };
 
             // B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
             // re-consult the toolset chain (documented as "called once per

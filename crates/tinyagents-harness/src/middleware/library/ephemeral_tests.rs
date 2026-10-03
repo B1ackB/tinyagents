@@ -48,7 +48,13 @@ fn a_later_hoisting_selection_rehomes_earlier_ephemeral_system_text() {
 
     assert_eq!(system_count(&req), 1);
     assert_eq!(req.messages[0], leading);
-    assert!(req.messages.last().unwrap().text().contains("artifact: outputs/result.json"));
+    assert!(
+        req.messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("artifact: outputs/result.json")
+    );
 }
 
 #[test]
