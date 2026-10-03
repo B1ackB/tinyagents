@@ -299,6 +299,7 @@ impl<Ctx> RunContext<Ctx> {
         let events = EventSink::with_stream_id(config.run_id.as_str());
         Self {
             instance_id: next_context_instance_id(),
+            lifecycle: std::sync::Arc::new(()),
             config,
             data,
             frozen_system_prefix_len: None,

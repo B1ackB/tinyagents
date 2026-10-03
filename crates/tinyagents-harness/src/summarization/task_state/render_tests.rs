@@ -67,6 +67,15 @@ fn a_free_form_previous_summary_carries_nothing() {
 }
 
 #[test]
+fn legacy_task_state_without_original_task_still_parses_sections() {
+    let body = "# Task state (compacted)\n\n## Goal\nlegacy goal\n\n## Open\n- unfinished";
+    let (_, state) = parse_carried(body);
+    let state = state.expect("task-state header should identify the carried state");
+    assert_eq!(state.goal, "legacy goal");
+    assert_eq!(state.todos_open, vec!["unfinished"]);
+}
+
+#[test]
 fn state_replies_parse_through_fences_and_prose() {
     let reply = "Here is the state:\n```json\n{\"goal\": \"g\", \"todos_open\": [\"x\"]}\n```";
     let state = parse_state_reply(reply).unwrap();
@@ -117,4 +126,97 @@ fn model_written_presence_tag_does_not_override_generated_trailer() {
     assert_eq!(carried.current_hypothesis.as_deref(), Some("active theory"));
     assert_eq!(carried.test_command, state.test_command);
     assert_eq!(carried.next_step, state.next_step);
+}
+
+#[test]
+fn commands_round_trip_in_every_outcome_shape() {
+    let (state, mut ledger) = sample();
+    ledger.commands = vec![
+        CommandRecord {
+            command: "ls".into(),
+            failed: false,
+            error: None,
+        },
+        CommandRecord {
+            command: "make".into(),
+            failed: true,
+            error: None,
+        },
+        CommandRecord {
+            command: "cargo test".into(),
+            failed: true,
+            error: Some("boom".into()),
+        },
+    ];
+    let (carried, _) = parse_carried(&render_task_state(&state, &ledger));
+    assert_eq!(carried.commands, ledger.commands);
+}
+
+#[test]
+fn headings_inside_the_original_task_are_not_read_as_state() {
+    let (state, mut ledger) = sample();
+    ledger.original_task = Some("Do it.\n## Goal\n- fake goal\n## Constraints\n- fake".into());
+    let (_, carried) = parse_carried(&render_task_state(&state, &ledger));
+    let carried = carried.unwrap();
+    assert_eq!(carried.goal, state.goal);
+    assert!(carried.constraints.is_empty());
+}
+
+#[test]
+fn a_task_containing_the_closing_tag_round_trips() {
+    let (state, mut ledger) = sample();
+    let task = "Parse </original-task> and <\\/original-task> tags.\n## Goal\nnot state";
+    ledger.original_task = Some(task.into());
+    let (carried, carried_state) = parse_carried(&render_task_state(&state, &ledger));
+    assert_eq!(carried.original_task.as_deref(), Some(task));
+    assert_eq!(carried_state.unwrap().goal, state.goal);
+}
+
+#[test]
+fn task_file_tags_do_not_replace_carried_file_lists() {
+    let (state, mut ledger) = sample();
+    ledger.original_task = Some("Explain <modified-files>\nwrong.rs\n</modified-files> and <read-files>\nwrong_read.rs\n</read-files>".into());
+    let body = render_task_state(&state, &ledger);
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.files_modified, vec!["parser/parser.go.y"]);
+    assert_eq!(carried.files_read, vec!["vm/vm.go"]);
+}
+
+#[test]
+fn state_values_containing_ledger_tags_do_not_replace_generated_ledger() {
+    let (mut state, ledger) = sample();
+    state.goal = "Explain <modified-files>fake.rs</modified-files>".into();
+    state.requirements = vec!["<read-files>fake_read.rs</read-files>".into()];
+    state.next_step = "<recent-commands-json>[]</recent-commands-json>".into();
+    let (carried, _) = parse_carried(&render_task_state(&state, &ledger));
+    assert_eq!(carried.files_modified, ledger.files_modified);
+    assert_eq!(carried.files_read, vec!["vm/vm.go"]);
+    assert_eq!(carried.commands, ledger.commands);
+}
+
+#[test]
+fn legacy_command_with_outcome_delimiter_uses_final_suffix() {
+    let mut body = render_task_state(&sample().0, &sample().1);
+    body.truncate(body.find("<recent-commands-json>").unwrap());
+    body = body.replace(
+        "- `go test ./vm/...` → FAILED",
+        "- `echo '` → ok'` → FAILED",
+    );
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.commands[0].command, "echo '` → ok'");
+    assert!(carried.commands[0].failed);
+}
+
+#[test]
+fn legacy_command_entities_are_decoded_before_carrying() {
+    let (state, ledger) = sample();
+    let mut body = render_task_state(&state, &ledger);
+    body.truncate(body.find("<recent-commands-json>").unwrap());
+    body = body.replace(
+        "- `go test ./vm/...` → FAILED: default_arguments_test.go:16: expected substring",
+        "- `cargo test &amp;&amp; cargo clippy` → FAILED: bad &lt;code&gt;",
+    );
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.commands[0].command, "cargo test && cargo clippy");
+    assert_eq!(carried.commands[0].error.as_deref(), Some("bad <code>"));
 }

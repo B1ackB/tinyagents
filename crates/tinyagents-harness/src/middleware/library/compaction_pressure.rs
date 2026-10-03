@@ -4,7 +4,6 @@
 //! Kept apart from the middleware so the arithmetic is testable without a
 //! model, a stack, or a summarizer.
 
-use std::hash::{Hash, Hasher};
 use tinyinference_llm::message::Message;
 use tinyinference_llm::usage::Usage;
 
@@ -31,6 +30,15 @@ impl PromptSource {
     }
 }
 
+/// Fingerprint of a whole message prefix: the tip of the chained fingerprints
+/// (0 for an empty prefix).
+fn prefix_fingerprint(messages: &[Message]) -> u64 {
+    super::context::fingerprint_chain(messages)
+        .last()
+        .copied()
+        .unwrap_or(0)
+}
+
 impl CompactionPressure {
     /// Starts a model call: spends one call of an active suppression window.
     /// Returns whether summarization is suppressed for this call.
@@ -46,7 +54,9 @@ impl CompactionPressure {
     /// The best available prompt size for a request of `messages` carrying
     /// `schema_tokens` of tool declarations.
     ///
-    /// With a measurement whose request this one extends, that is the
+    /// With a measurement whose request this one extends (same message count
+    /// or more, an identical prefix, and no fewer tool-schema tokens, so a front-trimmed request measured
+    /// earlier is not mistaken for the prefix of an untrimmed one), that is the
     /// provider's own count plus an estimate of the appended messages and of
     /// any schema growth; otherwise the whole-request estimate.
     pub(crate) fn prompt_tokens(
@@ -58,13 +68,14 @@ impl CompactionPressure {
             crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens;
         if let Some(measured) = &self.measured
             && measured.messages <= messages.len()
-            && fingerprint(&messages[..measured.messages]) == measured.prefix_fingerprint
+            && schema_tokens >= measured.schema_tokens
+            && prefix_fingerprint(&messages[..measured.messages]) == measured.fingerprint
         {
             let appended =
                 crate::token_estimation::estimate_slice_tokens(&messages[measured.messages..]);
             let schema_growth = schema_tokens.saturating_sub(measured.schema_tokens);
             return (
-                (measured.prompt_tokens + appended + schema_growth).max(full_estimate),
+                measured.prompt_tokens + appended + schema_growth,
                 PromptSource::Measured,
             );
         }
@@ -74,7 +85,7 @@ impl CompactionPressure {
     /// Records the shape of the request this middleware let through, so the
     /// usage reported for it can be attributed in [`Self::observe`].
     pub(crate) fn note_request(&mut self, messages: &[Message], schema_tokens: u64) {
-        self.pending = Some((messages.len(), schema_tokens, fingerprint(messages)));
+        self.pending = Some((messages.len(), schema_tokens, prefix_fingerprint(messages)));
     }
 
     /// Marks that a compaction just ran, so the next reported usage judges
@@ -96,7 +107,7 @@ impl CompactionPressure {
         strike_limit: u32,
         cooldown_calls: u32,
     ) -> bool {
-        let Some((messages, schema_tokens, prefix_fingerprint)) = self.pending.take() else {
+        let Some((messages, schema_tokens, fingerprint)) = self.pending.take() else {
             return false;
         };
         let Some(usage) = usage.filter(|usage| usage.input_tokens > 0) else {
@@ -107,7 +118,7 @@ impl CompactionPressure {
             prompt_tokens,
             messages,
             schema_tokens,
-            prefix_fingerprint,
+            fingerprint,
         });
         if !std::mem::take(&mut self.awaiting_verdict) {
             return false;
@@ -143,18 +154,6 @@ impl CompactionPressure {
         );
         true
     }
-}
-
-/// Hash the full structured message prefix, including tool calls and results.
-fn fingerprint(messages: &[Message]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for message in messages {
-        match serde_json::to_vec(message) {
-            Ok(bytes) => bytes.hash(&mut hasher),
-            Err(_) => format!("{message:?}").hash(&mut hasher),
-        }
-    }
-    hasher.finish()
 }
 
 #[cfg(test)]

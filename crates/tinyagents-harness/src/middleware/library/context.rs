@@ -426,16 +426,10 @@ impl ContextCompressionMiddleware {
             .chain(prior_pin.iter().map(|pin| pin.message.clone()))
             .chain(live[folded..].iter().cloned())
             .collect();
-        let mut planning_policy = self.policy.clone();
-        if let Some(tokens) = self.keep_recent_tokens {
-            let trigger = planning_policy.trigger_budget();
-            planning_policy.keep_recent_tokens = Some(if trigger == 0 {
-                tokens
-            } else {
-                tokens.min(trigger / 2)
-            });
-        }
-        let plan = planning_policy.plan_split(&unfolded);
+        let plan = match self.keep_recent_tokens {
+            Some(tokens) => self.policy.plan_split_recent_tokens(&unfolded, tokens),
+            None => self.policy.plan_split(&unfolded),
+        };
         // Nothing old enough to compress (e.g. keep_last covers everything):
         // keep the request as it stands rather than summarizing an empty set.
         if plan.to_summarize.is_empty() {
@@ -723,15 +717,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             .unwrap_or(0);
         let fold_extends = live_chain.len() >= folded
             && fingerprint_chain_from(seed, remainder) == live_chain[folded..];
-        // The request's checkpoint was removed above and becomes the previous
-        // summary. Preserve any other system messages while planning the tail.
+        // The request's checkpoint (stripped above) is superseded by the new
+        // one, which is built on it: the checkpoint is taken from this very
+        // request, so it describes exactly the history before the cut whether
+        // or not the request still aligns with the live transcript.
+        let kept_system: Vec<Message> = system;
         let plan = crate::summarization::split_at_cut(
-            system.clone(),
+            kept_system.clone(),
             &non_system,
             cut.index,
             self.policy.pin_turn_user_message,
         );
         if plan.to_summarize.is_empty() {
+            // Only the pinned message lay before the cut, and it stays pinned:
+            // nothing to compact.
             return Err(first_error);
         }
         let coords = LiveCoords {
@@ -739,7 +738,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
         };
         let new_folded = coords.live_index(plan.cut);
-        let pinned = pinned_from_plan(&plan, system.len(), &coords);
+        let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
         let boundary = LiveBoundary {
             first_kept_index: new_folded,
             pinned_user_index: pinned.as_ref().map(|pin| pin.live_index),
@@ -997,7 +996,7 @@ fn touch_run(
 /// `messages[..=i]`, so one comparison checks that a remembered prefix is still
 /// intact. Hashes each message's serialized form, so any edit to an earlier
 /// message changes every later entry.
-fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
+pub(super) fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
     fingerprint_chain_from(0, messages)
 }
 
@@ -1195,7 +1194,8 @@ impl ContextCompressionMiddleware {
         tracing::info!(
             run_id = %ctx.run_id(),
             reason = reason.as_str(),
-            boundary = ?boundary,
+            boundary = boundary.map(|b| b.first_kept_index),
+            pinned_user_index = boundary.and_then(|b| b.pinned_user_index),
             tokens_before,
             tokens_after,
             latency_ms,
@@ -1214,10 +1214,7 @@ impl ContextCompressionMiddleware {
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
-                placement: match &record.summary {
-                    Message::User(_) => SummaryPlacement::User,
-                    _ => SummaryPlacement::System,
-                },
+                placement: self.placement,
                 first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
@@ -1266,7 +1263,7 @@ impl ContextCompressionMiddleware {
     /// same schema cost first: otherwise a request whose schemas already
     /// consume a meaningful share of `trigger_budget` (or all of it) would
     /// still trim messages to the *full* budget and stay over the threshold.
-    fn trim_to_trigger<Ctx: Send + Sync>(
+    pub(super) fn trim_to_trigger<Ctx: Send + Sync>(
         &self,
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
@@ -1276,10 +1273,59 @@ impl ContextCompressionMiddleware {
             .policy
             .trigger_budget()
             .saturating_sub(schema_tokens(&request.tools));
-        let trimmed = if self.policy.pin_turn_user_message {
-            crate::summarization::trim_keeping_turn_user_message(&request.messages, message_budget)
-        } else {
-            trim_messages(&request.messages, &TrimStrategy::MaxTokens(message_budget))
+        // Preserve the folded history independently of checkpoint role while
+        // trimming the live tail to the remaining budget.
+        let checkpoint_at = request.messages.iter().position(is_checkpoint);
+        let trim_tail = |messages: &[Message], budget| {
+            if self.policy.pin_turn_user_message {
+                crate::summarization::trim_keeping_turn_user_message(messages, budget)
+            } else {
+                crate::summarization::enforce_approximate_budget(
+                    trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
+                    budget,
+                    None,
+                )
+            }
+        };
+        let trimmed = match checkpoint_at {
+            Some(at) => {
+                let mut rest = request.messages.clone();
+                let checkpoint = rest.remove(at);
+                let system_tokens = crate::token_estimation::count_tokens_approximately(
+                    &rest
+                        .iter()
+                        .filter(|message| matches!(message, Message::System(_)))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+                let checkpoint_budget = message_budget.saturating_sub(system_tokens);
+                let checkpoint = if crate::token_estimation::count_tokens_approximately(
+                    std::slice::from_ref(&checkpoint),
+                ) >= checkpoint_budget
+                {
+                    shrink_checkpoint(&checkpoint, checkpoint_budget / 2, checkpoint_budget)
+                } else {
+                    Some(checkpoint)
+                };
+                match checkpoint {
+                    Some(checkpoint) => {
+                        let budget = message_budget.saturating_sub(
+                            crate::token_estimation::count_tokens_approximately(
+                                std::slice::from_ref(&checkpoint),
+                            ),
+                        );
+                        let mut trimmed = trim_tail(&rest, budget);
+                        let insert = trimmed
+                            .iter()
+                            .take_while(|m| matches!(m, Message::System(_)))
+                            .count();
+                        trimmed.insert(insert, checkpoint);
+                        trimmed
+                    }
+                    None => trim_tail(&rest, message_budget),
+                }
+            }
+            None => trim_tail(&request.messages, message_budget),
         };
         let to_tokens = total_message_tokens(&trimmed);
         request.messages = trimmed;
@@ -1297,6 +1343,62 @@ impl ContextCompressionMiddleware {
             state.pressure.pending = None;
         }
     }
+}
+
+/// Shrinks a checkpoint to `preferred_tokens`, including marker and
+/// truncation notice. If the framing alone exceeds that target, it may use
+/// up to `max_tokens`; a checkpoint that cannot fit even then is dropped.
+fn shrink_checkpoint(
+    checkpoint: &Message,
+    preferred_tokens: u64,
+    max_tokens: u64,
+) -> Option<Message> {
+    let body = checkpoint_body(checkpoint).unwrap_or_default();
+    let placement = if matches!(checkpoint, Message::System(_)) {
+        crate::summarization::SummaryPlacement::System
+    } else {
+        crate::summarization::SummaryPlacement::User
+    };
+    let render = |keep: usize| {
+        let cut: String = body.chars().take(keep).collect();
+        checkpoint_message(
+            placement,
+            &format!("{cut}\n[checkpoint truncated to fit the context budget]"),
+        )
+    };
+    let minimum = render(0);
+    let framing_tokens =
+        crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&minimum));
+    if framing_tokens > max_tokens {
+        tracing::warn!(
+            framing_tokens,
+            max_tokens,
+            "[context_compression] checkpoint framing exceeds trim budget; dropping it"
+        );
+        return None;
+    }
+    let target = preferred_tokens.max(framing_tokens).min(max_tokens);
+    let mut low = 0;
+    let mut high = body
+        .chars()
+        .count()
+        .min(usize::try_from(target.saturating_mul(4)).unwrap_or(usize::MAX));
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&render(mid)))
+            <= target
+        {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    tracing::warn!(
+        from_chars = body.chars().count(),
+        to_chars = low,
+        "[context_compression] checkpoint exceeds trim budget; truncating it"
+    );
+    Some(render(low))
 }
 
 /// `messages` with `fold` applied, when the fold still matches them and covers
@@ -1325,9 +1427,8 @@ fn compacted_history(
     let mut history = Vec::with_capacity(messages.len());
     history.extend(messages[..leading].iter().cloned());
     history.push(fold.summary.clone());
-    if let Some(pin) = &fold.pinned {
-        history.push(pin.message.clone());
-    }
+    // The message the fold pinned out of the folded range follows its summary.
+    history.extend(fold.pinned.iter().map(|pin| pin.message.clone()));
     let mut skipped = 0usize;
     for message in &messages[leading..] {
         let system = matches!(message, Message::System(_));
