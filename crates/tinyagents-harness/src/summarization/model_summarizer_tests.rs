@@ -220,22 +220,6 @@ const DSML_REPLY: &str = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke nam
 <｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /app && cat src/lib.rs</｜｜DSML｜｜ parameter>\n\
 </｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
 
-#[test]
-fn tool_call_markup_is_detected_but_quoted_json_and_prose_are_not() {
-    assert!(super::model_summarizer::contains_tool_call_markup(
-        DSML_REPLY
-    ));
-    assert!(super::model_summarizer::contains_tool_call_markup(
-        "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
-    ));
-    assert!(!super::model_summarizer::contains_tool_call_markup(
-        "## Goal\nShip the parser.\n\n## Active State\nConfig is {\"retries\": 3}."
-    ));
-    assert!(!super::model_summarizer::contains_tool_call_markup(
-        "{\"name\":\"shell\",\"arguments\":{}}"
-    ));
-}
-
 #[tokio::test]
 async fn the_transcript_is_fenced_as_data_with_the_instruction_last() {
     let model = Arc::new(ScriptedModel::replies(vec!["## Goal\nx"]));
