@@ -165,6 +165,10 @@ impl ConversationStore {
                 let differs = index.get(thread_id).is_none_or(|entry| {
                     entry.message_count != Some(count)
                         || entry.last_message_at.as_deref() != Some(resolved_last.as_str())
+                        || entry.message_bytes
+                            != fs::metadata(self.thread_messages_path(thread_id))
+                                .ok()
+                                .map(|m| m.len())
                 });
                 if differs {
                     append_jsonl(
@@ -173,7 +177,9 @@ impl ConversationStore {
                             thread_id: thread_id.clone(),
                             message_count: count,
                             last_message_at: resolved_last.clone(),
-                            message_bytes: fs::metadata(self.thread_messages_path(thread_id)).ok().map(|m| m.len()),
+                            message_bytes: fs::metadata(self.thread_messages_path(thread_id))
+                                .ok()
+                                .map(|m| m.len()),
                         },
                     )?;
                 }
@@ -235,7 +241,9 @@ impl ConversationStore {
                         thread_id,
                         message_count: count,
                         last_message_at: resolved_last,
-                        message_bytes: fs::metadata(self.thread_messages_path(&thread_id)).ok().map(|m| m.len()),
+                        message_bytes: fs::metadata(self.thread_messages_path(&thread_id))
+                            .ok()
+                            .map(|m| m.len()),
                     },
                 )?;
             }
@@ -244,8 +252,10 @@ impl ConversationStore {
 
     fn stats_need_repair(&self, thread_id: &str, entry: &super::ThreadIndexEntry) -> bool {
         let actual_bytes = fs::metadata(self.thread_messages_path(thread_id))
-            .map(|metadata| metadata.len()).unwrap_or(0);
-        entry.message_count.is_none() || entry.last_message_at.is_none()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        entry.message_count.is_none()
+            || entry.last_message_at.is_none()
             || entry.message_bytes != Some(actual_bytes)
     }
 
@@ -361,6 +371,7 @@ impl ConversationStore {
                         parent_thread_id_value,
                         labels_value,
                         message_count_value,
+                        message_bytes_value,
                         last_message_at_value,
                         personality_id_value,
                     ) = match index.get(&thread_id) {
@@ -371,6 +382,7 @@ impl ConversationStore {
                                 .map(normalize_labels)
                                 .unwrap_or_else(|| existing.labels.clone()),
                             existing.message_count,
+                            existing.message_bytes,
                             existing.last_message_at.clone(),
                             personality_id.or_else(|| existing.personality_id.clone()),
                         ),
@@ -382,6 +394,7 @@ impl ConversationStore {
                                 created_at,
                                 parent_thread_id,
                                 inferred,
+                                None,
                                 None,
                                 None,
                                 personality_id,
@@ -396,7 +409,7 @@ impl ConversationStore {
                             parent_thread_id: parent_thread_id_value,
                             labels: labels_value,
                             message_count: message_count_value,
-                            message_bytes: existing.and_then(|entry| entry.message_bytes),
+                            message_bytes: message_bytes_value,
                             last_message_at: last_message_at_value,
                             personality_id: personality_id_value,
                         },
@@ -408,6 +421,7 @@ impl ConversationStore {
                 ThreadLogEntry::MessageAppended {
                     thread_id,
                     last_message_at,
+                    message_bytes,
                 } => {
                     if let Some(entry) = index.get_mut(&thread_id) {
                         // Increment from a known baseline. If we have no
@@ -420,16 +434,19 @@ impl ConversationStore {
                             *count += 1;
                         }
                         entry.last_message_at = Some(last_message_at);
+                        entry.message_bytes = message_bytes;
                     }
                 }
                 ThreadLogEntry::Stats {
                     thread_id,
                     message_count,
                     last_message_at,
+                    message_bytes,
                 } => {
                     if let Some(entry) = index.get_mut(&thread_id) {
                         entry.message_count = Some(message_count);
                         entry.last_message_at = Some(last_message_at);
+                        entry.message_bytes = message_bytes;
                     }
                 }
             }
