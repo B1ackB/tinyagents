@@ -27,6 +27,19 @@ fn make_store() -> (TempDir, ConversationStore) {
 }
 
 #[test]
+fn append_jsonl_separates_an_unterminated_tail() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("entries.jsonl");
+    std::fs::write(&path, "{\"incomplete\":").unwrap();
+
+    append_jsonl(&path, &json!({"id": "new"})).unwrap();
+
+    let entries: Vec<serde_json::Value> = read_jsonl(&path).unwrap();
+    assert_eq!(entries, vec![json!({"id": "new"})]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"incomplete\":\n{\"id\":\"new\"}\n");
+}
+
+#[test]
 fn store_roundtrips_threads_and_messages() {
     let (_temp, store) = make_store();
     let created_at = "2026-04-10T12:00:00Z".to_string();

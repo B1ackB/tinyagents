@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -294,6 +294,8 @@ pub(super) fn find_message_by_id(path: &Path, id: &str) -> Result<Option<ThreadM
 }
 
 /// Append one serialized value as a JSONL line, fsync'd before returning.
+/// A previous interrupted append may leave an unterminated tail; separate it
+/// from the new record so a successful retry remains readable.
 pub(super) fn append_jsonl<T>(path: &Path, value: &T) -> Result<(), String>
 where
     T: serde::Serialize,
@@ -306,8 +308,25 @@ where
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
+        .read(true)
         .open(path)
         .map_err(|e| format!("open {} for append: {e}", path.display()))?;
+    if file
+        .metadata()
+        .map_err(|e| format!("stat {}: {e}", path.display()))?
+        .len()
+        > 0
+    {
+        file.seek(SeekFrom::End(-1))
+            .map_err(|e| format!("seek {}: {e}", path.display()))?;
+        let mut last = [0];
+        file.read_exact(&mut last)
+            .map_err(|e| format!("read tail of {}: {e}", path.display()))?;
+        if last[0] != b'\n' {
+            file.write_all(b"\n")
+                .map_err(|e| format!("separate partial line in {}: {e}", path.display()))?;
+        }
+    }
     let line = serde_json::to_string(value)
         .map_err(|e| format!("serialize jsonl line for {}: {e}", path.display()))?;
     writeln!(file, "{line}").map_err(|e| format!("write {}: {e}", path.display()))?;
