@@ -1494,8 +1494,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
     ) -> BoxModelFuture<'a> {
         Box::pin(async move {
             let mut request = request;
-            super::run_loop::refresh_prompt_cache_fingerprint(&mut request);
             let binding = self.rebind(ctx, &request).await?;
+            crate::middleware::library::rehome_ephemeral_system_instructions(
+                &mut request,
+                binding.model.profile(),
+            );
+            super::run_loop::refresh_prompt_cache_fingerprint(&mut request);
             // Dropped-block counts describe the response this call returns.
             // Clear them first (a cache hit makes no attempt), and again on
             // failure: a wrap middleware may answer in place of the failed
