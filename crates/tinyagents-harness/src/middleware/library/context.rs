@@ -83,6 +83,8 @@ impl ContextCompressionMiddleware {
             max_turn_tokens: None,
             overflow_classifier: OverflowClassifier::default(),
             before_compaction: None,
+            fold: std::sync::Mutex::new(None),
+            live_chain: std::sync::Mutex::new(Vec::new()),
         }
     }
 
