@@ -482,7 +482,9 @@ pub struct SummarizationPolicy {
     pub context_window: Option<u64>,
 
     /// Fraction of [`context_window`][Self::context_window] that must be
-    /// reached before summarization triggers. Defaults to `0.9` (90%). Ignored
+    /// reached before summarization triggers. Defaults to `0.9` (90%) for a
+    /// bare policy; [`crate::summarization::summarization_policy`] uses
+    /// `min(80% of the window, 350k tokens)` instead. Ignored
     /// when `context_window` is `None`.
     #[serde(default = "default_threshold_fraction")]
     pub threshold_fraction: f64,
