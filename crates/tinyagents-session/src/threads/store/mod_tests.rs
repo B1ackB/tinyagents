@@ -36,7 +36,10 @@ fn append_jsonl_separates_an_unterminated_tail() {
 
     let entries: Vec<serde_json::Value> = read_jsonl(&path).unwrap();
     assert_eq!(entries, vec![json!({"id": "new"})]);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"incomplete\":\n{\"id\":\"new\"}\n");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\"incomplete\":\n{\"id\":\"new\"}\n"
+    );
 }
 
 #[test]

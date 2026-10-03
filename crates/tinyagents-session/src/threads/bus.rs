@@ -105,6 +105,11 @@ pub trait ChannelEventHandler: Send + Sync {
 /// concrete bus implementation. A host wires the persistence subscriber by
 /// implementing this trait over its real bus and forwarding channel events as
 /// [`ChannelEvent`]s.
+///
+/// To preserve transcript order, a bus must await delivery of each event for
+/// a channel thread before dispatching the next one. Concurrent handler calls
+/// carry no source sequence number, so the subscriber cannot infer their
+/// original order.
 pub trait ConversationEventBus {
     /// Register `handler` to receive channel events. Returns `true` if the
     /// subscription was installed.
