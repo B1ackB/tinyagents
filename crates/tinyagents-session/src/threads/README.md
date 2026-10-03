@@ -14,7 +14,8 @@ This module was moved verbatim from TinyMemory's `tinymemory-conversations`
 crate. Chat history is session data, not memory, so it lives with the other
 session persistence here. Nothing about the format changed:
 
-- the root, file names, and per-thread file naming are the same;
+- the root and metadata file names are the same; short thread IDs retain the
+  same per-thread hex naming, while long IDs use bounded hash names;
 - every serde attribute (`camelCase` fields, the `type` and `extraMetadata`
   wire keys, the `op`-tagged log entries) is the same;
 - every public name is the same except two types, renamed because
@@ -59,7 +60,7 @@ Every entry point takes the **workspace directory** and derives the root:
 {workspace_dir}/memory/conversations/
 ├── threads.jsonl                      ← append-only thread metadata log
 └── threads/
-    ├── {hex(thread_id)}.jsonl         ← one message log per thread
+    ├── {hex-or-sha256(thread_id)}.jsonl ← one message log per thread
     └── .conversations-{uuid}.tmp      ← transient, during atomic rewrites
 ```
 
@@ -75,10 +76,11 @@ Every entry point takes the **workspace directory** and derives the root:
   - `stats` — an absolute count/timestamp snapshot. Written to backfill
     threads whose messages predate `message_appended`, and to repair the
     trail after a crash between the two appends.
-- **`threads/{hex}.jsonl`** holds one `ThreadMessage` per line
+- **`threads/{hex-or-sha256}.jsonl`** holds one `ThreadMessage` per line
   (`id`, `content`, `type`, `extraMetadata`, `sender`, `createdAt`). The
-  filename is the lowercase hex of the thread id's UTF-8 bytes, so any
-  provider id is filesystem-safe.
+  filename is the lowercase hex of the thread id's UTF-8 bytes for IDs up to
+  124 bytes. Longer IDs use `sha256-` followed by the lowercase hex SHA-256
+  digest of those bytes, keeping the filename within common filesystem limits.
 - Appends are `O_APPEND` + `fsync`. Edits that must change existing lines
   (`update_message`, `delete_messages_from`) write a sibling temp file,
   `fsync` it, and rename it over the original, so a crash never leaves a
@@ -88,8 +90,10 @@ Every entry point takes the **workspace directory** and derives the root:
 
 Message ids with the `agent:` prefix (`run_reply_message_id`) are minted
 deterministically and may be presented twice by two writers; `append_message`
-returns the stored message instead of writing a duplicate. Every other id is
-UUID-fresh and appends without a lookup.
+returns the stored message instead of writing a duplicate. Channel events use
+`{role}:{message_id}` IDs with `extraMetadata.scope` set to `"channel"`;
+`append_message` also returns the stored message on redelivery. Other IDs are
+UUID-fresh and append without a lookup.
 
 ## Concurrency
 

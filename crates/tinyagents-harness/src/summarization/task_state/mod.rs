@@ -106,18 +106,23 @@ impl TaskState {
         clip(&mut self.todos_done, MAX_LIST_ITEMS, true);
         clip(&mut self.todos_open, MAX_LIST_ITEMS, false);
         self.goal = ledger::truncate_chars(self.goal.trim(), MAX_ITEM_CHARS * 2);
-        self.current_hypothesis =
-            ledger::truncate_chars(self.current_hypothesis.trim(), MAX_HYPOTHESIS_CHARS);
-        self.test_command = ledger::truncate_chars(self.test_command.trim(), MAX_ITEM_CHARS);
-        self.next_step = ledger::truncate_chars(self.next_step.trim(), MAX_ITEM_CHARS);
+        self.current_hypothesis = self
+            .current_hypothesis
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_HYPOTHESIS_CHARS));
+        self.test_command = self
+            .test_command
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_ITEM_CHARS));
+        self.next_step = self
+            .next_step
+            .map(|value| ledger::truncate_chars(value.trim(), MAX_ITEM_CHARS));
         self
     }
 }
 
 impl TaskState {
     /// This state updated by a `later` one: lists union in order (earlier
-    /// items first), scalars take the later value unless it is empty. Used to
-    /// join the halves of a split compaction without losing either.
+    /// items first), and present optional scalars take the later value. Used
+    /// to join the halves of a split compaction without losing either.
     #[must_use]
     fn merged_with(mut self, later: TaskState) -> Self {
         fn union(into: &mut Vec<String>, from: Vec<String>) {
@@ -147,9 +152,15 @@ impl TaskState {
         union(&mut self.todos_open, later.todos_open);
         let done = &self.todos_done;
         self.todos_open.retain(|item| !done.contains(item));
-        scalar(&mut self.current_hypothesis, later.current_hypothesis);
-        scalar(&mut self.test_command, later.test_command);
-        scalar(&mut self.next_step, later.next_step);
+        if later.current_hypothesis.is_some() {
+            self.current_hypothesis = later.current_hypothesis;
+        }
+        if later.test_command.is_some() {
+            self.test_command = later.test_command;
+        }
+        if later.next_step.is_some() {
+            self.next_step = later.next_step;
+        }
         self
     }
 }

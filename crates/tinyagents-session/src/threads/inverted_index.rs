@@ -91,9 +91,9 @@ struct DocEntry {
 
 /// In-memory trigram/bigram inverted index over conversation messages.
 ///
-/// Documents are addressed by a dense `u32` doc-id assigned in insertion
-/// order. Deletes leave tombstones (`docs[i] = None`) rather than shifting
-/// the array, so posting-list integers stay valid without rebuilding.
+/// Documents are addressed by `u32` slots. Deletes remove postings and free
+/// their slots for later inserts, so repeated thread rebuilds do not grow
+/// the slot array without bound.
 #[derive(Debug, Default)]
 pub(crate) struct InvertedIndex {
     /// `ngram -> sorted set of doc-ids`. BTreeSet so per-doc removals
@@ -101,9 +101,9 @@ pub(crate) struct InvertedIndex {
     /// sort-merge intersect in `candidates_for_term`). Keys are
     /// `Box<str>` to shave 8 bytes per entry vs `String`.
     postings: HashMap<Box<str>, BTreeSet<u32>>,
-    /// Tombstoned: `docs[i] == None` means the message was deleted. We
-    /// keep the slot so existing doc-ids in posting lists stay valid.
+    /// `docs[i] == None` means the slot is available for reuse.
     docs: Vec<Option<DocEntry>>,
+    free_doc_ids: Vec<u32>,
     /// Reverse lookup for incremental removal: `(thread_id, message_id)`
     /// → `doc_id`. Letting us drop a single message without re-walking
     /// the corpus.
@@ -144,7 +144,7 @@ impl InvertedIndex {
         let created_at_ms = chrono::DateTime::parse_from_rfc3339(&created_at)
             .map(|value| value.timestamp_millis())
             .unwrap_or(i64::MIN);
-        let doc_id = self.docs.len() as u32;
+        let doc_id = self.free_doc_ids.pop().unwrap_or(self.docs.len() as u32);
         for ngram in ngrams(&normalized) {
             if let Some(posting) = self.postings.get_mut(ngram) {
                 posting.insert(doc_id);
@@ -156,7 +156,7 @@ impl InvertedIndex {
         }
         let thread_arc = self.intern_thread_id(thread_id);
         let role_arc = self.intern_role(&sender);
-        self.docs.push(Some(DocEntry {
+        let entry = DocEntry {
             thread_id: thread_arc,
             message_id: id,
             role: role_arc,
@@ -164,7 +164,12 @@ impl InvertedIndex {
             content_normalized: normalized,
             created_at,
             created_at_ms,
-        }));
+        };
+        if doc_id as usize == self.docs.len() {
+            self.docs.push(Some(entry));
+        } else {
+            self.docs[doc_id as usize] = Some(entry);
+        }
         self.by_message.insert(key, doc_id);
     }
 
@@ -190,6 +195,7 @@ impl InvertedIndex {
     pub fn clear(&mut self) {
         self.postings.clear();
         self.docs.clear();
+        self.free_doc_ids.clear();
         self.by_message.clear();
         self.thread_id_pool.clear();
         self.role_pool.clear();
@@ -200,6 +206,7 @@ impl InvertedIndex {
         let Some(entry) = self.docs.get_mut(idx).and_then(|slot| slot.take()) else {
             return;
         };
+        self.free_doc_ids.push(doc_id);
         self.by_message
             .remove(&(entry.thread_id.to_string(), entry.message_id.clone()));
         // Remove doc_id from every posting list referencing it. We re-

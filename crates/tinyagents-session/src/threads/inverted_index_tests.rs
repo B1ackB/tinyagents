@@ -30,6 +30,31 @@ fn substring_inside_word_matches() {
 }
 
 #[test]
+fn repeated_thread_rebuilds_reuse_removed_document_slots() {
+    let mut idx = InvertedIndex::new();
+    for generation in 0..20 {
+        idx.remove_thread("active");
+        for id in 0..30 {
+            idx.insert(
+                "active",
+                msg(
+                    &format!("{generation}-{id}"),
+                    &format!("era{generation}unique message {id}"),
+                    "2026-04-10T10:00:00Z",
+                ),
+            );
+        }
+        assert_eq!(idx.docs.len(), 30);
+        assert_eq!(
+            idx.search(&format!("era{generation}unique"), 50, None)
+                .len(),
+            30
+        );
+    }
+    assert!(idx.search("era0unique", 50, None).is_empty());
+}
+
+#[test]
 fn polish_diacritics_normalized_both_sides() {
     let mut idx = InvertedIndex::new();
     idx.insert(

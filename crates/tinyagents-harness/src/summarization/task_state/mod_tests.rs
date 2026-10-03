@@ -204,6 +204,46 @@ async fn merge_refreshes_revisited_file_before_capping() {
     assert!(!ledger.files_modified.contains(&"f1".to_string()));
 }
 
+#[tokio::test]
+async fn later_split_summary_clears_obsolete_live_task_fields() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        r#"{"current_hypothesis":"old theory","test_command":"cargo test old","next_step":"retry old work"}"#,
+        r#"{"current_hypothesis":"","test_command":"","next_step":""}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize(&shell("c9", "echo done", ""))
+        .await
+        .unwrap();
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (_, state) = parse_carried(&merged.summary.text());
+    let state = state.unwrap();
+    assert_eq!(state.current_hypothesis.as_deref(), Some(""));
+    assert_eq!(state.test_command.as_deref(), Some(""));
+    assert_eq!(state.next_step.as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn later_split_summary_omitting_live_task_fields_preserves_earlier_values() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        r#"{"current_hypothesis":"old theory","test_command":"cargo test old","next_step":"retry old work"}"#,
+        r#"{"goal":"updated goal"}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize(&shell("c9", "echo done", ""))
+        .await
+        .unwrap();
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (_, state) = parse_carried(&merged.summary.text());
+    let state = state.unwrap();
+    assert_eq!(state.current_hypothesis.as_deref(), Some("old theory"));
+    assert_eq!(state.test_command.as_deref(), Some("cargo test old"));
+    assert_eq!(state.next_step.as_deref(), Some("retry old work"));
+}
+
 #[test]
 fn oversized_tool_pair_stays_in_one_chunk() {
     let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m")
@@ -223,7 +263,7 @@ fn bounded_caps_lists_and_items() {
         todos_done: many(40),
         todos_open: many(40),
         errors_and_fixes: vec!["e".repeat(5_000)],
-        current_hypothesis: "h".repeat(5_000),
+        current_hypothesis: Some("h".repeat(5_000)),
         ..TaskState::default()
     }
     .bounded();
@@ -240,7 +280,7 @@ fn bounded_caps_lists_and_items() {
     assert_eq!(state.todos_done[0], "item 28");
     assert_eq!(state.todos_open[0], "item 0", "open work keeps the oldest");
     assert!(state.errors_and_fixes[0].chars().count() <= 401);
-    assert!(state.current_hypothesis.chars().count() <= 801);
+    assert!(state.current_hypothesis.unwrap().chars().count() <= 801);
 }
 
 #[tokio::test]

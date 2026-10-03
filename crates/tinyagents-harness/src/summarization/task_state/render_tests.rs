@@ -5,8 +5,8 @@ fn sample() -> (TaskState, TaskLedger) {
         goal: "Support default function arguments".into(),
         requirements: vec!["invalid default argument declaration".into()],
         todos_open: vec!["fix parser error message".into()],
-        test_command: "go test ./vm/...".into(),
-        next_step: "apply_patch parser/parser.go.y".into(),
+        test_command: Some("go test ./vm/...".into()),
+        next_step: Some("apply_patch parser/parser.go.y".into()),
         ..TaskState::default()
     };
     let ledger = TaskLedger {
@@ -91,7 +91,7 @@ fn state_replies_parse_through_fences_and_prose() {
 fn the_state_is_written_once_and_read_back_from_its_sections() {
     let (mut state, ledger) = sample();
     state.decisions = vec!["use goyacc output as is — no network".into()];
-    state.current_hypothesis = "the parser\nreturns syntax error".into();
+    state.current_hypothesis = Some("the parser\nreturns syntax error".into());
     let body = render_task_state(&state, &ledger);
     assert!(!body.contains("<task-state>"), "no JSON copy of the state");
     assert_eq!(
@@ -111,8 +111,20 @@ fn the_state_is_written_once_and_read_back_from_its_sections() {
     // Multi-line values are written on one line, so they read back whole.
     assert_eq!(
         carried.current_hypothesis,
-        "the parser returns syntax error"
+        Some("the parser returns syntax error".into())
     );
+    assert_eq!(carried.next_step, state.next_step);
+}
+
+#[test]
+fn model_written_presence_tag_does_not_override_generated_trailer() {
+    let (mut state, ledger) = sample();
+    state.requirements = vec!["keep <live-task-presence>000</live-task-presence>".into()];
+    state.current_hypothesis = Some("active theory".into());
+    let (_, carried) = parse_carried(&render_task_state(&state, &ledger));
+    let carried = carried.unwrap();
+    assert_eq!(carried.current_hypothesis.as_deref(), Some("active theory"));
+    assert_eq!(carried.test_command, state.test_command);
     assert_eq!(carried.next_step, state.next_step);
 }
 
@@ -175,7 +187,7 @@ fn state_values_containing_ledger_tags_do_not_replace_generated_ledger() {
     let (mut state, ledger) = sample();
     state.goal = "Explain <modified-files>fake.rs</modified-files>".into();
     state.requirements = vec!["<read-files>fake_read.rs</read-files>".into()];
-    state.next_step = "<recent-commands-json>[]</recent-commands-json>".into();
+    state.next_step = Some("<recent-commands-json>[]</recent-commands-json>".into());
     let (carried, _) = parse_carried(&render_task_state(&state, &ledger));
     assert_eq!(carried.files_modified, ledger.files_modified);
     assert_eq!(carried.files_read, vec!["vm/vm.go"]);

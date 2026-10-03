@@ -337,13 +337,9 @@ impl ConversationStore {
             }
         }
         // The compact stat trail in `threads.jsonl` (`MessageAppended`/
-        // `Stats`) only ever grows via `append_message`'s increment — it has
-        // no notion of a truncation. Append an authoritative `Stats` snapshot
-        // now so `list_threads`'s `message_count`/`last_message_at` reflect
-        // the post-truncation file immediately, instead of staying
-        // overcounted until this thread is next quarantined as unreadable
-        // and rescanned (which never happens on its own — see
-        // `list_threads_coordinated`, which only remeasures a `None` count).
+        // `Stats`) has no notion of truncation. Append an authoritative
+        // snapshot, including the new byte length, so `list_threads` sees
+        // current counts without a byte-mismatch rescan.
         let last_message_at = kept.last().map(|m| m.created_at.clone());
         {
             let _metadata = self.locks.metadata.lock();

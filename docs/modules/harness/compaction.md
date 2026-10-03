@@ -230,6 +230,9 @@ The ledger round-trips through tagged blocks (`<original-task>`,
 `<modified-files>`, `<read-files>`), and the state through its one-line `## `
 sections. `parse_carried` reads both back from the previous summary, so the
 next checkpoint carries them exactly rather than re-summarizing a summary.
+The three live-task fields use `Option<String>`: a later split summary that
+omits one preserves the earlier value, while an explicit empty string clears
+it. A small presence tag retains this distinction through checkpoint text.
 The state is written once: a JSON copy beside the sections doubled every
 checkpoint in a live run.
 

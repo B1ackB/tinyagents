@@ -346,7 +346,12 @@ fn persist_channel_turn(
                         == Some(descriptor.sender)
                     && metadata.get("replyTarget").and_then(|v| v.as_str())
                         == Some(descriptor.reply_target)
-                    && metadata.get("threadTs").and_then(|v| v.as_str()) == descriptor.thread_ts
+                    && (descriptor.channel == "telegram"
+                        || metadata
+                            .get("threadTs")
+                            .and_then(|v| v.as_str())
+                            .and_then(non_empty_trimmed)
+                            == descriptor.thread_ts.and_then(non_empty_trimmed))
             });
     let thread_id = if legacy_matches {
         legacy_id
