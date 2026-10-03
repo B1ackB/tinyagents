@@ -30,9 +30,9 @@ fn user(text: &str) -> Message {
     })
 }
 
-/// ~30 estimated tokens (chars / 4) tagged with `tag`.
+/// ~60 estimated tokens (chars / 4) tagged with `tag`.
 fn chunk(tag: &str) -> Message {
-    user(&format!("{tag}:{}", "x".repeat(116)))
+    user(&format!("{tag}:{}", "x".repeat(236)))
 }
 
 /// The checkpoint the middleware writes for `summary` (default user placement).
@@ -90,13 +90,14 @@ struct Fixture {
     c: RunContext,
 }
 
-/// A 100-token window at 0.5 → a 50-token trigger, keeping the newest message.
+/// A 300-token window at 0.5 → a 150-token trigger, keeping the newest message.
+/// Roomy enough that the checkpoint marker plus one kept chunk stays under it.
 fn fixture() -> Fixture {
     let policy = SummarizationPolicy {
         keep_last: 1,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(100)
+    .with_context_window(300)
     .with_threshold_fraction(0.5);
     let summarizer = ShortSummarizer::default();
     let seen = summarizer.seen.clone();
@@ -139,7 +140,7 @@ async fn reapplies_the_fold_instead_of_recompacting_every_call() {
     } = fixture();
     let mut transcript = vec![chunk("m1"), chunk("m2"), chunk("m3")];
 
-    // ~90 tokens: over the 50-token trigger, so the first call compacts m1, m2.
+    // ~180 tokens: over the 150-token trigger, so the first call compacts m1, m2.
     let sent = send(&stack, &mut c, &transcript).await;
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(sent, vec![cp("summary #1"), chunk("m3")]);
