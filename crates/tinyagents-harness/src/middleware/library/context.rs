@@ -184,7 +184,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
         if let Some(fold) = &prior {
             request.messages = splice_summary(
-                system.iter().cloned().chain(live[folded..].iter().cloned()).collect(),
+                system
+                    .iter()
+                    .cloned()
+                    .chain(live[folded..].iter().cloned())
+                    .collect(),
                 fold.summary.clone(),
             );
         }
@@ -602,8 +606,7 @@ impl ContextCompressionMiddleware {
     fn validated_fold(&self, chain: &[u64]) -> Option<crate::middleware::types::CompactionFold> {
         let mut slot = self.fold.lock().expect("fold mutex poisoned");
         let fold = slot.as_ref()?;
-        let matches = fold.folded > 0
-            && chain.get(fold.folded - 1) == Some(&fold.fingerprint);
+        let matches = fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint);
         if matches {
             return Some(fold.clone());
         }
