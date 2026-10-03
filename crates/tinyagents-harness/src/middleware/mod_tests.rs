@@ -770,15 +770,17 @@ async fn context_compression_records_are_bounded_by_max_records() {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push(mw.clone());
 
+    // The transcript grows by two messages a call, as an agent loop's does, so
+    // every call has new history past the fold to compact. (Re-sending an
+    // unchanged transcript re-applies the existing fold instead.)
     let big = "a".repeat(200);
     let mut c = ctx();
-    for _ in 0..10 {
+    let mut transcript = vec![user(&format!("{big}-0"))];
+    for i in 0..10 {
+        transcript.push(user(&format!("{big}-{i}a")));
+        transcript.push(user(&format!("{big}-{i}b")));
         let mut request = ModelRequest {
-            messages: vec![
-                user(&format!("{big}-1")),
-                user(&format!("{big}-2")),
-                user(&format!("{big}-3")),
-            ],
+            messages: transcript.clone(),
             ..Default::default()
         };
         stack

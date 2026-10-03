@@ -875,11 +875,6 @@ pub struct ContextCompressionMiddleware {
     pub(crate) max_records: usize,
     /// Recovery behaviour when [`Summarizer::summarize`] returns `Err`.
     pub(crate) on_failure: CompressionFailurePolicy,
-    /// The most recently produced compaction summary text, threaded into the
-    /// next compaction's [`crate::summarization::SummaryRequest::previous_summary`]
-    /// so an iterative [`Summarizer`] refines rather than restarts. `None`
-    /// until the first compaction on this middleware instance.
-    pub(crate) last_summary: Mutex<Option<String>>,
     /// Token budget above which a single "turn" of messages handed to the
     /// summarizer is itself split into two halves and merged (see
     /// [`crate::summarization::summarize_with_split`]). `None` disables
@@ -894,6 +889,63 @@ pub struct ContextCompressionMiddleware {
     /// overflow-triggered) that can decline it or substitute a summary. See
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
+    /// Per-run compaction state: the fold each in-flight run has made and the
+    /// live transcript its last `before_model` saw. Keyed by the context's
+    /// process-unique [`RunContext::instance_id`] (a `RunId` is a caller label
+    /// two concurrent runs may share), so invocations sharing this middleware
+    /// never read each other's fold, and dropped in `after_agent`. See [`RunCompaction`].
+    pub(crate) runs: Mutex<std::collections::HashMap<u64, RunCompaction>>,
+}
+
+/// Most runs [`ContextCompressionMiddleware`] tracks at once. A run whose
+/// `after_agent` never fires (an aborted invocation) would otherwise stay in
+/// the map forever on a long-lived shared harness; past this many, the least
+/// recently used run is evicted, which only costs it a re-compaction.
+pub(crate) const MAX_TRACKED_COMPACTION_RUNS: usize = 256;
+
+/// One run's compaction state inside [`ContextCompressionMiddleware`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunCompaction {
+    /// The compaction this run already performed, re-applied to every later
+    /// request. See [`CompactionFold`].
+    pub(crate) fold: Option<CompactionFold>,
+    /// Chained fingerprints of the live (pre-fold) non-system transcript this
+    /// run's last `before_model` saw, so the overflow path can extend the fold
+    /// in live-transcript coordinates.
+    pub(crate) live_chain: Vec<u64>,
+    /// The most recent summary this run produced, threaded into its next
+    /// compaction's [`crate::summarization::SummaryRequest::previous_summary`]
+    /// so an iterative [`Summarizer`] refines rather than restarts, when no
+    /// fold carries it (a host that spliced the summary into its transcript).
+    pub(crate) last_summary: Option<String>,
+    /// Once the host has persisted a compressed transcript, subsequent
+    /// boundaries are in that shortened transcript's coordinates.
+    pub(crate) boundary_unaligned: bool,
+    /// Monotonic touch stamp for least-recently-used eviction.
+    pub(crate) touched: u64,
+}
+
+/// A compaction this middleware already performed, remembered so it is
+/// re-applied rather than recomputed.
+///
+/// The agent loop rebuilds every request from its own working transcript, and
+/// `before_model` only rewrites that outgoing copy: the loop never sees the
+/// summary. Without this record every call after the first compaction found
+/// the full history over the threshold again, so it compacted on every turn
+/// and handed the summarizer the whole, ever-growing history each time
+/// (101 summarizer calls in one 300-call SWE task, ~85% of its cost, with the
+/// agent seeing only the summary and a handful of recent messages).
+#[derive(Clone, Debug)]
+pub(crate) struct CompactionFold {
+    /// How many leading non-system messages of the live transcript the
+    /// summary stands in for.
+    pub(crate) folded: usize,
+    /// Chained fingerprint of those `folded` messages. A transcript whose
+    /// prefix no longer matches (rewritten or replaced history) drops the
+    /// fold instead of splicing a summary over the wrong messages.
+    pub(crate) fingerprint: u64,
+    /// The summary message spliced in place of the folded messages.
+    pub(crate) summary: tinyinference_llm::message::Message,
 }
 
 // ── MicrocompactMiddleware ────────────────────────────────────────────────────
