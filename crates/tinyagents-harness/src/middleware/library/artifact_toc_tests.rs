@@ -408,13 +408,8 @@ async fn a_share_smaller_than_the_header_renders_no_rows() {
 #[tokio::test]
 async fn toc_for_a_hoisting_model_adds_no_system_message() {
     let mw = ArtifactIndexTocMiddleware::new(0, STORE);
-    let mut ctx = ctx_with_artifacts(&[(
-        "call-1",
-        "fetch_issues",
-        "outputs/issues-p1.json",
-        240_000,
-    )])
-    .await;
+    let mut ctx =
+        ctx_with_artifacts(&[("call-1", "fetch_issues", "outputs/issues-p1.json", 240_000)]).await;
     ctx.model_profile = Some(tinyinference_llm::model::ModelProfile {
         hoists_system_messages: true,
         mid_conversation_system_messages: true,
@@ -433,7 +428,10 @@ async fn toc_for_a_hoisting_model_adds_no_system_message() {
     mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
 
     assert_eq!(request.messages.len(), 3, "no message added");
-    assert_eq!(request.messages[0], leading, "leading system message untouched");
+    assert_eq!(
+        request.messages[0], leading,
+        "leading system message untouched"
+    );
     let systems = request
         .messages
         .iter()

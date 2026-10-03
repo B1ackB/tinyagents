@@ -88,7 +88,13 @@ fn hoisting_profile_adds_a_user_reminder_after_an_assistant_tail() {
     assert_eq!(req.messages.len(), 4);
     assert_eq!(system_count(&req), 1);
     assert!(matches!(req.messages.last(), Some(Message::User(_))));
-    assert!(req.messages.last().unwrap().text().contains("check your work"));
+    assert!(
+        req.messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("check your work")
+    );
 }
 
 #[test]

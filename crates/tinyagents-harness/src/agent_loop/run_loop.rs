@@ -555,13 +555,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // see `ModelRegistry::resolve_request`), so this stays
                     // proportional to the diff it gates. An unresolved
                     // preview conservatively folds (`false`): folding is
-                    // always correct, only less cache-friendly.
-                    let mid_conversation = self
-                        .models
-                        .resolve_request(&ModelRequest::new(messages.clone()), None, None)
-                        .and_then(|binding| binding.model.profile().cloned())
-                        .is_some_and(|profile| profile.mid_conversation_system_messages);
-                    tool_changes::apply_tool_change_patch(messages, patch, mid_conversation);
+                    // always correct, only less cache-friendly. A model that
+                    // hoists system turns never folds (#6962).
+                    let in_place = tool_changes::patch_inserts_in_place(
+                        self.preview_model_profile(&ModelRequest::new(messages.clone()))
+                            .as_ref(),
+                    );
+                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
                     declared_tool_schemas = live_schemas.clone();
                     direct_tool_schemas = live_schemas;
                 }
@@ -576,12 +576,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .collect();
             if !newly_promoted.is_empty() {
                 if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
-                    let mid_conversation = self
-                        .models
-                        .resolve_request(&ModelRequest::new(messages.clone()), None, None)
-                        .and_then(|binding| binding.model.profile().cloned())
-                        .is_some_and(|profile| profile.mid_conversation_system_messages);
-                    tool_changes::apply_tool_change_patch(messages, patch, mid_conversation);
+                    let in_place = tool_changes::patch_inserts_in_place(
+                        self.preview_model_profile(&ModelRequest::new(messages.clone()))
+                            .as_ref(),
+                    );
+                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
                 }
                 recorded_promotions.extend(newly_promoted.iter().map(|schema| schema.name.clone()));
                 promoted_schemas.extend(
