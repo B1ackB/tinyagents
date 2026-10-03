@@ -890,10 +890,11 @@ pub struct ContextCompressionMiddleware {
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
     /// Per-run compaction state: the fold each in-flight run has made and the
-    /// live transcript its last `before_model` saw. Keyed by run so two
-    /// invocations sharing this middleware never read each other's fold, and
-    /// dropped in `after_agent`. See [`RunCompaction`].
-    pub(crate) runs: Mutex<std::collections::HashMap<crate::ids::RunId, RunCompaction>>,
+    /// live transcript its last `before_model` saw. Keyed by the context's
+    /// process-unique [`RunContext::instance_id`] (a `RunId` is a caller label
+    /// two concurrent runs may share), so invocations sharing this middleware
+    /// never read each other's fold, and dropped in `after_agent`. See [`RunCompaction`].
+    pub(crate) runs: Mutex<std::collections::HashMap<u64, RunCompaction>>,
 }
 
 /// Most runs [`ContextCompressionMiddleware`] tracks at once. A run whose
