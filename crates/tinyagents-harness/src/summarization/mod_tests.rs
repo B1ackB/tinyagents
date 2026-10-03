@@ -391,6 +391,38 @@ mod smoke {
     }
 }
 
+#[test]
+fn fallback_trim_counts_message_framing_against_the_final_budget() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
+    let mut messages = vec![Message::system("instructions"), Message::user("task")];
+    messages.extend((0..80).map(|_| Message::assistant("ok")));
+    let budget = 50;
+    let kept = trim_keeping_turn_user_message(&messages, budget);
+
+    assert!(
+        kept.iter()
+            .any(|message| matches!(message, Message::User(_)))
+    );
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
+#[test]
+fn fallback_trim_preserves_a_system_prompt_before_fitting_the_user_pin() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
+
+    let system = Message::system("s".repeat(350));
+    let user = Message::user("u".repeat(100));
+    let budget = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&system))
+        + crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&user))
+        - 1;
+    let kept = trim_keeping_turn_user_message(&[system.clone(), user], budget);
+
+    assert_eq!(kept.first(), Some(&system));
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
 /// Regression tests for the structural repair of transcript cut points.
 ///
 /// Every test here is written against the concrete provider failure it
@@ -646,6 +678,260 @@ mod pairing {
     }
 }
 
+/// Tests for the turn-aware split (issue tinyhumansai/openhuman#6960): the
+/// token-budget tail ([`SummarizationPolicy::keep_recent_tokens`]) and pinning
+/// the turn's originating user message
+/// ([`SummarizationPolicy::pin_turn_user_message`]).
+///
+/// A long tool-driven turn crosses the threshold mid-turn. Split by count, its
+/// only user message — the assignment the agent is working on — lands in the
+/// summarized head, and the summary then tells the model that pending work is
+/// stale. These pin the assignment into the kept tail instead.
+mod turn_pin {
+    use crate::summarization::{
+        PINNED_USER_MESSAGE_MAX_TOKENS, SummarizationPolicy, summarization_policy_with_tail,
+        tool_pairing_is_intact,
+    };
+    use crate::token_estimation::{estimate_message_tokens, estimate_slice_tokens};
+    use serde_json::json;
+    use tinyinference_llm::message::{AssistantMessage, Message};
+    use tinyinference_llm::tool::ToolCall;
+
+    fn assistant_calling(id: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            id: None,
+            content: Vec::new(),
+            tool_calls: vec![ToolCall::new(id, "lookup", json!({"q": id}))],
+            usage: None,
+            origin: None,
+        })
+    }
+
+    #[test]
+    fn final_budget_enforcement_drops_a_call_with_its_result() {
+        use crate::summarization::enforce_approximate_budget;
+        use crate::token_estimation::count_tokens_approximately;
+
+        let messages = vec![
+            Message::user("task"),
+            assistant_calling("c1"),
+            Message::tool("c1", "result"),
+            Message::assistant("tail"),
+        ];
+        let budget = count_tokens_approximately(&messages) - 1;
+        let trimmed = enforce_approximate_budget(messages, budget, Some(0));
+        assert!(tool_pairing_is_intact(&trimmed), "{trimmed:?}");
+        assert!(count_tokens_approximately(&trimmed) <= budget);
+    }
+
+    /// `[system, user(task), (assistant(call), tool(result)) x 10]`: one turn,
+    /// twenty tool-loop messages after its only user message.
+    fn long_turn() -> Vec<Message> {
+        let mut messages = vec![
+            Message::system("sys"),
+            Message::user("Write the quarterly report to report.md"),
+        ];
+        for i in 0..10 {
+            let id = format!("c{i}");
+            messages.push(assistant_calling(&id));
+            messages.push(Message::tool(
+                &id,
+                format!("result {i} {}", "x".repeat(200)),
+            ));
+        }
+        messages
+    }
+
+    fn pinning_policy() -> SummarizationPolicy {
+        SummarizationPolicy {
+            keep_last: 8,
+            pin_turn_user_message: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_turn_user_message_heads_the_kept_tail() {
+        let (to_summarize, to_keep) = pinning_policy().plan(&long_turn());
+
+        assert!(matches!(to_keep[0], Message::System(_)));
+        assert_eq!(
+            to_keep[1].text(),
+            "Write the quarterly report to report.md",
+            "the turn's assignment must head the kept tail verbatim: {to_keep:?}"
+        );
+        assert!(
+            !to_summarize.iter().any(|m| matches!(m, Message::User(_))),
+            "the pinned user message must not also be summarized"
+        );
+        assert!(!to_summarize.is_empty());
+        assert!(
+            tool_pairing_is_intact(&to_keep),
+            "kept tail orphans a tool result: {to_keep:?}"
+        );
+        assert!(tool_pairing_is_intact(&to_summarize));
+    }
+
+    #[test]
+    fn without_pinning_the_count_split_summarizes_the_assignment() {
+        let policy = SummarizationPolicy {
+            keep_last: 8,
+            ..Default::default()
+        };
+        let (to_summarize, to_keep) = policy.plan(&long_turn());
+        assert!(to_summarize.iter().any(|m| matches!(m, Message::User(_))));
+        assert!(!to_keep.iter().any(|m| matches!(m, Message::User(_))));
+    }
+
+    #[test]
+    fn no_pin_when_the_kept_tail_already_has_a_user_message() {
+        let mut messages = long_turn();
+        messages.push(Message::user("also add a chart"));
+        messages.push(Message::assistant("on it"));
+        let split = pinning_policy().plan_split(&messages);
+
+        assert_eq!(split.pinned, None);
+        let users: Vec<String> = split
+            .to_keep
+            .iter()
+            .filter(|m| matches!(m, Message::User(_)))
+            .map(Message::text)
+            .collect();
+        assert_eq!(users, vec!["also add a chart".to_string()]);
+    }
+
+    #[test]
+    fn plan_split_reports_the_cut_and_the_pinned_index() {
+        let messages = long_turn();
+        let split = pinning_policy().plan_split(&messages);
+
+        // Non-system coordinates: the user message is index 0.
+        assert_eq!(split.pinned, Some(0));
+        // keep_last = 8 over 21 non-system messages requests index 13, which
+        // is `assistant(c6)` (odd indices are the call turns): already safe.
+        assert_eq!(split.cut, 13);
+        assert_eq!(split.to_summarize.len(), 12);
+        assert_eq!(split.to_keep.len(), 1 + 1 + 8);
+    }
+
+    #[test]
+    fn the_token_tail_keeps_at_least_keep_recent_tokens() {
+        let messages = long_turn();
+        let per_pair =
+            estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
+        let policy = SummarizationPolicy {
+            // keep_last would keep everything; the token tail overrides it.
+            keep_last: 100,
+            keep_recent_tokens: Some(per_pair * 3),
+            ..Default::default()
+        };
+        let split = policy.plan_split(&messages);
+
+        let kept_non_system: Vec<Message> = split
+            .to_keep
+            .iter()
+            .filter(|m| !matches!(m, Message::System(_)))
+            .cloned()
+            .collect();
+        assert!(estimate_slice_tokens(&kept_non_system) >= per_pair * 3);
+        assert_eq!(
+            kept_non_system.len(),
+            6,
+            "three call/result pairs: {kept_non_system:?}"
+        );
+        assert!(tool_pairing_is_intact(&kept_non_system));
+        assert_eq!(split.to_summarize.len(), 21 - 6);
+    }
+
+    #[test]
+    fn the_token_tail_keeps_everything_that_fits() {
+        let policy = SummarizationPolicy {
+            keep_recent_tokens: Some(1_000_000),
+            ..Default::default()
+        };
+        let (to_summarize, to_keep) = policy.plan(&long_turn());
+        assert!(to_summarize.is_empty());
+        assert_eq!(to_keep.len(), 22);
+    }
+
+    #[test]
+    fn the_token_tail_never_keeps_nothing() {
+        // The newest message alone is over the budget: it still stays
+        // verbatim, together with the call it answers.
+        let policy = SummarizationPolicy {
+            keep_recent_tokens: Some(1),
+            ..Default::default()
+        };
+        let split = policy.plan_split(&long_turn());
+        let kept: Vec<&Message> = split
+            .to_keep
+            .iter()
+            .filter(|m| !matches!(m, Message::System(_)))
+            .collect();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(matches!(kept[1], Message::Tool(_)));
+    }
+
+    #[test]
+    fn token_tail_and_pinning_compose() {
+        let messages = long_turn();
+        let per_pair =
+            estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
+        let policy = summarization_policy_with_tail(1_000_000, per_pair * 2);
+        assert!(policy.pin_turn_user_message);
+        let (to_summarize, to_keep) = policy.plan(&messages);
+
+        assert_eq!(to_keep[1].text(), "Write the quarterly report to report.md");
+        assert_eq!(to_keep.len(), 1 + 1 + 4);
+        assert_eq!(to_summarize.len(), 16);
+        assert!(tool_pairing_is_intact(&to_keep));
+    }
+
+    #[test]
+    fn an_oversized_pinned_message_is_truncated_with_a_marker() {
+        let mut messages = long_turn();
+        let huge = "y".repeat((PINNED_USER_MESSAGE_MAX_TOKENS as usize) * 4 * 3);
+        messages[1] = Message::user(huge);
+        let (_to_summarize, to_keep) = pinning_policy().plan(&messages);
+
+        let pinned = &to_keep[1];
+        assert!(matches!(pinned, Message::User(_)));
+        assert!(
+            estimate_message_tokens(pinned) <= PINNED_USER_MESSAGE_MAX_TOKENS + 64,
+            "pinned message was not capped: {} tokens",
+            estimate_message_tokens(pinned)
+        );
+        assert!(pinned.text().starts_with("yyyy"));
+        assert!(pinned.text().contains("truncated"));
+    }
+
+    #[test]
+    fn a_user_role_checkpoint_is_never_pinned_as_the_turn_message() {
+        use crate::summarization::{SummaryPlacement, checkpoint_message};
+        let mut messages = long_turn();
+        // A host-persisted checkpoint stands where the task was.
+        messages[1] = checkpoint_message(SummaryPlacement::User, "earlier work");
+        let split = pinning_policy().plan_split(&messages);
+        assert_eq!(split.pinned, None, "{:?}", split.to_keep);
+    }
+
+    #[test]
+    fn the_tail_constructor_sets_the_policy_fields() {
+        let policy = summarization_policy_with_tail(100_000, 30_000);
+        assert_eq!(policy.context_window, Some(100_000));
+        assert_eq!(policy.keep_recent_tokens, Some(30_000));
+        assert!(policy.pin_turn_user_message);
+    }
+
+    #[test]
+    fn policies_serialized_before_the_new_fields_still_load() {
+        let policy: SummarizationPolicy =
+            serde_json::from_value(json!({"trigger_tokens": 10, "keep_last": 2})).unwrap();
+        assert_eq!(policy.keep_recent_tokens, None);
+        assert!(!policy.pin_turn_user_message);
+    }
+}
+
 /// Tests for [`render_message_for_summary`] and the default summarizer built on
 /// it.
 mod rendering {
@@ -790,6 +1076,29 @@ mod plan_recent_tokens {
         assert!((2..=4).contains(&kept_turns), "kept {kept_turns} turns");
         assert_eq!(to_summarize.len() + to_keep.len(), history().len());
         assert!(matches!(to_summarize[0], Message::User(_)));
+    }
+
+    #[test]
+    fn token_budget_split_pins_the_turn_user_message() {
+        let policy = SummarizationPolicy {
+            pin_turn_user_message: true,
+            ..summarization_policy(1_000_000)
+        };
+        let split = policy.plan_split_recent_tokens(&history(), 3_500);
+
+        assert_eq!(split.pinned, Some(0));
+        assert_eq!(split.to_keep[1].text(), "task");
+        assert!(
+            !split
+                .to_summarize
+                .iter()
+                .any(|message| matches!(message, Message::User(_))),
+            "the pinned task must not be summarized"
+        );
+        assert!(crate::summarization::tool_pairing_is_intact(&split.to_keep));
+        assert!(crate::summarization::tool_pairing_is_intact(
+            &split.to_summarize
+        ));
     }
 
     #[test]

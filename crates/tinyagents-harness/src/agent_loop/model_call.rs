@@ -22,6 +22,24 @@ use crate::no_progress::StreamTextStallDetector;
 use tinyinference_llm::cache::CachePolicy;
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
+    /// Previews which model `request` would reach through the local
+    /// [`crate::model_registry::ModelRegistry`] and returns its capability
+    /// profile, without dispatching anything.
+    ///
+    /// A pure registry lookup (no network call), so it is cheap enough to run
+    /// before every `before_model` pass and before every tool-change patch.
+    /// `None` when nothing resolves or the model advertises no profile. A
+    /// Hosted runs use their resolver for the profile shown to middleware;
+    /// this local preview is only their initial fallback.
+    pub(super) fn preview_model_profile(
+        &self,
+        request: &ModelRequest,
+    ) -> Option<tinyinference_llm::model::ModelProfile> {
+        self.models
+            .resolve_request(request, None, None)
+            .and_then(|binding| binding.model.profile().cloned())
+    }
+
     /// Resolves the model binding through the host's routing authority when
     /// this run is a hosted invocation; returns `None` for a plain SDK run so
     /// the caller falls through to local [`crate::model_registry::ModelRegistry`]
@@ -1476,8 +1494,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
     ) -> BoxModelFuture<'a> {
         Box::pin(async move {
             let mut request = request;
-            super::run_loop::refresh_prompt_cache_fingerprint(&mut request);
             let binding = self.rebind(ctx, &request).await?;
+            crate::middleware::library::rehome_ephemeral_system_instructions(
+                &mut request,
+                binding.model.profile(),
+            );
+            super::run_loop::refresh_prompt_cache_fingerprint(&mut request);
             // Dropped-block counts describe the response this call returns.
             // Clear them first (a cache hit makes no attempt), and again on
             // failure: a wrap middleware may answer in place of the failed

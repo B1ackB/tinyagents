@@ -17,12 +17,18 @@ use crate::summarization::is_checkpoint;
 pub(crate) const MAX_TASK_CHARS: usize = 6_000;
 /// Commands kept in the ledger (the most recent ones).
 pub(crate) const MAX_COMMANDS: usize = 15;
+/// Most recent read files kept in a checkpoint.
+pub(crate) const MAX_FILES_READ: usize = 60;
+/// Most recent modified files kept in a checkpoint.
+pub(crate) const MAX_FILES_MODIFIED: usize = 100;
+/// Maximum rendered path characters retained per file list.
+pub(crate) const MAX_FILE_LIST_CHARS: usize = 4_096;
 /// Longest single command line kept.
 const MAX_COMMAND_CHARS: usize = 200;
 
 impl TaskLedger {
     /// Folds the facts in `messages` into this ledger (which may carry facts
-    /// from earlier checkpoints). Files keep first-seen order; commands keep
+    /// from earlier checkpoints). Files keep most-recent order; commands keep
     /// the most recent [`MAX_COMMANDS`].
     pub fn absorb(&mut self, messages: &[Message]) {
         if self.original_task.is_none() {
@@ -50,8 +56,30 @@ impl TaskLedger {
                 self.absorb_call(&call.name, &call.arguments, result);
             }
         }
-        if self.commands.len() > MAX_COMMANDS {
-            self.commands.drain(..self.commands.len() - MAX_COMMANDS);
+        self.cap();
+    }
+
+    /// Keeps the most recent [`MAX_COMMANDS`] commands and bounded file lists.
+    pub(crate) fn cap(&mut self) {
+        fn tail<T>(items: &mut Vec<T>, keep: usize) {
+            if items.len() > keep {
+                items.drain(..items.len() - keep);
+            }
+        }
+        tail(&mut self.commands, MAX_COMMANDS);
+        for (files, limit) in [
+            (&mut self.files_modified, MAX_FILES_MODIFIED),
+            (&mut self.files_read, MAX_FILES_READ),
+        ] {
+            tail(files, limit);
+            while files
+                .iter()
+                .map(|path| escaped_path_len(path) + 1)
+                .sum::<usize>()
+                > MAX_FILE_LIST_CHARS
+            {
+                files.remove(0);
+            }
         }
     }
 
@@ -387,10 +415,22 @@ fn clean_path(raw: &str) -> Option<String> {
     looks_like_file.then(|| path.to_string())
 }
 
-fn push_unique(list: &mut Vec<String>, value: String) {
-    if !list.contains(&value) {
-        list.push(value);
+/// Bytes needed for a path after the checkpoint renderer escapes XML tags.
+fn escaped_path_len(path: &str) -> usize {
+    path.bytes()
+        .map(|byte| match byte {
+            b'&' => 5,
+            b'<' | b'>' => 4,
+            _ => 1,
+        })
+        .sum()
+}
+
+pub(super) fn push_unique(list: &mut Vec<String>, value: String) {
+    if let Some(at) = list.iter().position(|existing| existing == &value) {
+        list.remove(at);
     }
+    list.push(value);
 }
 
 pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
@@ -407,16 +447,21 @@ pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
 /// (SIGPIPE from `| head`) is a success.
 pub(crate) fn failure_of(result: &str) -> Option<&str> {
     let lower = result.to_ascii_lowercase();
-    for anchor in [
-        "exit code",
-        "exit_code\":",
-        "exited with code",
-        "exit status",
-    ] {
-        if let Some(at) = lower.find(anchor) {
-            let code: String = lower[at + anchor.len()..]
+    for line in lower.lines().rev() {
+        for anchor in [
+            "exit code",
+            "exit_code\":",
+            "exited with code",
+            "exit status",
+        ] {
+            let Some(at) = line.rfind(anchor) else {
+                continue;
+            };
+            let rest = line[at + anchor.len()..].trim_start_matches(|c: char| {
+                c.is_ascii_whitespace() || matches!(c, ':' | '=' | '(')
+            });
+            let code: String = rest
                 .chars()
-                .skip_while(|c| !c.is_ascii_digit() && *c != '-')
                 .take_while(|c| c.is_ascii_digit() || *c == '-')
                 .collect();
             if let Ok(code) = code.parse::<i64>() {

@@ -98,6 +98,9 @@ pub enum EntryKind {
 pub struct CompactionEntry {
     /// The replacement summary installed as the new context.
     pub summary: String,
+    /// Role used when restoring this checkpoint. Older entries used system.
+    #[serde(default = "legacy_compaction_placement")]
+    pub placement: tinyagents_harness::summarization::SummaryPlacement,
     /// The first entry (by id) that survives the compaction unsummarized;
     /// context projection includes everything from this entry to the tip,
     /// in addition to the summary.
@@ -111,6 +114,10 @@ pub struct CompactionEntry {
     /// bookkeeping, hook that authored the summary, ...).
     #[serde(default)]
     pub details: Value,
+}
+
+fn legacy_compaction_placement() -> tinyagents_harness::summarization::SummaryPlacement {
+    tinyagents_harness::summarization::SummaryPlacement::System
 }
 
 /// A note summarizing the branch abandoned at a navigation point.

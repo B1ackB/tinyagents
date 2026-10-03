@@ -30,6 +30,15 @@ impl PromptSource {
     }
 }
 
+/// Fingerprint of a whole message prefix: the tip of the chained fingerprints
+/// (0 for an empty prefix).
+fn prefix_fingerprint(messages: &[Message]) -> u64 {
+    super::context::fingerprint_chain(messages)
+        .last()
+        .copied()
+        .unwrap_or(0)
+}
+
 impl CompactionPressure {
     /// Starts a model call: spends one call of an active suppression window.
     /// Returns whether summarization is suppressed for this call.
@@ -45,7 +54,9 @@ impl CompactionPressure {
     /// The best available prompt size for a request of `messages` carrying
     /// `schema_tokens` of tool declarations.
     ///
-    /// With a measurement whose request this one extends, that is the
+    /// With a measurement whose request this one extends (same message count
+    /// or more, an identical prefix, and no fewer tool-schema tokens, so a front-trimmed request measured
+    /// earlier is not mistaken for the prefix of an untrimmed one), that is the
     /// provider's own count plus an estimate of the appended messages and of
     /// any schema growth; otherwise the whole-request estimate.
     pub(crate) fn prompt_tokens(
@@ -53,8 +64,12 @@ impl CompactionPressure {
         messages: &[Message],
         schema_tokens: u64,
     ) -> (u64, PromptSource) {
-        if let Some(measured) = self.measured
+        let full_estimate =
+            crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens;
+        if let Some(measured) = &self.measured
             && measured.messages <= messages.len()
+            && schema_tokens >= measured.schema_tokens
+            && prefix_fingerprint(&messages[..measured.messages]) == measured.fingerprint
         {
             let appended =
                 crate::token_estimation::estimate_slice_tokens(&messages[measured.messages..]);
@@ -64,16 +79,13 @@ impl CompactionPressure {
                 PromptSource::Measured,
             );
         }
-        (
-            crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens,
-            PromptSource::Estimated,
-        )
+        (full_estimate, PromptSource::Estimated)
     }
 
     /// Records the shape of the request this middleware let through, so the
     /// usage reported for it can be attributed in [`Self::observe`].
-    pub(crate) fn note_request(&mut self, messages: usize, schema_tokens: u64) {
-        self.pending = Some((messages, schema_tokens));
+    pub(crate) fn note_request(&mut self, messages: &[Message], schema_tokens: u64) {
+        self.pending = Some((messages.len(), schema_tokens, prefix_fingerprint(messages)));
     }
 
     /// Marks that a compaction just ran, so the next reported usage judges
@@ -95,7 +107,7 @@ impl CompactionPressure {
         strike_limit: u32,
         cooldown_calls: u32,
     ) -> bool {
-        let Some((messages, schema_tokens)) = self.pending.take() else {
+        let Some((messages, schema_tokens, fingerprint)) = self.pending.take() else {
             return false;
         };
         let Some(usage) = usage.filter(|usage| usage.input_tokens > 0) else {
@@ -106,6 +118,7 @@ impl CompactionPressure {
             prompt_tokens,
             messages,
             schema_tokens,
+            fingerprint,
         });
         if !std::mem::take(&mut self.awaiting_verdict) {
             return false;

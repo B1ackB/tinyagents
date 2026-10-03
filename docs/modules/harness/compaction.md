@@ -39,11 +39,14 @@ keep a few extra tokens to preserve pairing.
 Returns `None` when there is nothing to cut: no non-system content, or the
 whole non-system slice already fits under `keep_recent_tokens`.
 
-This is distinct from `SummarizationPolicy::plan`, which splits by a fixed
-`keep_last` *message count*. `find_cut_point` is used by
+`SummarizationPolicy::plan` splits by a fixed `keep_last` *message count*
+unless `SummarizationPolicy::keep_recent_tokens` is set, in which case it uses
+`find_cut_point` too. `find_cut_point` is also used by
 `ContextCompressionMiddleware::wrap_model`'s overflow recovery path, where a
 token budget (not a message count) is what needs to shrink under a provider's
-context window.
+context window. With `pin_turn_user_message`, both paths keep the turn's most
+recent user message verbatim at the front of the kept tail when the tail has
+none of its own.
 
 ## Split turns: `summarize_with_split`
 
@@ -227,6 +230,9 @@ The ledger round-trips through tagged blocks (`<original-task>`,
 `<modified-files>`, `<read-files>`), and the state through its one-line `## `
 sections. `parse_carried` reads both back from the previous summary, so the
 next checkpoint carries them exactly rather than re-summarizing a summary.
+The three live-task fields use `Option<String>`: a later split summary that
+omits one preserves the earlier value, while an explicit empty string clears
+it. A small presence tag retains this distinction through checkpoint text.
 The state is written once: a JSON copy beside the sections doubled every
 checkpoint in a live run.
 
@@ -272,6 +278,7 @@ pub enum CompactionReason { Manual, Threshold, Overflow }
 
 pub struct CompactionRecord {
     pub summary: String,
+    pub placement: SummaryPlacement, // role to restore from durable storage
     pub first_kept_index: usize, // position in the non-system slice, matches CutPoint::index
     pub tokens_before: u64,
     pub tokens_after: u64,

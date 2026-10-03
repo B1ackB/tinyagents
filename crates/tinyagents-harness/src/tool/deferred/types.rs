@@ -33,6 +33,10 @@ use tinytools::ToolResult;
 /// rows appended, so only the ids listed here are unanswered.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeferredToolRequests {
+    /// Host-only state that must survive a deferred resume, including
+    /// middleware state lost when the transcript is compacted.
+    #[serde(default)]
+    pub resume_metadata: BTreeMap<String, Value>,
     /// Calls the *host* must execute (an external/schema-only tool, or a tool
     /// that raised `CallDeferred`). Resolve each with a
     /// [`DeferredCallResult`].
@@ -84,6 +88,9 @@ pub enum DeferredCallResult {
 /// loop refuses to resume until every pending id is covered.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DeferredToolResults {
+    /// Host-only state copied from the deferred request being resolved.
+    #[serde(default)]
+    pub resume_metadata: BTreeMap<String, Value>,
     /// Decisions for the calls in [`DeferredToolRequests::approvals`].
     #[serde(default)]
     pub approvals: BTreeMap<CallId, ToolApprovalDecision>,

@@ -151,7 +151,7 @@ async fn long_histories_are_folded_in_sequential_chunks() {
 async fn merge_unions_files_and_keeps_the_later_state() {
     let model = Arc::new(ScriptedModel::replies(vec![
         STATE_REPLY,
-        r#"{"goal": "later"}"#,
+        r#"{"goal": "later", "requirements": ["second half requirement"]}"#,
     ]));
     let summarizer = TaskStateSummarizer::new(model, "m");
     let a = summarizer.summarize(&history()).await.unwrap();
@@ -162,8 +162,96 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     let merged = summarizer.merge(&[a, b]).await.unwrap();
     let body = merged.summary.text();
     assert!(body.contains("## Goal\nlater"));
+    assert!(body.contains("second half requirement"));
+    assert!(body.contains("invalid default argument declaration"));
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
+    assert!(body.contains("invalid default argument declaration"));
+    let (ledger, _) = parse_carried(&body);
+    assert!(ledger.commands.iter().any(|command| command.failed));
+}
+
+#[tokio::test]
+async fn merge_refreshes_revisited_file_before_capping() {
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m");
+    let record = |files: Vec<String>| SummaryRecord {
+        summary: Message::user(render_task_state(
+            &TaskState::default(),
+            &TaskLedger {
+                files_modified: files,
+                ..Default::default()
+            },
+        )),
+        provenance: CompressionProvenance {
+            source_ids: vec![],
+            original_token_estimate: 0,
+            summary_token_estimate: 0,
+            reason: String::new(),
+        },
+        usage: None,
+    };
+    let first = record(
+        (0..ledger::MAX_FILES_MODIFIED)
+            .map(|i| format!("f{i}"))
+            .collect(),
+    );
+    let second = record(vec!["f0".into(), "new".into()]);
+
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (ledger, _) = parse_carried(&merged.summary.text());
+    assert!(ledger.files_modified.contains(&"f0".to_string()));
+    assert!(ledger.files_modified.contains(&"new".to_string()));
+    assert!(!ledger.files_modified.contains(&"f1".to_string()));
+}
+
+#[tokio::test]
+async fn later_split_summary_clears_obsolete_live_task_fields() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        r#"{"current_hypothesis":"old theory","test_command":"cargo test old","next_step":"retry old work"}"#,
+        r#"{"current_hypothesis":"","test_command":"","next_step":""}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize(&shell("c9", "echo done", ""))
+        .await
+        .unwrap();
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (_, state) = parse_carried(&merged.summary.text());
+    let state = state.unwrap();
+    assert_eq!(state.current_hypothesis.as_deref(), Some(""));
+    assert_eq!(state.test_command.as_deref(), Some(""));
+    assert_eq!(state.next_step.as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn later_split_summary_omitting_live_task_fields_preserves_earlier_values() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        r#"{"current_hypothesis":"old theory","test_command":"cargo test old","next_step":"retry old work"}"#,
+        r#"{"goal":"updated goal"}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize(&shell("c9", "echo done", ""))
+        .await
+        .unwrap();
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (_, state) = parse_carried(&merged.summary.text());
+    let state = state.unwrap();
+    assert_eq!(state.current_hypothesis.as_deref(), Some("old theory"));
+    assert_eq!(state.test_command.as_deref(), Some("cargo test old"));
+    assert_eq!(state.next_step.as_deref(), Some("retry old work"));
+}
+
+#[test]
+fn oversized_tool_pair_stays_in_one_chunk() {
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m")
+        .with_max_chunk_tokens(1);
+    let messages = shell("large", "cat huge.log", &"x".repeat(1000));
+    let chunks = summarizer.chunks(&messages);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].len(), 2);
 }
 
 #[test]
@@ -175,7 +263,7 @@ fn bounded_caps_lists_and_items() {
         todos_done: many(40),
         todos_open: many(40),
         errors_and_fixes: vec!["e".repeat(5_000)],
-        current_hypothesis: "h".repeat(5_000),
+        current_hypothesis: Some("h".repeat(5_000)),
         ..TaskState::default()
     }
     .bounded();
@@ -192,7 +280,7 @@ fn bounded_caps_lists_and_items() {
     assert_eq!(state.todos_done[0], "item 28");
     assert_eq!(state.todos_open[0], "item 0", "open work keeps the oldest");
     assert!(state.errors_and_fixes[0].chars().count() <= 401);
-    assert!(state.current_hypothesis.chars().count() <= 801);
+    assert!(state.current_hypothesis.unwrap().chars().count() <= 801);
 }
 
 #[tokio::test]
@@ -231,4 +319,94 @@ async fn checkpoint_size_stays_bounded_across_many_compactions() {
     let last = *sizes.last().unwrap();
     // 3 lists x 12 items x ~215 chars, plus the ledger: well under 12k chars.
     assert!(last < 12_000, "checkpoint grew to {last} chars: {sizes:?}");
+}
+
+#[tokio::test]
+async fn merge_keeps_the_first_halfs_state_and_commands() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        STATE_REPLY,
+        r#"{"goal": "", "todos_open": ["second half work"]}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let a = summarizer.summarize(&history()).await.unwrap();
+    let b = summarizer
+        .summarize(&shell("c9", "cargo build", "ok"))
+        .await
+        .unwrap();
+    let body = summarizer.merge(&[a, b]).await.unwrap().summary.text();
+    // The empty later goal does not erase the earlier one; lists union.
+    assert!(body.contains("## Goal\ndefault args"));
+    assert!(body.contains("- invalid default argument declaration"));
+    assert!(body.contains("- fix error text"));
+    assert!(body.contains("- second half work"));
+    // Commands from both halves survive.
+    assert!(body.contains("- `go test ./vm/...` → FAILED: vm_test.go:9: boom"));
+    assert!(body.contains("- `cargo build` → ok"));
+}
+
+#[tokio::test]
+async fn a_second_compaction_carries_earlier_commands_forward() {
+    let model = Arc::new(ScriptedModel::replies(vec![STATE_REPLY, STATE_REPLY]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize_request(
+            &SummaryRequest::new(vec![Message::assistant("thinking")])
+                .with_previous_summary(first.summary.text()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        second
+            .summary
+            .text()
+            .contains("- `go test ./vm/...` → FAILED: vm_test.go:9: boom")
+    );
+}
+
+#[test]
+fn an_oversized_tool_group_is_never_split() {
+    let mut messages = vec![Message::user("task")];
+    messages.extend(shell("c1", "cat big", &"x".repeat(4_000)));
+    messages.push(Message::user("after"));
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::replies(vec!["{}"])), "m")
+        .with_max_chunk_tokens(50);
+    for chunk in summarizer.chunks(&messages) {
+        assert!(
+            !matches!(chunk.first(), Some(Message::Tool(_))),
+            "a chunk opens on an orphaned tool result"
+        );
+    }
+}
+
+#[test]
+fn merge_closes_open_work_the_other_half_finished() {
+    let earlier = TaskState {
+        todos_open: vec!["a".into(), "b".into()],
+        ..TaskState::default()
+    };
+    let later = TaskState {
+        todos_done: vec!["a".into()],
+        ..TaskState::default()
+    };
+    let merged = earlier.merged_with(later);
+    assert_eq!(merged.todos_open, vec!["b"]);
+    assert_eq!(merged.todos_done, vec!["a"]);
+}
+
+#[test]
+fn later_split_state_can_reopen_completed_work() {
+    let first = TaskState {
+        todos_done: vec!["run tests".into()],
+        todos_open: vec!["update docs".into()],
+        ..TaskState::default()
+    };
+    let later = TaskState {
+        todos_open: vec!["run tests".into()],
+        todos_done: vec!["update docs".into()],
+        ..TaskState::default()
+    };
+    let merged = first.merged_with(later);
+    assert_eq!(merged.todos_open, vec!["run tests"]);
+    assert_eq!(merged.todos_done, vec!["update docs"]);
 }

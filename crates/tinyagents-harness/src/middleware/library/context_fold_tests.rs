@@ -667,3 +667,146 @@ async fn an_unaligned_overflow_summary_is_not_built_on_later() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].previous_summary, None);
 }
+
+#[test]
+fn deterministic_trim_keeps_the_user_role_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(200);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let checkpoint = cp("everything that happened before");
+    let mut request = ModelRequest {
+        messages: std::iter::once(Message::system("sys"))
+            .chain(std::iter::once(checkpoint.clone()))
+            .chain((0..10).map(|i| chunk(&format!("m{i}"))))
+            .collect(),
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert_eq!(request.messages[0].text(), "sys");
+    assert_eq!(request.messages[1], checkpoint, "the checkpoint survives");
+    assert!(request.messages.len() < 12, "the live tail was trimmed");
+    assert!(
+        request.messages.last().unwrap().text().starts_with("m9:"),
+        "the newest message is kept"
+    );
+}
+
+#[test]
+fn deterministic_trim_shrinks_a_checkpoint_that_cannot_fit() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: vec![cp(&"y".repeat(4_000)), chunk("m0")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(crate::summarization::is_checkpoint(&request.messages[0]));
+    assert!(request.messages[0].text().chars().count() < 400);
+    assert!(request.messages[0].text().contains("truncated"));
+}
+
+#[test]
+fn deterministic_trim_keeps_a_system_role_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let checkpoint = crate::summarization::checkpoint_message(
+        crate::summarization::SummaryPlacement::System,
+        &"history ".repeat(1_000),
+    );
+    let mut request = ModelRequest {
+        messages: vec![Message::system("sys"), checkpoint, chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(crate::summarization::is_checkpoint)
+    );
+    assert!(request.messages.iter().any(|m| m.text() == "sys"));
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.text().contains("truncated"))
+    );
+}
+
+#[test]
+fn deterministic_trim_reserves_system_prompt_before_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let system = Message::system("core instructions ".repeat(14));
+    let mut request = ModelRequest {
+        messages: vec![system.clone(), cp(&"history ".repeat(200)), chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(request.messages.contains(&system));
+    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 100);
+}
+
+#[test]
+fn deterministic_trim_charges_checkpoint_framing() {
+    let policy = SummarizationPolicy::default().with_trigger_override(50);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: vec![cp(&"history ".repeat(1_000)), chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(
+        crate::token_estimation::count_tokens_approximately(&request.messages) <= 50,
+        "tokens={} messages={:?}",
+        crate::token_estimation::count_tokens_approximately(&request.messages),
+        request.messages,
+    );
+}
+
+#[test]
+fn deterministic_trim_without_pinning_charges_message_framing() {
+    let policy = SummarizationPolicy::default().with_trigger_override(50);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: (0..30).map(|_| Message::user("x")).collect(),
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 50);
+}
+
+#[test]
+fn deterministic_trim_fits_pinned_user_after_checkpoint() {
+    let policy = SummarizationPolicy {
+        pin_turn_user_message: true,
+        ..SummarizationPolicy::default()
+    }
+    .with_trigger_override(200);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: vec![cp(&"history".repeat(60)), Message::user("x".repeat(500))],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 200);
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(crate::summarization::is_checkpoint)
+    );
+}
