@@ -51,6 +51,15 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
     // Escape delimiters so a task cannot close its block and forge ledger tags.
     let task = escape_tagged(ledger.original_task.as_deref().unwrap_or(""));
     let command_data = escape_tagged(&serde_json::to_string(&ledger.commands).unwrap_or_default());
+    // The visible sections render missing and explicitly cleared values the
+    // same way. Carry presence separately so split-summary merge can tell
+    // them apart; older checkpoints without this tag treat all as present.
+    let live_presence = format!(
+        "{}{}{}",
+        u8::from(state.current_hypothesis.is_some()),
+        u8::from(state.test_command.is_some()),
+        u8::from(state.next_step.is_some())
+    );
     format!(
         "{TASK_STATE_HEADER}\n\n\
          <original-task>\n{task}\n</original-task>\n\n\
@@ -67,7 +76,8 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
          ## Recent commands\n{commands}\n\n\
          <modified-files>\n{modified}\n</modified-files>\n\
          <read-files>\n{read}\n</read-files>\n\
-         <recent-commands-json>\n{command_data}\n</recent-commands-json>",
+         <recent-commands-json>\n{command_data}\n</recent-commands-json>\n\
+         <live-task-presence>{live_presence}</live-task-presence>",
         goal = or_none(&state.goal),
         requirements = list(&state.requirements),
         constraints = list(&state.constraints),
@@ -75,9 +85,9 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
         errors = list(&state.errors_and_fixes),
         done = list(&state.todos_done),
         open = list(&state.todos_open),
-        hypothesis = or_none(&state.current_hypothesis),
-        test = or_none(&state.test_command),
-        next = or_none(&state.next_step),
+        hypothesis = or_none(state.current_hypothesis.as_deref().unwrap_or("")),
+        test = or_none(state.test_command.as_deref().unwrap_or("")),
+        next = or_none(state.next_step.as_deref().unwrap_or("")),
         modified = ledger
             .files_modified
             .iter()
@@ -209,6 +219,10 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             .and_then(|block| serde_json::from_str(&unescape_tagged(block)).ok())
             .unwrap_or_default(),
     };
+    let live_presence = tagged(previous, "live-task-presence")
+        .filter(|value| value.len() == 3)
+        .map(str::as_bytes);
+    let present = |index: usize| live_presence.is_none_or(|bits| bits[index] != b'0');
     let state = previous
         .trim_start()
         .starts_with(TASK_STATE_HEADER)
@@ -220,9 +234,9 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             errors_and_fixes: section_items(previous, ERRORS),
             todos_done: section_items(previous, DONE),
             todos_open: section_items(previous, OPEN),
-            current_hypothesis: section_text(previous, HYPOTHESIS),
-            test_command: section_text(previous, TEST),
-            next_step: section_text(previous, NEXT),
+            current_hypothesis: present(0).then(|| section_text(previous, HYPOTHESIS)),
+            test_command: present(1).then(|| section_text(previous, TEST)),
+            next_step: present(2).then(|| section_text(previous, NEXT)),
         });
     (ledger, state)
 }
