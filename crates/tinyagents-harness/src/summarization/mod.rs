@@ -494,7 +494,9 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
     let Some(pin) = messages
         .iter()
         .rposition(|m| matches!(m, Message::User(_)))
-        .and_then(|index| fit_pinned_message(&messages[index], budget.saturating_sub(system_tokens)))
+        .and_then(|index| {
+            fit_pinned_message(&messages[index], budget.saturating_sub(system_tokens))
+        })
     else {
         return enforce_approximate_budget(
             trim_messages(messages, &TrimStrategy::MaxTokens(budget)),

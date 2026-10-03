@@ -169,6 +169,39 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     assert!(ledger.commands.iter().any(|command| command.failed));
 }
 
+#[tokio::test]
+async fn merge_refreshes_revisited_file_before_capping() {
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m");
+    let record = |files: Vec<String>| SummaryRecord {
+        summary: Message::user(render_task_state(
+            &TaskState::default(),
+            &TaskLedger {
+                files_modified: files,
+                ..Default::default()
+            },
+        )),
+        provenance: CompressionProvenance {
+            source_ids: vec![],
+            original_token_estimate: 0,
+            summary_token_estimate: 0,
+            reason: String::new(),
+        },
+        usage: None,
+    };
+    let first = record(
+        (0..ledger::MAX_FILES_MODIFIED)
+            .map(|i| format!("f{i}"))
+            .collect(),
+    );
+    let second = record(vec!["f0".into(), "new".into()]);
+
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (ledger, _) = parse_carried(&merged.summary.text());
+    assert!(ledger.files_modified.contains(&"f0".to_string()));
+    assert!(ledger.files_modified.contains(&"new".to_string()));
+    assert!(!ledger.files_modified.contains(&"f1".to_string()));
+}
+
 #[test]
 fn oversized_tool_pair_stays_in_one_chunk() {
     let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m")
