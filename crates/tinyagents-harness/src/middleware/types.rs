@@ -988,7 +988,7 @@ pub(crate) struct CompactionPressure {
 }
 
 /// A provider-measured prompt size and the request shape it was measured on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MeasuredPrompt {
     /// Provider-reported input tokens of the call.
     pub(crate) prompt_tokens: u64,

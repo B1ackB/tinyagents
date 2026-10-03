@@ -421,15 +421,9 @@ fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
     first
         .todos_open
         .retain(|item| !first.todos_done.contains(item));
-    if !second.current_hypothesis.is_empty() {
-        first.current_hypothesis = second.current_hypothesis;
-    }
-    if !second.test_command.is_empty() {
-        first.test_command = second.test_command;
-    }
-    if !second.next_step.is_empty() {
-        first.next_step = second.next_step;
-    }
+    first.current_hypothesis = second.current_hypothesis;
+    first.test_command = second.test_command;
+    first.next_step = second.next_step;
     first
 }
 

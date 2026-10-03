@@ -56,7 +56,7 @@ impl CompactionPressure {
     ) -> (u64, PromptSource) {
         let full_estimate =
             crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens;
-        if let Some(measured) = self.measured
+        if let Some(measured) = &self.measured
             && measured.messages <= messages.len()
             && fingerprint(&messages[..measured.messages]) == measured.prefix_fingerprint
         {
