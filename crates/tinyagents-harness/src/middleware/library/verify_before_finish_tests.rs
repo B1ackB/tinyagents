@@ -259,11 +259,7 @@ async fn custom_trigger_sees_the_tools_called() {
     assert_eq!(check_count(&without), 0);
 
     let with = drive(
-        vec![
-            tool_round("c1", "todo"),
-            answer("draft"),
-            answer("checked"),
-        ],
+        vec![tool_round("c1", "todo"), answer("draft"), answer("checked")],
         only_with_todo(),
         RunLimits::default().with_max_model_calls(10),
     )

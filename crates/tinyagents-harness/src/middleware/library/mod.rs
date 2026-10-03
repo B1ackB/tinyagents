@@ -101,7 +101,8 @@ pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
 };
 pub use verify_before_finish::{
-    FinishActivity, FinishCheckTrigger, VerifyBeforeFinishMiddleware,
+    DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
+    MIN_REMAINING_MODEL_CALLS, VerifyBeforeFinishMiddleware,
 };
 pub use wrap_up::{
     CapturedOutcomes, DEFAULT_CLEARED_PLACEHOLDER, FinalCallWrapUpMiddleware, OutcomesUnavailable,

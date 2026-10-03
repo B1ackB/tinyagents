@@ -136,7 +136,11 @@ impl VerifyBeforeFinishMiddleware {
     }
 
     /// Why this response must not be held for the check, or `None` when it may.
-    fn skip_reason<C>(&self, ctx: &RunContext<C>, response: &ModelResponse) -> Option<&'static str> {
+    fn skip_reason<C>(
+        &self,
+        ctx: &RunContext<C>,
+        response: &ModelResponse,
+    ) -> Option<&'static str> {
         if !response.tool_calls().is_empty() {
             return Some("not_final");
         }
