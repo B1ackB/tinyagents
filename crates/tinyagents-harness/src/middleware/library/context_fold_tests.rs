@@ -60,6 +60,7 @@ impl Summarizer for ShortSummarizer {
                 summary_token_estimate: 0,
                 reason: "test".into(),
             },
+            usage: None,
         })
     }
 }
