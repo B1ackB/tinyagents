@@ -54,4 +54,5 @@ pub struct VerifyBeforeFinishMiddleware {
     pub(super) min_remaining_wall_clock: Duration,
     pub(super) wall_clock_limit: Option<Duration>,
     pub(super) runs: Mutex<HashMap<u64, RunState>>,
+    pub(super) wrap_up: Option<Arc<crate::middleware::library::FinalCallWrapUpMiddleware>>,
 }

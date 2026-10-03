@@ -630,3 +630,67 @@ async fn out_of_range_thresholds_are_ignored() {
     let calls: Vec<usize> = appended.iter().map(|(call, _)| *call).collect();
     assert_eq!(calls, vec![9, 10], "{appended:?}");
 }
+
+// ── nudges ride the ephemeral-instruction placement (#6962) ─────────────────
+
+fn hoisting() -> tinyinference_llm::model::ModelProfile {
+    tinyinference_llm::model::ModelProfile {
+        hoists_system_messages: true,
+        ..Default::default()
+    }
+}
+
+/// On a hoisting model a nudge folds into the tail user turn, never a second
+/// consecutive user turn.
+async fn assert_folds_into_tail(
+    mw: &FinalCallWrapUpMiddleware,
+    max: usize,
+    back: usize,
+    needle: &str,
+) {
+    let mut ctx = ctx_at(max, back);
+    ctx.model_profile = Some(hoisting());
+    let mut request = ModelRequest {
+        messages: vec![TaMessage::user("fix the bug")],
+        tools: mixed_belt(),
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    assert_eq!(
+        request.messages.len(),
+        1,
+        "no extra turn: {:?}",
+        request.messages
+    );
+    let text = request.messages[0].text();
+    assert!(text.starts_with("fix the bug"), "{text}");
+    assert!(text.contains(needle), "{text}");
+}
+
+#[tokio::test]
+async fn budget_notice_folds_into_the_tail_turn_on_hoisting_models() {
+    let mw = mw(sink_with(&[])).with_budget_notice([0.5]);
+    assert_folds_into_tail(&mw, 20, 10, "model calls left").await;
+}
+
+#[tokio::test]
+async fn final_write_instruction_folds_into_the_tail_turn_on_hoisting_models() {
+    assert_folds_into_tail(&mw(sink_with(&[])), 20, 1, "WRITE NOW").await;
+}
+
+#[tokio::test]
+async fn conclusion_instruction_folds_into_the_tail_turn_on_hoisting_models() {
+    assert_folds_into_tail(&mw(sink_with(&[])), 20, 0, "CONCLUDE NOW").await;
+}
+
+/// The check and the budget notice must not both speak in one run.
+#[tokio::test]
+async fn announced_budget_notice_is_visible_to_the_run_that_got_it() {
+    let mw = mw(sink_with(&[])).with_budget_notice([0.5]);
+    let mut ctx = ctx_at(20, 10);
+    assert!(!mw.budget_notice_announced(&ctx));
+    let mut request = ModelRequest::new(vec![TaMessage::user("x")]);
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    assert!(mw.budget_notice_announced(&ctx));
+    assert!(!mw.budget_notice_announced(&ctx_at(20, 10)));
+}

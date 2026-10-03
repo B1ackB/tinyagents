@@ -28,7 +28,20 @@ impl VerifyBeforeFinishMiddleware {
             min_remaining_wall_clock: DEFAULT_MIN_REMAINING_WALL_CLOCK,
             wall_clock_limit: None,
             runs: Mutex::default(),
+            wrap_up: None,
         }
+    }
+
+    /// Stay quiet in any run where `wrap_up` has already announced a budget
+    /// notice, so the check ("re-read and verify") cannot contradict a notice
+    /// telling the model to stop gathering and finish. Pass the same `Arc`
+    /// that is installed as middleware.
+    pub fn with_wrap_up(
+        mut self,
+        wrap_up: Arc<crate::middleware::library::FinalCallWrapUpMiddleware>,
+    ) -> Self {
+        self.wrap_up = Some(wrap_up);
+        self
     }
 
     /// Fire only for runs with at least `rounds` tool rounds. Replaces any
@@ -94,6 +107,13 @@ impl VerifyBeforeFinishMiddleware {
         }
         if response.continue_turn.is_some() {
             return Some("already_continued");
+        }
+        if self
+            .wrap_up
+            .as_ref()
+            .is_some_and(|wrap_up| wrap_up.budget_notice_announced(ctx))
+        {
+            return Some("budget_notice_announced");
         }
         if ctx.limits.remaining_model_calls() < MIN_REMAINING_MODEL_CALLS {
             return Some("model_call_budget");
