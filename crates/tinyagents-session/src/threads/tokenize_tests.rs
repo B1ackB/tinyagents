@@ -42,6 +42,8 @@ fn normalize_unifies_cjk_halfwidth_fullwidth() {
     let halfwidth = "ｶﾀｶﾅ"; // half-width
     let fullwidth = "カタカナ"; // full-width
     assert_eq!(normalize(halfwidth), normalize(fullwidth));
+    assert_eq!(normalize("ｶﾞｲﾄﾞ"), normalize("ガイド"));
+    assert_eq!(normalize("ﾊﾟﾝ"), normalize("パン"));
 }
 
 #[test]

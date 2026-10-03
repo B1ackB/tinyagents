@@ -60,6 +60,43 @@ pub fn normalize(text: &str) -> String {
     let lowered: String = text.chars().flat_map(char::to_lowercase).collect();
     let mut out = String::with_capacity(lowered.len());
     for c in lowered.chars() {
+        if matches!(c, 'ﾞ' | 'ﾟ')
+            && let Some(base) = out.pop()
+        {
+            let voiced = match (base, c) {
+                ('ウ', 'ﾞ') => Some('ヴ'),
+                ('カ', 'ﾞ') => Some('ガ'),
+                ('キ', 'ﾞ') => Some('ギ'),
+                ('ク', 'ﾞ') => Some('グ'),
+                ('ケ', 'ﾞ') => Some('ゲ'),
+                ('コ', 'ﾞ') => Some('ゴ'),
+                ('サ', 'ﾞ') => Some('ザ'),
+                ('シ', 'ﾞ') => Some('ジ'),
+                ('ス', 'ﾞ') => Some('ズ'),
+                ('セ', 'ﾞ') => Some('ゼ'),
+                ('ソ', 'ﾞ') => Some('ゾ'),
+                ('タ', 'ﾞ') => Some('ダ'),
+                ('チ', 'ﾞ') => Some('ヂ'),
+                ('ツ', 'ﾞ') => Some('ヅ'),
+                ('テ', 'ﾞ') => Some('デ'),
+                ('ト', 'ﾞ') => Some('ド'),
+                ('ハ', 'ﾞ') => Some('バ'),
+                ('ヒ', 'ﾞ') => Some('ビ'),
+                ('フ', 'ﾞ') => Some('ブ'),
+                ('ヘ', 'ﾞ') => Some('ベ'),
+                ('ホ', 'ﾞ') => Some('ボ'),
+                ('ハ', 'ﾟ') => Some('パ'),
+                ('ヒ', 'ﾟ') => Some('ピ'),
+                ('フ', 'ﾟ') => Some('プ'),
+                ('ヘ', 'ﾟ') => Some('ペ'),
+                ('ホ', 'ﾟ') => Some('ポ'),
+                _ => None,
+            };
+            out.push(voiced.unwrap_or(base));
+            if voiced.is_some() {
+                continue;
+            }
+        }
         if is_combining_mark(c) {
             // Drop diacritics that sit on their own code point (Arabic
             // harakat, Hebrew niqqud, Latin combining marks, …).
