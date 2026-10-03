@@ -62,7 +62,11 @@ pub fn push_ephemeral_instruction(
     profile: Option<&ModelProfile>,
 ) {
     let text = text.into();
-    if !profile.is_some_and(|profile| profile.hoists_system_messages) {
+    if profile.is_none()
+        || profile.is_some_and(|profile| {
+            profile.mid_conversation_system_messages && !profile.hoists_system_messages
+        })
+    {
         tracing::trace!("[tinyagents::mw] ephemeral instruction placed as a tail system message");
         let mut message = Message::system(text);
         if let Message::System(system) = &mut message {

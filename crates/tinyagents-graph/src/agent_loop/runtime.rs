@@ -328,10 +328,20 @@ where
     let call_id = CallId::new(format!("{}-model-{}", ctx.run_id(), run.model_calls + 1));
 
     let mut request = request;
+    let resolution_cache = Arc::new(std::sync::Mutex::new(Some((
+        request.model.clone(),
+        request.required_capabilities.clone(),
+        binding,
+    ))));
     // Mirror the direct loop: `before_model` middleware reads the target
     // model's profile (e.g. to avoid new system messages on a model that
     // hoists them, #6962).
-    ctx.model_profile = binding.model.profile().cloned();
+    ctx.model_profile = resolution_cache
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|(_, _, binding)| binding.model.profile().cloned());
+    let profile_cache = resolution_cache.clone();
     harness
         .middleware()
         .run_before_model_with_profile(
@@ -339,12 +349,23 @@ where
             app_state,
             &mut request,
             harness,
-            |harness, _ctx, request| {
+            move |harness, _ctx, request| {
+                let profile_cache = profile_cache.clone();
                 Box::pin(async move {
-                    Ok(harness
-                        .models()
-                        .resolve_request(request, None, None)
-                        .and_then(|binding| binding.model.profile().cloned()))
+                    let key = (request.model.clone(), request.required_capabilities.clone());
+                    if let Some((cached_model, cached_capabilities, binding)) =
+                        profile_cache.lock().unwrap().as_ref()
+                        && *cached_model == key.0
+                        && *cached_capabilities == key.1
+                    {
+                        return Ok(binding.model.profile().cloned());
+                    }
+                    let binding = harness.models().resolve_request(request, None, None);
+                    let profile = binding
+                        .as_ref()
+                        .and_then(|binding| binding.model.profile().cloned());
+                    *profile_cache.lock().unwrap() = binding.map(|binding| (key.0, key.1, binding));
+                    Ok(profile)
                 })
             },
         )
@@ -353,9 +374,15 @@ where
     // Middleware may select a different registered model or add required
     // capabilities. Resolve again so graph execution dispatches the request
     // that middleware actually prepared, just like the direct loop.
-    let binding = harness
-        .models()
-        .resolve_request(&request, None, None)
+    let key = (request.model.clone(), request.required_capabilities.clone());
+    let binding = resolution_cache
+        .lock()
+        .unwrap()
+        .take()
+        .and_then(|(cached_model, cached_capabilities, binding)| {
+            (cached_model == key.0 && cached_capabilities == key.1).then_some(binding)
+        })
+        .or_else(|| harness.models().resolve_request(&request, None, None))
         .ok_or_else(|| {
             TinyAgentsError::ModelNotFound(
                 request.model.clone().unwrap_or_else(|| "<default>".into()),
