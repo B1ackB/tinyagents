@@ -176,7 +176,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
         files_read: lines("read-files"),
         commands: Vec::new(),
     };
-    let state = previous.starts_with(TASK_STATE_HEADER).then(|| TaskState {
+    let state = previous.trim_start().starts_with(TASK_STATE_HEADER).then(|| TaskState {
         goal: section_text(previous, GOAL),
         requirements: section_items(previous, REQUIREMENTS),
         constraints: section_items(previous, CONSTRAINTS),

@@ -66,7 +66,53 @@ const FIELDS: &str = r#"Return a JSON object with exactly these keys:
   "test_command": string,         // the exact command used to run the tests, or ""
   "next_step": string             // the very next concrete action: tool and argument
 }
-Keep everything from the previous state that is still true; move finished items from todos_open to todos_done; drop nothing the task requires. Copy file paths, identifiers, commands and error lines exactly."#;
+Keep what is still true from the previous state; move finished items from todos_open to todos_done; never drop a requirement. Stay compact: one line per item, at most 12 items per list; merge related items and drop ones that are superseded or no longer matter. Copy file paths, identifiers, commands and error lines exactly."#;
+
+/// Longest single list item or scalar kept (chars).
+const MAX_ITEM_CHARS: usize = 400;
+/// Longest hypothesis kept (chars).
+const MAX_HYPOTHESIS_CHARS: usize = 800;
+/// Items kept per list. Requirements keep the first ones (they come from
+/// the task); history lists keep the most recent ones; open work keeps the
+/// first (oldest outstanding) ones.
+const MAX_REQUIREMENTS: usize = 40;
+const MAX_LIST_ITEMS: usize = 12;
+
+impl TaskState {
+    /// The state with every list and field capped, so a checkpoint stays a
+    /// few thousand tokens however many compactions it has been carried
+    /// through. Without a cap the model's lists only grow (it is told to keep
+    /// what is still true), and a checkpoint that nears the trigger by itself
+    /// makes every compaction free almost nothing.
+    #[must_use]
+    pub fn bounded(mut self) -> Self {
+        fn clip(items: &mut Vec<String>, keep: usize, recent: bool) {
+            for item in items.iter_mut() {
+                *item = ledger::truncate_chars(item.trim(), MAX_ITEM_CHARS);
+            }
+            items.retain(|i| !i.is_empty());
+            if items.len() > keep {
+                if recent {
+                    items.drain(..items.len() - keep);
+                } else {
+                    items.truncate(keep);
+                }
+            }
+        }
+        clip(&mut self.requirements, MAX_REQUIREMENTS, false);
+        clip(&mut self.constraints, MAX_LIST_ITEMS, false);
+        clip(&mut self.decisions, MAX_LIST_ITEMS, true);
+        clip(&mut self.errors_and_fixes, MAX_LIST_ITEMS, true);
+        clip(&mut self.todos_done, MAX_LIST_ITEMS, true);
+        clip(&mut self.todos_open, MAX_LIST_ITEMS, false);
+        self.goal = ledger::truncate_chars(self.goal.trim(), MAX_ITEM_CHARS * 2);
+        self.current_hypothesis =
+            ledger::truncate_chars(self.current_hypothesis.trim(), MAX_HYPOTHESIS_CHARS);
+        self.test_command = ledger::truncate_chars(self.test_command.trim(), MAX_ITEM_CHARS);
+        self.next_step = ledger::truncate_chars(self.next_step.trim(), MAX_ITEM_CHARS);
+        self
+    }
+}
 
 impl TaskStateSummarizer {
     /// A task-state summarizer over `model` (its id pinned for provenance).
@@ -232,6 +278,7 @@ impl Summarizer for TaskStateSummarizer {
                 .await
             {
                 Ok(Some(next)) => {
+                    let next = next.bounded();
                     previous_text = serde_json::to_string(&next).ok();
                     state = Some(next);
                 }
