@@ -411,8 +411,8 @@ fn cap_pinned_message(message: &Message) -> Message {
         "[summarization::plan] truncating an oversized pinned user message"
     );
     Message::user(format!(
-        "{kept}\n[… message truncated: the original was about {tokens} tokens; the rest was \
-         folded into the summary above]"
+        "{kept}\n[… message truncated to fit the context window: the original was about \
+         {tokens} tokens]"
     ))
 }
 
