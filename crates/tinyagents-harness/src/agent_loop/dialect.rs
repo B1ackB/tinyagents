@@ -629,7 +629,15 @@ impl DeltaScrubber {
             model_call_id,
             calls: Vec::new(),
             dropped,
+            withhold: false,
+            withheld: 0,
         }
+    }
+
+    /// Scrub calls without dispatching them (see [`TextRecovery::withholding`]).
+    pub(super) fn withholding(mut self, withhold: bool) -> Self {
+        self.withhold = withhold;
+        self
     }
 
     /// Feeds one text delta; returns the text safe to forward.
