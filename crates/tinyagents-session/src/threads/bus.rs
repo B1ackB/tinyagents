@@ -34,6 +34,7 @@ use super::{
 
 static CONVERSATION_PERSISTENCE_WORKSPACE: OnceLock<Arc<RwLock<PathBuf>>> = OnceLock::new();
 static CONVERSATION_PERSISTENCE_REGISTERED: OnceLock<()> = OnceLock::new();
+static REGISTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A channel turn the persistence subscriber knows how to mirror into the
 /// conversation store. Decoupled from any concrete event-bus event type so the
@@ -128,6 +129,7 @@ pub fn register_conversation_persistence_subscriber(
         *guard = workspace_dir;
     }
 
+    let _registration = REGISTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if CONVERSATION_PERSISTENCE_REGISTERED.get().is_some() {
         return;
     }
@@ -305,11 +307,22 @@ fn persist_channel_turn(
         descriptor.reply_target,
         descriptor.thread_ts,
     );
-    let thread_id = if legacy_id != collision_safe_id
+    let legacy_matches = legacy_id != collision_safe_id
         && list_threads(workspace_dir.to_path_buf())?
             .iter()
             .any(|thread| thread.id == legacy_id)
-    {
+        && get_messages(workspace_dir.to_path_buf(), &legacy_id)?
+            .iter()
+            .any(|message| {
+                let metadata = &message.extra_metadata;
+                metadata.get("channel").and_then(|v| v.as_str()) == Some(descriptor.channel)
+                    && metadata.get("channelSender").and_then(|v| v.as_str())
+                        == Some(descriptor.sender)
+                    && metadata.get("replyTarget").and_then(|v| v.as_str())
+                        == Some(descriptor.reply_target)
+                    && metadata.get("threadTs").and_then(|v| v.as_str()) == descriptor.thread_ts
+            });
+    let thread_id = if legacy_matches {
         legacy_id
     } else {
         collision_safe_id
@@ -337,13 +350,7 @@ fn persist_channel_turn(
     )?;
 
     let persisted_message_id = format!("{}:{}", descriptor.role, descriptor.message_id);
-    if get_messages(workspace_dir.to_path_buf(), &thread_id)?
-        .iter()
-        .any(|message| message.id == persisted_message_id)
-    {
-        return Ok(());
-    }
-
+    // The store checks channel-scoped ids while holding the thread lock.
     append_message(
         workspace_dir.to_path_buf(),
         &thread_id,

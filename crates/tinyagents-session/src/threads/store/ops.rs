@@ -151,7 +151,8 @@ impl ConversationStore {
             }
         }
         let path = self.thread_messages_path(thread_id);
-        if is_deterministic_message_id(&message.id)
+        if (is_deterministic_message_id(&message.id)
+            || message.extra_metadata.get("scope").and_then(|v| v.as_str()) == Some("channel"))
             && let Some(existing) = find_message_by_id(&path, &message.id)?
         {
             return Ok(existing);

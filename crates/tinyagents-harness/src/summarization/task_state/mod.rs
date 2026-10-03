@@ -332,8 +332,7 @@ impl Summarizer for TaskStateSummarizer {
         })
     }
 
-    /// Merges split halves by carrying the first half's ledger into the
-    /// second: file lists union in order, the later state wins.
+    /// Merges independently summarized halves, retaining facts from both.
     async fn merge(&self, summaries: &[SummaryRecord]) -> Result<SummaryRecord> {
         let mut ledger = TaskLedger::default();
         let mut state = None;
@@ -352,7 +351,36 @@ impl Summarizer for TaskStateSummarizer {
                     ledger.files_read.push(f);
                 }
             }
-            state = next_state.or(state);
+            if let Some(next_state) = next_state {
+                let current = state.get_or_insert_with(TaskState::default);
+                if !next_state.goal.is_empty() {
+                    current.goal = next_state.goal;
+                }
+                for (target, additions) in [
+                    (&mut current.requirements, next_state.requirements),
+                    (&mut current.constraints, next_state.constraints),
+                    (&mut current.decisions, next_state.decisions),
+                    (&mut current.errors_and_fixes, next_state.errors_and_fixes),
+                    (&mut current.todos_done, next_state.todos_done),
+                    (&mut current.todos_open, next_state.todos_open),
+                ] {
+                    for item in additions {
+                        if !target.contains(&item) {
+                            target.push(item);
+                        }
+                    }
+                }
+                current.todos_open.retain(|item| !current.todos_done.contains(item));
+                if !next_state.current_hypothesis.is_empty() {
+                    current.current_hypothesis = next_state.current_hypothesis;
+                }
+                if !next_state.test_command.is_empty() {
+                    current.test_command = next_state.test_command;
+                }
+                if !next_state.next_step.is_empty() {
+                    current.next_step = next_state.next_step;
+                }
+            }
         }
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
