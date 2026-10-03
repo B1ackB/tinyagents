@@ -113,7 +113,7 @@ impl VerifyBeforeFinishMiddleware {
             .as_ref()
             .is_some_and(|wrap_up| wrap_up.budget_notice_announced(ctx))
         {
-            return None;
+            return Some("budget_notice_announced");
         }
         if ctx.limits.remaining_model_calls() < MIN_REMAINING_MODEL_CALLS {
             return Some("model_call_budget");
