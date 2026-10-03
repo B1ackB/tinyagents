@@ -72,6 +72,7 @@ mod policy_gate;
 mod repeat_progress;
 mod resilience;
 mod tool_policy;
+mod turn_clock;
 mod verify_before_finish;
 mod wrap_up;
 
@@ -100,6 +101,7 @@ pub use policy_gate::{
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
 };
+pub use turn_clock::{TurnClock, TurnClockMiddleware};
 pub use verify_before_finish::{
     DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
     MIN_REMAINING_MODEL_CALLS, VerifyBeforeFinishMiddleware,
@@ -120,6 +122,9 @@ mod context_fold_test;
 #[cfg(test)]
 #[path = "context_loop_tests.rs"]
 mod context_loop_test;
+#[cfg(test)]
+#[path = "context_pin_tests.rs"]
+mod context_pin_test;
 #[cfg(test)]
 #[path = "context_task_state_tests.rs"]
 mod context_task_state_test;
