@@ -16,6 +16,43 @@ fn conversation_purge_stats_default() {
 }
 
 #[test]
+fn list_threads_repairs_an_interrupted_append_after_known_stats() {
+    let (_temp, store) = make_store();
+    store
+        .ensure_thread(CreateConversationThread {
+            id: "t1".into(),
+            title: "T1".into(),
+            created_at: "2026-04-10T12:00:00Z".into(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        })
+        .unwrap();
+    let message = |id: &str, time: &str| ThreadMessage {
+        id: id.into(),
+        content: id.into(),
+        message_type: "text".into(),
+        extra_metadata: json!({}),
+        sender: "user".into(),
+        created_at: time.into(),
+    };
+    store
+        .append_message("t1", message("m1", "2026-04-10T12:01:00Z"))
+        .unwrap();
+    assert_eq!(store.list_threads().unwrap()[0].message_count, 1);
+    // Simulate a crash after the transcript write but before MessageAppended.
+    append_jsonl(
+        &store.thread_messages_path("t1"),
+        &message("m2", "2026-04-10T12:02:00Z"),
+    )
+    .unwrap();
+    let reopened = ConversationStore::new(_temp.path().to_path_buf());
+    let thread = &reopened.list_threads().unwrap()[0];
+    assert_eq!(thread.message_count, 2);
+    assert_eq!(thread.last_message_at, "2026-04-10T12:02:00Z");
+}
+
+#[test]
 fn list_threads_reconciles_stats_with_authoritative_message_files() {
     let (temp, store) = make_store();
     store

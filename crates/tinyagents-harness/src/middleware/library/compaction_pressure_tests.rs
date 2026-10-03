@@ -62,7 +62,10 @@ fn changed_measured_prefix_falls_back_to_whole_request_estimate() {
     let messages = [Message::user("a much longer replacement")];
     let (tokens, source) = pressure.prompt_tokens(&messages, 0);
     assert_eq!(source, PromptSource::Estimated);
-    assert_eq!(tokens, crate::token_estimation::estimate_slice_tokens(&messages));
+    assert_eq!(
+        tokens,
+        crate::token_estimation::estimate_slice_tokens(&messages)
+    );
 }
 
 #[test]

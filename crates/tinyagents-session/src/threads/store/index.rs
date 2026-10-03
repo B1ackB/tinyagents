@@ -252,11 +252,11 @@ impl ConversationStore {
 
     fn stats_need_repair(&self, thread_id: &str, entry: &super::ThreadIndexEntry) -> bool {
         let actual_bytes = fs::metadata(self.thread_messages_path(thread_id))
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+            .ok()
+            .map(|metadata| metadata.len());
         entry.message_count.is_none()
             || entry.last_message_at.is_none()
-            || entry.message_bytes != Some(actual_bytes)
+            || actual_bytes.is_some_and(|bytes| entry.message_bytes != Some(bytes))
     }
 
     fn threads_from_index(index: BTreeMap<String, ThreadIndexEntry>) -> Vec<ConversationThread> {

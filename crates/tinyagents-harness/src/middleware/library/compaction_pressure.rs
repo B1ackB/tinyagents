@@ -53,7 +53,7 @@ impl CompactionPressure {
         messages: &[Message],
         schema_tokens: u64,
     ) -> (u64, PromptSource) {
-        if let Some(measured) = self.measured
+        if let Some(measured) = &self.measured
             && measured.messages <= messages.len()
             && measured.prefix == messages[..measured.messages]
         {
