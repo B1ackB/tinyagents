@@ -112,14 +112,12 @@ impl ModelSummarizer {
         let (summary, usage) = self
             .summarize_once(request)
             .await
-            .map_err(|(error, usage)| {
-                match usage {
-                    Some(usage) => TinyAgentsError::SummarizationUsage {
-                        error: Box::new(error),
-                        usage,
-                    },
-                    None => error,
-                }
+            .map_err(|(error, usage)| match usage {
+                Some(usage) => TinyAgentsError::SummarizationUsage {
+                    error: Box::new(error),
+                    usage,
+                },
+                None => error,
             })?;
 
         let summary = summary.trim();

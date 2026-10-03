@@ -310,10 +310,8 @@ async fn fallback_reports_usage_from_failed_markup_attempts() {
         ModelResponse::assistant(DSML_REPLY).with_usage(usage),
     ]));
     let policy = SummarizationPolicy::default().with_context_window(1_000);
-    let guarded = FaultTolerantCachingSummarizer::new(
-        Box::new(ModelSummarizer::new(model, "m")),
-        &policy,
-    );
+    let guarded =
+        FaultTolerantCachingSummarizer::new(Box::new(ModelSummarizer::new(model, "m")), &policy);
     let record = guarded.summarize(&[Message::user("x")]).await.unwrap();
     assert_eq!(record.usage.unwrap().total_tokens, 30);
 }
