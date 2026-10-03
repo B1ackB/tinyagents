@@ -1487,6 +1487,47 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             if real_tool_calls.is_empty() {
+                // A call written on a turn that could not take one (tools
+                // withdrawn for a concluding answer, or `ToolChoice::None`).
+                // It was scrubbed and not run; what is left is either nothing
+                // or a lead-in to a step that never happened, so it is not the
+                // answer the request asked for. Drop that row and ask once
+                // more, telling the model plainly that tools are gone.
+                // Replaying bench captures, this re-prompt turned 8 of 8
+                // DeepSeek V4 replies that had leaked a call into plain-text
+                // answers. Runs before the empty-reply retries: a bare
+                // re-send of the same transcript leaks the same way.
+                let withheld_calls = recovery.dropped.withheld();
+                if withheld_calls > 0
+                    && withheld_call_nudges_used < self.policy.dropped_tool_call_nudges
+                    && ctx.limits.remaining_model_calls() > 0
+                {
+                    withheld_call_nudges_used += 1;
+                    messages.pop();
+                    tracing::info!(
+                        target: "tinyagents::agent_loop",
+                        run_id = %ctx.run_id(),
+                        call_id = %call_id,
+                        withheld_calls,
+                        attempt = withheld_call_nudges_used,
+                        "[agent_loop] re-prompting after a tool call on a turn with no callable tools"
+                    );
+                    ctx.emit(AgentEvent::ControlApplied {
+                        control: "withheld_tool_call".to_string(),
+                        detail: format!(
+                            "{withheld_calls} tool call(s) written while no tool was callable \
+                             in model call `{call_id}`; scrubbed, not run, re-prompted"
+                        ),
+                    });
+                    messages.push(Message::user(WITHHELD_TOOL_CALL_NUDGE));
+                    let record = ctx.emit(AgentEvent::RetryScheduled {
+                        call_id: call_id.clone(),
+                        attempt: withheld_call_nudges_used as usize,
+                    });
+                    status.set_last_event(record.id);
+                    continue;
+                }
+
                 // Truncated-empty recovery (runs before structured extraction,
                 // which would otherwise fail on the empty completion). A local
                 // reasoning model can burn the whole token budget on its hidden
