@@ -95,6 +95,21 @@ fn is_absolute_path_under(path: &str, dir: &Path) -> bool {
         && path != dir
 }
 
+/// Remove lexical `.` and `..` components without requiring the path to exist.
+fn normalize_absolute_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn read_target_matching(
     tool_name: &str,
     args: &Value,
@@ -161,10 +176,10 @@ pub fn page_artifact_read(
         let cut = floor_char_boundary(&content, budget_bytes);
         return content[..cut].to_string();
     };
+    let escaped_path = serde_json::to_string(&read.path).expect("serializing a string cannot fail");
     let with_path = |next: usize| {
         format!(
-            "\n\n[artifact page: bytes {start}..{next} of {total}. Continue with {read_tool} {{\"path\":\"{}\",\"offset\":{next}}}]",
-            read.path
+            "\n\n[artifact page: bytes {start}..{next} of {total}. Continue with {read_tool} {{\"path\":{escaped_path},\"offset\":{next}}}]"
         )
     };
     // Without the path (the caller already has it). At most ~100 bytes, so it
@@ -389,6 +404,7 @@ impl ToolResultArtifactStore {
                 .map(|cwd| cwd.join(&storage_dir))
                 .unwrap_or(storage_dir)
         };
+        let storage_dir = normalize_absolute_path(&storage_dir);
         Self::with_layout(
             storage_dir,
             StoreLayout::Detached,
@@ -611,6 +627,8 @@ impl ToolResultArtifactStore {
             String::new()
         };
 
+        let escaped_pointer =
+            serde_json::to_string(&relative_path).expect("serializing a string cannot fail");
         let envelope = format!(
             "[tool_result_preview]\n\
              tool: {tool_name}\n\
@@ -618,7 +636,7 @@ impl ToolResultArtifactStore {
              original_bytes: {}\n\
              stored_bytes: {}\n\
              artifact_path: {relative_path}\n\
-             read_with: {read_tool} {{\"path\":\"{relative_path}\"}} (a long read returns one page and names the \"offset\" to continue from)\n\
+             read_with: {read_tool} {{\"path\":{escaped_pointer}}} (a long read returns one page and names the \"offset\" to continue from)\n\
              notes: {location_note}{redaction_note}{truncation_note}\n\n\
              [preview]\n{preview}",
             content.len(),
@@ -830,7 +848,19 @@ pub async fn spill_aggregate_tool_results(
                 // pointer — `allowed_len` can be 0 here, which would blank the
                 // result and strip the `artifact_path` the model reads to recover
                 // the full output.
-                let envelope_allowance = allowed_len.max(MIN_ENVELOPE_ALLOWANCE_BYTES);
+                let header_len = persisted
+                    .output
+                    .find("\nread_with:")
+                    .map(|end| end + 1)
+                    .unwrap_or(persisted.output.len());
+                // `apply_tool_result_budget` keeps a head of budget minus its
+                // trailer reserve. Include the complete rendered pointer/header
+                // in that head, even when the path is an unusually long absolute
+                // detached pointer.
+                let envelope_allowance = allowed_len.max(
+                    MIN_ENVELOPE_ALLOWANCE_BYTES
+                        .max(header_len.saturating_add(TRAILER_RESERVED + 1)),
+                );
                 let (output, final_bytes) =
                     bound_text_to_budget(persisted.output, envelope_allowance);
                 total = total

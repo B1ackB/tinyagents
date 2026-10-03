@@ -490,6 +490,19 @@ fn a_page_never_exceeds_the_floored_budget_and_always_advances() {
 }
 
 #[test]
+fn page_continuation_json_escapes_paths() {
+    let read = ArtifactRead {
+        path: r#"C:\\state\\a\"b.txt"#.to_string(),
+        offset: 0,
+    };
+    let page = page_artifact_read("x".repeat(2_000), &read, 1_000, "file_read");
+    let call = page.split("Continue with file_read ").nth(1).unwrap();
+    let call = call.split(']').next().unwrap();
+    let parsed: Value = serde_json::from_str(call).unwrap();
+    assert_eq!(parsed["path"], read.path);
+}
+
+#[test]
 fn a_body_redaction_grows_past_the_read_limit_falls_back_to_the_processed_copy() {
     let raw = "call +15551234567 or +15557654321";
     // The limit is the raw size: the raw body fits, its redacted form does not.
@@ -670,6 +683,24 @@ fn detached_store_makes_a_relative_storage_dir_absolute() {
     let store = detached_store(Path::new("relative/state"), "s");
     assert!(store.root().is_absolute());
     assert!(Path::new(&store.path_for_read_tool("shell", Some("c"))).is_absolute());
+}
+
+#[test]
+fn detached_store_normalizes_parent_components() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("nested").join("..").join("state");
+    let store = detached_store(&storage, "s");
+    assert!(
+        !store
+            .root()
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    );
+    assert!(
+        store
+            .path_for_read_tool("shell", Some("c"))
+            .starts_with(tmp.path().to_string_lossy().as_ref())
+    );
 }
 
 #[test]
