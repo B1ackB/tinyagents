@@ -653,11 +653,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             ctx.model_profile = self.preview_model_profile(&request);
             // A host resolver may be stateful. Reuse its decision while the
             // routing inputs stay fixed, including for the final dispatch.
-            let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(None::<(
-                Option<String>,
-                Option<tinyinference_llm::model::CapabilitySet>,
-                crate::model_registry::ResolvedModelBinding<State>,
-            )>));
+            let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(
+                None::<(
+                    Option<String>,
+                    Option<tinyinference_llm::model::CapabilitySet>,
+                    crate::model_registry::ResolvedModelBinding<State>,
+                )>,
+            ));
             let profile_cache = resolution_cache.clone();
             self.middleware
                 .run_before_model_with_profile(
@@ -668,7 +670,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     move |harness, ctx, request| {
                         let resolution_cache = profile_cache.clone();
                         Box::pin(async move {
-                            let key = (request.model.clone(), request.required_capabilities.clone());
+                            let key =
+                                (request.model.clone(), request.required_capabilities.clone());
                             if let Some((cached_key, cached_capabilities, binding)) =
                                 resolution_cache.lock().unwrap().as_ref()
                                 && *cached_key == key.0
@@ -724,10 +727,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // `RunContext`; explicit-model SDK calls continue to resolve only
             // through the local registry. Context-instance identity keeps two
             // same-id concurrent runs from borrowing each other's model.
-            let cached = resolution_cache.lock().unwrap().take().and_then(|(model, capabilities, binding)| {
-                (model == request.model && capabilities == request.required_capabilities)
-                    .then_some(binding)
-            });
+            let cached = resolution_cache.lock().unwrap().take().and_then(
+                |(model, capabilities, binding)| {
+                    (model == request.model && capabilities == request.required_capabilities)
+                        .then_some(binding)
+                },
+            );
             let hosted_binding = match cached {
                 Some(binding) => Some(binding),
                 None => self.resolve_host_model(ctx, &request).await?,

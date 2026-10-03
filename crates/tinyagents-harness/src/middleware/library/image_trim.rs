@@ -11,6 +11,27 @@ use crate::middleware::Middleware;
 use tinyinference_llm::message::{ContentBlock, Message as TaMessage};
 use tinyinference_llm::model::ModelRequest;
 
+use super::ephemeral::{HARNESS_NOTE_HEADER, push_ephemeral_instruction};
+
+fn dropped_harness_notes(message: &TaMessage) -> Vec<String> {
+    let content = match message {
+        TaMessage::User(user) => &user.content,
+        TaMessage::Tool(tool) => &tool.content,
+        _ => return Vec::new(),
+    };
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => text
+                .strip_prefix("\n\n")
+                .and_then(|text| text.strip_prefix(HARNESS_NOTE_HEADER))
+                .and_then(|text| text.strip_prefix('\n'))
+                .map(str::to_owned),
+            _ => None,
+        })
+        .collect()
+}
+
 // ── ImageAwareMessageTrimMiddleware ───────────────────────────────────────────
 
 /// Flat token cost charged per image — an inline `[IMAGE:…]` marker or a native
@@ -172,7 +193,7 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
 
     async fn before_model(
         &self,
-        _ctx: &mut RunContext<C>,
+        ctx: &mut RunContext<C>,
         _state: &(),
         request: &mut ModelRequest,
     ) -> TaResult<()> {
@@ -195,6 +216,7 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
 
         let mut removed = 0usize;
         let mut total = original_tokens;
+        let mut rescued_notes = Vec::new();
         for absolute_idx in removable_positions {
             if total <= self.budget {
                 break;
@@ -202,6 +224,7 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             // Subsequent positions shift left by one for every prior removal.
             let remove_at = absolute_idx - removed;
             let dropped = messages.remove(remove_at);
+            rescued_notes.extend(dropped_harness_notes(&dropped));
             total = total.saturating_sub(estimate_message_tokens(&dropped));
             removed += 1;
         }
@@ -216,11 +239,17 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             .position(|m| !matches!(m, TaMessage::System(_)))
         {
             if matches!(messages[first_non_system], TaMessage::Tool(_)) {
-                messages.remove(first_non_system);
+                rescued_notes.extend(dropped_harness_notes(&messages.remove(first_non_system)));
                 removed += 1;
             } else {
                 break;
             }
+        }
+
+        // Hoisting models carry per-call guidance on a user or tool turn.
+        // Keep that small guidance even when the turn itself is evicted.
+        for note in rescued_notes {
+            push_ephemeral_instruction(request, note, ctx.model_profile.as_ref());
         }
 
         if removed > 0 {
