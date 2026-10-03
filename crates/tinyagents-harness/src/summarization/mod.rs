@@ -489,7 +489,11 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         .rposition(|m| matches!(m, Message::User(_)))
         .and_then(|index| fit_pinned_message(&messages[index], budget))
     else {
-        return trim_messages(messages, &TrimStrategy::MaxTokens(budget));
+        return enforce_approximate_budget(
+            trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
+            budget,
+            None,
+        );
     };
     let reserved = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&pin));
     let mut trimmed = trim_messages(
@@ -497,7 +501,7 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
     );
     if trimmed.iter().any(|m| matches!(m, Message::User(_))) {
-        return trimmed;
+        return enforce_approximate_budget(trimmed, budget, None);
     }
     let system_prefix = trimmed
         .iter()
@@ -509,7 +513,50 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         "[summarization::trim] re-inserting the turn's user message after a fallback front-drop"
     );
     trimmed.insert(system_prefix, pin);
-    trimmed
+    enforce_approximate_budget(trimmed, budget, Some(system_prefix))
+}
+
+/// Correct the cheaper trim estimate against the prompt-pressure estimator.
+fn enforce_approximate_budget(
+    mut messages: Vec<Message>,
+    budget: u64,
+    mut pinned: Option<usize>,
+) -> Vec<Message> {
+    use crate::token_estimation::count_tokens_approximately;
+
+    while count_tokens_approximately(&messages) > budget {
+        let oldest = messages
+            .iter()
+            .enumerate()
+            .find(|(index, message)| Some(*index) != pinned && !matches!(message, Message::System(_)))
+            .or_else(|| {
+                messages
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| Some(*index) != pinned)
+            })
+            .map(|(index, _)| index);
+        let Some(index) = oldest else {
+            break;
+        };
+        messages.remove(index);
+        if let Some(pin_index) = pinned.as_mut()
+            && index < *pin_index
+        {
+            *pin_index -= 1;
+        }
+        while let Some(index) = messages.iter().position(|message| !matches!(message, Message::System(_)))
+            && matches!(messages[index], Message::Tool(_))
+        {
+            messages.remove(index);
+            if let Some(pin_index) = pinned.as_mut()
+                && index < *pin_index
+            {
+                *pin_index -= 1;
+            }
+        }
+    }
+    messages
 }
 
 /// A pinned user message fitted to this fallback's residual budget.
