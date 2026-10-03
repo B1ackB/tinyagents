@@ -145,5 +145,8 @@ mod run_queue_test;
 #[path = "mod_tests.rs"]
 mod test;
 #[cfg(test)]
+#[path = "model_profile_preview_tests.rs"]
+mod model_profile_preview_test;
+#[cfg(test)]
 #[path = "unknown_tool_tests.rs"]
 mod unknown_tool_test;
