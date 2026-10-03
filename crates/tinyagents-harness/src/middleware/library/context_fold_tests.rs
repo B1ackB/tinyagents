@@ -35,13 +35,13 @@ fn chunk(tag: &str) -> Message {
     user(&format!("{tag}:{}", "x".repeat(116)))
 }
 
-/// Answers every request with a short summary naming how many requests it has
-/// seen, and records each request.
 /// The checkpoint the middleware writes for `summary` (default user placement).
 fn cp(summary: &str) -> Message {
     crate::summarization::checkpoint_message(crate::summarization::SummaryPlacement::User, summary)
 }
 
+/// Answers every request with a short summary naming how many requests it has
+/// seen, and records each request.
 #[derive(Default)]
 struct ShortSummarizer {
     seen: Arc<Mutex<Vec<SummaryRequest>>>,
