@@ -977,7 +977,10 @@ impl ContextCompressionMiddleware {
 /// as `pinned_user_index`. Everything before `first_kept_index` was folded
 /// into the summary *except* that message, so a sink restoring the compacted
 /// transcript must keep it after the summary.
-fn compaction_details(source_ids: &[String], pinned_user_index: Option<usize>) -> serde_json::Value {
+fn compaction_details(
+    source_ids: &[String],
+    pinned_user_index: Option<usize>,
+) -> serde_json::Value {
     let mut details = serde_json::json!({ "source_ids": source_ids });
     if let Some(index) = pinned_user_index {
         details["pinned_user_index"] = serde_json::json!(index);

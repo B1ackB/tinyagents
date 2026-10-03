@@ -118,7 +118,11 @@ fn fixture(decline_threshold_after: Option<usize>) -> Fixture {
     }
 }
 
-async fn send(stack: &MiddlewareStack<()>, c: &mut RunContext, transcript: &[Message]) -> Vec<Message> {
+async fn send(
+    stack: &MiddlewareStack<()>,
+    c: &mut RunContext,
+    transcript: &[Message],
+) -> Vec<Message> {
     let mut request = ModelRequest {
         messages: transcript.to_vec(),
         ..Default::default()
@@ -162,7 +166,10 @@ async fn a_threshold_compaction_keeps_the_turn_user_message_verbatim() {
         vec![Message::system("summary #1"), task(), step("a3")],
         "the assignment must follow the summary verbatim"
     );
-    assert_eq!(seen.lock().unwrap()[0].messages, vec![step("a1"), step("a2")]);
+    assert_eq!(
+        seen.lock().unwrap()[0].messages,
+        vec![step("a1"), step("a2")]
+    );
     // The tail starts at a3 (live index 3); the pinned task is live index 0.
     assert_eq!(first_kept(&sink), vec![3]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0)]);
@@ -212,7 +219,10 @@ async fn a_second_compaction_keeps_the_pin_and_summarizes_only_new_history() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].messages, vec![step("a3"), step("a4")]);
     assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
-    assert_eq!(sent, vec![Message::system("summary #2"), task(), step("a5")]);
+    assert_eq!(
+        sent,
+        vec![Message::system("summary #2"), task(), step("a5")]
+    );
     assert_eq!(first_kept(&sink), vec![3, 5]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(0)]);
 }
@@ -237,7 +247,10 @@ async fn a_later_user_message_takes_over_the_pin() {
         seen.lock().unwrap()[1].messages,
         vec![task(), step("a3"), step("a4")]
     );
-    assert_eq!(sent, vec![Message::system("summary #2"), change, step("a5")]);
+    assert_eq!(
+        sent,
+        vec![Message::system("summary #2"), change, step("a5")]
+    );
     // live: task 0, a1 1, a2 2, a3 3, change 4, a4 5, a5 6
     assert_eq!(first_kept(&sink), vec![3, 6]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(4)]);
@@ -301,8 +314,14 @@ async fn an_overflow_after_a_pinned_fold_extends_it_and_keeps_the_pin() {
         .unwrap();
 
     let retried = base.calls.lock().unwrap()[1].messages.clone();
-    assert_eq!(retried, vec![Message::system("summary #2"), task(), step("a5")]);
-    assert_eq!(seen.lock().unwrap()[1].messages, vec![step("a3"), step("a4")]);
+    assert_eq!(
+        retried,
+        vec![Message::system("summary #2"), task(), step("a5")]
+    );
+    assert_eq!(
+        seen.lock().unwrap()[1].messages,
+        vec![step("a3"), step("a4")]
+    );
     // The pinned message no longer misaligns the request with the live
     // transcript, so the overflow boundary is persisted too.
     assert_eq!(first_kept(&sink), vec![3, 5]);
@@ -314,7 +333,9 @@ struct FailingSummarizer;
 #[async_trait]
 impl Summarizer for FailingSummarizer {
     async fn summarize(&self, _messages: &[Message]) -> Result<SummaryRecord> {
-        Err(crate::error::TinyAgentsError::Model("summarizer down".into()))
+        Err(crate::error::TinyAgentsError::Model(
+            "summarizer down".into(),
+        ))
     }
 }
 

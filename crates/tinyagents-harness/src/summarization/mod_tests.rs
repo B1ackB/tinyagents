@@ -685,7 +685,10 @@ mod turn_pin {
         for i in 0..10 {
             let id = format!("c{i}");
             messages.push(assistant_calling(&id));
-            messages.push(Message::tool(&id, format!("result {i} {}", "x".repeat(200))));
+            messages.push(Message::tool(
+                &id,
+                format!("result {i} {}", "x".repeat(200)),
+            ));
         }
         messages
     }
@@ -765,7 +768,8 @@ mod turn_pin {
     #[test]
     fn the_token_tail_keeps_at_least_keep_recent_tokens() {
         let messages = long_turn();
-        let per_pair = estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
+        let per_pair =
+            estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
         let policy = SummarizationPolicy {
             // keep_last would keep everything; the token tail overrides it.
             keep_last: 100,
@@ -781,7 +785,11 @@ mod turn_pin {
             .cloned()
             .collect();
         assert!(estimate_slice_tokens(&kept_non_system) >= per_pair * 3);
-        assert_eq!(kept_non_system.len(), 6, "three call/result pairs: {kept_non_system:?}");
+        assert_eq!(
+            kept_non_system.len(),
+            6,
+            "three call/result pairs: {kept_non_system:?}"
+        );
         assert!(tool_pairing_is_intact(&kept_non_system));
         assert_eq!(split.to_summarize.len(), 21 - 6);
     }
@@ -818,7 +826,8 @@ mod turn_pin {
     #[test]
     fn token_tail_and_pinning_compose() {
         let messages = long_turn();
-        let per_pair = estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
+        let per_pair =
+            estimate_message_tokens(&messages[2]) + estimate_message_tokens(&messages[3]);
         let policy = summarization_policy_with_tail(1_000_000, per_pair * 2);
         assert!(policy.pin_turn_user_message);
         let (to_summarize, to_keep) = policy.plan(&messages);

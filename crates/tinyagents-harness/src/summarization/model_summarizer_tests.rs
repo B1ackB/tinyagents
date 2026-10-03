@@ -296,7 +296,10 @@ async fn pending_work_is_handed_on_as_in_progress_not_stale() {
     let model = Arc::new(ScriptedModel::replies(vec!["## Goal\nx"]));
     let summarizer = ModelSummarizer::new(model.clone(), "m");
     summarizer
-        .summarize(&[Message::user("write the report"), Message::assistant("drafting")])
+        .summarize(&[
+            Message::user("write the report"),
+            Message::assistant("drafting"),
+        ])
         .await
         .unwrap();
 
@@ -306,9 +309,8 @@ async fn pending_work_is_handed_on_as_in_progress_not_stale() {
         "pending work must not be labelled stale: {prompt}"
     );
     assert!(
-        prompt.contains(
-            "In progress — continue these unless a later live message changes direction"
-        ),
+        prompt
+            .contains("In progress — continue these unless a later live message changes direction"),
         "{prompt}"
     );
     // The guard against redoing requests that were already answered stays.
