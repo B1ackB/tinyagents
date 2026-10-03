@@ -147,7 +147,7 @@ impl InvertedIndex {
         let doc_id = self
             .free_doc_ids
             .pop()
-            .unwrap_or_else(|| self.docs.len() as u32);
+            .unwrap_or(self.docs.len() as u32);
         for ngram in ngrams(&normalized) {
             if let Some(posting) = self.postings.get_mut(ngram) {
                 posting.insert(doc_id);
