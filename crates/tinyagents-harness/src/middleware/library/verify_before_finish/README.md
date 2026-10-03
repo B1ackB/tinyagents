@@ -11,7 +11,11 @@ and per-run state. `middleware.rs` contains configuration and lifecycle hooks;
 
 The check is skipped for tool-bearing, empty, truncated, or already continued
 responses and when call or wall-clock budget is too small. Successful and
-failed runs release activity through lifecycle hooks. Deferred resumes seed
-activity from the resumed transcript before the next model response, so a new
-context can still trigger the check. Interrupted runs are pruned once their
+failed runs release activity through lifecycle hooks. Deferred runs put their
+tool activity and check status in `DeferredToolRequests::resume_metadata`.
+Hosts constructing `DeferredToolResults` manually must copy it with
+`with_resume_metadata(&requests)`; `approve_all()` copies it automatically.
+On resume the middleware restores that state even if compaction removed the
+tool calls or the check message. Legacy results without metadata recover only
+activity visible in the transcript. Interrupted runs are pruned once their
 contexts have been dropped; active runs retain state beyond 1,024 entries.
