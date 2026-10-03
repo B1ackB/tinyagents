@@ -1,10 +1,20 @@
-//! Persist oversized tool outputs as action-workspace artifacts.
+//! Persist oversized tool outputs as artifacts the model can read back.
 //!
 //! Tool results enter the model context before the provider has seen them, so
 //! this is the last cheap point to replace large raw output with a bounded
-//! preview. The full, redacted body is written under `action_dir` so the
-//! host's file-reading tool can inspect it later without exposing internal
-//! host state.
+//! preview. The full, redacted body is written to disk so the host's
+//! file-reading tool can inspect it later.
+//!
+//! Where it is written is the host's choice, through the two constructors:
+//!
+//! * [`ToolResultArtifactStore::new`] writes under
+//!   `<action_dir>/artifacts/tool-results/` and hands the model a path relative
+//!   to `action_dir`. Simple, but the files land in the directory the agent is
+//!   working in: a coding agent editing a git checkout adds them to the
+//!   project, and they show up in its diff.
+//! * [`ToolResultArtifactStore::detached`] writes under a storage directory the
+//!   host keeps outside the working tree and hands the model the **absolute**
+//!   path. Use it whenever the action directory is someone's project.
 //!
 //! Distinct from [`offload_oversized_result`](super::offload_oversized_result),
 //! which offloads a *worker's final result* under `outputs/`: this handles each
@@ -45,26 +55,83 @@ pub struct ArtifactRead {
 /// `wrapper_tool` — and only it, the one tool whose result *is* the
 /// wrapped tool's result — is followed into the tool it runs (#6284). Any
 /// other tool that happens to carry `tool`/`args` fields is not a wrapper.
+///
+/// This recognises the relative `artifacts/tool-results/…` pointer of a store
+/// built with [`ToolResultArtifactStore::new`]. A detached store hands out
+/// absolute paths; use [`ToolResultArtifactStore::read_target`] for it.
 pub fn artifact_read_target(
     tool_name: &str,
     args: &Value,
     read_tool: &str,
     wrapper_tool: &str,
 ) -> Option<ArtifactRead> {
+    read_target_matching(
+        tool_name,
+        args,
+        read_tool,
+        wrapper_tool,
+        &is_relative_artifact_path,
+    )
+}
+
+/// A path component match: `artifacts/tool-results-backup/…` shares the
+/// prefix but is not the artifact directory.
+fn is_relative_artifact_path(path: &str) -> bool {
+    path.trim_start_matches("./")
+        .strip_prefix(ARTIFACT_ROOT)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether `path` is absolute and lexically inside `dir`. A `..` component
+/// disqualifies it outright: the read tool would resolve it somewhere else,
+/// and the bytes it returns would not be this store's.
+fn is_absolute_path_under(path: &str, dir: &Path) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        && path.starts_with(dir)
+        && path != dir
+}
+
+/// Remove lexical `.` and `..` components without requiring the path to exist.
+fn normalize_absolute_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn read_target_matching(
+    tool_name: &str,
+    args: &Value,
+    read_tool: &str,
+    wrapper_tool: &str,
+    is_artifact: &dyn Fn(&str) -> bool,
+) -> Option<ArtifactRead> {
     if tool_name == wrapper_tool {
         let inner_tool = args.get("tool").and_then(Value::as_str)?;
-        return artifact_read_target(inner_tool, args.get("args")?, read_tool, wrapper_tool);
+        return read_target_matching(
+            inner_tool,
+            args.get("args")?,
+            read_tool,
+            wrapper_tool,
+            is_artifact,
+        );
     }
     if tool_name != read_tool {
         return None;
     }
     let path = args.get("path").and_then(Value::as_str)?;
-    // A path component match: `artifacts/tool-results-backup/…` shares the
-    // prefix but is not the artifact directory.
-    let under_root = path
-        .trim_start_matches("./")
-        .strip_prefix(ARTIFACT_ROOT)
-        .is_some_and(|rest| rest.starts_with('/'));
+    let under_root = is_artifact(path);
     // An absent or null offset starts at 0. A present one that is not a
     // non-negative integer that fits `usize` is not a read `file_read` serves
     // (it rejects it), so it is not an artifact read either; never reinterpret
@@ -109,10 +176,10 @@ pub fn page_artifact_read(
         let cut = floor_char_boundary(&content, budget_bytes);
         return content[..cut].to_string();
     };
+    let escaped_path = serde_json::to_string(&read.path).expect("serializing a string cannot fail");
     let with_path = |next: usize| {
         format!(
-            "\n\n[artifact page: bytes {start}..{next} of {total}. Continue with {read_tool} {{\"path\":\"{}\",\"offset\":{next}}}]",
-            read.path
+            "\n\n[artifact page: bytes {start}..{next} of {total}. Continue with {read_tool} {{\"path\":{escaped_path},\"offset\":{next}}}]"
         )
     };
     // Without the path (the caller already has it). At most ~100 bytes, so it
@@ -221,7 +288,11 @@ fn apply_tool_result_budget(content: String, budget_bytes: usize) -> (String, Bu
     )
 }
 
-/// Writes oversized tool results under `<action_dir>/artifacts/tool-results/`.
+/// Writes oversized tool results to disk: under
+/// `<action_dir>/artifacts/tool-results/` ([`Self::new`]), or under a storage
+/// directory outside the working tree ([`Self::detached`]). Detached artifacts
+/// live in a dedicated `tool-results` child namespace so pruning cannot touch
+/// other host state.
 ///
 /// The host supplies what the crate cannot decide: the redactor every body
 /// passes through before it is stored (an artifact on disk is exactly as
@@ -230,11 +301,25 @@ fn apply_tool_result_budget(content: String, budget_bytes: usize) -> (String, Bu
 /// largest body that tool will open.
 #[derive(Debug, Clone)]
 pub struct ToolResultArtifactStore {
-    action_dir: PathBuf,
+    /// `action_dir` for [`StoreLayout::ActionRelative`], the storage directory
+    /// itself for [`StoreLayout::Detached`].
+    root: PathBuf,
+    layout: StoreLayout,
     session_key: String,
     redactor: Arc<dyn ArtifactRedactor>,
     read_tool: String,
     max_readable_bytes: u64,
+}
+
+/// Where a store keeps its files and how it names them to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreLayout {
+    /// `<root>/artifacts/tool-results/…`, named relative to `root` (the
+    /// action directory). The original layout.
+    ActionRelative,
+    /// `<root>/…`, named by absolute path. `root` is a host-owned storage
+    /// directory outside the working tree.
+    Detached,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +355,11 @@ impl ToolResultArtifactStore {
     /// `read_tool` is the host's file-reading tool and `max_readable_bytes` the
     /// largest body it will open; a body whose redacted form exceeds it is
     /// never stored, because the model could not read it back.
+    ///
+    /// Files go under `<action_dir>/artifacts/tool-results/` and the model is
+    /// given a path relative to `action_dir`. When `action_dir` is a project
+    /// the agent edits, prefer [`Self::detached`]: these files would otherwise
+    /// become part of the project.
     pub fn new(
         action_dir: PathBuf,
         session_key: impl Into<String>,
@@ -277,8 +367,90 @@ impl ToolResultArtifactStore {
         read_tool: impl Into<String>,
         max_readable_bytes: u64,
     ) -> Self {
-        Self {
+        Self::with_layout(
             action_dir,
+            StoreLayout::ActionRelative,
+            session_key,
+            redactor,
+            read_tool,
+            max_readable_bytes,
+        )
+    }
+
+    /// A store that keeps its files in `storage_dir`, outside the working
+    /// tree, and names each one to the model by its absolute path.
+    ///
+    /// The working tree is the agent's to change and, for a coding agent, the
+    /// thing it is graded or reviewed on: an artifact written there is a stray
+    /// file in the user's project, picked up by `git add -A` and shipped in the
+    /// diff. A detached store never writes there. The absolute pointer resolves
+    /// the same way from any working directory, so it stays readable when a
+    /// turn's action directory changes, and a shell can open it as readily as
+    /// the host's read tool can.
+    ///
+    /// Artifacts are kept under `storage_dir/tool-results/`, an owned namespace
+    /// that pruning may remove stale session directories from. The host must
+    /// let its read tool open paths under that namespace; that grant is policy
+    /// and therefore the host's, not this crate's.
+    pub fn detached(
+        storage_dir: PathBuf,
+        session_key: impl Into<String>,
+        redactor: Arc<dyn ArtifactRedactor>,
+        read_tool: impl Into<String>,
+        max_readable_bytes: u64,
+    ) -> Self {
+        Self::try_detached(
+            storage_dir.join("tool-results"),
+            session_key,
+            redactor,
+            read_tool,
+            max_readable_bytes,
+        )
+        .expect("detached artifact storage directory must be absolute and UTF-8 representable")
+    }
+
+    /// Fallible form of [`Self::detached`]. Returns an error when a relative
+    /// root cannot be made absolute or when the root cannot be represented in
+    /// the UTF-8 path string passed to the model's read tool.
+    pub fn try_detached(
+        storage_dir: PathBuf,
+        session_key: impl Into<String>,
+        redactor: Arc<dyn ArtifactRedactor>,
+        read_tool: impl Into<String>,
+        max_readable_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        // The pointer is this path, so it must be absolute: a relative one would
+        // resolve against whatever directory the reading tool works in.
+        let storage_dir = if storage_dir.is_absolute() {
+            storage_dir
+        } else {
+            std::env::current_dir()?.join(&storage_dir)
+        };
+        let storage_dir = normalize_absolute_path(&storage_dir);
+        if storage_dir.to_str().is_none() {
+            anyhow::bail!("detached artifact storage path is not valid UTF-8");
+        }
+        Ok(Self::with_layout(
+            storage_dir,
+            StoreLayout::Detached,
+            session_key,
+            redactor,
+            read_tool,
+            max_readable_bytes,
+        ))
+    }
+
+    fn with_layout(
+        root: PathBuf,
+        layout: StoreLayout,
+        session_key: impl Into<String>,
+        redactor: Arc<dyn ArtifactRedactor>,
+        read_tool: impl Into<String>,
+        max_readable_bytes: u64,
+    ) -> Self {
+        Self {
+            root,
+            layout,
             session_key: sanitize_component(&session_key.into()),
             redactor,
             read_tool: read_tool.into(),
@@ -286,11 +458,47 @@ impl ToolResultArtifactStore {
         }
     }
 
-    /// The root artifacts are written under. A caller choosing the wrong root
-    /// produces a pointer the model cannot dereference, and that is only
-    /// assertable from outside (#6483).
+    /// The root artifacts are written under: the action directory for a store
+    /// from [`Self::new`], the storage directory for one from
+    /// [`Self::detached`]. A caller choosing the wrong root produces a pointer
+    /// the model cannot dereference, and that is only assertable from outside
+    /// (#6483).
     pub fn root(&self) -> &Path {
-        &self.action_dir
+        &self.root
+    }
+
+    /// Whether this store keeps its files outside the working tree
+    /// ([`Self::detached`]).
+    pub fn is_detached(&self) -> bool {
+        self.layout == StoreLayout::Detached
+    }
+
+    /// The directory holding one subdirectory per session.
+    fn sessions_dir(&self) -> PathBuf {
+        match self.layout {
+            StoreLayout::ActionRelative => self.root.join(ARTIFACT_ROOT),
+            StoreLayout::Detached => self.root.clone(),
+        }
+    }
+
+    /// The artifact a tool call reads, if it reads one of *this* store's
+    /// artifacts.
+    ///
+    /// Like [`artifact_read_target`], which it extends: a relative
+    /// `artifacts/tool-results/…` path is still recognised, so a transcript
+    /// written before a host moved to a detached store keeps paging correctly,
+    /// and a detached store additionally recognises an absolute path inside its
+    /// storage directory, which is the pointer it hands out.
+    pub fn read_target(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        wrapper_tool: &str,
+    ) -> Option<ArtifactRead> {
+        read_target_matching(tool_name, args, &self.read_tool, wrapper_tool, &|path| {
+            is_relative_artifact_path(path)
+                || (self.is_detached() && is_absolute_path_under(path, &self.root))
+        })
     }
 
     /// The host's file-reading tool, as quoted in every envelope.
@@ -301,9 +509,9 @@ impl ToolResultArtifactStore {
     /// Delete artifact directories for sessions other than this one that have
     /// not been touched within `max_age`.
     ///
-    /// Artifacts are written under the user's action workspace and nothing else
-    /// removes them, so without a bound the directory grows for the life of the
-    /// install — a connector returning 17-65 KB across 8-14 calls per question
+    /// Nothing else removes artifacts (from the action workspace, or from a
+    /// detached store's storage directory), so without a bound the directory
+    /// grows for the life of the install — a connector returning 17-65 KB across 8-14 calls per question
     /// (#6408) writes a file per call. Trading a token-burn bug for a
     /// disk-growth bug is not a fix.
     ///
@@ -321,7 +529,7 @@ impl ToolResultArtifactStore {
     /// logs and carries on, because the worst case is disk left uncollected,
     /// which the next session retries.
     pub fn prune_stale_sessions(&self, max_age: std::time::Duration) -> std::io::Result<u32> {
-        let root = self.action_dir.join(ARTIFACT_ROOT);
+        let root = self.sessions_dir();
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             // No artifact root yet is the common case on a first run.
@@ -351,13 +559,25 @@ impl ToolResultArtifactStore {
         Ok(removed)
     }
 
+    /// The pointer the model is given for one artifact: relative to the
+    /// action directory for [`Self::new`], absolute for [`Self::detached`].
     pub fn path_for_read_tool(&self, tool_name: &str, call_id: Option<&str>) -> String {
+        let relative = self.session_relative_path(tool_name, call_id);
+        match self.layout {
+            StoreLayout::ActionRelative => format!("{ARTIFACT_ROOT}/{relative}"),
+            StoreLayout::Detached => self.root.join(relative).to_string_lossy().into_owned(),
+        }
+    }
+
+    /// `<session>/<tool>/<call>.txt`, the part of an artifact's path below the
+    /// sessions directory.
+    fn session_relative_path(&self, tool_name: &str, call_id: Option<&str>) -> String {
         let call = call_id
             .map(sanitize_component)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(random_call_id);
         format!(
-            "{ARTIFACT_ROOT}/{}/{}/{}.txt",
+            "{}/{}/{}.txt",
             self.session_key,
             sanitize_component(tool_name),
             call
@@ -386,21 +606,35 @@ impl ToolResultArtifactStore {
             &self.read_tool,
         )?;
         let read_tool = self.read_tool.as_str();
-        let relative_path = self.path_for_read_tool(tool_name, call_id);
-        let absolute_path = self.action_dir.join(&relative_path);
-        assert_within_action_dir(&self.action_dir, &absolute_path)?;
+        let pointer = self.path_for_read_tool(tool_name, call_id);
+        let absolute_path = match self.layout {
+            StoreLayout::ActionRelative => self.root.join(&pointer),
+            StoreLayout::Detached => PathBuf::from(&pointer),
+        };
+        assert_within_root(&self.root, &absolute_path)?;
         if let Some(parent) = absolute_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
-            let canonical_root = tokio::fs::canonicalize(&self.action_dir).await?;
+            let canonical_root = tokio::fs::canonicalize(&self.root).await?;
             let canonical_parent = tokio::fs::canonicalize(parent).await?;
             if !canonical_parent.starts_with(&canonical_root) {
                 anyhow::bail!(
-                    "tool-result artifact parent escaped action_dir: {}",
+                    "tool-result artifact parent escaped its root: {}",
                     parent.display()
                 );
             }
         }
         tokio::fs::write(&absolute_path, sanitized.text.as_bytes()).await?;
+        let relative_path = pointer;
+        // Keeps the action-relative envelope byte-identical to what it was
+        // before detached stores existed (`contract_expected.txt`).
+        let location_note = match self.layout {
+            StoreLayout::ActionRelative => {
+                "Full scrubbed output was persisted under the action workspace."
+            }
+            StoreLayout::Detached => {
+                "Full scrubbed output was persisted outside the working tree, at the absolute artifact_path above (not part of the project)."
+            }
+        };
 
         let (preview, preview_outcome) =
             apply_tool_result_budget(sanitized.text.clone(), preview_budget_bytes);
@@ -418,6 +652,8 @@ impl ToolResultArtifactStore {
             String::new()
         };
 
+        let escaped_pointer =
+            serde_json::to_string(&relative_path).expect("serializing a string cannot fail");
         let envelope = format!(
             "[tool_result_preview]\n\
              tool: {tool_name}\n\
@@ -425,8 +661,8 @@ impl ToolResultArtifactStore {
              original_bytes: {}\n\
              stored_bytes: {}\n\
              artifact_path: {relative_path}\n\
-             read_with: {read_tool} {{\"path\":\"{relative_path}\"}} (a long read returns one page and names the \"offset\" to continue from)\n\
-             notes: Full scrubbed output was persisted under the action workspace.{redaction_note}{truncation_note}\n\n\
+             read_with: {read_tool} {{\"path\":{escaped_pointer}}} (a long read returns one page and names the \"offset\" to continue from)\n\
+             notes: {location_note}{redaction_note}{truncation_note}\n\n\
              [preview]\n{preview}",
             content.len(),
             sanitized.text.len(),
@@ -506,10 +742,9 @@ pub async fn apply_per_result_persistence(
             .await
         {
             Ok(persisted) => {
-                let (output, final_bytes) = bound_text_to_budget(
-                    persisted.output,
-                    budget_bytes.max(MIN_ENVELOPE_ALLOWANCE_BYTES),
-                );
+                let envelope_allowance = budget_bytes.max(envelope_budget_floor(&persisted.output));
+                let (output, final_bytes) =
+                    bound_text_to_budget(persisted.output, envelope_allowance);
                 if final_bytes >= original_bytes {
                     // #4469 item 9: this branch does NOT fall back to inline
                     // truncation — the envelope is returned regardless, because it
@@ -637,7 +872,11 @@ pub async fn spill_aggregate_tool_results(
                 // pointer — `allowed_len` can be 0 here, which would blank the
                 // result and strip the `artifact_path` the model reads to recover
                 // the full output.
-                let envelope_allowance = allowed_len.max(MIN_ENVELOPE_ALLOWANCE_BYTES);
+                // `apply_tool_result_budget` keeps a head of budget minus its
+                // trailer reserve. Include the complete rendered pointer/header
+                // in that head, even when the path is an unusually long absolute
+                // detached pointer.
+                let envelope_allowance = allowed_len.max(envelope_budget_floor(&persisted.output));
                 let (output, final_bytes) =
                     bound_text_to_budget(persisted.output, envelope_allowance);
                 total = total
@@ -687,6 +926,14 @@ fn bound_text_to_budget(content: String, budget_bytes: usize) -> (String, usize)
     output.truncate(cut);
     let final_bytes = output.len();
     (output, final_bytes)
+}
+
+fn envelope_budget_floor(envelope: &str) -> usize {
+    let header_len = envelope
+        .find("\nnotes:")
+        .map(|end| end + 1)
+        .unwrap_or(envelope.len());
+    MIN_ENVELOPE_ALLOWANCE_BYTES.max(header_len.saturating_add(TRAILER_RESERVED + 1))
 }
 
 /// Round a byte index DOWN to the nearest UTF-8 character boundary.
@@ -740,12 +987,12 @@ fn sanitize_component(value: &str) -> String {
     }
 }
 
-fn assert_within_action_dir(action_dir: &Path, path: &Path) -> anyhow::Result<()> {
-    if path.starts_with(action_dir) {
+fn assert_within_root(root: &Path, path: &Path) -> anyhow::Result<()> {
+    if path.starts_with(root) {
         return Ok(());
     }
     anyhow::bail!(
-        "tool-result artifact path escaped action_dir: {}",
+        "tool-result artifact path escaped its root: {}",
         path.display()
     );
 }

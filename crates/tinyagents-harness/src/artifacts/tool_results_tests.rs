@@ -191,7 +191,7 @@ async fn persisted_preview_is_bounded_for_small_budget() {
         apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call"), 320).await;
 
     assert!(outcome.persisted);
-    assert!(outcome.final_bytes <= MIN_ENVELOPE_ALLOWANCE_BYTES);
+    assert!(outcome.final_bytes <= envelope_budget_floor(&out));
     assert_eq!(out.len(), outcome.final_bytes);
     assert!(out.contains("[tool_result_preview]"));
     assert!(
@@ -217,6 +217,38 @@ async fn tiny_per_result_budget_keeps_the_recovery_pointer() {
     assert!(outcome.persisted);
     assert!(out.contains("artifact_path: artifacts/tool-results/session/shell/call.txt"));
     assert!(out.contains("read_with: file_read"));
+}
+
+#[tokio::test]
+async fn long_detached_pointer_survives_a_small_result_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("r".repeat(220));
+    let store = detached_store(&storage, "session");
+    let (out, outcome) = apply_per_result_persistence(
+        "x".repeat(2_000),
+        None,
+        Some(&store),
+        "shell",
+        Some("call"),
+        20,
+    )
+    .await;
+    assert!(outcome.persisted);
+    let pointer = outcome.artifact_path.unwrap();
+    assert!(out.contains(&format!("artifact_path: {pointer}\n")));
+    let read_line = out
+        .lines()
+        .find(|line| line.starts_with("read_with:"))
+        .unwrap();
+    let call = read_line
+        .split_once("file_read ")
+        .unwrap()
+        .1
+        .split(" (a long")
+        .next()
+        .unwrap();
+    let parsed: Value = serde_json::from_str(call).unwrap();
+    assert_eq!(parsed["path"], pointer);
 }
 
 #[tokio::test]
@@ -329,19 +361,21 @@ async fn aggregate_forces_budget_when_envelope_has_no_savings() {
 
     let total: usize = results.iter().map(|result| result.output.len()).sum();
     // #4469 item 6: the aggregate spill now floors each persisted envelope at
-    // MIN_ENVELOPE_ALLOWANCE_BYTES so the `[tool_result_preview]` header +
-    // `artifact_path` pointer always survives (previously an exhausted budget
-    // could blank a result to ""). That is a documented trade — the total may
-    // slightly overshoot the raw aggregate budget — so the invariant is now:
-    // (a) no envelope is blanked, and (b) the total stays bounded by the
-    // per-result floor rather than the raw budget.
+    // Each envelope is floored at the size needed to retain its complete
+    // rendered header and the truncation trailer reserve, so the total may
+    // slightly overshoot the raw aggregate budget.
     assert!(
         results.iter().all(|result| !result.output.is_empty()),
         "no persisted envelope may be blanked — the artifact pointer must survive"
     );
+    let floor_total: usize = results
+        .iter()
+        .filter(|result| looks_like_preview_envelope(&result.output))
+        .map(|result| envelope_budget_floor(&result.output))
+        .sum();
     assert!(
-        total <= results.len() * MIN_ENVELOPE_ALLOWANCE_BYTES,
-        "total={total} exceeds the per-result envelope floor bound"
+        total <= floor_total,
+        "total={total} exceeds floor={floor_total}"
     );
     assert!(
         tmp.path()
@@ -490,6 +524,19 @@ fn a_page_never_exceeds_the_floored_budget_and_always_advances() {
 }
 
 #[test]
+fn page_continuation_json_escapes_paths() {
+    let read = ArtifactRead {
+        path: r#"C:\\state\\a\"b.txt"#.to_string(),
+        offset: 0,
+    };
+    let page = page_artifact_read("x".repeat(2_000), &read, 1_000, "file_read");
+    let call = page.split("Continue with file_read ").nth(1).unwrap();
+    let call = call.split(']').next().unwrap();
+    let parsed: Value = serde_json::from_str(call).unwrap();
+    assert_eq!(parsed["path"], read.path);
+}
+
+#[test]
 fn a_body_redaction_grows_past_the_read_limit_falls_back_to_the_processed_copy() {
     let raw = "call +15551234567 or +15557654321";
     // The limit is the raw size: the raw body fits, its redacted form does not.
@@ -619,4 +666,197 @@ notes: Full scrubbed output was persisted under the action workspace.\n\n\
 [preview]\nhello world";
     assert_eq!(persisted.output, expected);
     assert!(!persisted.redacted);
+}
+
+fn detached_store(dir: &Path, session: &str) -> ToolResultArtifactStore {
+    ToolResultArtifactStore::detached(
+        dir.to_path_buf(),
+        session,
+        Arc::new(TestRedactor),
+        "file_read",
+        10 * 1024 * 1024,
+    )
+}
+
+/// The reason detached stores exist: a coding agent's action directory is the
+/// project it is editing, and an artifact written there is a stray file in its
+/// diff. A detached store writes only under its storage directory and points at
+/// the file by absolute path.
+#[tokio::test]
+async fn detached_store_writes_outside_the_action_dir_with_an_absolute_pointer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let action = tmp.path().join("project");
+    let storage = tmp.path().join("state").join("tool-results");
+    std::fs::create_dir_all(&action).unwrap();
+    let store = detached_store(&storage, "session/one");
+    assert!(store.is_detached());
+    let artifact_root = storage.join("tool-results");
+    assert_eq!(store.root(), artifact_root.as_path());
+
+    let raw = format!("{} {}", "x".repeat(4096), test_github_token());
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call-1"), 1024).await;
+
+    let expected = artifact_root.join("session_one/shell/call-1.txt");
+    let pointer = expected.to_string_lossy().into_owned();
+    assert!(outcome.persisted);
+    assert_eq!(outcome.artifact_path.as_deref(), Some(pointer.as_str()));
+    assert!(out.contains(&format!("artifact_path: {pointer}\n")));
+    assert!(out.contains(&format!("read_with: file_read {{\"path\":\"{pointer}\"}}")));
+    assert!(out.contains("persisted outside the working tree"));
+    assert!(!out.contains("under the action workspace"));
+
+    let stored = std::fs::read_to_string(&expected).unwrap();
+    assert!(stored.contains("[REDACTED_SECRET]"));
+    assert!(!stored.contains(&test_github_token()));
+    // Nothing at all lands in the project.
+    assert_eq!(std::fs::read_dir(&action).unwrap().count(), 0);
+}
+
+#[test]
+fn detached_store_makes_a_relative_storage_dir_absolute() {
+    let store = detached_store(Path::new("relative/state"), "s");
+    assert!(store.root().is_absolute());
+    assert!(Path::new(&store.path_for_read_tool("shell", Some("c"))).is_absolute());
+}
+
+#[test]
+fn detached_store_normalizes_parent_components() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("nested").join("..").join("state");
+    let store = detached_store(&storage, "s");
+    assert!(
+        !store
+            .root()
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    );
+    assert!(
+        store
+            .path_for_read_tool("shell", Some("c"))
+            .starts_with(tmp.path().to_string_lossy().as_ref())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fallible_detached_constructor_rejects_non_utf8_roots() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    let result =
+        ToolResultArtifactStore::try_detached(root, "s", Arc::new(TestRedactor), "file_read", 1024);
+    assert!(result.is_err());
+}
+
+#[test]
+fn detached_read_target_recognises_its_absolute_pointers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("tool-results");
+    let store = detached_store(&storage, "s");
+    let pointer = store.path_for_read_tool("shell", Some("c"));
+
+    let direct = store.read_target(
+        "file_read",
+        &json!({"path": pointer, "offset": 7}),
+        "use_skill",
+    );
+    assert_eq!(
+        direct,
+        Some(ArtifactRead {
+            path: pointer.clone(),
+            offset: 7
+        })
+    );
+    // The orchestrator reaches `file_read` through `use_skill`.
+    let wrapped = store.read_target(
+        "use_skill",
+        &json!({"skill": "files", "tool": "file_read", "args": {"path": pointer}}),
+        "use_skill",
+    );
+    assert_eq!(wrapped.map(|read| read.offset), Some(0));
+    // Pointers written before the host moved to a detached store still page.
+    assert!(
+        store
+            .read_target(
+                "file_read",
+                &json!({"path": "artifacts/tool-results/s/shell/c.txt"}),
+                "use_skill"
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn detached_read_target_rejects_paths_that_are_not_its_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("tool-results");
+    let store = detached_store(&storage, "s");
+    let read = |path: String| store.read_target("file_read", &json!({"path": path}), "use_skill");
+
+    // A sibling directory sharing the prefix.
+    let sibling = format!("{}-backup/s/shell/c.txt", storage.display());
+    assert_eq!(read(sibling), None);
+    // `..` would make the read tool open a different file.
+    let escape = format!("{}/s/../../secret.txt", storage.display());
+    assert_eq!(read(escape), None);
+    // The storage directory itself is not an artifact.
+    assert_eq!(read(storage.to_string_lossy().into_owned()), None);
+    // Some other absolute file.
+    assert_eq!(read("/etc/hosts".to_string()), None);
+    // Only the read tool's result is the stored body.
+    let pointer = store.path_for_read_tool("shell", Some("c"));
+    assert_eq!(
+        store.read_target("file_write", &json!({"path": pointer}), "use_skill"),
+        None
+    );
+}
+
+/// An action-relative store must not start matching absolute paths just
+/// because the method exists: its pointers are relative.
+#[test]
+fn action_relative_read_target_ignores_absolute_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "s");
+    let absolute = tmp
+        .path()
+        .join("artifacts/tool-results/s/shell/c.txt")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        store.read_target("file_read", &json!({"path": absolute}), "use_skill"),
+        None
+    );
+    assert!(
+        store
+            .read_target(
+                "file_read",
+                &json!({"path": "artifacts/tool-results/s/shell/c.txt"}),
+                "use_skill"
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn detached_prune_stays_inside_its_owned_namespace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("state");
+    let artifact_root = storage.join("tool-results");
+    let stale = artifact_root.join("old-session/shell");
+    let current = artifact_root.join("current/shell");
+    let unrelated = storage.join("application-data");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&unrelated).unwrap();
+    std::fs::write(stale.join("c.txt"), "old").unwrap();
+    std::fs::write(current.join("c.txt"), "new").unwrap();
+
+    let store = detached_store(&storage, "current");
+    // Everything is "stale" at a zero max age; the current session is kept.
+    let removed = store.prune_stale_sessions(Duration::ZERO).unwrap();
+
+    assert_eq!(removed, 1);
+    assert!(!artifact_root.join("old-session").exists());
+    assert!(current.join("c.txt").exists());
+    assert!(unrelated.exists());
 }
