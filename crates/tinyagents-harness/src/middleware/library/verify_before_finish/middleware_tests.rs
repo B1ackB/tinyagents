@@ -15,6 +15,27 @@ use tinyinference_llm::tool::ToolCall;
 
 const CHECK: &str = "CHECK: re-read the request";
 
+#[test]
+fn retention_prunes_dropped_contexts_without_evicting_active_runs() {
+    let mut runs = HashMap::new();
+    let first = RunContext::new(RunConfig::new("first"), ());
+    state_for(&mut runs, &first).fired = true;
+    let others: Vec<_> = (0..MAX_RETAINED_RUNS)
+        .map(|_| RunContext::new(RunConfig::new("other"), ()))
+        .collect();
+    for ctx in &others {
+        state_for(&mut runs, ctx);
+    }
+    assert!(state_for(&mut runs, &first).fired);
+    assert_eq!(runs.len(), MAX_RETAINED_RUNS + 1);
+
+    drop(others);
+    let next = RunContext::new(RunConfig::new("next"), ());
+    state_for(&mut runs, &next);
+    assert_eq!(runs.len(), 2);
+    assert!(state_for(&mut runs, &first).fired);
+}
+
 /// An assistant turn that requests one call of `name`.
 fn tool_round(id: &str, name: &str) -> ModelResponse {
     let mut response = ModelResponse::assistant(String::new());

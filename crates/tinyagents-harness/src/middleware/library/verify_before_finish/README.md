@@ -13,5 +13,5 @@ The check is skipped for tool-bearing, empty, truncated, or already continued
 responses and when call or wall-clock budget is too small. Successful and
 failed runs release activity through lifecycle hooks. Deferred resumes seed
 activity from the resumed transcript before the next model response, so a new
-context can still trigger the check. Interrupted runs are bounded by a
-1,024-entry oldest-ID eviction cap.
+context can still trigger the check. Interrupted runs are pruned once their
+contexts have been dropped; active runs retain state beyond 1,024 entries.
