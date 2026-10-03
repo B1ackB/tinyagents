@@ -56,7 +56,11 @@ impl CompactionPressure {
     /// With a measurement whose request this one extends, that is the
     /// provider's own count plus an estimate of the appended messages and of
     /// any schema growth; otherwise the whole-request estimate.
-    pub(crate) fn prompt_tokens(&self, messages: &[Message], schema_tokens: u64) -> (u64, PromptSource) {
+    pub(crate) fn prompt_tokens(
+        &self,
+        messages: &[Message],
+        schema_tokens: u64,
+    ) -> (u64, PromptSource) {
         if let Some(measured) = self.measured
             && measured.messages <= messages.len()
         {

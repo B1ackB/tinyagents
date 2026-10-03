@@ -151,10 +151,7 @@ async fn reapplies_the_fold_instead_of_recompacting_every_call() {
     transcript.push(user("ok"));
     let sent = send(&stack, &mut c, &transcript).await;
     assert_eq!(seen.lock().unwrap().len(), 1, "no second summarizer call");
-    assert_eq!(
-        sent,
-        vec![cp("summary #1"), chunk("m3"), user("ok")]
-    );
+    assert_eq!(sent, vec![cp("summary #1"), chunk("m3"), user("ok")]);
     assert_eq!(sink.records.lock().unwrap().len(), 1);
 }
 
@@ -232,12 +229,7 @@ async fn keeps_system_prompts_ahead_of_the_reapplied_summary() {
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(
         sent,
-        vec![
-            system,
-            cp("summary #1"),
-            chunk("m3"),
-            user("ok"),
-        ]
+        vec![system, cp("summary #1"), chunk("m3"), user("ok"),]
     );
 }
 

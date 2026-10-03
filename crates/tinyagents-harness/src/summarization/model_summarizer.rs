@@ -157,14 +157,10 @@ impl ModelSummarizer {
         let mut last_chars = 0;
         let mut usage: Option<tinyinference_llm::usage::Usage> = None;
         for attempt in 1..=SUMMARY_MARKUP_ATTEMPTS {
-            let response = self
-                .model
-                .invoke(&(), request.clone())
-                .await
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
-                    TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
-                })?;
+            let response = self.model.invoke(&(), request.clone()).await.map_err(|e| {
+                tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
+                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
+            })?;
             if let Some(reported) = response.usage {
                 usage = Some(usage.map_or(reported, |sum| sum + reported));
             }

@@ -6,7 +6,10 @@ fn user_placement_builds_a_marked_user_message() {
     assert!(matches!(message, Message::User(_)));
     assert!(message.text().starts_with(CHECKPOINT_PREFIX));
     assert!(is_checkpoint(&message));
-    assert_eq!(checkpoint_body(&message).as_deref(), Some("## Goal\nship it"));
+    assert_eq!(
+        checkpoint_body(&message).as_deref(),
+        Some("## Goal\nship it")
+    );
 }
 
 #[test]

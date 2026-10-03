@@ -144,8 +144,7 @@ fn cp(summary: &str) -> Message {
 }
 
 fn six_tool_turns_then_answer() -> Vec<ModelResponse> {
-    let mut responses: Vec<ModelResponse> =
-        (1..=6).map(|i| tool_turn(&format!("c{i}"))).collect();
+    let mut responses: Vec<ModelResponse> = (1..=6).map(|i| tool_turn(&format!("c{i}"))).collect();
     responses.push(ModelResponse::assistant("done"));
     responses
 }
@@ -200,7 +199,11 @@ async fn compacts_once_per_crossing_and_incrementally_through_the_loop() {
     assert_eq!(compacted[0], Message::system("You are a coding agent."));
     assert_eq!(compacted[1], cp("summary #2"));
     assert_eq!(compacted.last().map(Message::text).as_deref(), Some("done"));
-    assert_eq!(compacted.len(), 2 + 4 + 1, "system, checkpoint, two rounds, answer");
+    assert_eq!(
+        compacted.len(),
+        2 + 4 + 1,
+        "system, checkpoint, two rounds, answer"
+    );
 }
 
 #[tokio::test]
@@ -402,7 +405,10 @@ async fn a_provider_overflow_compacts_once_and_retries() {
     let mut input = vec![Message::system("You are a coding agent.")];
     for i in 0..4 {
         input.push(Message::user(format!("question {i}: {}", "q".repeat(400))));
-        input.push(Message::assistant(format!("answer {i}: {}", "a".repeat(400))));
+        input.push(Message::assistant(format!(
+            "answer {i}: {}",
+            "a".repeat(400)
+        )));
     }
     input.push(Message::user("continue"));
     let run = harness
@@ -410,10 +416,17 @@ async fn a_provider_overflow_compacts_once_and_retries() {
         .await
         .expect("the retry succeeds");
 
-    assert_eq!(*model.calls.lock().unwrap(), 3, "one failure, one retry, one more call");
+    assert_eq!(
+        *model.calls.lock().unwrap(),
+        3,
+        "one failure, one retry, one more call"
+    );
     assert_eq!(seen.lock().unwrap().len(), 1, "compacted exactly once");
     let requests = inner.requests();
-    assert!(is_checkpoint(&requests[0].messages[1]), "the retry is compacted");
+    assert!(
+        is_checkpoint(&requests[0].messages[1]),
+        "the retry is compacted"
+    );
     assert!(
         is_checkpoint(&requests[1].messages[1]),
         "the next call reuses the overflow compaction"

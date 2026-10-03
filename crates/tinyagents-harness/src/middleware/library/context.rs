@@ -918,7 +918,10 @@ impl ContextCompressionMiddleware {
     /// whose shape `before_model` never saw, so its usage cannot anchor the
     /// next call's measurement.
     fn forget_pending(&self) {
-        self.pressure.lock().expect("pressure mutex poisoned").pending = None;
+        self.pressure
+            .lock()
+            .expect("pressure mutex poisoned")
+            .pending = None;
     }
 
     /// The run's transcript with this instance's fold applied, when the fold
