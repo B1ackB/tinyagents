@@ -1,10 +1,8 @@
-//! Tests for the channel-persistence subscriber and its workspace-identity
-//! guard, ported from OpenHuman's `bus` tests onto the decoupled
-//! [`ChannelEvent`] contract.
-
+use super::*;
 use tempfile::TempDir;
 
-use super::*;
+// Tests for the channel-persistence subscriber and its workspace-identity
+// guard, ported from OpenHuman's bus tests onto the decoupled ChannelEvent.
 
 #[test]
 fn subscriber_reads_rebound_workspace_from_shared_handle() {

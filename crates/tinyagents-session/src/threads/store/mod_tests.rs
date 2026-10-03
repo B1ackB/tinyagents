@@ -1,10 +1,9 @@
-//! Unit tests for the JSONL-backed [`ConversationStore`], exercising thread
-//! upsert, message append, label/title updates, deletion and purge semantics.
-
-use tempfile::TempDir;
-
 use super::*;
 use serde_json::json;
+use tempfile::TempDir;
+
+// Unit tests for the JSONL-backed ConversationStore, exercising thread
+// upsert, message append, label/title updates, deletion and purge semantics.
 
 impl ConversationStore {
     pub(super) fn lock_identity_for_test(&self) -> usize {

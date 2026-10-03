@@ -1,8 +1,7 @@
-//! Phase 1 + Phase 2 query pipeline tests for the in-memory inverted index.
-
+use super::*;
 use serde_json::json;
 
-use super::*;
+// Phase 1 + Phase 2 query pipeline tests for the in-memory inverted index.
 
 fn msg(id: &str, content: &str, created: &str) -> ThreadMessage {
     ThreadMessage {
