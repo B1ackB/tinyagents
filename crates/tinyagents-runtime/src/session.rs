@@ -237,14 +237,14 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             .as_ref()
             .is_some_and(|session| session.generation > 0)
             || transcript.meta.parent_session_id.is_some();
-        let mut boundary_resolved = true;
+        let mut recovered_boundary = None;
         if recorded_boundary.is_none() && cached_boundary.is_none() && compacted_head {
             // Without the sealed root there is no safe boundary in a head
             // containing a System summary. If a replacement prefix was
             // supplied, fail rather than replaying unverifiable old System
             // instructions beside it.
             stored_len = 0;
-            boundary_resolved = false;
+            let mut boundary_resolved = false;
             let bound_session = session_binding.as_ref().or(target.session.as_ref());
             if let Some(head) = bound_session
                 .map(|session| target.locator.head_generation(session))
@@ -259,18 +259,31 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     match read.read_session() {
                         Ok(Some(root_transcript)) => match codec.decode_history(&root_transcript) {
                             Ok(root_messages) => {
-                                let root_prefix = root_messages
-                                    .iter()
-                                    .take_while(|message| matches!(message, Message::System(_)))
-                                    .collect::<Vec<_>>();
+                                let root_len = root_transcript
+                                    .meta
+                                    .prefix_message_count
+                                    .unwrap_or_else(|| {
+                                        root_messages
+                                            .iter()
+                                            .take_while(|message| {
+                                                matches!(message, Message::System(_))
+                                            })
+                                            .count()
+                                    })
+                                    .min(root_messages.len());
+                                let root_prefix = &root_messages[..root_len];
                                 if decoded.len() >= root_prefix.len()
                                     && root_prefix
                                         .iter()
                                         .zip(decoded.iter())
-                                        .all(|(root, head)| *root == head)
+                                        .all(|(root, head)| root == head)
                                 {
                                     stored_len = root_prefix.len();
                                     boundary_resolved = true;
+                                    recovered_boundary = root_transcript
+                                        .meta
+                                        .prefix_message_count
+                                        .map(|_| stored_len);
                                 } else {
                                     tracing::warn!(
                                         session = %root.session_id(),
@@ -313,7 +326,10 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 ));
             }
         }
-        let stored_len = if recorded_boundary.is_some() || cached_boundary.is_some() {
+        let authoritative_boundary = recorded_boundary.is_some()
+            || cached_boundary.is_some()
+            || recovered_boundary.is_some();
+        let stored_len = if authoritative_boundary {
             // An explicit frozen prefix may include non-System few-shot rows.
             // Only the legacy inferred boundary is limited to leading System
             // messages; a recorded count is bounded by the transcript itself.
@@ -321,12 +337,9 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         } else {
             stored_len.min(leading_len)
         };
-        // A legacy, uncompacted transcript has no recorded boundary for
+        // A legacy transcript has no recorded boundary for
         // non-System few-shot messages. Leading System rows alone must not
         // turn that unknown extent into an authoritative cached boundary.
-        let authoritative_boundary = recorded_boundary.is_some()
-            || cached_boundary.is_some()
-            || (compacted_head && boundary_resolved);
         self.persisted_prefix_len = authoritative_boundary.then_some(stored_len);
         if self.prefix.messages().is_empty() && stored_len != 0 {
             self.prefix = PrefixSnapshot::new(decoded[..stored_len].to_vec());
@@ -599,7 +612,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                         partial.partial.as_ref(),
                         turn_usage.as_ref(),
                         record_tools.as_ref(),
-                        prefix.messages().len(),
+                        &prefix,
                     )?;
                     self.remember_sent_tools(record_tools.as_ref());
                     self.prefix = prefix;
@@ -634,7 +647,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             None,
             turn_usage.as_ref(),
             record_tools.as_ref(),
-            prefix.messages().len(),
+            &prefix,
         )?;
         self.remember_sent_tools(record_tools.as_ref());
         self.prefix = prefix;
@@ -792,8 +805,13 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         partial: Option<&TranscriptPartial>,
         turn_usage: Option<&TurnUsage>,
         tools: Option<&ToolSnapshot>,
-        prefix_len: usize,
+        prefix: &PrefixSnapshot,
     ) -> Result<Option<TranscriptCommitReceipt>, RuntimeError> {
+        // A committed prefix refresh is a replacement even when its rows
+        // happen to begin with every old raw row. Never reclassify conversation
+        // rows as prefix in the old generation, including persisted partials.
+        let prefix_changed = self.committed_turns != 0 && prefix != &self.prefix;
+        let prefix_len = prefix.messages().len();
         let (request_id, thread_id) = identifiers;
         let Some(target) = self.target.as_mut() else {
             return Ok(None);
@@ -838,7 +856,8 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         let common_len = previous_len.min(next_len);
         // Compare in normalized form: a legacy-string row from the host and the
         // typed row the transcript lifted from it are the same row.
-        let extends = next_len >= previous_len
+        let extends = !prefix_changed
+            && next_len >= previous_len
             && raw[..common_len]
                 .iter()
                 .zip(&self.persisted[..common_len])

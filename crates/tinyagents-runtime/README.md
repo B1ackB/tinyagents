@@ -68,8 +68,9 @@ history. Each committed transcript generation records the frozen prefix's
 message count so a cold resume strips that generation's stored tiers rather
 than guessing from every leading System row; older files fall back to the
 sealed generation when it can establish the boundary.
-Uncompacted legacy files without a recorded boundary reconcile overlapping
-configured few-shot messages on every resume. Their inferred leading System
+Legacy files without an exact boundary reconcile overlapping configured
+few-shot messages on every resume. A compacted head may recover an exact count
+from its sealed root when that full prefix matches the head. An inferred System
 count is not cached as authoritative; the next successful persisted turn
 records the complete configured prefix count. Recorded boundaries preserve
 equal messages that belong to the conversation after the prefix.
@@ -88,9 +89,11 @@ Prefixes are frozen by default. A host deliberately changing a managed system
 section may return `PrefixSnapshot::new(messages).refreshing()` from
 `before_turn`. This opt-in preserves conversation rows while allowing a new
 prefix after committed turns. The replacement stays tentative until the turn
-commits, including a successfully persisted partial outcome. Changed durable rows
-seal the existing transcript and create a successor generation for session-bound
+commits, including a successfully persisted partial outcome. Every changed committed
+prefix seals the existing transcript and creates a successor generation for session-bound
 targets. Stem targets record the changed rows through in-place compaction instead.
+This replacement is explicit even when the refreshed prefix starts with all
+prior raw rows; the old generation's conversation and prefix boundary remain intact.
 An identical prefix is a no-op. Cold resume restores the committed prefix. Preserve the original system messages when only
 one managed section needs updating. Codecs receive the history before the
 refresh beside its original raw rows, so unchanged durable metadata remains
