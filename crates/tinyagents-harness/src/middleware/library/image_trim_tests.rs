@@ -169,3 +169,37 @@ async fn eviction_preserves_ephemeral_artifact_index_on_hoisting_models() {
     assert!(text.contains("stored artifact: outputs/result.json"));
     assert!(text.contains("latest question"));
 }
+
+#[tokio::test]
+async fn rescued_note_is_charged_before_trim_stops() {
+    let profile = ModelProfile {
+        hoists_system_messages: true,
+        ..ModelProfile::default()
+    };
+    let mut request = ModelRequest::new(vec![TaMessage::user("x".repeat(8_000))]);
+    push_ephemeral_instruction(&mut request, "artifact".repeat(60), Some(&profile));
+    request.messages.push(TaMessage::user("m".repeat(4_000)));
+    request.messages.push(TaMessage::user("latest"));
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("mw-test"), ());
+    ctx.model_profile = Some(profile);
+    let trim = ImageAwareMessageTrimMiddleware::for_context_window(1_600);
+
+    trim.before_model(&mut ctx, &(), &mut request)
+        .await
+        .unwrap();
+
+    let text = request
+        .messages
+        .iter()
+        .map(TaMessage::text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains(&"m".repeat(4_000)));
+    assert!(text.contains("artifact"));
+    assert!(text.contains("latest"));
+    let tokens: u64 = request.messages.iter().map(estimate_message_tokens).sum();
+    assert!(
+        tokens <= legacy_max_input_tokens(1_600),
+        "rescued note exceeded the input budget: {tokens}"
+    );
+}

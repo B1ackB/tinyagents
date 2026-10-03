@@ -33,6 +33,17 @@ fn dropped_harness_notes(message: &TaMessage) -> Vec<String> {
         .collect()
 }
 
+fn rescued_note_tokens(notes: &[String]) -> u64 {
+    notes
+        .iter()
+        .map(|note| {
+            estimate_text_tokens(note)
+                .saturating_add(estimate_text_tokens(HARNESS_NOTE_HEADER))
+                .saturating_add(16) // block delimiters and a possible new user turn
+        })
+        .sum()
+}
+
 // ── ImageAwareMessageTrimMiddleware ───────────────────────────────────────────
 
 /// Flat token cost charged per image — an inline `[IMAGE:…]` marker or a native
@@ -225,8 +236,11 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             // Subsequent positions shift left by one for every prior removal.
             let remove_at = absolute_idx - removed;
             let dropped = messages.remove(remove_at);
-            rescued_notes.extend(dropped_harness_notes(&dropped));
-            total = total.saturating_sub(estimate_message_tokens(&dropped));
+            let notes = dropped_harness_notes(&dropped);
+            total = total
+                .saturating_sub(estimate_message_tokens(&dropped))
+                .saturating_add(rescued_note_tokens(&notes));
+            rescued_notes.extend(notes);
             removed += 1;
         }
 
@@ -240,7 +254,12 @@ impl<C: Send + Sync> Middleware<(), C> for ImageAwareMessageTrimMiddleware {
             .position(|m| !matches!(m, TaMessage::System(_)))
         {
             if matches!(messages[first_non_system], TaMessage::Tool(_)) {
-                rescued_notes.extend(dropped_harness_notes(&messages.remove(first_non_system)));
+                let dropped = messages.remove(first_non_system);
+                let notes = dropped_harness_notes(&dropped);
+                total = total
+                    .saturating_sub(estimate_message_tokens(&dropped))
+                    .saturating_add(rescued_note_tokens(&notes));
+                rescued_notes.extend(notes);
                 removed += 1;
             } else {
                 break;

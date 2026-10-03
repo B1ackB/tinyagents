@@ -662,11 +662,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // Known tool requirements must shape the hosted profile seen by
             // middleware. The later gate below still catches tools added by
             // a before_model hook.
-            if matches!(self.policy.tool_dialect, crate::config::ToolDispatcher::Native)
-                && (!request.tools.is_empty()
-                    || matches!(request.response_format, Some(ResponseFormat::Auto { .. })))
+            if matches!(
+                self.policy.tool_dialect,
+                crate::config::ToolDispatcher::Native
+            ) && (!request.tools.is_empty()
+                || matches!(request.response_format, Some(ResponseFormat::Auto { .. })))
             {
-                request.required_capabilities.get_or_insert_default().tool_calling = true;
+                request
+                    .required_capabilities
+                    .get_or_insert_default()
+                    .tool_calling = true;
             }
 
             status.mark_running(HarnessPhase::Middleware);
