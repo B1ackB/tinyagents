@@ -1376,8 +1376,16 @@ async fn hosted_model_fallback_rebinds_through_the_host_resolver_not_the_local_r
     assert_eq!(run.text().as_deref(), Some("host authority won"));
     assert_eq!(host_backup.requests().len(), 1);
     let fallback_request = host_backup.requests().pop().unwrap();
-    assert!(fallback_request.messages.iter().any(|message| message.text().contains("fallback guidance")));
-    assert!(fallback_request.messages.iter().all(|message| !matches!(message, tinyinference_llm::message::Message::System(system) if system.text().contains("fallback guidance"))));
+    assert!(
+        fallback_request
+            .messages
+            .iter()
+            .any(|message| message.text().contains("fallback guidance"))
+    );
+    assert!(fallback_request.messages.iter().all(|message| {
+        !matches!(message, tinyinference_llm::message::Message::System(_))
+            || !message.text().contains("fallback guidance")
+    }));
     assert_eq!(
         *resolver.requested_pins.lock().expect("resolver lock"),
         vec![None, Some("host-backup".to_string())],
