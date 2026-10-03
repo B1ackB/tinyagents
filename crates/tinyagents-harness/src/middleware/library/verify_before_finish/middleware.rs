@@ -1,105 +1,21 @@
-//! [`VerifyBeforeFinishMiddleware`]: before a multi-step run's first final
-//! answer stands, ask the model once to check it against the request.
-//!
-//! # Why
-//!
-//! A run ends the moment the model returns text with no tool calls, i.e. when
-//! the model *believes* it is done. On long tasks that belief is often built on
-//! checks that cannot fail: a test derived from the implementation rather than
-//! the spec, a benchmark measuring something other than what is graded, a
-//! filter stated in the request that nothing ever re-read. One extra model call
-//! that re-reads the request against the finished work is the cheapest lever
-//! the harness has on that failure mode. This is a hypothesis about model
-//! behaviour, so the middleware is opt-in and the trigger is the host's call.
-//!
-//! # How
-//!
-//! `after_model` sees the response before the loop decides it is final. When
-//! it is a final answer (text, no tool calls, not truncated, not already
-//! continued), the run's activity meets the trigger, the budget has room and
-//! the check has not run yet in this run, the middleware sets
-//! [`ModelResponse::continue_turn`] to the check message. The loop then keeps
-//! the draft answer on the transcript, appends the check as the next **user**
-//! turn (tail content, never a mid-conversation system message, so the cached
-//! prefix is untouched) and asks for another reply. That reply is free to call
-//! tools and fix what the check found; the next tool-less answer ends the run,
-//! because the check fires at most once per run.
-//!
-//! The check rides `continue_turn` rather than a `JumpTo(Model)` plus a
-//! `before_model` injection so the message is part of the transcript: a
-//! follow-up call that fixes something still sees the instruction it is acting
-//! on, and every later request keeps the same prefix.
-//!
-//! # Budget
-//!
-//! Skipped when two or fewer model calls remain after the answer, so it never
-//! competes with a final-call wrap-up for the last calls, and when a configured
-//! wall-clock deadline is closer than
-//! [`with_min_remaining_wall_clock`](VerifyBeforeFinishMiddleware::with_min_remaining_wall_clock)
-//! (the run context's deadline, and the policy cap a host declares through
-//! [`with_wall_clock_limit`](VerifyBeforeFinishMiddleware::with_wall_clock_limit)).
+//! Configuration and lifecycle hooks for final-answer verification.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tinyinference_llm::message::Message;
+use tinyinference_llm::model::{ModelRequest, ModelResponse};
 
+use super::types::{
+    DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
+    MIN_REMAINING_MODEL_CALLS, RunState, VerifyBeforeFinishMiddleware,
+};
 use crate::context::RunContext;
-use crate::error::Result;
+use crate::error::{Result, TinyAgentsError};
 use crate::events::AgentEvent;
 use crate::middleware::{AgentRun, Middleware};
-use tinyinference_llm::model::ModelResponse;
-
-/// Fewest model calls that must remain after the answer for the check to run.
-/// The check takes one; leaving at least two more keeps it clear of a host's
-/// penultimate/final-call wrap-up and leaves room to act on what it finds.
-pub const MIN_REMAINING_MODEL_CALLS: usize = 3;
-
-/// Default for
-/// [`with_min_remaining_wall_clock`](VerifyBeforeFinishMiddleware::with_min_remaining_wall_clock).
-pub const DEFAULT_MIN_REMAINING_WALL_CLOCK: Duration = Duration::from_secs(120);
-
-/// What a run did before its answer, as seen by a [`FinishCheckTrigger`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FinishActivity {
-    /// Model responses in this run that requested at least one tool call.
-    pub tool_rounds: usize,
-    /// Names of every tool those rounds requested.
-    pub tools_called: BTreeSet<String>,
-}
-
-impl FinishActivity {
-    /// Whether the run requested `tool` at least once.
-    pub fn called(&self, tool: &str) -> bool {
-        self.tools_called.contains(tool)
-    }
-}
-
-/// Decides whether a run's activity warrants the check.
-pub type FinishCheckTrigger = Arc<dyn Fn(&FinishActivity) -> bool + Send + Sync>;
-
-/// Per-run bookkeeping, keyed by [`RunContext::instance_id`].
-#[derive(Default)]
-struct RunState {
-    activity: FinishActivity,
-    fired: bool,
-}
-
-/// Asks a multi-step run, once, to check its final answer against the request
-/// before that answer ends the run. See the module docs.
-///
-/// Generic over the application state and run-context payload: nothing here
-/// reads either. The host supplies the check text and decides which runs get
-/// it ([`with_min_tool_rounds`](Self::with_min_tool_rounds) or
-/// [`with_trigger`](Self::with_trigger)).
-pub struct VerifyBeforeFinishMiddleware {
-    check: String,
-    trigger: FinishCheckTrigger,
-    min_remaining_wall_clock: Duration,
-    wall_clock_limit: Option<Duration>,
-    runs: Mutex<HashMap<u64, RunState>>,
-}
 
 impl VerifyBeforeFinishMiddleware {
     /// A middleware that appends `check` as a user turn. By default it fires
@@ -192,6 +108,20 @@ impl VerifyBeforeFinishMiddleware {
     }
 }
 
+const MAX_RETAINED_RUNS: usize = 1_024;
+const RESUME_KEY: &str = "tinyagents.verify_before_finish.v1";
+
+fn state_for<'a, C>(runs: &'a mut HashMap<u64, RunState>, ctx: &RunContext<C>) -> &'a mut RunState {
+    // A cancelled run can bypass both terminal hooks. Its context marker is
+    // gone, so prune it without discarding any still-active run's fired flag.
+    if runs.len() >= MAX_RETAINED_RUNS {
+        runs.retain(|_, run| run.lifecycle.upgrade().is_some());
+    }
+    let run = runs.entry(ctx.instance_id()).or_default();
+    run.lifecycle = Arc::downgrade(&ctx.lifecycle);
+    run
+}
+
 fn min_rounds_trigger(rounds: usize) -> FinishCheckTrigger {
     Arc::new(move |activity: &FinishActivity| activity.tool_rounds >= rounds)
 }
@@ -200,6 +130,54 @@ fn min_rounds_trigger(rounds: usize) -> FinishCheckTrigger {
 impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMiddleware {
     fn name(&self) -> &str {
         "verify_before_finish"
+    }
+
+    async fn before_agent(&self, ctx: &mut RunContext<C>, _state: &S) -> Result<()> {
+        if let Some(results) = ctx.deferred_results.as_ref()
+            && let Ok(mut runs) = self.runs.lock()
+        {
+            let run = state_for(&mut runs, ctx);
+            if let Some(saved) = results.resume_metadata.get(RESUME_KEY)
+                && let Ok((activity, fired)) =
+                    serde_json::from_value::<(FinishActivity, bool)>(saved.clone())
+            {
+                run.activity = activity;
+                run.fired = fired;
+            } else {
+                // Legacy result sets did not carry middleware state. Recover
+                // only what the surviving transcript can prove.
+                run.activity.tool_rounds = 1;
+                run.restore_deferred = true;
+            }
+        }
+        Ok(())
+    }
+
+    async fn before_model(
+        &self,
+        ctx: &mut RunContext<C>,
+        _state: &S,
+        request: &mut ModelRequest,
+    ) -> Result<()> {
+        if let Ok(mut runs) = self.runs.lock()
+            && let Some(run) = runs.get_mut(&ctx.instance_id())
+            && run.restore_deferred
+        {
+            run.restore_deferred = false;
+            let mut rounds = 0;
+            for message in &request.messages {
+                if let Message::Assistant(assistant) = message
+                    && !assistant.tool_calls.is_empty()
+                {
+                    rounds += 1;
+                    run.activity
+                        .tools_called
+                        .extend(assistant.tool_calls.iter().map(|call| call.name.clone()));
+                }
+            }
+            run.activity.tool_rounds = run.activity.tool_rounds.max(rounds);
+        }
+        Ok(())
     }
 
     async fn after_model(
@@ -212,7 +190,7 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
             tracing::warn!("[tinyagents::mw] verify_before_finish state poisoned; not checking");
             return Ok(());
         };
-        let run = runs.entry(ctx.instance_id()).or_default();
+        let run = state_for(&mut runs, ctx);
 
         let calls = response.tool_calls();
         if !calls.is_empty() {
@@ -261,19 +239,35 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         Ok(())
     }
 
+    async fn on_error(&self, ctx: &mut RunContext<C>, _error: &TinyAgentsError) -> Result<()> {
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.remove(&ctx.instance_id());
+        }
+        Ok(())
+    }
+
     async fn after_agent(
         &self,
         ctx: &mut RunContext<C>,
         _state: &S,
-        _run: &mut AgentRun,
+        run: &mut AgentRun,
     ) -> Result<()> {
-        if let Ok(mut runs) = self.runs.lock() {
-            runs.remove(&ctx.instance_id());
+        let state = self
+            .runs
+            .lock()
+            .ok()
+            .and_then(|mut runs| runs.remove(&ctx.instance_id()));
+        if let (Some(state), Some(deferred)) = (state, run.deferred.as_mut()) {
+            deferred.resume_metadata.insert(
+                RESUME_KEY.to_string(),
+                serde_json::to_value((&state.activity, state.fired))
+                    .expect("finish activity is serializable"),
+            );
         }
         Ok(())
     }
 }
 
 #[cfg(test)]
-#[path = "verify_before_finish_tests.rs"]
+#[path = "middleware_tests.rs"]
 mod tests;

@@ -121,6 +121,7 @@ const OPEN: &str = "## Open";
 const HYPOTHESIS: &str = "## Current hypothesis";
 const TEST: &str = "## Test command";
 const NEXT: &str = "## Next step";
+const COMMANDS: &str = "## Recent commands";
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -130,7 +131,9 @@ fn one_line(text: &str) -> String {
 /// heading or tagged block.
 fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
     // Only search the generated sections, never Markdown in the original task.
-    let sections = text.split_once("</original-task>")?.1;
+    let sections = text
+        .split_once("</original-task>")
+        .map_or(text, |(_, sections)| sections);
     let at = sections.find(&format!("\n{heading}\n"))? + heading.len() + 2;
     let rest = &sections[at..];
     let end = rest
@@ -180,6 +183,40 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     Some(text[start..end].trim())
 }
 
+/// Read the generated ledger block after model-written state sections, which
+/// may themselves contain literal examples of ledger tags.
+fn last_tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.rfind(&open)? + open.len();
+    let end = start + text[start..].find(&close)?;
+    Some(text[start..end].trim())
+}
+
+/// Reads the commands back out of the `## Recent commands` section.
+fn section_commands(text: &str) -> Vec<CommandRecord> {
+    section(text, COMMANDS)
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.trim().strip_prefix("- `"))
+                .filter_map(|l| {
+                    let (command, outcome) = l.rsplit_once("` → ")?;
+                    let failed = outcome.starts_with("FAILED");
+                    let error = outcome
+                        .strip_prefix("FAILED: ")
+                        .map(unescape_tagged)
+                        .filter(|e| !e.is_empty());
+                    Some(CommandRecord {
+                        command: unescape_tagged(command),
+                        failed,
+                        error,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Reads the facts a previous checkpoint carries: its ledger (task and file
 /// lists and recent commands) and its
 /// model-written state. A previous summary that is not a task-state
@@ -187,8 +224,11 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// ledger and `None`; the caller then hands its text to the model instead.
 #[must_use]
 pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
+    let body = previous
+        .split_once("</original-task>")
+        .map_or(previous, |(_, body)| body);
     let lines = |tag: &str| -> Vec<String> {
-        tagged(previous, tag)
+        last_tagged(body, tag)
             .map(|block| {
                 block
                     .lines()
@@ -205,9 +245,9 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             .map(unescape_tagged),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
-        commands: tagged(previous, "recent-commands-json")
+        commands: last_tagged(body, "recent-commands-json")
             .and_then(|block| serde_json::from_str(&unescape_tagged(block)).ok())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| section_commands(previous)),
     };
     let state = previous
         .trim_start()

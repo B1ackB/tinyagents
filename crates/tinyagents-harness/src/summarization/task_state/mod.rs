@@ -114,6 +114,46 @@ impl TaskState {
     }
 }
 
+impl TaskState {
+    /// This state updated by a `later` one: lists union in order (earlier
+    /// items first), scalars take the later value unless it is empty. Used to
+    /// join the halves of a split compaction without losing either.
+    #[must_use]
+    fn merged_with(mut self, later: TaskState) -> Self {
+        fn union(into: &mut Vec<String>, from: Vec<String>) {
+            for item in from {
+                if !into.contains(&item) {
+                    into.push(item);
+                }
+            }
+        }
+        fn scalar(into: &mut String, from: String) {
+            if !from.trim().is_empty() {
+                *into = from;
+            }
+        }
+        scalar(&mut self.goal, later.goal);
+        union(&mut self.requirements, later.requirements);
+        union(&mut self.constraints, later.constraints);
+        union(&mut self.decisions, later.decisions);
+        union(&mut self.errors_and_fixes, later.errors_and_fixes);
+        // Status in the later half supersedes the earlier half in either
+        // direction: work can be completed or reopened after new edits.
+        self.todos_done
+            .retain(|item| !later.todos_open.contains(item));
+        self.todos_open
+            .retain(|item| !later.todos_done.contains(item));
+        union(&mut self.todos_done, later.todos_done);
+        union(&mut self.todos_open, later.todos_open);
+        let done = &self.todos_done;
+        self.todos_open.retain(|item| !done.contains(item));
+        scalar(&mut self.current_hypothesis, later.current_hypothesis);
+        scalar(&mut self.test_command, later.test_command);
+        scalar(&mut self.next_step, later.next_step);
+        self
+    }
+}
+
 impl TaskStateSummarizer {
     /// A task-state summarizer over `model` (its id pinned for provenance).
     pub fn new(model: Arc<dyn ChatModel<()>>, model_id: impl Into<String>) -> Self {
@@ -163,9 +203,9 @@ impl TaskStateSummarizer {
                 let safe = start + find_safe_cutoff_point(&messages[start..], end - start);
                 if safe > start {
                     end = safe;
-                } else if safe == start {
-                    // The first call/result group alone exceeds the budget.
-                    // Keep its consecutive results with the call.
+                } else {
+                    // One call whose results alone exceed the chunk: send the
+                    // whole group rather than orphan its results.
                     while end < messages.len() && matches!(messages[end], Message::Tool(_)) {
                         end += 1;
                     }
@@ -340,35 +380,32 @@ impl Summarizer for TaskStateSummarizer {
         })
     }
 
-    /// Merges split halves by carrying the first half's ledger into the
-    /// second: file lists and durable state fields union in order.
+    /// Merges split halves field by field: file lists union in order, the
+    /// recent commands are concatenated and capped, list fields of the state
+    /// union in order, and a later scalar replaces an earlier one only when it
+    /// is not empty. The second half is summarized without the previous
+    /// checkpoint, so replacing the carried state wholesale would drop it.
     async fn merge(&self, summaries: &[SummaryRecord]) -> Result<SummaryRecord> {
         let mut ledger = TaskLedger::default();
-        let mut state = None;
+        let mut state: Option<TaskState> = None;
         for record in summaries {
             let (next, next_state) = parse_carried(&record.summary.text());
             if ledger.original_task.is_none() {
                 ledger.original_task = next.original_task;
             }
             for f in next.files_modified {
-                if !ledger.files_modified.contains(&f) {
-                    ledger.files_modified.push(f);
-                }
+                ledger::push_unique(&mut ledger.files_modified, f);
             }
             for f in next.files_read {
-                if !ledger.files_read.contains(&f) {
-                    ledger.files_read.push(f);
-                }
+                ledger::push_unique(&mut ledger.files_read, f);
             }
             ledger.commands.extend(next.commands);
-            if let Some(next_state) = next_state {
-                state = Some(match state {
-                    Some(previous) => merge_state(previous, next_state),
-                    None => next_state,
-                });
-            }
+            state = match (state, next_state) {
+                (Some(earlier), Some(later)) => Some(earlier.merged_with(later)),
+                (earlier, later) => later.or(earlier),
+            };
         }
-        ledger.absorb(&[]);
+        ledger.cap();
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
             provenance: CompressionProvenance {
@@ -397,34 +434,6 @@ fn ledger_is_empty(ledger: &TaskLedger) -> bool {
         && ledger.files_modified.is_empty()
         && ledger.files_read.is_empty()
         && ledger.commands.is_empty()
-}
-
-/// Merge independently summarized halves, retaining facts that appear only
-/// in the first half while taking the later live status fields.
-fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
-    fn extend_unique(into: &mut Vec<String>, from: Vec<String>) {
-        for item in from {
-            if !into.contains(&item) {
-                into.push(item);
-            }
-        }
-    }
-    if !second.goal.is_empty() {
-        first.goal = second.goal;
-    }
-    extend_unique(&mut first.requirements, second.requirements);
-    extend_unique(&mut first.constraints, second.constraints);
-    extend_unique(&mut first.decisions, second.decisions);
-    extend_unique(&mut first.errors_and_fixes, second.errors_and_fixes);
-    extend_unique(&mut first.todos_done, second.todos_done);
-    extend_unique(&mut first.todos_open, second.todos_open);
-    first
-        .todos_open
-        .retain(|item| !first.todos_done.contains(item));
-    first.current_hypothesis = second.current_hypothesis;
-    first.test_command = second.test_command;
-    first.next_step = second.next_step;
-    first
 }
 
 #[cfg(test)]

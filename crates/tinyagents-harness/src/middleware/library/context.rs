@@ -996,7 +996,7 @@ fn touch_run(
 /// `messages[..=i]`, so one comparison checks that a remembered prefix is still
 /// intact. Hashes each message's serialized form, so any edit to an earlier
 /// message changes every later entry.
-fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
+pub(super) fn fingerprint_chain(messages: &[Message]) -> Vec<u64> {
     fingerprint_chain_from(0, messages)
 }
 
@@ -1263,7 +1263,7 @@ impl ContextCompressionMiddleware {
     /// same schema cost first: otherwise a request whose schemas already
     /// consume a meaningful share of `trigger_budget` (or all of it) would
     /// still trim messages to the *full* budget and stay over the threshold.
-    fn trim_to_trigger<Ctx: Send + Sync>(
+    pub(super) fn trim_to_trigger<Ctx: Send + Sync>(
         &self,
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
@@ -1273,11 +1273,59 @@ impl ContextCompressionMiddleware {
             .policy
             .trigger_budget()
             .saturating_sub(schema_tokens(&request.tools));
-        // A pinning policy keeps the turn's assignment through the front-drop.
-        let trimmed = if self.policy.pin_turn_user_message {
-            crate::summarization::trim_keeping_turn_user_message(&request.messages, message_budget)
-        } else {
-            trim_messages(&request.messages, &TrimStrategy::MaxTokens(message_budget))
+        // Preserve the folded history independently of checkpoint role while
+        // trimming the live tail to the remaining budget.
+        let checkpoint_at = request.messages.iter().position(is_checkpoint);
+        let trim_tail = |messages: &[Message], budget| {
+            if self.policy.pin_turn_user_message {
+                crate::summarization::trim_keeping_turn_user_message(messages, budget)
+            } else {
+                crate::summarization::enforce_approximate_budget(
+                    trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
+                    budget,
+                    None,
+                )
+            }
+        };
+        let trimmed = match checkpoint_at {
+            Some(at) => {
+                let mut rest = request.messages.clone();
+                let checkpoint = rest.remove(at);
+                let system_tokens = crate::token_estimation::count_tokens_approximately(
+                    &rest
+                        .iter()
+                        .filter(|message| matches!(message, Message::System(_)))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+                let checkpoint_budget = message_budget.saturating_sub(system_tokens);
+                let checkpoint = if crate::token_estimation::count_tokens_approximately(
+                    std::slice::from_ref(&checkpoint),
+                ) >= checkpoint_budget
+                {
+                    shrink_checkpoint(&checkpoint, checkpoint_budget / 2, checkpoint_budget)
+                } else {
+                    Some(checkpoint)
+                };
+                match checkpoint {
+                    Some(checkpoint) => {
+                        let budget = message_budget.saturating_sub(
+                            crate::token_estimation::count_tokens_approximately(
+                                std::slice::from_ref(&checkpoint),
+                            ),
+                        );
+                        let mut trimmed = trim_tail(&rest, budget);
+                        let insert = trimmed
+                            .iter()
+                            .take_while(|m| matches!(m, Message::System(_)))
+                            .count();
+                        trimmed.insert(insert, checkpoint);
+                        trimmed
+                    }
+                    None => trim_tail(&rest, message_budget),
+                }
+            }
+            None => trim_tail(&request.messages, message_budget),
         };
         let to_tokens = total_message_tokens(&trimmed);
         request.messages = trimmed;
@@ -1295,6 +1343,62 @@ impl ContextCompressionMiddleware {
             state.pressure.pending = None;
         }
     }
+}
+
+/// Shrinks a checkpoint to `preferred_tokens`, including marker and
+/// truncation notice. If the framing alone exceeds that target, it may use
+/// up to `max_tokens`; a checkpoint that cannot fit even then is dropped.
+fn shrink_checkpoint(
+    checkpoint: &Message,
+    preferred_tokens: u64,
+    max_tokens: u64,
+) -> Option<Message> {
+    let body = checkpoint_body(checkpoint).unwrap_or_default();
+    let placement = if matches!(checkpoint, Message::System(_)) {
+        crate::summarization::SummaryPlacement::System
+    } else {
+        crate::summarization::SummaryPlacement::User
+    };
+    let render = |keep: usize| {
+        let cut: String = body.chars().take(keep).collect();
+        checkpoint_message(
+            placement,
+            &format!("{cut}\n[checkpoint truncated to fit the context budget]"),
+        )
+    };
+    let minimum = render(0);
+    let framing_tokens =
+        crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&minimum));
+    if framing_tokens > max_tokens {
+        tracing::warn!(
+            framing_tokens,
+            max_tokens,
+            "[context_compression] checkpoint framing exceeds trim budget; dropping it"
+        );
+        return None;
+    }
+    let target = preferred_tokens.max(framing_tokens).min(max_tokens);
+    let mut low = 0;
+    let mut high = body
+        .chars()
+        .count()
+        .min(usize::try_from(target.saturating_mul(4)).unwrap_or(usize::MAX));
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&render(mid)))
+            <= target
+        {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    tracing::warn!(
+        from_chars = body.chars().count(),
+        to_chars = low,
+        "[context_compression] checkpoint exceeds trim budget; truncating it"
+    );
+    Some(render(low))
 }
 
 /// `messages` with `fold` applied, when the fold still matches them and covers

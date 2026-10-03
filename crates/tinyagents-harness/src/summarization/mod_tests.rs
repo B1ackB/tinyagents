@@ -391,6 +391,38 @@ mod smoke {
     }
 }
 
+#[test]
+fn fallback_trim_counts_message_framing_against_the_final_budget() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
+    let mut messages = vec![Message::system("instructions"), Message::user("task")];
+    messages.extend((0..80).map(|_| Message::assistant("ok")));
+    let budget = 50;
+    let kept = trim_keeping_turn_user_message(&messages, budget);
+
+    assert!(
+        kept.iter()
+            .any(|message| matches!(message, Message::User(_)))
+    );
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
+#[test]
+fn fallback_trim_preserves_a_system_prompt_before_fitting_the_user_pin() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
+
+    let system = Message::system("s".repeat(350));
+    let user = Message::user("u".repeat(100));
+    let budget = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&system))
+        + crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&user))
+        - 1;
+    let kept = trim_keeping_turn_user_message(&[system.clone(), user], budget);
+
+    assert_eq!(kept.first(), Some(&system));
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
 /// Regression tests for the structural repair of transcript cut points.
 ///
 /// Every test here is written against the concrete provider failure it
@@ -673,6 +705,23 @@ mod turn_pin {
             usage: None,
             origin: None,
         })
+    }
+
+    #[test]
+    fn final_budget_enforcement_drops_a_call_with_its_result() {
+        use crate::summarization::enforce_approximate_budget;
+        use crate::token_estimation::count_tokens_approximately;
+
+        let messages = vec![
+            Message::user("task"),
+            assistant_calling("c1"),
+            Message::tool("c1", "result"),
+            Message::assistant("tail"),
+        ];
+        let budget = count_tokens_approximately(&messages) - 1;
+        let trimmed = enforce_approximate_budget(messages, budget, Some(0));
+        assert!(tool_pairing_is_intact(&trimmed), "{trimmed:?}");
+        assert!(count_tokens_approximately(&trimmed) <= budget);
     }
 
     /// `[system, user(task), (assistant(call), tool(result)) x 10]`: one turn,

@@ -424,24 +424,38 @@ pub(crate) fn split_at_cut(
 
 /// Front-drop `messages` to `budget` tokens ([`TrimStrategy::MaxTokens`]) the
 /// way the compression middleware's fallback does, but keep the most recent
-/// user message — size-capped as a pin is — when the drop would remove every
-/// user message. Its tokens are reserved from `budget` first, so the result
-/// still fits.
+/// user message, size-capped to fit the residual budget, when the drop would
+/// remove every user message. Its tokens are reserved
+/// from `budget` first, so the result still fits.
 pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) -> Vec<Message> {
+    let system_tokens = crate::token_estimation::count_tokens_approximately(
+        &messages
+            .iter()
+            .filter(|message| matches!(message, Message::System(_)))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let Some(pin) = messages
         .iter()
         .rposition(is_turn_user_message)
-        .map(|index| cap_pinned_message(&messages[index]))
+        .and_then(|index| {
+            fit_pinned_message(&messages[index], budget.saturating_sub(system_tokens))
+        })
     else {
-        return trim_messages(messages, &TrimStrategy::MaxTokens(budget));
+        return enforce_approximate_budget(
+            trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
+            budget,
+            None,
+        );
     };
-    let reserved = crate::token_estimation::estimate_message_tokens(&pin);
+    let reserved = crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&pin));
     let mut trimmed = trim_messages(
         messages,
         &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
     );
     if trimmed.iter().any(is_turn_user_message) {
-        return trimmed;
+        let retained_user = trimmed.iter().rposition(is_turn_user_message);
+        return enforce_approximate_budget(trimmed, budget, retained_user);
     }
     let system_prefix = trimmed
         .iter()
@@ -453,7 +467,101 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         "[summarization::trim] re-inserting the turn's user message after a fallback front-drop"
     );
     trimmed.insert(system_prefix, pin);
-    trimmed
+    enforce_approximate_budget(trimmed, budget, Some(system_prefix))
+}
+
+/// Correct the cheaper trim estimate against the prompt-pressure estimator.
+pub(crate) fn enforce_approximate_budget(
+    mut messages: Vec<Message>,
+    budget: u64,
+    mut pinned: Option<usize>,
+) -> Vec<Message> {
+    use crate::token_estimation::count_tokens_approximately;
+
+    while count_tokens_approximately(&messages) > budget {
+        let oldest = messages
+            .iter()
+            .enumerate()
+            .find(|(index, message)| {
+                Some(*index) != pinned && !matches!(message, Message::System(_))
+            })
+            .or_else(|| {
+                messages
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| Some(*index) != pinned)
+            })
+            .map(|(index, _)| index);
+        let Some(index) = oldest else {
+            break;
+        };
+        let removed = messages.remove(index);
+        if let Some(pin_index) = pinned.as_mut()
+            && index < *pin_index
+        {
+            *pin_index -= 1;
+        }
+        // A call and its contiguous results are one provider turn. Dropping
+        // only the call would strand results behind a pinned user message.
+        if is_tool_calling_assistant(&removed) {
+            while matches!(messages.get(index), Some(Message::Tool(_))) {
+                messages.remove(index);
+                if let Some(pin_index) = pinned.as_mut()
+                    && index < *pin_index
+                {
+                    *pin_index -= 1;
+                }
+            }
+        }
+        while let Some(index) = messages
+            .iter()
+            .position(|message| !matches!(message, Message::System(_)))
+            && matches!(messages[index], Message::Tool(_))
+        {
+            messages.remove(index);
+            if let Some(pin_index) = pinned.as_mut()
+                && index < *pin_index
+            {
+                *pin_index -= 1;
+            }
+        }
+    }
+    messages
+}
+
+/// A pinned user message fitted to this fallback's residual budget.
+fn fit_pinned_message(message: &Message, budget: u64) -> Option<Message> {
+    let pin = cap_pinned_message(message);
+    let count = |message: &Message| {
+        crate::token_estimation::count_tokens_approximately(std::slice::from_ref(message))
+    };
+    if count(&pin) <= budget {
+        return Some(pin);
+    }
+    let text = pin.text();
+    let render = |keep: usize| {
+        let cut: String = text.chars().take(keep).collect();
+        Message::user(format!(
+            "{cut}\n[message truncated to fit the context window]"
+        ))
+    };
+    if count(&render(0)) > budget {
+        return None;
+    }
+    let mut low = 0;
+    let mut high = text
+        .chars()
+        .count()
+        .min(usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX));
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if count(&render(mid)) <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    Some(render(low))
 }
 
 /// Whether `message` is a user message a person (or host) wrote — not a

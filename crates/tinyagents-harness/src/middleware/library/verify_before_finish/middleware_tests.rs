@@ -15,6 +15,27 @@ use tinyinference_llm::tool::ToolCall;
 
 const CHECK: &str = "CHECK: re-read the request";
 
+#[test]
+fn retention_prunes_dropped_contexts_without_evicting_active_runs() {
+    let mut runs = HashMap::new();
+    let first = RunContext::new(RunConfig::new("first"), ());
+    state_for(&mut runs, &first).fired = true;
+    let others: Vec<_> = (0..MAX_RETAINED_RUNS)
+        .map(|_| RunContext::new(RunConfig::new("other"), ()))
+        .collect();
+    for ctx in &others {
+        state_for(&mut runs, ctx);
+    }
+    assert!(state_for(&mut runs, &first).fired);
+    assert_eq!(runs.len(), MAX_RETAINED_RUNS + 1);
+
+    drop(others);
+    let next = RunContext::new(RunConfig::new("next"), ());
+    state_for(&mut runs, &next);
+    assert_eq!(runs.len(), 2);
+    assert!(state_for(&mut runs, &first).fired);
+}
+
 /// An assistant turn that requests one call of `name`.
 fn tool_round(id: &str, name: &str) -> ModelResponse {
     let mut response = ModelResponse::assistant(String::new());
@@ -346,4 +367,125 @@ async fn leaves_empty_truncated_and_continued_answers_alone() {
     let mut real = answer("done");
     mw.after_model(&mut ctx, &(), &mut real).await.unwrap();
     assert_eq!(real.continue_turn.as_deref(), Some(CHECK));
+}
+
+#[tokio::test]
+async fn failed_run_releases_its_activity() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    let mut ctx = RunContext::new(RunConfig::new("vbf"), ());
+    mw.after_model(&mut ctx, &(), &mut tool_round("c1", "lookup"))
+        .await
+        .unwrap();
+    assert!(mw.runs.lock().unwrap().contains_key(&ctx.instance_id()));
+    <VerifyBeforeFinishMiddleware as Middleware<(), ()>>::on_error(
+        &mw,
+        &mut ctx,
+        &crate::error::TinyAgentsError::Model("failed".into()),
+    )
+    .await
+    .unwrap();
+    assert!(!mw.runs.lock().unwrap().contains_key(&ctx.instance_id()));
+}
+
+#[tokio::test]
+async fn interrupted_runs_cannot_grow_activity_map_without_bound() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    for _ in 0..1_025 {
+        let mut ctx = RunContext::new(RunConfig::new("vbf"), ());
+        mw.after_model(&mut ctx, &(), &mut tool_round("c1", "lookup"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(mw.runs.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn deferred_resume_restores_tool_activity_from_transcript() {
+    let mw =
+        VerifyBeforeFinishMiddleware::new(CHECK).with_trigger(|activity| activity.called("lookup"));
+    let mut ctx = RunContext::new(RunConfig::new("resumed").with_max_model_calls(10), ())
+        .with_deferred_results(crate::tool::DeferredToolResults::new().approve("c1"));
+    mw.before_agent(&mut ctx, &()).await.unwrap();
+    let mut request = tinyinference_llm::model::ModelRequest {
+        messages: vec![
+            Message::user("do the task"),
+            Message::Assistant(tool_round("c1", "lookup").message),
+            Message::tool("c1", "approved"),
+        ],
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    let mut draft = answer("done");
+    mw.after_model(&mut ctx, &(), &mut draft).await.unwrap();
+    assert_eq!(draft.continue_turn.as_deref(), Some(CHECK));
+}
+
+#[tokio::test]
+async fn deferred_resume_does_not_repeat_an_existing_check() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    let mut ctx = RunContext::new(RunConfig::new("resumed").with_max_model_calls(10), ())
+        .with_deferred_results(crate::tool::DeferredToolResults::new().approve("c1"));
+    mw.before_agent(&mut ctx, &()).await.unwrap();
+    let mut request = tinyinference_llm::model::ModelRequest {
+        messages: vec![Message::user("do the task"), Message::user(CHECK)],
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+    let mut draft = answer("done");
+    mw.after_model(&mut ctx, &(), &mut draft).await.unwrap();
+    assert_eq!(draft.continue_turn.as_deref(), Some(CHECK));
+}
+
+#[tokio::test]
+async fn deferred_resume_restores_compacted_activity_and_check_provenance() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK)
+        .with_trigger(|activity| activity.tool_rounds >= 2 && activity.called("todo"));
+    let mut original = RunContext::new(RunConfig::new("original").with_max_model_calls(10), ());
+    mw.after_model(&mut original, &(), &mut tool_round("c1", "todo"))
+        .await
+        .unwrap();
+    mw.after_model(&mut original, &(), &mut tool_round("c2", "lookup"))
+        .await
+        .unwrap();
+    let mut run = AgentRun::new();
+    run.deferred = Some(crate::tool::DeferredToolRequests::default());
+    mw.after_agent(&mut original, &(), &mut run).await.unwrap();
+    let requests = run.deferred.unwrap();
+    let stored = serde_json::to_string(&requests).unwrap();
+    let requests: crate::tool::DeferredToolRequests = serde_json::from_str(&stored).unwrap();
+    let results = crate::tool::DeferredToolResults::new()
+        .approve("c2")
+        .with_resume_metadata(&requests);
+    let mut resumed = RunContext::new(RunConfig::new("resumed").with_max_model_calls(10), ())
+        .with_deferred_results(results);
+    mw.before_agent(&mut resumed, &()).await.unwrap();
+    let mut request = tinyinference_llm::model::ModelRequest {
+        messages: vec![Message::user("compacted history")],
+        ..Default::default()
+    };
+    mw.before_model(&mut resumed, &(), &mut request)
+        .await
+        .unwrap();
+    let mut draft = answer("done");
+    mw.after_model(&mut resumed, &(), &mut draft).await.unwrap();
+    assert_eq!(draft.continue_turn.as_deref(), Some(CHECK));
+
+    // A check already emitted before deferral stays spent even when its
+    // message was removed from the resumed transcript.
+    let mut checked = AgentRun::new();
+    checked.deferred = Some(crate::tool::DeferredToolRequests::default());
+    mw.after_agent(&mut resumed, &(), &mut checked)
+        .await
+        .unwrap();
+    let results = crate::tool::DeferredToolResults::new()
+        .approve("c3")
+        .with_resume_metadata(checked.deferred.as_ref().unwrap());
+    let mut resumed_again = RunContext::new(RunConfig::new("again").with_max_model_calls(10), ())
+        .with_deferred_results(results);
+    mw.before_agent(&mut resumed_again, &()).await.unwrap();
+    let mut final_answer = answer("checked");
+    mw.after_model(&mut resumed_again, &(), &mut final_answer)
+        .await
+        .unwrap();
+    assert!(final_answer.continue_turn.is_none());
 }

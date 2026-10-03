@@ -996,8 +996,9 @@ pub(crate) struct MeasuredPrompt {
     pub(crate) messages: usize,
     /// Estimated tokens of the tool declarations it carried.
     pub(crate) schema_tokens: u64,
-    /// Fingerprint of the messages this middleware handed to later layers.
-    pub(crate) prefix_fingerprint: u64,
+    /// Chained fingerprint of those messages, so a later request is only
+    /// treated as extending this one when its prefix is identical.
+    pub(crate) fingerprint: u64,
 }
 
 /// A compaction this middleware already performed, remembered so it is

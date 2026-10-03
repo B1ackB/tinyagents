@@ -153,3 +153,66 @@ fn tool_kinds_follow_common_harness_names() {
     assert_eq!(ToolKind::of("read_file"), ToolKind::Read);
     assert_eq!(ToolKind::of("web_search_tool"), ToolKind::Other);
 }
+
+#[test]
+fn revisited_file_remains_recent_when_list_is_capped() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES_READ).map(|i| format!("f{i}")).collect(),
+        ..TaskLedger::default()
+    };
+    push_unique(&mut ledger.files_read, "f0".into());
+    push_unique(&mut ledger.files_read, "new".into());
+    ledger.cap();
+    assert!(!ledger.files_read.contains(&"f1".to_string()));
+    assert_eq!(ledger.files_read[MAX_FILES_READ - 2..], ["f0", "new"]);
+}
+
+#[test]
+fn exit_code_mentioned_in_output_is_not_a_failure() {
+    let output = "src/main.rs:42: println!(\"exit code {}\", c)\nsrc/main.rs:57: done";
+    assert!(failure_of(output).is_none());
+    assert!(failure_of("exit code:\n57").is_none());
+}
+
+#[test]
+fn file_lists_have_a_rendered_size_bound() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES_READ)
+            .map(|i| format!("{}-{i}", "x".repeat(100)))
+            .collect(),
+        ..TaskLedger::default()
+    };
+    ledger.cap();
+    assert!(ledger.files_read.iter().map(String::len).sum::<usize>() <= MAX_FILE_LIST_CHARS);
+    assert_eq!(
+        ledger.files_read.last().unwrap(),
+        &format!("{}-{}", "x".repeat(100), MAX_FILES_READ - 1)
+    );
+}
+
+#[test]
+fn file_list_cap_counts_escaped_path_expansion() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES_READ)
+            .map(|i| format!("{i}-{}", "&".repeat(40)))
+            .collect(),
+        ..TaskLedger::default()
+    };
+    ledger.cap();
+    assert!(
+        ledger
+            .files_read
+            .iter()
+            .map(|path| escaped_path_len(path) + 1)
+            .sum::<usize>()
+            <= MAX_FILE_LIST_CHARS
+    );
+    assert!(ledger.files_read.len() < MAX_FILES_READ);
+    assert!(
+        ledger
+            .files_read
+            .last()
+            .unwrap()
+            .starts_with(&(MAX_FILES_READ - 1).to_string())
+    );
+}
