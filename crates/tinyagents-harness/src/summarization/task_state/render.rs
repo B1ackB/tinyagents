@@ -47,7 +47,7 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let task = ledger.original_task.as_deref().unwrap_or("");
+    let task = escape_task(ledger.original_task.as_deref().unwrap_or(""));
     format!(
         "{TASK_STATE_HEADER}\n\n\
          <original-task>\n{task}\n</original-task>\n\n\
@@ -97,6 +97,19 @@ const HYPOTHESIS: &str = "## Current hypothesis";
 const TEST: &str = "## Test command";
 const NEXT: &str = "## Next step";
 const COMMANDS: &str = "## Recent commands";
+
+/// The verbatim task is embedded between `<original-task>` tags, so a literal
+/// closing tag inside it would end the block early on the next parse. Escape it
+/// (and the escape itself) so the task round-trips exactly.
+fn escape_task(task: &str) -> String {
+    task.replace("<\\/original-task>", "<\\\\/original-task>")
+        .replace("</original-task>", "<\\/original-task>")
+}
+
+fn unescape_task(task: &str) -> String {
+    task.replace("<\\/original-task>", "</original-task>")
+        .replace("<\\\\/original-task>", "<\\/original-task>")
+}
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -205,7 +218,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())
-            .map(String::from),
+            .map(unescape_task),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
         commands: section_commands(body),

@@ -55,7 +55,7 @@ impl CompactionPressure {
     /// `schema_tokens` of tool declarations.
     ///
     /// With a measurement whose request this one extends (same message count
-    /// or more *and* an identical prefix, so a front-trimmed request measured
+    /// or more, an identical prefix, and no fewer tool-schema tokens, so a front-trimmed request measured
     /// earlier is not mistaken for the prefix of an untrimmed one), that is the
     /// provider's own count plus an estimate of the appended messages and of
     /// any schema growth; otherwise the whole-request estimate.
@@ -66,6 +66,7 @@ impl CompactionPressure {
     ) -> (u64, PromptSource) {
         if let Some(measured) = self.measured
             && measured.messages <= messages.len()
+            && schema_tokens >= measured.schema_tokens
             && prefix_fingerprint(&messages[..measured.messages]) == measured.fingerprint
         {
             let appended =

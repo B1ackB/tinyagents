@@ -139,6 +139,9 @@ impl TaskState {
         union(&mut self.errors_and_fixes, later.errors_and_fixes);
         union(&mut self.todos_done, later.todos_done);
         union(&mut self.todos_open, later.todos_open);
+        // Work a half reports done is no longer open, whichever half listed it.
+        let done = &self.todos_done;
+        self.todos_open.retain(|item| !done.contains(item));
         scalar(&mut self.current_hypothesis, later.current_hypothesis);
         scalar(&mut self.test_command, later.test_command);
         scalar(&mut self.next_step, later.next_step);

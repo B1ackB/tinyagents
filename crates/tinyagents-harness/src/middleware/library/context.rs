@@ -1122,7 +1122,7 @@ impl ContextCompressionMiddleware {
     /// same schema cost first: otherwise a request whose schemas already
     /// consume a meaningful share of `trigger_budget` (or all of it) would
     /// still trim messages to the *full* budget and stay over the threshold.
-    fn trim_to_trigger<Ctx: Send + Sync>(
+    pub(super) fn trim_to_trigger<Ctx: Send + Sync>(
         &self,
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
@@ -1132,7 +1132,31 @@ impl ContextCompressionMiddleware {
             .policy
             .trigger_budget()
             .saturating_sub(schema_tokens(&request.tools));
-        let trimmed = trim_messages(&request.messages, &TrimStrategy::MaxTokens(message_budget));
+        // A user-role checkpoint opening the transcript stands in for the
+        // history already folded away: trimming it first would leave the model
+        // neither the history nor its summary. Trim the live tail around it.
+        let checkpoint_at = request
+            .messages
+            .iter()
+            .position(|m| !matches!(m, Message::System(_)))
+            .filter(|&at| is_checkpoint(&request.messages[at]));
+        let trimmed = match checkpoint_at {
+            Some(at) => {
+                let mut rest = request.messages.clone();
+                let checkpoint = rest.remove(at);
+                let budget = message_budget.saturating_sub(
+                    crate::token_estimation::estimate_message_tokens(&checkpoint),
+                );
+                let mut trimmed = trim_messages(&rest, &TrimStrategy::MaxTokens(budget));
+                let insert = trimmed
+                    .iter()
+                    .take_while(|m| matches!(m, Message::System(_)))
+                    .count();
+                trimmed.insert(insert, checkpoint);
+                trimmed
+            }
+            None => trim_messages(&request.messages, &TrimStrategy::MaxTokens(message_budget)),
+        };
         let to_tokens = total_message_tokens(&trimmed);
         request.messages = trimmed;
         ctx.emit(AgentEvent::Compressed {

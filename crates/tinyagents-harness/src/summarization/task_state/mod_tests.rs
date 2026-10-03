@@ -290,3 +290,18 @@ fn an_oversized_tool_group_is_never_split() {
         );
     }
 }
+
+#[test]
+fn merge_closes_open_work_the_other_half_finished() {
+    let earlier = TaskState {
+        todos_open: vec!["a".into(), "b".into()],
+        ..TaskState::default()
+    };
+    let later = TaskState {
+        todos_done: vec!["a".into()],
+        ..TaskState::default()
+    };
+    let merged = earlier.merged_with(later);
+    assert_eq!(merged.todos_open, vec!["b"]);
+    assert_eq!(merged.todos_done, vec!["a"]);
+}

@@ -118,3 +118,18 @@ fn usage_without_a_pending_request_is_ignored() {
     assert!(!pressure.observe(None, &policy, 2, 10));
     assert!(pressure.measured.is_none());
 }
+
+#[test]
+fn shrunken_tool_schemas_fall_back_to_the_estimate() {
+    let mut pressure = CompactionPressure::default();
+    pressure.begin_call();
+    let sent = vec![Message::user("x")];
+    pressure.note_request(&sent, 100);
+    pressure.observe(Some(&usage(5_000)), &policy(100_000), 2, 10);
+    let (tokens, source) = pressure.prompt_tokens(&sent, 10);
+    assert_eq!(source, PromptSource::Estimated);
+    assert_eq!(
+        tokens,
+        crate::token_estimation::estimate_slice_tokens(&sent) + 10
+    );
+}

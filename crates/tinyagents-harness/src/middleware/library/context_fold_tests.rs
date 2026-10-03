@@ -667,3 +667,27 @@ async fn an_unaligned_overflow_summary_is_not_built_on_later() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].previous_summary, None);
 }
+
+#[test]
+fn deterministic_trim_keeps_the_user_role_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(200);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let checkpoint = cp("everything that happened before");
+    let mut request = ModelRequest {
+        messages: std::iter::once(Message::system("sys"))
+            .chain(std::iter::once(checkpoint.clone()))
+            .chain((0..10).map(|i| chunk(&format!("m{i}"))))
+            .collect(),
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert_eq!(request.messages[0].text(), "sys");
+    assert_eq!(request.messages[1], checkpoint, "the checkpoint survives");
+    assert!(request.messages.len() < 12, "the live tail was trimmed");
+    assert!(
+        request.messages.last().unwrap().text().starts_with("m9:"),
+        "the newest message is kept"
+    );
+}

@@ -119,3 +119,13 @@ fn headings_inside_the_original_task_are_not_read_as_state() {
     assert_eq!(carried.goal, state.goal);
     assert!(carried.constraints.is_empty());
 }
+
+#[test]
+fn a_task_containing_the_closing_tag_round_trips() {
+    let (state, mut ledger) = sample();
+    let task = "Parse </original-task> and <\\/original-task> tags.\n## Goal\nnot state";
+    ledger.original_task = Some(task.into());
+    let (carried, carried_state) = parse_carried(&render_task_state(&state, &ledger));
+    assert_eq!(carried.original_task.as_deref(), Some(task));
+    assert_eq!(carried_state.unwrap().goal, state.goal);
+}
