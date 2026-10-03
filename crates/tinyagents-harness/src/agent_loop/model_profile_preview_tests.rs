@@ -18,6 +18,25 @@ use tinyinference_llm::model::{ModelProfile, ModelRequest};
 /// Records the profile each `before_model` call saw.
 struct SeenProfiles(Arc<Mutex<Vec<Option<ModelProfile>>>>);
 
+struct SelectModel(&'static str);
+
+#[async_trait]
+impl Middleware<()> for SelectModel {
+    fn name(&self) -> &str {
+        "select-model"
+    }
+
+    async fn before_model(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        request: &mut ModelRequest,
+    ) -> Result<()> {
+        request.model = Some(self.0.into());
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Middleware<()> for SeenProfiles {
     fn name(&self) -> &str {
@@ -55,4 +74,37 @@ async fn before_model_sees_the_target_model_profile() {
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.as_slice(), [Some(profile)]);
+}
+
+#[tokio::test]
+async fn later_middleware_sees_model_selected_by_earlier_middleware() {
+    let first_profile = ModelProfile {
+        model: Some("first".into()),
+        hoists_system_messages: true,
+        ..ModelProfile::default()
+    };
+    let second_profile = ModelProfile {
+        model: Some("second".into()),
+        hoists_system_messages: false,
+        ..ModelProfile::default()
+    };
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model(
+        "first",
+        Arc::new(ScriptedModel::replies(vec!["wrong"]).with_profile(first_profile)),
+    );
+    harness.register_model(
+        "second",
+        Arc::new(ScriptedModel::replies(vec!["done"]).with_profile(second_profile.clone())),
+    );
+    harness.push_middleware(Arc::new(SelectModel("second")));
+    harness.push_middleware(Arc::new(SeenProfiles(seen.clone())));
+
+    harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(seen.lock().unwrap().as_slice(), [Some(second_profile)]);
 }
