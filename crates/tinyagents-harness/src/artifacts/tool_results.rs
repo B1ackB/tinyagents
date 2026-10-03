@@ -717,10 +717,9 @@ pub async fn apply_per_result_persistence(
             .await
         {
             Ok(persisted) => {
-                let (output, final_bytes) = bound_text_to_budget(
-                    persisted.output,
-                    budget_bytes.max(MIN_ENVELOPE_ALLOWANCE_BYTES),
-                );
+                let envelope_allowance = budget_bytes.max(envelope_budget_floor(&persisted.output));
+                let (output, final_bytes) =
+                    bound_text_to_budget(persisted.output, envelope_allowance);
                 if final_bytes >= original_bytes {
                     // #4469 item 9: this branch does NOT fall back to inline
                     // truncation — the envelope is returned regardless, because it
@@ -848,19 +847,11 @@ pub async fn spill_aggregate_tool_results(
                 // pointer — `allowed_len` can be 0 here, which would blank the
                 // result and strip the `artifact_path` the model reads to recover
                 // the full output.
-                let header_len = persisted
-                    .output
-                    .find("\nread_with:")
-                    .map(|end| end + 1)
-                    .unwrap_or(persisted.output.len());
                 // `apply_tool_result_budget` keeps a head of budget minus its
                 // trailer reserve. Include the complete rendered pointer/header
                 // in that head, even when the path is an unusually long absolute
                 // detached pointer.
-                let envelope_allowance = allowed_len.max(
-                    MIN_ENVELOPE_ALLOWANCE_BYTES
-                        .max(header_len.saturating_add(TRAILER_RESERVED + 1)),
-                );
+                let envelope_allowance = allowed_len.max(envelope_budget_floor(&persisted.output));
                 let (output, final_bytes) =
                     bound_text_to_budget(persisted.output, envelope_allowance);
                 total = total
@@ -910,6 +901,14 @@ fn bound_text_to_budget(content: String, budget_bytes: usize) -> (String, usize)
     output.truncate(cut);
     let final_bytes = output.len();
     (output, final_bytes)
+}
+
+fn envelope_budget_floor(envelope: &str) -> usize {
+    let header_len = envelope
+        .find("\nread_with:")
+        .map(|end| end + 1)
+        .unwrap_or(envelope.len());
+    MIN_ENVELOPE_ALLOWANCE_BYTES.max(header_len.saturating_add(TRAILER_RESERVED + 1))
 }
 
 /// Round a byte index DOWN to the nearest UTF-8 character boundary.

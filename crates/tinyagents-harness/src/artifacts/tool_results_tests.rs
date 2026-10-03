@@ -220,6 +220,38 @@ async fn tiny_per_result_budget_keeps_the_recovery_pointer() {
 }
 
 #[tokio::test]
+async fn long_detached_pointer_survives_a_small_result_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("r".repeat(220));
+    let store = detached_store(&storage, "session");
+    let (out, outcome) = apply_per_result_persistence(
+        "x".repeat(2_000),
+        None,
+        Some(&store),
+        "shell",
+        Some("call"),
+        20,
+    )
+    .await;
+    assert!(outcome.persisted);
+    let pointer = outcome.artifact_path.unwrap();
+    assert!(out.contains(&format!("artifact_path: {pointer}\n")));
+    let read_line = out
+        .lines()
+        .find(|line| line.starts_with("read_with:"))
+        .unwrap();
+    let call = read_line
+        .split_once("file_read ")
+        .unwrap()
+        .1
+        .split(" (a long")
+        .next()
+        .unwrap();
+    let parsed: Value = serde_json::from_str(call).unwrap();
+    assert_eq!(parsed["path"], pointer);
+}
+
+#[tokio::test]
 async fn nested_artifact_activity_is_included_in_session_freshness() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("artifacts/tool-results");
