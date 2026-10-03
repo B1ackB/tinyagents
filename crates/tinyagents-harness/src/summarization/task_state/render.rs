@@ -78,8 +78,18 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
         hypothesis = or_none(&state.current_hypothesis),
         test = or_none(&state.test_command),
         next = or_none(&state.next_step),
-        modified = ledger.files_modified.join("\n"),
-        read = ledger.read_only_files().join("\n"),
+        modified = ledger
+            .files_modified
+            .iter()
+            .map(|p| escape_tagged(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        read = ledger
+            .read_only_files()
+            .iter()
+            .map(|p| escape_tagged(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
     )
 }
 
@@ -153,10 +163,11 @@ fn section_text(text: &str, heading: &str) -> String {
 }
 
 fn render_command(c: &CommandRecord) -> String {
+    let command = escape_tagged(&c.command);
     match (&c.failed, &c.error) {
-        (false, _) => format!("- `{}` → ok", c.command),
-        (true, Some(error)) => format!("- `{}` → FAILED: {error}", c.command),
-        (true, None) => format!("- `{}` → FAILED", c.command),
+        (false, _) => format!("- `{command}` → ok"),
+        (true, Some(error)) => format!("- `{command}` → FAILED: {}", escape_tagged(error)),
+        (true, None) => format!("- `{command}` → FAILED"),
     }
 }
 
@@ -183,7 +194,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
                     .lines()
                     .map(str::trim)
                     .filter(|l| !l.is_empty())
-                    .map(String::from)
+                    .map(unescape_tagged)
                     .collect()
             })
             .unwrap_or_default()
