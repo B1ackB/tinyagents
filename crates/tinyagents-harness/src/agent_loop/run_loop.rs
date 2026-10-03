@@ -752,6 +752,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     })?
             };
             ctx.model_profile = binding.model.profile().cloned();
+            crate::middleware::library::rehome_ephemeral_system_instructions(
+                &mut request,
+                ctx.model_profile.as_ref(),
+            );
             let model_name = binding.resolved.name.clone();
 
             // An explicit request override that resolution skipped (unknown
