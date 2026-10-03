@@ -11,5 +11,7 @@ and per-run state. `middleware.rs` contains configuration and lifecycle hooks;
 
 The check is skipped for tool-bearing, empty, truncated, or already continued
 responses and when call or wall-clock budget is too small. Successful and
-failed runs release activity through lifecycle hooks. Interrupted runs are
-bounded by a 1,024-entry oldest-ID eviction cap.
+failed runs release activity through lifecycle hooks. Deferred resumes seed
+activity from the resumed transcript before the next model response, so a new
+context can still trigger the check. Interrupted runs are bounded by a
+1,024-entry oldest-ID eviction cap.
