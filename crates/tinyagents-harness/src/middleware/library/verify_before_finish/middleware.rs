@@ -10,7 +10,7 @@ use tinyinference_llm::model::{ModelRequest, ModelResponse};
 
 use super::types::{
     DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
-    MIN_REMAINING_MODEL_CALLS, VerifyBeforeFinishMiddleware,
+    MIN_REMAINING_MODEL_CALLS, RunState, VerifyBeforeFinishMiddleware,
 };
 use crate::context::RunContext;
 use crate::error::{Result, TinyAgentsError};
