@@ -688,13 +688,14 @@ async fn detached_store_writes_outside_the_action_dir_with_an_absolute_pointer()
     std::fs::create_dir_all(&action).unwrap();
     let store = detached_store(&storage, "session/one");
     assert!(store.is_detached());
-    assert_eq!(store.root(), storage.as_path());
+    let artifact_root = storage.join("tool-results");
+    assert_eq!(store.root(), artifact_root.as_path());
 
     let raw = format!("{} {}", "x".repeat(4096), test_github_token());
     let (out, outcome) =
         apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call-1"), 1024).await;
 
-    let expected = storage.join("session_one/shell/call-1.txt");
+    let expected = artifact_root.join("session_one/shell/call-1.txt");
     let pointer = expected.to_string_lossy().into_owned();
     assert!(outcome.persisted);
     assert_eq!(outcome.artifact_path.as_deref(), Some(pointer.as_str()));
@@ -835,13 +836,16 @@ fn action_relative_read_target_ignores_absolute_paths() {
 }
 
 #[test]
-fn detached_prune_sweeps_stale_sessions_in_the_storage_dir() {
+fn detached_prune_stays_inside_its_owned_namespace() {
     let tmp = tempfile::tempdir().unwrap();
-    let storage = tmp.path().join("tool-results");
-    let stale = storage.join("old-session/shell");
-    let current = storage.join("current/shell");
+    let storage = tmp.path().join("state");
+    let artifact_root = storage.join("tool-results");
+    let stale = artifact_root.join("old-session/shell");
+    let current = artifact_root.join("current/shell");
+    let unrelated = storage.join("application-data");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&unrelated).unwrap();
     std::fs::write(stale.join("c.txt"), "old").unwrap();
     std::fs::write(current.join("c.txt"), "new").unwrap();
 
@@ -850,6 +854,7 @@ fn detached_prune_sweeps_stale_sessions_in_the_storage_dir() {
     let removed = store.prune_stale_sessions(Duration::ZERO).unwrap();
 
     assert_eq!(removed, 1);
-    assert!(!storage.join("old-session").exists());
+    assert!(!artifact_root.join("old-session").exists());
     assert!(current.join("c.txt").exists());
+    assert!(unrelated.exists());
 }
