@@ -1290,8 +1290,9 @@ impl ContextCompressionMiddleware {
             Some(at) => {
                 let mut rest = request.messages.clone();
                 let checkpoint = rest.remove(at);
-                let checkpoint = if crate::token_estimation::estimate_message_tokens(&checkpoint)
-                    >= message_budget
+                let checkpoint = if crate::token_estimation::count_tokens_approximately(
+                    std::slice::from_ref(&checkpoint),
+                ) >= message_budget
                 {
                     shrink_checkpoint(&checkpoint, message_budget / 2, message_budget)
                 } else {
@@ -1300,7 +1301,9 @@ impl ContextCompressionMiddleware {
                 match checkpoint {
                     Some(checkpoint) => {
                         let budget = message_budget.saturating_sub(
-                            crate::token_estimation::estimate_message_tokens(&checkpoint),
+                            crate::token_estimation::count_tokens_approximately(
+                                std::slice::from_ref(&checkpoint),
+                            ),
                         );
                         let mut trimmed = trim_tail(&rest, budget);
                         let insert = trimmed
@@ -1355,7 +1358,8 @@ fn shrink_checkpoint(
         )
     };
     let minimum = render(0);
-    let framing_tokens = crate::token_estimation::estimate_message_tokens(&minimum);
+    let framing_tokens =
+        crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&minimum));
     if framing_tokens > max_tokens {
         tracing::warn!(
             framing_tokens,
@@ -1372,7 +1376,9 @@ fn shrink_checkpoint(
         .min(usize::try_from(target.saturating_mul(4)).unwrap_or(usize::MAX));
     while low < high {
         let mid = low + (high - low).div_ceil(2);
-        if crate::token_estimation::estimate_message_tokens(&render(mid)) <= target {
+        if crate::token_estimation::count_tokens_approximately(std::slice::from_ref(&render(mid)))
+            <= target
+        {
             low = mid;
         } else {
             high = mid - 1;
