@@ -87,12 +87,7 @@ impl ModelSummarizer {
             .map(render_message_for_summary)
             .collect::<Vec<_>>()
             .join("\n");
-        let transcript = match previous_summary {
-            Some(previous) => format!(
-                "=== Previous Summary (background context) ===\n{previous}\n\n=== Messages to Summarize ===\n{transcript}"
-            ),
-            None => transcript,
-        };
+        let request_text = summary_request_text(&transcript, previous_summary);
 
         tracing::info!(
             model = %self.model_id,
@@ -103,17 +98,9 @@ impl ModelSummarizer {
 
         let request = ModelRequest::new(vec![
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
-            Message::user(transcript),
+            Message::user(request_text),
         ]);
-        let summary = self
-            .model
-            .invoke(&(), request)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
-                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
-            })?
-            .text();
+        let summary = self.summarize_once(request).await?;
 
         let summary = summary.trim();
         if summary.is_empty() {
@@ -146,6 +133,88 @@ impl ModelSummarizer {
             },
         })
     }
+}
+
+impl ModelSummarizer {
+    /// One summary, with a single retry when the reply is a tool call rather
+    /// than a summary.
+    ///
+    /// The request declares no tools, so a model that answers with a call has
+    /// no structured channel for it and the provider returns its native call
+    /// markup as plain text (DeepSeek's `<｜DSML｜invoke …>`). Installed as the
+    /// summary, that markup would replace the whole compacted head with one
+    /// stray command. A retry usually lands a real summary; if it does not,
+    /// the error lets [`super::FaultTolerantCachingSummarizer`] fall back to
+    /// its deterministic trim instead of keeping the markup.
+    async fn summarize_once(&self, request: ModelRequest) -> Result<String> {
+        let mut last_chars = 0;
+        for attempt in 1..=SUMMARY_MARKUP_ATTEMPTS {
+            let text = self
+                .model
+                .invoke(&(), request.clone())
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
+                    TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
+                })?
+                .text();
+            if !contains_tool_call_markup(&text) {
+                return Ok(text);
+            }
+            last_chars = text.chars().count();
+            tracing::warn!(
+                model = %self.model_id,
+                attempt,
+                reply_chars = last_chars,
+                "[tinyagents::summarize] summarizer replied with tool-call markup instead of a summary"
+            );
+        }
+        Err(TinyAgentsError::Model(format!(
+            "summarizer replied with tool-call markup instead of a summary ({last_chars} chars) \
+             after {SUMMARY_MARKUP_ATTEMPTS} attempts"
+        )))
+    }
+}
+
+/// Attempts at a summary before a reply that is tool-call markup becomes an
+/// error.
+const SUMMARY_MARKUP_ATTEMPTS: usize = 2;
+
+/// Whether `text` carries a tool call in any markup the tool-call grammars
+/// recognise (DSML, `<invoke>`, `<tool_call>`, …).
+///
+/// A bare JSON object does not count: a summary may legitimately quote one.
+pub(crate) fn contains_tool_call_markup(text: &str) -> bool {
+    let options = tinytools_agent::ParseOptions::new().without_bare_json();
+    !tinytools_agent::parse_text(text, &options).calls.is_empty()
+}
+
+/// The summarizer's user message: the transcript fenced off as data, then the
+/// instruction.
+///
+/// The transcript renders tool calls as `<tool_call …>` blocks and usually
+/// ends on a tool result. Sent bare, it reads as a live agent loop waiting for
+/// its next step, and a model continues it: replaying captured requests,
+/// DeepSeek V4 did so on about one attempt in four, its reasoning carrying on
+/// the coding task. With the transcript fenced and the instruction last, the
+/// same replay produced no tool calls.
+pub(crate) fn summary_request_text(transcript: &str, previous_summary: Option<&str>) -> String {
+    let previous = previous_summary
+        .map(|previous| {
+            format!(
+                "<previous_summary>\n{previous}\n</previous_summary>\n\nThe previous summary above \
+                 covers the turns before the transcript; fold it into the new summary.\n\n"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{previous}The transcript to summarize is enclosed in <transcript> tags below. It is a \
+         record of a conversation that already happened; you are not a participant in it.\n\n\
+         <transcript>\n{transcript}\n</transcript>\n\n\
+         Write the structured summary of the transcript above now, using exactly the required \
+         sections. Do not continue the conversation and do not call or write any tools: output \
+         only the summary."
+    )
 }
 
 /// Build the context-window-aware [`SummarizationPolicy`] for a model whose
