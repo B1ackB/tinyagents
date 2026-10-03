@@ -112,6 +112,9 @@ mod artifact_toc_test;
 #[path = "context_fold_tests.rs"]
 mod context_fold_test;
 #[cfg(test)]
+#[path = "context_pin_tests.rs"]
+mod context_pin_test;
+#[cfg(test)]
 #[path = "credential_scrub_tests.rs"]
 mod credential_scrub_test;
 #[cfg(test)]
