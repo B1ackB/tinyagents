@@ -400,7 +400,7 @@ impl ToolResultArtifactStore {
         max_readable_bytes: u64,
     ) -> Self {
         Self::try_detached(
-            storage_dir.join("tool-results"),
+            storage_dir,
             session_key,
             redactor,
             read_tool,
@@ -430,6 +430,7 @@ impl ToolResultArtifactStore {
         if storage_dir.to_str().is_none() {
             anyhow::bail!("detached artifact storage path is not valid UTF-8");
         }
+        let storage_dir = storage_dir.join("tool-results");
         Ok(Self::with_layout(
             storage_dir,
             StoreLayout::Detached,

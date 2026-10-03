@@ -851,7 +851,14 @@ fn detached_prune_stays_inside_its_owned_namespace() {
     std::fs::write(stale.join("c.txt"), "old").unwrap();
     std::fs::write(current.join("c.txt"), "new").unwrap();
 
-    let store = detached_store(&storage, "current");
+    let store = ToolResultArtifactStore::try_detached(
+        storage.clone(),
+        "current",
+        Arc::new(TestRedactor),
+        "file_read",
+        10 * 1024 * 1024,
+    )
+    .unwrap();
     // Everything is "stale" at a zero max age; the current session is kept.
     let removed = store.prune_stale_sessions(Duration::ZERO).unwrap();
 
