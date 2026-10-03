@@ -2580,6 +2580,10 @@ fn reset_truncated_empty_recovery(
 #[path = "run_loop_recovery_tests.rs"]
 mod recovery_tests;
 
+#[cfg(test)]
+#[path = "run_loop_withheld_tests.rs"]
+mod withheld_tests;
+
 /// Attaches `default` to `request` when the request carries no reasoning
 /// config of its own. A request-level config always wins.
 pub(crate) fn apply_default_reasoning(
