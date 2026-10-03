@@ -172,8 +172,25 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         _state: &State,
         request: &mut ModelRequest,
     ) -> Result<()> {
-        // Below the window threshold: pass through untouched (no-op, no event).
-        // The tool declarations count: they ride along on every request.
+        // The loop rebuilds every request from its full working transcript, so
+        // re-apply the compaction this instance already made before deciding
+        // anything (see `CompactionFold`). Without this, every call after the
+        // first compaction re-crossed the threshold and re-summarized the
+        // whole history.
+        let (system, live) = partition_messages_system(&request.messages);
+        let chain = fingerprint_chain(&live);
+        let prior = self.validated_fold(&chain);
+        *self.live_chain.lock().expect("live_chain mutex poisoned") = chain.clone();
+        let folded = prior.as_ref().map_or(0, |fold| fold.folded);
+        if let Some(fold) = &prior {
+            request.messages = splice_summary(
+                system.iter().cloned().chain(live[folded..].iter().cloned()).collect(),
+                fold.summary.clone(),
+            );
+        }
+
+        // Below the window threshold: pass through (no new compaction, no
+        // event). The tool declarations count: they ride along on every request.
         if !self
             .policy
             .should_summarize_with_tools(&request.messages, &request.tools)
@@ -181,18 +198,28 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             return Ok(());
         }
 
-        let (to_summarize, to_keep) = self.policy.plan(&request.messages);
+        // Plan over the unfolded remainder only: the folded prefix is already
+        // represented by the prior summary, which reaches the summarizer as
+        // `previous_summary` instead of as messages to re-read.
+        let unfolded: Vec<Message> = system
+            .iter()
+            .cloned()
+            .chain(live[folded..].iter().cloned())
+            .collect();
+        let (to_summarize, to_keep) = self.policy.plan(&unfolded);
         // Nothing old enough to compress (e.g. keep_last covers everything):
-        // leave the transcript untouched rather than summarizing an empty set.
+        // keep the request as it stands rather than summarizing an empty set.
         if to_summarize.is_empty() {
             return Ok(());
         }
 
         let from_tokens = total_message_tokens(&request.messages);
-        // `plan` splits by count (`non_system[..first_kept_index]` is exactly
-        // `to_summarize`); the record's `first_kept_index` is therefore just
-        // its length — see `compaction::CompactionRecord::first_kept_index`.
-        let first_kept_index = to_summarize.len();
+        // `plan` splits by count, so `to_summarize` is exactly the next
+        // `to_summarize.len()` live messages after the existing fold. The
+        // record's `first_kept_index` is in live-transcript coordinates — what
+        // a session-backed `CompactionSink` maps to an entry id — see
+        // `compaction::CompactionRecord::first_kept_index`.
+        let first_kept_index = folded + to_summarize.len();
 
         match self.hook_decision(
             CompactionReason::Threshold,
@@ -211,6 +238,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                         reason: "before_compaction hook supplied the summary".to_string(),
                     },
                 };
+                self.remember_fold(first_kept_index, &chain, &record.summary);
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
                 self.finish_compaction(
@@ -231,11 +259,23 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             CompactionDecision::Proceed => {}
         }
 
-        let previous_summary = self
-            .last_summary
-            .lock()
-            .expect("last_summary mutex poisoned")
-            .clone();
+        // The prior fold's summary is the one standing in for everything before
+        // `to_summarize`; fall back to the last summary this instance produced
+        // when the host already spliced that summary into the transcript itself.
+        let previous_summary = prior.as_ref().map(|fold| fold.summary.text()).or_else(|| {
+            self.last_summary
+                .lock()
+                .expect("last_summary mutex poisoned")
+                .clone()
+        });
+        tracing::debug!(
+            folded,
+            to_summarize = to_summarize.len(),
+            to_keep = to_keep.len(),
+            from_tokens,
+            incremental = previous_summary.is_some(),
+            "[context_compression] compacting"
+        );
         let record = match summarize_with_split(
             self.summarizer.as_ref(),
             &to_summarize,
@@ -251,6 +291,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                 // transcripts (the ones that reached the compaction threshold).
                 // Emit a diagnostic and recover per the configured
                 // `CompressionFailurePolicy` instead of aborting the whole run.
+                // The prior fold (if any) stays applied to the request: it is
+                // still a valid summary of the prefix it covers.
                 ctx.emit(AgentEvent::MiddlewareFailed {
                     name: self.label.to_string(),
                     error: err.to_string(),
@@ -299,7 +341,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // persistent instructions keep priority and the cacheable prefix is
         // not churned. The summary of the elided older turns then sits
         // between the system prompt and the kept recent turns, in
-        // chronological position.
+        // chronological position. It replaces the prior fold's summary, which
+        // it was built on.
+        self.remember_fold(first_kept_index, &chain, &record.summary);
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
 
