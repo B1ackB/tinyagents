@@ -55,6 +55,17 @@ fn a_shorter_request_than_the_measured_one_falls_back() {
 }
 
 #[test]
+fn changed_measured_prefix_falls_back_to_whole_request_estimate() {
+    let mut pressure = CompactionPressure::default();
+    pressure.note_request(&[Message::user("short")], 0);
+    pressure.observe(Some(&usage(5_000)), &policy(100_000), 2, 10);
+    let messages = [Message::user("a much longer replacement")];
+    let (tokens, source) = pressure.prompt_tokens(&messages, 0);
+    assert_eq!(source, PromptSource::Estimated);
+    assert_eq!(tokens, crate::token_estimation::estimate_slice_tokens(&messages));
+}
+
+#[test]
 fn two_ineffective_compactions_suppress_for_the_cooldown() {
     let policy = policy(1_000);
     let mut pressure = CompactionPressure::default();
