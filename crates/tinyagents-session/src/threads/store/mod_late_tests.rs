@@ -784,10 +784,7 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
             personality_id: None,
         })
         .unwrap();
-    for (id, content) in [
-        ("keep", "orchid"),
-        ("cut", "quartz"),
-    ] {
+    for (id, content) in [("keep", "orchid"), ("cut", "quartz")] {
         store
             .append_message(
                 "truncate-search",
@@ -817,7 +814,7 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
     );
     assert!(
         store
-        .search_cross_thread_messages("quartz", 10, None)
+            .search_cross_thread_messages("quartz", 10, None)
             .unwrap()
             .is_empty()
     );
@@ -827,5 +824,76 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn truncation_waits_for_cold_index_publication() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let (_temp, store) = make_store();
+    store
+        .ensure_thread(CreateConversationThread {
+            id: "truncate-cold".to_string(),
+            title: "Cold index".to_string(),
+            created_at: "2026-04-10T12:00:00Z".to_string(),
+            parent_thread_id: None,
+            labels: None,
+            personality_id: None,
+        })
+        .unwrap();
+    store
+        .append_message(
+            "truncate-cold",
+            ThreadMessage {
+                id: "cut".to_string(),
+                content: "quartz".to_string(),
+                message_type: "text".to_string(),
+                extra_metadata: json!({}),
+                sender: "user".to_string(),
+                created_at: "2026-04-10T12:01:00Z".to_string(),
+            },
+        )
+        .unwrap();
+
+    let (scanned_tx, scanned_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let prime_store = store.clone();
+    let prime = thread::spawn(move || {
+        let _lifecycle = prime_store.locks.lifecycle.read();
+        prime_store.prime_index_if_cold_with_hook(|| {
+            scanned_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+    });
+    scanned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (truncate_tx, truncate_rx) = mpsc::channel();
+    let truncate_store = store.clone();
+    thread::spawn(move || {
+        truncate_tx
+            .send(truncate_store.delete_messages_from("truncate-cold", "cut"))
+            .unwrap();
+    });
+    assert!(
+        truncate_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    release_tx.send(()).unwrap();
+    prime.join().unwrap().unwrap();
+    assert_eq!(
+        truncate_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap(),
+        Some(1)
+    );
+    assert!(
+        store
+            .search_cross_thread_messages("quartz", 10, None)
+            .unwrap()
+            .is_empty()
     );
 }
