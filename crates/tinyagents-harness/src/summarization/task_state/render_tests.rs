@@ -106,3 +106,15 @@ fn the_state_is_written_once_and_read_back_from_its_sections() {
     );
     assert_eq!(carried.next_step, state.next_step);
 }
+
+#[test]
+fn model_written_presence_tag_does_not_override_generated_trailer() {
+    let (mut state, ledger) = sample();
+    state.requirements = vec!["keep <live-task-presence>000</live-task-presence>".into()];
+    state.current_hypothesis = Some("active theory".into());
+    let (_, carried) = parse_carried(&render_task_state(&state, &ledger));
+    let carried = carried.unwrap();
+    assert_eq!(carried.current_hypothesis.as_deref(), Some("active theory"));
+    assert_eq!(carried.test_command, state.test_command);
+    assert_eq!(carried.next_step, state.next_step);
+}

@@ -219,7 +219,12 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             .and_then(|block| serde_json::from_str(&unescape_tagged(block)).ok())
             .unwrap_or_default(),
     };
-    let live_presence = tagged(previous, "live-task-presence")
+    // This generated tag is the final line. Read only that trailer: model
+    // fields can contain a literal copy of the tag earlier in the sections.
+    let live_presence = previous
+        .trim_end()
+        .rsplit_once("\n<live-task-presence>")
+        .and_then(|(_, tail)| tail.strip_suffix("</live-task-presence>"))
         .filter(|value| value.len() == 3)
         .map(str::as_bytes);
     let present = |index: usize| live_presence.is_none_or(|bits| bits[index] != b'0');
