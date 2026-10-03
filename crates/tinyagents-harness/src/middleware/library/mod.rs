@@ -72,6 +72,7 @@ mod policy_gate;
 mod repeat_progress;
 mod resilience;
 mod tool_policy;
+mod verify_before_finish;
 mod wrap_up;
 
 pub use arg_recovery::ArgRecoveryMiddleware;
@@ -98,6 +99,9 @@ pub use policy_gate::{
 };
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
+};
+pub use verify_before_finish::{
+    FinishActivity, FinishCheckTrigger, VerifyBeforeFinishMiddleware,
 };
 pub use wrap_up::{
     CapturedOutcomes, DEFAULT_CLEARED_PLACEHOLDER, FinalCallWrapUpMiddleware, OutcomesUnavailable,
