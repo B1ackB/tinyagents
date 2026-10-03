@@ -26,6 +26,21 @@ impl ConversationStore {
         let _metadata = self.locks.metadata.lock();
         let root = self.ensure_root()?;
         let threads_path = root.join(THREADS_FILENAME);
+        // A prior delete may have written its tombstone but failed to remove
+        // the transcript. Do not attach that transcript to a reused ID.
+        if !self.thread_exists_unlocked(&request.id)? {
+            let messages_path = self.thread_messages_path(&request.id);
+            match fs::remove_file(&messages_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "clear previous conversation messages {}: {error}",
+                        messages_path.display()
+                    ));
+                }
+            }
+        }
         let now = request.created_at.clone();
         let labels = request.labels.clone().map(normalize_labels);
         append_jsonl(

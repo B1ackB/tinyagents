@@ -812,6 +812,80 @@ fn delete_error_still_evicts_tombstoned_thread_from_warm_index() {
     );
 }
 
+#[test]
+fn delete_retry_removes_orphaned_transcript() {
+    let (_temp, store) = make_store();
+    let request = CreateConversationThread {
+        parent_thread_id: None,
+        id: "delete-retry".to_string(),
+        title: "Delete retry".to_string(),
+        created_at: "2026-04-10T12:00:00Z".to_string(),
+        labels: None,
+        personality_id: None,
+    };
+    store.ensure_thread(request.clone()).unwrap();
+    store
+        .append_message(
+            "delete-retry",
+            ThreadMessage {
+                id: "old".to_string(),
+                content: "old private content".to_string(),
+                message_type: "text".to_string(),
+                extra_metadata: json!({}),
+                sender: "user".to_string(),
+                created_at: "2026-04-10T12:01:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    let transcript = store.thread_messages_path("delete-retry");
+    let old_contents = std::fs::read(&transcript).unwrap();
+    std::fs::remove_file(&transcript).unwrap();
+    std::fs::create_dir(&transcript).unwrap();
+    assert!(
+        store
+            .delete_thread("delete-retry", "2026-04-10T12:02:00Z")
+            .is_err()
+    );
+
+    std::fs::remove_dir(&transcript).unwrap();
+    std::fs::write(&transcript, &old_contents).unwrap();
+    assert!(
+        !store
+            .delete_thread("delete-retry", "2026-04-10T12:03:00Z")
+            .unwrap()
+    );
+    assert!(!transcript.exists());
+    store.ensure_thread(request).unwrap();
+    assert!(store.get_messages("delete-retry").unwrap().is_empty());
+}
+
+#[test]
+fn reused_thread_id_clears_orphaned_transcript_without_delete_retry() {
+    let (_temp, store) = make_store();
+    let request = CreateConversationThread {
+        parent_thread_id: None,
+        id: "reused-id".to_string(),
+        title: "Reused ID".to_string(),
+        created_at: "2026-04-10T12:00:00Z".to_string(),
+        labels: None,
+        personality_id: None,
+    };
+    store.ensure_thread(request.clone()).unwrap();
+    let transcript = store.thread_messages_path("reused-id");
+    std::fs::create_dir(&transcript).unwrap();
+    assert!(
+        store
+            .delete_thread("reused-id", "2026-04-10T12:02:00Z")
+            .is_err()
+    );
+    std::fs::remove_dir(&transcript).unwrap();
+    std::fs::write(&transcript, b"orphaned transcript").unwrap();
+
+    store.ensure_thread(request).unwrap();
+    assert!(!transcript.exists());
+    assert!(store.get_messages("reused-id").unwrap().is_empty());
+}
+
 #[path = "mod_concurrency_tests.rs"]
 mod concurrency;
 
