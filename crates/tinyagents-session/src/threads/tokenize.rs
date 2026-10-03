@@ -46,8 +46,8 @@
 //! 5. **Full-width ASCII → ASCII** — folds the full-width variants
 //!    (`ＡＢＣ` → `abc`, U+FF01..=U+FF5E, plus the ideographic space) so an
 //!    ASCII query retrieves full-width Latin content, matching NFKC.
-//! 6. **Half-width → full-width katakana** — unifies the half-width and
-//!    full-width kana forms so byte equality lines up at lookup time.
+//! 6. **Kana composition** — unifies half-width and full-width katakana and
+//!    composes voiced kana marks in both half-width and canonical forms.
 //!
 //! The result is idempotent: re-running `normalize` on its own output is a
 //! no-op (no precomposed letters, combining marks, or half-width forms remain).
