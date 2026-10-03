@@ -393,6 +393,40 @@ pub(crate) fn split_at_cut(
     }
 }
 
+/// Front-drop `messages` to `budget` tokens ([`TrimStrategy::MaxTokens`]) the
+/// way the compression middleware's fallback does, but keep the most recent
+/// user message — size-capped as a pin is — when the drop would remove every
+/// user message. Its tokens are reserved from `budget` first, so the result
+/// still fits.
+pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) -> Vec<Message> {
+    let Some(pin) = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::User(_)))
+        .map(|index| cap_pinned_message(&messages[index]))
+    else {
+        return trim_messages(messages, &TrimStrategy::MaxTokens(budget));
+    };
+    let reserved = crate::token_estimation::estimate_message_tokens(&pin);
+    let mut trimmed = trim_messages(
+        messages,
+        &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
+    );
+    if trimmed.iter().any(|m| matches!(m, Message::User(_))) {
+        return trimmed;
+    }
+    let system_prefix = trimmed
+        .iter()
+        .take_while(|m| matches!(m, Message::System(_)))
+        .count();
+    tracing::debug!(
+        budget,
+        reserved,
+        "[summarization::trim] re-inserting the turn's user message after a fallback front-drop"
+    );
+    trimmed.insert(system_prefix, pin);
+    trimmed
+}
+
 /// `message`, or — when it estimates above [`PINNED_USER_MESSAGE_MAX_TOKENS`]
 /// — its text cut to that size with a truncation marker. A truncated message
 /// keeps only its text: the cap exists to bound size, and an attachment large

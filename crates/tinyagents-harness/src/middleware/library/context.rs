@@ -381,10 +381,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                         );
                         let message_budget =
                             self.policy.trigger_budget().saturating_sub(schema_tokens);
-                        let trimmed = trim_messages(
-                            &request.messages,
-                            &TrimStrategy::MaxTokens(message_budget),
-                        );
+                        // A pinning policy keeps the turn's assignment through
+                        // the front-drop too.
+                        let trimmed = if self.policy.pin_turn_user_message {
+                            crate::summarization::trim_keeping_turn_user_message(
+                                &request.messages,
+                                message_budget,
+                            )
+                        } else {
+                            trim_messages(
+                                &request.messages,
+                                &TrimStrategy::MaxTokens(message_budget),
+                            )
+                        };
                         let to_tokens = total_message_tokens(&trimmed);
                         request.messages = trimmed;
                         ctx.emit(AgentEvent::Compressed {

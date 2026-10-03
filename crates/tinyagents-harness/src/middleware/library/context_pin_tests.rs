@@ -308,3 +308,47 @@ async fn an_overflow_after_a_pinned_fold_extends_it_and_keeps_the_pin() {
     assert_eq!(first_kept(&sink), vec![3, 5]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(0)]);
 }
+
+struct FailingSummarizer;
+
+#[async_trait]
+impl Summarizer for FailingSummarizer {
+    async fn summarize(&self, _messages: &[Message]) -> Result<SummaryRecord> {
+        Err(crate::error::TinyAgentsError::Model("summarizer down".into()))
+    }
+}
+
+#[tokio::test]
+async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
+    let policy = SummarizationPolicy {
+        keep_last: 1,
+        pin_turn_user_message: true,
+        ..SummarizationPolicy::default()
+    }
+    .with_context_window(100)
+    .with_threshold_fraction(0.5);
+    let mw = Arc::new(ContextCompressionMiddleware::with_summarizer(
+        policy,
+        Box::new(FailingSummarizer),
+    ));
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push(mw as Arc<dyn Middleware<()>>);
+    let mut c = RunContext::new(RunConfig::new("pin-run"), ());
+
+    let transcript = vec![
+        Message::system("sys"),
+        task(),
+        step("a1"),
+        step("a2"),
+        step("a3"),
+    ];
+    let sent = send(&stack, &mut c, &transcript).await;
+
+    assert_eq!(sent.first(), Some(&Message::system("sys")));
+    assert_eq!(
+        sent.get(1),
+        Some(&task()),
+        "the front-drop must keep the turn's assignment: {sent:?}"
+    );
+    assert_eq!(sent.last(), Some(&step("a3")));
+}
