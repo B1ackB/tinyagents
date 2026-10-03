@@ -501,7 +501,8 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
         &TrimStrategy::MaxTokens(budget.saturating_sub(reserved)),
     );
     if trimmed.iter().any(|m| matches!(m, Message::User(_))) {
-        return enforce_approximate_budget(trimmed, budget, None);
+        let retained_user = trimmed.iter().rposition(|m| matches!(m, Message::User(_)));
+        return enforce_approximate_budget(trimmed, budget, retained_user);
     }
     let system_prefix = trimmed
         .iter()

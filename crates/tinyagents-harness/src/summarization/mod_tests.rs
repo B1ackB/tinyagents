@@ -393,6 +393,8 @@ mod smoke {
 
 #[test]
 fn fallback_trim_counts_message_framing_against_the_final_budget() {
+    use super::trim_keeping_turn_user_message;
+    use tinyinference_llm::message::Message;
     let mut messages = vec![Message::system("instructions"), Message::user("task")];
     messages.extend((0..80).map(|_| Message::assistant("ok")));
     let budget = 50;
