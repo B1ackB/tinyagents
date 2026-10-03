@@ -522,7 +522,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(folded + cut.index)),
+                    self.boundary_for_run(
+                        ctx.instance_id(),
+                        fold_extends.then_some(folded + cut.index),
+                    ),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
@@ -570,7 +573,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(folded + cut.index)),
+            self.boundary_for_run(
+                ctx.instance_id(),
+                fold_extends.then_some(folded + cut.index),
+            ),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,

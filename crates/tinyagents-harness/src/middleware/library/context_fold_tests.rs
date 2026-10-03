@@ -291,6 +291,44 @@ async fn keeps_each_runs_fold_separate() {
 }
 
 #[tokio::test]
+async fn keeps_concurrent_contexts_with_the_same_run_id_separate() {
+    // A `RunId` is a caller label: two live invocations may share one. Their
+    // folds must still not mix.
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        c: mut first,
+    } = fixture();
+    let mut second = ctx();
+    assert_eq!(first.run_id(), second.run_id());
+
+    let mut a = vec![chunk("a1"), chunk("a2"), chunk("a3")];
+    send(&stack, &mut first, &a).await;
+    let sent_b = send(
+        &stack,
+        &mut second,
+        &[chunk("b1"), chunk("b2"), chunk("b3")],
+    )
+    .await;
+    assert_eq!(sent_b, vec![Message::system("summary #2"), chunk("b3")]);
+    assert_eq!(seen.lock().unwrap()[1].previous_summary, None);
+
+    // The second context finishing must not erase the first one's fold.
+    stack
+        .run_after_agent(&mut second, &(), &mut crate::middleware::AgentRun::new())
+        .await
+        .unwrap();
+    a.push(user("ok"));
+    let sent_a = send(&stack, &mut first, &a).await;
+    assert_eq!(
+        sent_a,
+        vec![Message::system("summary #1"), chunk("a3"), user("ok")]
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn forgets_a_runs_fold_when_the_run_ends() {
     let Fixture {
         stack,
@@ -494,4 +532,72 @@ async fn concat_summarizer_carries_the_previous_summary_forward() {
     let text = record.summary.text();
     assert!(text.starts_with("earlier\n"), "{text}");
     assert!(text.contains("new"), "{text}");
+}
+
+#[tokio::test]
+async fn an_unaligned_overflow_summary_is_not_built_on_later() {
+    // Threshold compaction is declined until the overflow has happened, so the
+    // overflow path fires first, on a request a later step rewrote.
+    let allow_threshold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = allow_threshold.clone();
+    let summarizer = ShortSummarizer::default();
+    let seen = summarizer.seen.clone();
+    let mw = Arc::new(
+        ContextCompressionMiddleware::with_summarizer(
+            SummarizationPolicy {
+                keep_last: 1,
+                ..SummarizationPolicy::default()
+            }
+            .with_context_window(100)
+            .with_threshold_fraction(0.5),
+            Box::new(summarizer),
+        )
+        .with_before_compaction(move |c| match c.reason {
+            crate::summarization::CompactionReason::Threshold
+                if !gate.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                crate::summarization::CompactionDecision::Decline
+            }
+            _ => crate::summarization::CompactionDecision::Proceed,
+        }),
+    );
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push(mw.clone());
+    stack.push(Arc::new(LaterStep::RewriteOldest));
+    stack.push_model_middleware(mw);
+    let mut c = ctx();
+
+    let big = "word ".repeat(60);
+    let transcript: Vec<Message> = (1..=5).map(|i| user(&format!("{i} {big}"))).collect();
+    let mut request = ModelRequest {
+        messages: transcript.clone(),
+        ..Default::default()
+    };
+    stack
+        .run_before_model(&mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let base = OverflowOnce {
+        calls: Mutex::new(0),
+    };
+    stack
+        .run_wrapped_model(&mut c, &(), request, &base)
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1, "the overflow compaction ran");
+
+    // The next threshold compaction summarizes the original transcript from
+    // scratch; the overflow's summary of the rewritten request is not its base.
+    allow_threshold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut request = ModelRequest {
+        messages: transcript,
+        ..Default::default()
+    };
+    stack
+        .run_before_model(&mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].previous_summary, None);
 }
