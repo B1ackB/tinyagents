@@ -917,6 +917,9 @@ pub(crate) struct RunCompaction {
     /// so an iterative [`Summarizer`] refines rather than restarts, when no
     /// fold carries it (a host that spliced the summary into its transcript).
     pub(crate) last_summary: Option<String>,
+    /// Once the host has persisted a compressed transcript, subsequent
+    /// boundaries are in that shortened transcript's coordinates.
+    pub(crate) boundary_unaligned: bool,
     /// Monotonic touch stamp for least-recently-used eviction.
     pub(crate) touched: u64,
 }

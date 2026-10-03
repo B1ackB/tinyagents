@@ -484,6 +484,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             CompactionDecision::Decline => return Err(first_error),
             CompactionDecision::Proceed => {}
             CompactionDecision::UseSummary(text) => {
+                let text = prior
+                    .as_ref()
+                    .map(|fold| format!("{}\n{text}", fold.summary.text()))
+                    .unwrap_or(text);
                 let record = SummaryRecord {
                     summary: Message::system(text),
                     provenance: crate::summarization::CompressionProvenance {
@@ -507,7 +511,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    fold_extends.then_some(folded + cut.index),
+                    self.boundary_for_run(
+                        ctx.run_id(),
+                        fold_extends.then_some(folded + cut.index),
+                    ),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
@@ -555,7 +562,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            fold_extends.then_some(folded + cut.index),
+            self.boundary_for_run(
+                ctx.run_id(),
+                fold_extends.then_some(folded + cut.index),
+            ),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
@@ -700,9 +710,11 @@ impl ContextCompressionMiddleware {
         state.fold = None;
         if let Some(at) = system.iter().position(|m| *m == fold.summary) {
             system.remove(at);
+            state.boundary_unaligned = true;
             tracing::debug!("[context_compression] host carries the fold summary itself");
             return FoldCheck::HostApplied(fold.summary.text());
         }
+        state.last_summary = None;
         tracing::debug!(
             folded = fold.folded,
             live = chain.len(),
@@ -727,6 +739,13 @@ impl ContextCompressionMiddleware {
     fn run_last_summary(&self, run: &RunId) -> Option<String> {
         let runs = self.runs.lock().expect("runs mutex poisoned");
         runs.get(run).and_then(|state| state.last_summary.clone())
+    }
+
+    fn boundary_for_run(&self, run: &RunId, boundary: Option<usize>) -> Option<usize> {
+        let runs = self.runs.lock().expect("runs mutex poisoned");
+        runs.get(run)
+            .filter(|state| !state.boundary_unaligned)
+            .and(boundary)
     }
 
     /// Records that `summary` now stands in for `run`'s first `folded` live
