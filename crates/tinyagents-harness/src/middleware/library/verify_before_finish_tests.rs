@@ -356,7 +356,8 @@ async fn failed_run_releases_its_activity() {
         .await
         .unwrap();
     assert!(mw.runs.lock().unwrap().contains_key(&ctx.instance_id()));
-    mw.on_error(
+    <VerifyBeforeFinishMiddleware as Middleware<(), ()>>::on_error(
+        &mw,
         &mut ctx,
         &crate::error::TinyAgentsError::Model("failed".into()),
     )
