@@ -527,7 +527,7 @@ pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) 
 }
 
 /// Correct the cheaper trim estimate against the prompt-pressure estimator.
-fn enforce_approximate_budget(
+pub(crate) fn enforce_approximate_budget(
     mut messages: Vec<Message>,
     budget: u64,
     mut pinned: Option<usize>,
@@ -551,11 +551,23 @@ fn enforce_approximate_budget(
         let Some(index) = oldest else {
             break;
         };
-        messages.remove(index);
+        let removed = messages.remove(index);
         if let Some(pin_index) = pinned.as_mut()
             && index < *pin_index
         {
             *pin_index -= 1;
+        }
+        // A call and its contiguous results are one provider turn. Dropping
+        // only the call would strand results behind a pinned user message.
+        if is_tool_calling_assistant(&removed) {
+            while matches!(messages.get(index), Some(Message::Tool(_))) {
+                messages.remove(index);
+                if let Some(pin_index) = pinned.as_mut()
+                    && index < *pin_index
+                {
+                    *pin_index -= 1;
+                }
+            }
         }
         while let Some(index) = messages
             .iter()

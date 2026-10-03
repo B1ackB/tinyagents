@@ -181,6 +181,16 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     Some(text[start..end].trim())
 }
 
+/// Read the generated ledger block after model-written state sections, which
+/// may themselves contain literal examples of ledger tags.
+fn last_tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.rfind(&open)? + open.len();
+    let end = start + text[start..].find(&close)?;
+    Some(text[start..end].trim())
+}
+
 /// Reads the commands back out of the `## Recent commands` section.
 fn section_commands(text: &str) -> Vec<CommandRecord> {
     section(text, COMMANDS)
@@ -216,7 +226,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
         .split_once("</original-task>")
         .map_or(previous, |(_, body)| body);
     let lines = |tag: &str| -> Vec<String> {
-        tagged(body, tag)
+        last_tagged(body, tag)
             .map(|block| {
                 block
                     .lines()
@@ -233,7 +243,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
             .map(unescape_tagged),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
-        commands: tagged(body, "recent-commands-json")
+        commands: last_tagged(body, "recent-commands-json")
             .and_then(|block| serde_json::from_str(&unescape_tagged(block)).ok())
             .unwrap_or_else(|| section_commands(previous)),
     };

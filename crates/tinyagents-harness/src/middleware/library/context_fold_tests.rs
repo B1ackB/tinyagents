@@ -758,6 +758,20 @@ fn deterministic_trim_charges_checkpoint_framing() {
 }
 
 #[test]
+fn deterministic_trim_without_pinning_charges_message_framing() {
+    let policy = SummarizationPolicy::default().with_trigger_override(50);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: (0..30).map(|_| Message::user("x")).collect(),
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(crate::token_estimation::count_tokens_approximately(&request.messages) <= 50);
+}
+
+#[test]
 fn deterministic_trim_fits_pinned_user_after_checkpoint() {
     let policy = SummarizationPolicy {
         pin_turn_user_message: true,

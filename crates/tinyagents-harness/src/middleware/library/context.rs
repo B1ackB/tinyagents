@@ -1283,7 +1283,11 @@ impl ContextCompressionMiddleware {
             if self.policy.pin_turn_user_message {
                 crate::summarization::trim_keeping_turn_user_message(messages, budget)
             } else {
-                trim_messages(messages, &TrimStrategy::MaxTokens(budget))
+                crate::summarization::enforce_approximate_budget(
+                    trim_messages(messages, &TrimStrategy::MaxTokens(budget)),
+                    budget,
+                    None,
+                )
             }
         };
         let trimmed = match checkpoint_at {

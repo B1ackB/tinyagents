@@ -707,6 +707,23 @@ mod turn_pin {
         })
     }
 
+    #[test]
+    fn final_budget_enforcement_drops_a_call_with_its_result() {
+        use crate::summarization::enforce_approximate_budget;
+        use crate::token_estimation::count_tokens_approximately;
+
+        let messages = vec![
+            Message::user("task"),
+            assistant_calling("c1"),
+            Message::tool("c1", "result"),
+            Message::assistant("tail"),
+        ];
+        let budget = count_tokens_approximately(&messages) - 1;
+        let trimmed = enforce_approximate_budget(messages, budget, Some(0));
+        assert!(tool_pairing_is_intact(&trimmed), "{trimmed:?}");
+        assert!(count_tokens_approximately(&trimmed) <= budget);
+    }
+
     /// `[system, user(task), (assistant(call), tool(result)) x 10]`: one turn,
     /// twenty tool-loop messages after its only user message.
     fn long_turn() -> Vec<Message> {
