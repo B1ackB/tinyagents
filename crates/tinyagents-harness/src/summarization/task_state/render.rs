@@ -3,8 +3,10 @@
 //!
 //! The deterministic facts are written inside XML-ish tags so the next
 //! compaction can carry them forward exactly, without asking a model to
-//! remember them: `<original-task>`, `<modified-files>`, `<read-files>` and
-//! `<task-state>` (the model fields as JSON, so they round-trip too).
+//! remember them: `<original-task>`, `<modified-files>` and `<read-files>`.
+//! The model-written fields are read back from their `## ` sections, so the
+//! state is written once (a JSON copy beside the sections doubled every
+//! checkpoint).
 
 use super::types::{CommandRecord, TaskLedger, TaskState};
 
@@ -15,22 +17,24 @@ pub const TASK_STATE_HEADER: &str = "# Task state (compacted)";
 /// blocks the next compaction parses back.
 #[must_use]
 pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
+    // One line per item and per scalar: a newline inside a value would read
+    // back as a new item or section.
     let list = |items: &[String]| -> String {
         if items.is_empty() {
-            "- none".to_string()
+            NONE_ITEM.to_string()
         } else {
             items
                 .iter()
-                .map(|i| format!("- {i}"))
+                .map(|i| format!("- {}", one_line(i)))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
     };
     let or_none = |s: &str| {
         if s.trim().is_empty() {
-            "none".to_string()
+            NONE.to_string()
         } else {
-            s.to_string()
+            one_line(s)
         }
     };
     let commands = if ledger.commands.is_empty() {
@@ -43,7 +47,6 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let state_json = serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string());
     let task = ledger.original_task.as_deref().unwrap_or("");
     format!(
         "{TASK_STATE_HEADER}\n\n\
@@ -60,8 +63,7 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
          ## Next step\n{next}\n\n\
          ## Recent commands\n{commands}\n\n\
          <modified-files>\n{modified}\n</modified-files>\n\
-         <read-files>\n{read}\n</read-files>\n\
-         <task-state>\n{state_json}\n</task-state>",
+         <read-files>\n{read}\n</read-files>",
         goal = or_none(&state.goal),
         requirements = list(&state.requirements),
         constraints = list(&state.constraints),
@@ -75,6 +77,59 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
         modified = ledger.files_modified.join("\n"),
         read = ledger.read_only_files().join("\n"),
     )
+}
+
+const NONE: &str = "none";
+const NONE_ITEM: &str = "- none";
+
+/// Section headings of the model-written fields, in render order.
+const GOAL: &str = "## Goal";
+const REQUIREMENTS: &str = "## Requirements (verbatim)";
+const CONSTRAINTS: &str = "## Constraints";
+const DECISIONS: &str = "## Decisions";
+const ERRORS: &str = "## Errors and fixes";
+const DONE: &str = "## Done";
+const OPEN: &str = "## Open";
+const HYPOTHESIS: &str = "## Current hypothesis";
+const TEST: &str = "## Test command";
+const NEXT: &str = "## Next step";
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The body of the `heading` section: the lines up to the next `## `
+/// heading or tagged block.
+fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
+    let at = text.find(&format!("\n{heading}\n"))? + heading.len() + 2;
+    let rest = &text[at..];
+    let end = rest
+        .find("\n## ")
+        .into_iter()
+        .chain(rest.find("\n<"))
+        .min()
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim())
+}
+
+fn section_items(text: &str, heading: &str) -> Vec<String> {
+    section(text, heading)
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.trim().strip_prefix("- "))
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && *l != NONE)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn section_text(text: &str, heading: &str) -> String {
+    section(text, heading)
+        .filter(|body| *body != NONE)
+        .map(String::from)
+        .unwrap_or_default()
 }
 
 fn render_command(c: &CommandRecord) -> String {
@@ -121,7 +176,18 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
         files_read: lines("read-files"),
         commands: Vec::new(),
     };
-    let state = tagged(previous, "task-state").and_then(|json| serde_json::from_str(json).ok());
+    let state = previous.starts_with(TASK_STATE_HEADER).then(|| TaskState {
+        goal: section_text(previous, GOAL),
+        requirements: section_items(previous, REQUIREMENTS),
+        constraints: section_items(previous, CONSTRAINTS),
+        decisions: section_items(previous, DECISIONS),
+        errors_and_fixes: section_items(previous, ERRORS),
+        todos_done: section_items(previous, DONE),
+        todos_open: section_items(previous, OPEN),
+        current_hypothesis: section_text(previous, HYPOTHESIS),
+        test_command: section_text(previous, TEST),
+        next_step: section_text(previous, NEXT),
+    });
     (ledger, state)
 }
 
