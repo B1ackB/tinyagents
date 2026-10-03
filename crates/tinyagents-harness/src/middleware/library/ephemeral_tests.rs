@@ -39,6 +39,25 @@ fn non_hoisting_profile_appends_a_tail_system_message() {
 }
 
 #[test]
+fn a_later_hoisting_selection_rehomes_earlier_ephemeral_system_text() {
+    let leading = Message::system("stable persona");
+    let mut req = request(vec![leading.clone(), Message::user("question")]);
+    push_ephemeral_instruction(&mut req, "artifact: outputs/result.json", None);
+
+    rehome_ephemeral_system_instructions(&mut req, Some(&hoisting()));
+
+    assert_eq!(system_count(&req), 1);
+    assert_eq!(req.messages[0], leading);
+    assert!(
+        req.messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("artifact: outputs/result.json")
+    );
+}
+
+#[test]
 fn hoisting_profile_appends_to_the_last_tool_result_without_a_system_message() {
     let leading = Message::system("persona");
     let mut req = request(vec![

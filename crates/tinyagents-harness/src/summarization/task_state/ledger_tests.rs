@@ -118,6 +118,24 @@ fn only_recent_commands_are_kept() {
 }
 
 #[test]
+fn file_lists_keep_recent_entries() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES_READ + 2)
+            .map(|i| format!("read-{i}"))
+            .collect(),
+        files_modified: (0..MAX_FILES_MODIFIED + 2)
+            .map(|i| format!("write-{i}"))
+            .collect(),
+        ..TaskLedger::default()
+    };
+    ledger.absorb(&[]);
+    assert_eq!(ledger.files_read.len(), MAX_FILES_READ);
+    assert_eq!(ledger.files_read[0], "read-2");
+    assert_eq!(ledger.files_modified.len(), MAX_FILES_MODIFIED);
+    assert_eq!(ledger.files_modified[0], "write-2");
+}
+
+#[test]
 fn a_carried_task_is_not_replaced_by_a_later_user_message() {
     let mut ledger = TaskLedger {
         original_task: Some("the real task".into()),

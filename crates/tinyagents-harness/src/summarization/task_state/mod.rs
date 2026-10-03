@@ -161,7 +161,15 @@ impl TaskStateSummarizer {
                 // Never strand a tool result from its call: move the cut back
                 // (or, failing that, keep the indivisible group whole).
                 let safe = start + find_safe_cutoff_point(&messages[start..], end - start);
-                end = if safe > start { safe } else { end };
+                if safe > start {
+                    end = safe;
+                } else if safe == start {
+                    // The first call/result group alone exceeds the budget.
+                    // Keep its consecutive results with the call.
+                    while end < messages.len() && matches!(messages[end], Message::Tool(_)) {
+                        end += 1;
+                    }
+                }
             }
             out.push(&messages[start..end]);
             start = end;
@@ -333,7 +341,7 @@ impl Summarizer for TaskStateSummarizer {
     }
 
     /// Merges split halves by carrying the first half's ledger into the
-    /// second: file lists union in order, the later state wins.
+    /// second: file lists and durable state fields union in order.
     async fn merge(&self, summaries: &[SummaryRecord]) -> Result<SummaryRecord> {
         let mut ledger = TaskLedger::default();
         let mut state = None;
@@ -352,8 +360,15 @@ impl Summarizer for TaskStateSummarizer {
                     ledger.files_read.push(f);
                 }
             }
-            state = next_state.or(state);
+            ledger.commands.extend(next.commands);
+            if let Some(next_state) = next_state {
+                state = Some(match state {
+                    Some(previous) => merge_state(previous, next_state),
+                    None => next_state,
+                });
+            }
         }
+        ledger.absorb(&[]);
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
             provenance: CompressionProvenance {
@@ -382,6 +397,34 @@ fn ledger_is_empty(ledger: &TaskLedger) -> bool {
         && ledger.files_modified.is_empty()
         && ledger.files_read.is_empty()
         && ledger.commands.is_empty()
+}
+
+/// Merge independently summarized halves, retaining facts that appear only
+/// in the first half while taking the later live status fields.
+fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
+    fn extend_unique(into: &mut Vec<String>, from: Vec<String>) {
+        for item in from {
+            if !into.contains(&item) {
+                into.push(item);
+            }
+        }
+    }
+    if !second.goal.is_empty() {
+        first.goal = second.goal;
+    }
+    extend_unique(&mut first.requirements, second.requirements);
+    extend_unique(&mut first.constraints, second.constraints);
+    extend_unique(&mut first.decisions, second.decisions);
+    extend_unique(&mut first.errors_and_fixes, second.errors_and_fixes);
+    extend_unique(&mut first.todos_done, second.todos_done);
+    extend_unique(&mut first.todos_open, second.todos_open);
+    first
+        .todos_open
+        .retain(|item| !first.todos_done.contains(item));
+    first.current_hypothesis = second.current_hypothesis;
+    first.test_command = second.test_command;
+    first.next_step = second.next_step;
+    first
 }
 
 #[cfg(test)]

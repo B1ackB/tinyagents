@@ -7,6 +7,36 @@ use tinyinference_llm::model::{ModelProfile, ModelRequest};
 /// Header that introduces guidance appended to an existing tail message, so
 /// the model can tell the harness's words from the tool's or the user's.
 pub const HARNESS_NOTE_HEADER: &str = "[harness note]";
+const EPHEMERAL_SECTION: &str = "__tinyagents_ephemeral_instruction";
+
+/// Moves tail guidance created for a non-hoisting profile out of system
+/// messages if a later middleware selected a hoisting model.
+pub(crate) fn rehome_ephemeral_system_instructions(
+    request: &mut ModelRequest,
+    profile: Option<&ModelProfile>,
+) {
+    if profile.is_none()
+        || profile.is_some_and(|profile| {
+            profile.mid_conversation_system_messages && !profile.hoists_system_messages
+        })
+    {
+        return;
+    }
+    let mut notes = Vec::new();
+    request.messages.retain(|message| {
+        if let Message::System(system) = message
+            && system.sections.contains_key(EPHEMERAL_SECTION)
+        {
+            notes.push(message.text());
+            false
+        } else {
+            true
+        }
+    });
+    for note in notes {
+        push_ephemeral_instruction(request, note, profile);
+    }
+}
 
 /// Adds `text` to `request` as guidance for this call only.
 ///
@@ -34,7 +64,11 @@ pub fn push_ephemeral_instruction(
     let text = text.into();
     if !profile.is_some_and(|profile| profile.hoists_system_messages) {
         tracing::trace!("[tinyagents::mw] ephemeral instruction placed as a tail system message");
-        request.messages.push(Message::system(text));
+        let mut message = Message::system(text);
+        if let Message::System(system) = &mut message {
+            system.sections.insert(EPHEMERAL_SECTION.to_string(), None);
+        }
+        request.messages.push(message);
         return;
     }
     let note = format!("{HARNESS_NOTE_HEADER}\n{text}");

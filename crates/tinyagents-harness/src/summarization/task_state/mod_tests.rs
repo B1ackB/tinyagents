@@ -151,7 +151,7 @@ async fn long_histories_are_folded_in_sequential_chunks() {
 async fn merge_unions_files_and_keeps_the_later_state() {
     let model = Arc::new(ScriptedModel::replies(vec![
         STATE_REPLY,
-        r#"{"goal": "later"}"#,
+        r#"{"goal": "later", "requirements": ["second half requirement"]}"#,
     ]));
     let summarizer = TaskStateSummarizer::new(model, "m");
     let a = summarizer.summarize(&history()).await.unwrap();
@@ -162,8 +162,43 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     let merged = summarizer.merge(&[a, b]).await.unwrap();
     let body = merged.summary.text();
     assert!(body.contains("## Goal\nlater"));
+    assert!(body.contains("second half requirement"));
+    assert!(body.contains("invalid default argument declaration"));
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
+    assert!(body.contains("invalid default argument declaration"));
+    let (ledger, _) = parse_carried(&body);
+    assert!(ledger.commands.iter().any(|command| command.failed));
+}
+
+#[tokio::test]
+async fn later_split_summary_clears_obsolete_live_task_fields() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        r#"{"current_hypothesis":"old theory","test_command":"cargo test old","next_step":"retry old work"}"#,
+        r#"{"current_hypothesis":"","test_command":"","next_step":""}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize(&shell("c9", "echo done", ""))
+        .await
+        .unwrap();
+    let merged = summarizer.merge(&[first, second]).await.unwrap();
+    let (_, state) = parse_carried(&merged.summary.text());
+    let state = state.unwrap();
+    assert!(state.current_hypothesis.is_empty());
+    assert!(state.test_command.is_empty());
+    assert!(state.next_step.is_empty());
+}
+
+#[test]
+fn oversized_tool_pair_stays_in_one_chunk() {
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::new(vec![])), "m")
+        .with_max_chunk_tokens(1);
+    let messages = shell("large", "cat huge.log", &"x".repeat(1000));
+    let chunks = summarizer.chunks(&messages);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].len(), 2);
 }
 
 #[test]

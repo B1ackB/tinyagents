@@ -252,7 +252,7 @@ impl<'a> EntryTree<'a> {
     /// chronological order and this reasons over it that way) to find the
     /// **newest** [`EntryKind::Compaction`] entry on the path, and never
     /// includes anything older than it: the result is
-    /// `[summary as a system message] + kept entries in chronological
+    /// `[summary in its recorded role] + kept entries in chronological
     /// order`, where "kept" is everything from the compaction's
     /// `first_kept_entry_id` (inclusive) to `tip`. When there is no
     /// compaction on the path, every entry from the root is kept.
@@ -282,14 +282,33 @@ impl<'a> EntryTree<'a> {
         let mut messages = Vec::new();
         let start_idx = match compaction {
             Some((idx, compaction)) => {
-                messages.push(Message::System(SystemMessage {
-                    content: vec![ContentBlock::Text(compaction.summary.clone())],
-                    ..SystemMessage::default()
-                }));
-                chain
+                messages.push(match compaction.placement {
+                    tinyagents_harness::summarization::SummaryPlacement::User => {
+                        Message::user(compaction.summary.clone())
+                    }
+                    tinyagents_harness::summarization::SummaryPlacement::System => {
+                        Message::System(SystemMessage {
+                            content: vec![ContentBlock::Text(compaction.summary.clone())],
+                            ..SystemMessage::default()
+                        })
+                    }
+                });
+                let start_idx = chain
                     .iter()
                     .position(|e| e.id == compaction.first_kept_entry_id)
-                    .unwrap_or(idx + 1)
+                    .unwrap_or(idx + 1);
+                // A user message the compaction pinned lies inside the folded
+                // range but was kept verbatim: it follows the summary.
+                if let Some(pinned) = compaction
+                    .details
+                    .get(compaction_sink::PINNED_ENTRY_ID)
+                    .and_then(|id| serde_json::from_value::<EntryId>(id.clone()).ok())
+                    .and_then(|id| chain[..start_idx].iter().find(|e| e.id == id))
+                    .and_then(|entry| entry_to_message(&entry.kind))
+                {
+                    messages.push(pinned);
+                }
+                start_idx
             }
             None => 0,
         };

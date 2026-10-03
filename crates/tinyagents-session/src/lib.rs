@@ -39,6 +39,13 @@
 //! context-projection rule, fork semantics) and [`entry_tree::legacy`] for
 //! how pre-tree data is deterministically read into the same model.
 //!
+//! # Chat threads
+//!
+//! [`threads`] is the product-facing chat log: JSONL threads and messages
+//! under `{workspace_dir}/memory/conversations/` with a cross-thread inverted
+//! index. It shares no files with the session database or transcripts; see
+//! `src/threads/README.md`.
+//!
 //! # Layout
 //!
 //! Every entry point takes the workspace root and derives the database path,
@@ -82,6 +89,7 @@ pub mod retention;
 pub mod run_ledger;
 mod store;
 pub mod testkit;
+pub mod threads;
 pub mod transcript;
 pub mod turn_state;
 pub mod types;
@@ -106,6 +114,10 @@ pub use run_ledger::command_center::{
     CommandCenterView, ControlError, ControlVerb, apply_control, build_view, list_agent_work,
 };
 pub use store::{db_path, with_connection, with_transaction};
+pub use threads::{
+    ConversationPurgeStats, ConversationStore, ConversationThread, CreateConversationThread,
+    CrossThreadHit, ThreadMessage, ThreadMessagePatch,
+};
 pub use transcript::spend::{ThreadSpend, TranscriptSpend, thread_spend, transcript_spend};
 pub use turn_state::TurnStateMirror;
 pub use types::{

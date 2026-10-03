@@ -81,6 +81,16 @@ pub enum TinyAgentsError {
     #[error("model error: {0}")]
     Model(String),
 
+    /// A summarizer failed after receiving metered model responses. The usage
+    /// is retained so a deterministic fallback can still report their cost.
+    #[error("summarizer error: {error}")]
+    SummarizationUsage {
+        /// The underlying summarization failure.
+        error: Box<TinyAgentsError>,
+        /// Usage accumulated before the failure.
+        usage: tinyinference_llm::usage::Usage,
+    },
+
     /// Visible model output became repetitive process narration during a
     /// stream. The stream is dropped immediately; retrying the same request
     /// would reproduce the stall, so this failure is terminal.

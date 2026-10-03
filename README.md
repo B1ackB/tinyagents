@@ -37,7 +37,8 @@ TinyAgents is a Cargo workspace, not one crate. Depend on the pieces you need:
 - **`tinyagents-registry`** — a named capability catalog (models, tools,
   agents, graphs, and routers), plus an offline model price/capability catalog.
 - **`tinyagents-session`** — a SQLite-backed store for session history,
-  messages, tool calls, cost, and run lineage.
+  messages, tool calls, cost, and run lineage, plus JSONL transcripts and the
+  `threads` chat thread/message store.
 - **`tinyagents-definition`** — the host-owned agent definition vocabulary:
   identity, description, declared model/tools/delegates, and a read-only
   catalogue seam. Authorization, prompt construction, and execution stay with

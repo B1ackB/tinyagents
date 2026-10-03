@@ -325,10 +325,45 @@ where
                 request.model.clone().unwrap_or_else(|| "<default>".into()),
             )
         })?;
-    let model_name = binding.resolved.name.clone();
     let call_id = CallId::new(format!("{}-model-{}", ctx.run_id(), run.model_calls + 1));
 
     let mut request = request;
+    // Mirror the direct loop: `before_model` middleware reads the target
+    // model's profile (e.g. to avoid new system messages on a model that
+    // hoists them, #6962).
+    ctx.model_profile = binding.model.profile().cloned();
+    harness
+        .middleware()
+        .run_before_model_with_profile(
+            ctx,
+            app_state,
+            &mut request,
+            harness,
+            |harness, _ctx, request| {
+                Box::pin(async move {
+                    Ok(harness
+                        .models()
+                        .resolve_request(request, None, None)
+                        .and_then(|binding| binding.model.profile().cloned()))
+                })
+            },
+        )
+        .await?;
+
+    // Middleware may select a different registered model or add required
+    // capabilities. Resolve again so graph execution dispatches the request
+    // that middleware actually prepared, just like the direct loop.
+    let binding = harness
+        .models()
+        .resolve_request(&request, None, None)
+        .ok_or_else(|| {
+            TinyAgentsError::ModelNotFound(
+                request.model.clone().unwrap_or_else(|| "<default>".into()),
+            )
+        })?;
+    ctx.model_profile = binding.model.profile().cloned();
+    let model_name = binding.resolved.name.clone();
+
     // Mirror the direct loop: a named effort picks up the resolved model's
     // tuned `thinking_level_map` entry, unless an explicit budget is pinned.
     if let Some(profile) = binding.model.profile()
@@ -339,14 +374,6 @@ where
     {
         request.reasoning = Some(mapped.clone());
     }
-    // Mirror the direct loop: `before_model` middleware reads the target
-    // model's profile (e.g. to avoid new system messages on a model that
-    // hoists them, #6962).
-    ctx.model_profile = binding.model.profile().cloned();
-    harness
-        .middleware()
-        .run_before_model(ctx, app_state, &mut request)
-        .await?;
 
     let started_record = ctx.emit(AgentEvent::ModelStarted {
         call_id: call_id.clone(),
