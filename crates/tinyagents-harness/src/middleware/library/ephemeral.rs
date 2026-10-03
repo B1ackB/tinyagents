@@ -42,10 +42,14 @@ pub fn rehome_ephemeral_system_instructions(
 ///
 /// Where the guidance goes depends on the target model's `profile`:
 ///
-/// - **Default** (no profile, or one without
-///   [`ModelProfile::hoists_system_messages`]): a tail `Message::System`. On a
-///   wire that keeps system messages in place, a tail message leaves the
+/// - **System-capable** (no profile, or one with
+///   [`ModelProfile::mid_conversation_system_messages`] but without
+///   [`ModelProfile::hoists_system_messages`]): a tail `Message::System`. On
+///   a wire that keeps system messages in place, a tail message leaves the
 ///   cached prefix alone.
+/// - **System-unsupported** (a profile with neither capability): a trailing
+///   user message, because the provider cannot accept a system message at
+///   this point in the conversation.
 /// - **Hoisting** (for example DeepSeek, whose chat template moves every
 ///   system turn to the prompt head): no system message, because new system
 ///   text there rewrites the cached prefix (#6962). The text is appended to
