@@ -65,7 +65,7 @@ fn withholding_leaves_a_quoted_example_and_a_json_answer_alone() {
     assert_eq!(recovery.dropped.withheld(), 0);
 }
 
-fn harness_with(model: Arc<dyn tinyinference_llm::model::ChatModel<()>>, max_calls: u32) -> AgentHarness<()> {
+fn harness_with(model: Arc<dyn tinyinference_llm::model::ChatModel<()>>, max_calls: usize) -> AgentHarness<()> {
     let mut harness: AgentHarness<()> = AgentHarness::new();
     harness.register_model("mock", model);
     harness.with_policy(RunPolicy {
