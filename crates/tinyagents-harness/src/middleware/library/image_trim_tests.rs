@@ -4,8 +4,8 @@ use super::*;
 use crate::context::{RunConfig, RunContext};
 use crate::middleware::Middleware;
 use tinyinference_llm::message::Message as TaMessage;
-use tinyinference_llm::model::ModelRequest;
 use tinyinference_llm::model::ModelProfile;
+use tinyinference_llm::model::ModelRequest;
 
 // Image-aware token estimation. A base64 image marker must be priced at the
 // flat IMAGE_MARKER_TOKEN_COST, not chars/4 of its payload — otherwise one
@@ -140,14 +140,16 @@ async fn eviction_never_leaves_an_orphaned_leading_tool_result() {
 
 #[tokio::test]
 async fn eviction_preserves_ephemeral_artifact_index_on_hoisting_models() {
-    let mut request = ModelRequest::new(vec![
-        TaMessage::user("x".repeat(8_000)),
-    ]);
+    let mut request = ModelRequest::new(vec![TaMessage::user("x".repeat(8_000))]);
     let profile = ModelProfile {
         hoists_system_messages: true,
         ..ModelProfile::default()
     };
-    push_ephemeral_instruction(&mut request, "stored artifact: outputs/result.json", Some(&profile));
+    push_ephemeral_instruction(
+        &mut request,
+        "stored artifact: outputs/result.json",
+        Some(&profile),
+    );
     request.messages.push(TaMessage::user("latest question"));
     let mut ctx: RunContext = RunContext::new(RunConfig::new("mw-test"), ());
     ctx.model_profile = Some(profile);
@@ -157,7 +159,12 @@ async fn eviction_preserves_ephemeral_artifact_index_on_hoisting_models() {
         .await
         .unwrap();
 
-    let text = request.messages.iter().map(TaMessage::text).collect::<Vec<_>>().join("\n");
+    let text = request
+        .messages
+        .iter()
+        .map(TaMessage::text)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!text.contains(&"x".repeat(8_000)));
     assert!(text.contains("stored artifact: outputs/result.json"));
     assert!(text.contains("latest question"));
