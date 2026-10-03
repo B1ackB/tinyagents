@@ -905,7 +905,7 @@ fn bound_text_to_budget(content: String, budget_bytes: usize) -> (String, usize)
 
 fn envelope_budget_floor(envelope: &str) -> usize {
     let header_len = envelope
-        .find("\nread_with:")
+        .find("\nnotes:")
         .map(|end| end + 1)
         .unwrap_or(envelope.len());
     MIN_ENVELOPE_ALLOWANCE_BYTES.max(header_len.saturating_add(TRAILER_RESERVED + 1))
