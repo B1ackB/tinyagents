@@ -405,6 +405,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // Consecutive "you said tool_calls but sent none" re-prompts
         // (see `RunPolicy::dropped_tool_call_nudges`).
         let mut dropped_tool_call_nudges_used: u32 = 0;
+        // Consecutive re-prompts after a call written on a turn with no
+        // callable tool (bounded by the same `dropped_tool_call_nudges`).
+        let mut withheld_call_nudges_used: u32 = 0;
         let mut boosted_max_tokens: Option<u32> = None;
         let mut truncation_base: Option<u32> = None;
 
@@ -1005,9 +1008,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     offered: Arc::new(request.tools.clone()),
                     registry: dialect.registry_for(&request.tools),
                     dropped: Arc::default(),
+                    withhold: false,
                 }
             } else {
-                super::dialect::TextRecovery::default()
+                // Nothing can be recovered as a call, but a call the model
+                // writes anyway is kept out of the answer (see
+                // `TextRecovery::withholding`).
+                super::dialect::TextRecovery::withholding()
             };
             // Applied before budget preflight below: for a text dialect this
             // rewrite folds the protocol block and full tool catalogue into
@@ -1173,6 +1180,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // fenced code is protected is `tinytools-agent`'s call.
             if forced_text_dialect || text_dialect_recovery_enabled {
                 recover_text_dialect_calls(ctx, &mut response, &call_id, &recovery);
+            }
+            // A turn that could not take a call: whatever call markup the
+            // model wrote is scrubbed from the answer and never run. Applied
+            // whatever `text_dialect_recovery` says — that policy decides
+            // whether prose can *become* a call, and here none can. A
+            // streamed reply was already scrubbed delta by delta; this
+            // catches a unary one.
+            if recovery.withhold {
+                super::dialect::withhold_text_calls(&mut response, &call_id, &recovery.dropped);
             }
 
             // Account for the completed provider response before fallible
@@ -1429,6 +1445,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // otherwise receive fewer than the policy's configured number
                 // of consecutive re-prompts.
                 dropped_tool_call_nudges_used = 0;
+                withheld_call_nudges_used = 0;
                 empty_response_retries_used = 0;
                 reset_truncated_empty_recovery(
                     &mut truncated_empty_retries_used,
@@ -1470,6 +1487,48 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             if real_tool_calls.is_empty() {
+                // A call written on a turn that could not take one (tools
+                // withdrawn for a concluding answer, or `ToolChoice::None`).
+                // It was scrubbed and not run; what is left is either nothing
+                // or a lead-in to a step that never happened, so it is not the
+                // answer the request asked for. Drop that row and ask once
+                // more, telling the model plainly that tools are gone.
+                // Replaying the bench request that leaked (DeepSeek V4, tools
+                // withdrawn), the unchanged request leaked 6 times in 8; with
+                // the row dropped and this re-prompt added it leaked 0 times
+                // in 12. Runs before the empty-reply retries: a bare re-send
+                // of the same transcript leaks the same way.
+                let withheld_calls = recovery.dropped.withheld();
+                if withheld_calls > 0
+                    && withheld_call_nudges_used < self.policy.dropped_tool_call_nudges
+                    && ctx.limits.remaining_model_calls() > 0
+                {
+                    withheld_call_nudges_used += 1;
+                    messages.pop();
+                    tracing::info!(
+                        target: "tinyagents::agent_loop",
+                        run_id = %ctx.run_id(),
+                        call_id = %call_id,
+                        withheld_calls,
+                        attempt = withheld_call_nudges_used,
+                        "[agent_loop] re-prompting after a tool call on a turn with no callable tools"
+                    );
+                    ctx.emit(AgentEvent::ControlApplied {
+                        control: "withheld_tool_call".to_string(),
+                        detail: format!(
+                            "{withheld_calls} tool call(s) written while no tool was callable \
+                             in model call `{call_id}`; scrubbed, not run, re-prompted"
+                        ),
+                    });
+                    messages.push(Message::user(WITHHELD_TOOL_CALL_NUDGE));
+                    let record = ctx.emit(AgentEvent::RetryScheduled {
+                        call_id: call_id.clone(),
+                        attempt: withheld_call_nudges_used as usize,
+                    });
+                    status.set_last_event(record.id);
+                    continue;
+                }
+
                 // Truncated-empty recovery (runs before structured extraction,
                 // which would otherwise fail on the empty completion). A local
                 // reasoning model can burn the whole token budget on its hidden
@@ -1596,6 +1655,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     continue;
                 }
                 dropped_tool_call_nudges_used = 0;
+                withheld_call_nudges_used = 0;
                 empty_response_retries_used = 0;
 
                 // This turn resolved without scheduling a truncated-empty
@@ -1710,6 +1770,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // recovery state before the tools run so the next turn starts from
             // the caller's configured cap and a full retry budget.
             dropped_tool_call_nudges_used = 0;
+            withheld_call_nudges_used = 0;
             empty_response_retries_used = 0;
             reset_truncated_empty_recovery(
                 &mut truncated_empty_retries_used,
@@ -2437,6 +2498,13 @@ const DROPPED_TOOL_CALL_NUDGE: &str = "Your previous turn indicated a tool call 
      included. If you meant to call a tool, issue the actual tool call now; otherwise answer \
      directly.";
 
+/// The re-prompt sent when the model wrote a tool call on a turn that offered
+/// no callable tool. The call was scrubbed and not run; the wording names that
+/// plainly, because a model told only to "answer" keeps trying to act.
+const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but tools are not \
+     available for this reply, so it did not run. Do not write tool calls. Answer now in plain \
+     text from the results already gathered, and state any remaining uncertainty.";
+
 /// The re-prompt sent when a text-dialect tool-call block could not be
 /// decoded: no tool ran, and the model should know why rather than assume
 /// its call went through.
@@ -2512,6 +2580,10 @@ fn reset_truncated_empty_recovery(
 #[cfg(test)]
 #[path = "run_loop_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "run_loop_withheld_tests.rs"]
+mod withheld_tests;
 
 /// Attaches `default` to `request` when the request carries no reasoning
 /// config of its own. A request-level config always wins.

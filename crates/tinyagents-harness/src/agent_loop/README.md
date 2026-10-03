@@ -110,6 +110,30 @@ deterministic) and enabled per policy via
 `retry::RetryPolicy::with_backoff_sleep`. A real provider integration retries
 after a genuine, growing delay while unit tests stay sleep-free.
 
+## Calls written on a turn with no callable tool
+
+A request can withdraw its tools — a final wrap-up call, a spent research
+budget — or set `ToolChoice::None`, while its transcript is still full of tool
+calls. A native model then has no tool channel and writes its next call as
+plain text in its own markup (DeepSeek V4: `<｜DSML｜invoke name="shell">…`).
+Declaring the tools with `tool_choice: "none"` does not prevent it. Taken as
+the final answer, that markup ends the turn with a stray command where the
+result should be.
+
+On such a turn `TextRecovery::withholding` is in force: the streaming
+scrubber and, for unary replies, `withhold_text_calls` remove any complete
+call the tool-call grammars recognise from the visible text, keep reasoning,
+and count it in `DroppedBlocks::withheld`. Nothing is dispatched — the
+I-2 rule (prose never becomes a call when none could be accepted) holds. If a
+call was withheld and a model call remains, the loop drops that assistant row
+and re-prompts once with `WITHHELD_TOOL_CALL_NUDGE`, which says plainly that
+tools are unavailable, emitting `ControlApplied { control:
+"withheld_tool_call" }` and `RetryScheduled`. Re-prompts are bounded by
+`RunPolicy::dropped_tool_call_nudges` and run before the empty-reply retries,
+since a bare re-send of the same transcript leaks the same way. With no call
+left, the scrubbed reply stands. Language-tagged fenced examples and bare JSON
+answers are left untouched.
+
 ## Truncated-empty recovery
 
 Local reasoning models (for example `qwen3` via Ollama) intermittently spend

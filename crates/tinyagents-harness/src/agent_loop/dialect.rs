@@ -345,6 +345,11 @@ pub(super) struct TextRecovery {
     /// Call blocks the model attempted that produced no call, on the
     /// attempt whose response the loop is about to read.
     pub(super) dropped: Arc<DroppedBlocks>,
+    /// No tool could be called this turn (none offered, or an effective
+    /// `ToolChoice::None`), yet call markup is still scrubbed from the
+    /// visible text and counted in [`DroppedBlocks::withheld`] instead of
+    /// becoming a call. See [`TextRecovery::withholding`].
+    pub(super) withhold: bool,
 }
 
 /// Tool-call blocks a grammar recognised on one model attempt that did not
@@ -358,6 +363,9 @@ pub(super) struct DroppedBlocks {
     /// Openers with no closer at end of text (`UnterminatedBlock`); the raw
     /// markup is released as visible text.
     unterminated: AtomicUsize,
+    /// Complete calls the model wrote on a turn that could not take one;
+    /// scrubbed from the visible text and never dispatched.
+    withheld: AtomicUsize,
 }
 
 impl DroppedBlocks {
@@ -371,11 +379,32 @@ impl DroppedBlocks {
         self.unterminated.load(Ordering::Relaxed)
     }
 
+    /// Calls written on a turn that offered no callable tool.
+    pub(super) fn withheld(&self) -> usize {
+        self.withheld.load(Ordering::Relaxed)
+    }
+
     /// Forgets the counts: the next response comes from a new attempt, or
     /// the attempt that produced them failed and its response is discarded.
     pub(super) fn reset(&self) {
         self.malformed.store(0, Ordering::Relaxed);
         self.unterminated.store(0, Ordering::Relaxed);
+        self.withheld.store(0, Ordering::Relaxed);
+    }
+
+    /// Counts `calls` complete calls withheld on a turn that could not take
+    /// them.
+    fn record_withheld(&self, calls: usize, model_call_id: &CallId) {
+        if calls == 0 {
+            return;
+        }
+        self.withheld.fetch_add(calls, Ordering::Relaxed);
+        tracing::warn!(
+            target: "tinyagents::agent_loop",
+            call_id = %model_call_id,
+            withheld = calls,
+            "[agent_loop] tool call written on a turn with no callable tools; scrubbed, not run"
+        );
     }
 
     /// Adds the dropped blocks among `diagnostics`, logging any it finds.
@@ -404,10 +433,28 @@ impl DroppedBlocks {
 }
 
 impl TextRecovery {
+    /// Recovery for a turn on which no tool can be called: nothing is ever
+    /// recovered as a call, but call markup is still kept out of the answer.
+    ///
+    /// A request that withdraws its tools (a final wrap-up call, a spent
+    /// research budget, a summarizer) still carries a transcript full of tool
+    /// calls, and a native model with no tool channel open writes its next
+    /// call in its own markup as plain text: DeepSeek V4's
+    /// `<｜DSML｜invoke name="shell">…`. In replayed bench captures that
+    /// happened on most such requests, and declaring the tools with
+    /// `tool_choice: "none"` did not stop it. Read as a final answer the
+    /// markup ended the turn with a stray command in place of a result.
+    pub(super) fn withholding() -> Self {
+        Self {
+            withhold: true,
+            ..Self::default()
+        }
+    }
+
     /// A scrubber for one streamed model call, or `None` when no tools were
-    /// offered and there is nothing to recover.
+    /// offered and no markup has to be withheld either.
     pub(super) fn scrubber(&self, model_call_id: &CallId) -> Option<DeltaScrubber> {
-        (!self.offered.is_empty()).then(|| {
+        (!self.offered.is_empty() || self.withhold).then(|| {
             // A fresh scrubber is one provider attempt; a retried attempt
             // must not inherit the previous one's count.
             self.dropped.reset();
@@ -417,8 +464,32 @@ impl TextRecovery {
                 self.registry.clone(),
                 Arc::clone(&self.dropped),
             )
+            .withholding(self.withhold)
         })
     }
+}
+
+/// Scrubs tool-call markup out of a completed response on a turn that could
+/// not take a call, counting what it removed in `dropped` and dispatching
+/// nothing. Reasoning and other non-text blocks survive.
+///
+/// The streamed path does the same incrementally through a withholding
+/// [`DeltaScrubber`]; this covers a unary reply, and a streamed one whose
+/// terminal text was not reconciled from the deltas.
+pub(super) fn withhold_text_calls(
+    response: &mut ModelResponse,
+    model_call_id: &CallId,
+    dropped: &DroppedBlocks,
+) {
+    let text = response.text();
+    // Bare JSON stays: an answer may legitimately be a JSON object.
+    let outcome = tinytools_agent::parse_text(&text, &ParseOptions::new().without_bare_json());
+    if outcome.calls.is_empty() {
+        return;
+    }
+    dropped.record_withheld(outcome.calls.len(), model_call_id);
+    response.message.content =
+        replace_text_blocks(std::mem::take(&mut response.message.content), outcome.text);
 }
 
 /// How one model call is made: streamed or unary, and what it needs to
@@ -576,6 +647,11 @@ pub(super) struct DeltaScrubber {
     model_call_id: CallId,
     calls: Vec<ToolCall>,
     dropped: Arc<DroppedBlocks>,
+    /// Scrub complete calls without collecting them (a turn with no callable
+    /// tool); they are counted in [`DroppedBlocks::withheld`] instead.
+    withhold: bool,
+    /// Complete calls withheld on this attempt.
+    withheld: usize,
 }
 
 impl DeltaScrubber {
@@ -596,7 +672,15 @@ impl DeltaScrubber {
             model_call_id,
             calls: Vec::new(),
             dropped,
+            withhold: false,
+            withheld: 0,
         }
+    }
+
+    /// Scrub calls without dispatching them (see [`TextRecovery::withholding`]).
+    pub(super) fn withholding(mut self, withhold: bool) -> Self {
+        self.withhold = withhold;
+        self
     }
 
     /// Feeds one text delta; returns the text safe to forward.
@@ -615,6 +699,12 @@ impl DeltaScrubber {
 
     fn collect(&mut self, calls: Vec<ParsedToolCall>, diagnostics: &[ParseDiagnostic]) {
         self.dropped.record(diagnostics, &self.model_call_id);
+        if self.withhold {
+            self.withheld += calls.len();
+            self.dropped
+                .record_withheld(calls.len(), &self.model_call_id);
+            return;
+        }
         for call in calls {
             let slot = self.calls.len() + 1;
             self.calls
@@ -630,5 +720,10 @@ impl DeltaScrubber {
     /// Whether any call was completed during the stream.
     pub(super) fn has_calls(&self) -> bool {
         !self.calls.is_empty()
+    }
+
+    /// Whether any complete call was withheld during the stream.
+    pub(super) fn has_withheld(&self) -> bool {
+        self.withheld > 0
     }
 }

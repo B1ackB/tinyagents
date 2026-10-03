@@ -17,6 +17,7 @@ fn offered(names: &[&str]) -> TextRecovery {
         ),
         registry: None,
         dropped: Arc::default(),
+        withhold: false,
     }
 }
 
