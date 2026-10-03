@@ -604,6 +604,11 @@ pub(super) struct DeltaScrubber {
     model_call_id: CallId,
     calls: Vec<ToolCall>,
     dropped: Arc<DroppedBlocks>,
+    /// Scrub complete calls without collecting them (a turn with no callable
+    /// tool); they are counted in [`DroppedBlocks::withheld`] instead.
+    withhold: bool,
+    /// Complete calls withheld on this attempt.
+    withheld: usize,
 }
 
 impl DeltaScrubber {
