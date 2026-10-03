@@ -755,9 +755,8 @@ mod turn_pin {
 
         // Non-system coordinates: the user message is index 0.
         assert_eq!(split.pinned, Some(0));
-        // keep_last = 8 lands on an assistant tool-call turn: 21 - 8 = 13 is a
-        // tool result, so the split repairs back to 13 - 1? No: index 13 is
-        // `assistant(c6)` (odd indices are assistant turns), already safe.
+        // keep_last = 8 over 21 non-system messages requests index 13, which
+        // is `assistant(c6)` (odd indices are the call turns): already safe.
         assert_eq!(split.cut, 13);
         assert_eq!(split.to_summarize.len(), 12);
         assert_eq!(split.to_keep.len(), 1 + 1 + 8);
