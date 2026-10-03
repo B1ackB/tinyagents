@@ -198,10 +198,10 @@ fn patch_paths(arguments: &Value) -> Vec<String> {
             ]
             .iter()
             .find_map(|prefix| line.strip_prefix(prefix));
-            if let Some(path) = path.and_then(|p| clean_path(p.trim())) {
-                if path != "/dev/null" {
-                    push_unique(&mut out, path);
-                }
+            if let Some(path) = path.and_then(|p| clean_path(p.trim()))
+                && path != "/dev/null"
+            {
+                push_unique(&mut out, path);
             }
         }
     }
@@ -457,10 +457,12 @@ pub(crate) fn error_signature(failure: &str) -> Option<String> {
         }
         // file:line: message (compilers, go test).
         let mut parts = s.splitn(3, ':');
-        if let (Some(file), Some(line), Some(_)) = (parts.next(), parts.next(), parts.next()) {
-            if file.contains('.') && !file.contains(' ') && line.trim().parse::<u32>().is_ok() {
-                return 7;
-            }
+        if let (Some(file), Some(line), Some(_)) = (parts.next(), parts.next(), parts.next())
+            && file.contains('.')
+            && !file.contains(' ')
+            && line.trim().parse::<u32>().is_ok()
+        {
+            return 7;
         }
         if s.starts_with("FAILED ") || s.starts_with("--- FAIL") {
             return 6;
