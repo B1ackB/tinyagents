@@ -448,7 +448,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         // remainder: a later middleware dropping messages would shift every
         // index, and persisting a shifted boundary would corrupt a resumed
         // session.
-        let (prior, live_chain) = self.run_state(ctx.run_id());
+        // With no `before_model` state for this run (compression installed only
+        // as model middleware), nothing rewrote the request: it is the live
+        // transcript itself.
+        let (prior, live_chain) = self
+            .run_state(ctx.run_id())
+            .unwrap_or_else(|| (None, fingerprint_chain(&non_system)));
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
         let fold_extends = live_chain.len().checked_sub(folded) == Some(non_system.len());
         // When aligned, the request's copy of the prior summary is superseded
@@ -700,11 +705,15 @@ impl ContextCompressionMiddleware {
     }
 
     /// `run`'s fold and the live transcript its last `before_model` saw.
-    fn run_state(&self, run: &RunId) -> (Option<crate::middleware::types::CompactionFold>, Vec<u64>) {
+    /// `None` when `before_model` never ran for `run` (compression installed
+    /// only as model middleware).
+    fn run_state(
+        &self,
+        run: &RunId,
+    ) -> Option<(Option<crate::middleware::types::CompactionFold>, Vec<u64>)> {
         let runs = self.runs.lock().expect("runs mutex poisoned");
         runs.get(run)
             .map(|state| (state.fold.clone(), state.live_chain.clone()))
-            .unwrap_or_default()
     }
 
     /// Records that `summary` now stands in for `run`'s first `folded` live
