@@ -426,16 +426,10 @@ impl ContextCompressionMiddleware {
             .chain(prior_pin.iter().map(|pin| pin.message.clone()))
             .chain(live[folded..].iter().cloned())
             .collect();
-        let mut planning_policy = self.policy.clone();
-        if let Some(tokens) = self.keep_recent_tokens {
-            let trigger = planning_policy.trigger_budget();
-            planning_policy.keep_recent_tokens = Some(if trigger == 0 {
-                tokens
-            } else {
-                tokens.min(trigger / 2)
-            });
-        }
-        let plan = planning_policy.plan_split(&unfolded);
+        let plan = match self.keep_recent_tokens {
+            Some(tokens) => self.policy.plan_split_recent_tokens(&unfolded, tokens),
+            None => self.policy.plan_split(&unfolded),
+        };
         // Nothing old enough to compress (e.g. keep_last covers everything):
         // keep the request as it stands rather than summarizing an empty set.
         if plan.to_summarize.is_empty() {
@@ -723,15 +717,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             .unwrap_or(0);
         let fold_extends = live_chain.len() >= folded
             && fingerprint_chain_from(seed, remainder) == live_chain[folded..];
-        // The request's checkpoint was removed above and becomes the previous
-        // summary. Preserve any other system messages while planning the tail.
+        // The request's checkpoint (stripped above) is superseded by the new
+        // one, which is built on it: the checkpoint is taken from this very
+        // request, so it describes exactly the history before the cut whether
+        // or not the request still aligns with the live transcript.
+        let kept_system: Vec<Message> = system;
         let plan = crate::summarization::split_at_cut(
-            system.clone(),
+            kept_system.clone(),
             &non_system,
             cut.index,
             self.policy.pin_turn_user_message,
         );
         if plan.to_summarize.is_empty() {
+            // Only the pinned message lay before the cut, and it stays pinned:
+            // nothing to compact.
             return Err(first_error);
         }
         let coords = LiveCoords {
@@ -739,7 +738,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
         };
         let new_folded = coords.live_index(plan.cut);
-        let pinned = pinned_from_plan(&plan, system.len(), &coords);
+        let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
         let boundary = LiveBoundary {
             first_kept_index: new_folded,
             pinned_user_index: pinned.as_ref().map(|pin| pin.live_index),
@@ -1195,7 +1194,8 @@ impl ContextCompressionMiddleware {
         tracing::info!(
             run_id = %ctx.run_id(),
             reason = reason.as_str(),
-            boundary = ?boundary,
+            boundary = boundary.map(|b| b.first_kept_index),
+            pinned_user_index = boundary.and_then(|b| b.pinned_user_index),
             tokens_before,
             tokens_after,
             latency_ms,
@@ -1214,10 +1214,7 @@ impl ContextCompressionMiddleware {
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
-                placement: match &record.summary {
-                    Message::User(_) => SummaryPlacement::User,
-                    _ => SummaryPlacement::System,
-                },
+                placement: self.placement,
                 first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
@@ -1430,9 +1427,8 @@ fn compacted_history(
     let mut history = Vec::with_capacity(messages.len());
     history.extend(messages[..leading].iter().cloned());
     history.push(fold.summary.clone());
-    if let Some(pin) = &fold.pinned {
-        history.push(pin.message.clone());
-    }
+    // The message the fold pinned out of the folded range follows its summary.
+    history.extend(fold.pinned.iter().map(|pin| pin.message.clone()));
     let mut skipped = 0usize;
     for message in &messages[leading..] {
         let system = matches!(message, Message::System(_));
