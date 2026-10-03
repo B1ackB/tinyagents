@@ -227,9 +227,11 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
     transcript.extend([chunk("m4"), chunk("m5")]);
     let sent = send(&stack, &mut c, &transcript).await;
 
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    }
     assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
     assert_eq!(sink.records.lock().unwrap().len(), 1);
 }
@@ -264,6 +266,7 @@ async fn keeps_recognizing_a_host_spliced_summary_until_it_is_replaced() {
     // Until the host persists summary #2, it still sends summary #1. The
     // replacement fold must remove that obsolete host summary on reapply.
     let reapplied = send(&stack, &mut c, &transcript).await;
+    let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "the replacement fold is reused");
     assert_eq!(reapplied, vec![Message::system("summary #2"), chunk("m5")]);
 }
