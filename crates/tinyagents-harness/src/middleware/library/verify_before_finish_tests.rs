@@ -347,3 +347,32 @@ async fn leaves_empty_truncated_and_continued_answers_alone() {
     mw.after_model(&mut ctx, &(), &mut real).await.unwrap();
     assert_eq!(real.continue_turn.as_deref(), Some(CHECK));
 }
+
+#[tokio::test]
+async fn failed_run_releases_its_activity() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    let mut ctx = RunContext::new(RunConfig::new("vbf"), ());
+    mw.after_model(&mut ctx, &(), &mut tool_round("c1", "lookup"))
+        .await
+        .unwrap();
+    assert!(mw.runs.lock().unwrap().contains_key(&ctx.instance_id()));
+    mw.on_error(
+        &mut ctx,
+        &crate::error::TinyAgentsError::Model("failed".into()),
+    )
+    .await
+    .unwrap();
+    assert!(!mw.runs.lock().unwrap().contains_key(&ctx.instance_id()));
+}
+
+#[tokio::test]
+async fn interrupted_runs_cannot_grow_activity_map_without_bound() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK);
+    for _ in 0..1_025 {
+        let mut ctx = RunContext::new(RunConfig::new("vbf"), ());
+        mw.after_model(&mut ctx, &(), &mut tool_round("c1", "lookup"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(mw.runs.lock().unwrap().len(), 1_024);
+}
