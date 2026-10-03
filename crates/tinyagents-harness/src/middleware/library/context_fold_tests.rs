@@ -76,13 +76,16 @@ impl CompactionSink for RecordingSink {
     }
 }
 
+/// The middleware under test, what its summarizer and sink saw, and its context.
+struct Fixture {
+    stack: MiddlewareStack<()>,
+    seen: Arc<Mutex<Vec<SummaryRequest>>>,
+    sink: Arc<RecordingSink>,
+    c: RunContext,
+}
+
 /// A 100-token window at 0.5 → a 50-token trigger, keeping the newest message.
-fn harness() -> (
-    MiddlewareStack<()>,
-    Arc<Mutex<Vec<SummaryRequest>>>,
-    Arc<RecordingSink>,
-    RunContext,
-) {
+fn fixture() -> Fixture {
     let policy = SummarizationPolicy {
         keep_last: 1,
         ..SummarizationPolicy::default()
@@ -99,7 +102,12 @@ fn harness() -> (
     stack.push(mw);
     let sink = Arc::new(RecordingSink::default());
     let c = ctx().with_compaction_sink(sink.clone());
-    (stack, seen, sink, c)
+    Fixture {
+        stack,
+        seen,
+        sink,
+        c,
+    }
 }
 
 async fn send(
@@ -117,7 +125,12 @@ async fn send(
 
 #[tokio::test]
 async fn reapplies_the_fold_instead_of_recompacting_every_call() {
-    let (stack, seen, sink, mut c) = harness();
+    let Fixture {
+        stack,
+        seen,
+        sink,
+        mut c,
+    } = fixture();
     let mut transcript = vec![chunk("m1"), chunk("m2"), chunk("m3")];
 
     // ~90 tokens: over the 50-token trigger, so the first call compacts m1, m2.
@@ -140,7 +153,12 @@ async fn reapplies_the_fold_instead_of_recompacting_every_call() {
 
 #[tokio::test]
 async fn compacts_only_history_newer_than_the_fold() {
-    let (stack, seen, sink, mut c) = harness();
+    let Fixture {
+        stack,
+        seen,
+        sink,
+        mut c,
+    } = fixture();
     let mut transcript = vec![chunk("m1"), chunk("m2"), chunk("m3")];
     send(&stack, &mut c, &transcript).await;
 
@@ -171,7 +189,12 @@ async fn compacts_only_history_newer_than_the_fold() {
 
 #[tokio::test]
 async fn drops_the_fold_when_the_transcript_no_longer_matches() {
-    let (stack, seen, _sink, mut c) = harness();
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
     send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
 
     // A different history (rewritten or replaced): splicing the old summary
@@ -187,7 +210,12 @@ async fn drops_the_fold_when_the_transcript_no_longer_matches() {
 
 #[tokio::test]
 async fn keeps_system_prompts_ahead_of_the_reapplied_summary() {
-    let (stack, seen, _sink, mut c) = harness();
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
     let system = Message::system("You are a coding agent.");
     let mut transcript = vec![system.clone(), chunk("m1"), chunk("m2"), chunk("m3")];
     send(&stack, &mut c, &transcript).await;
