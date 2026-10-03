@@ -306,8 +306,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                 self.finish_compaction(
                     ctx,
                     record,
-                    self.boundary_for_run(ctx.instance_id(), Some(first_kept_index)),
-                    pinned_index,
+                    self.boundary_for_run(
+                        ctx.instance_id(),
+                        Some(LiveBoundary {
+                            first_kept_index,
+                            pinned_user_index: pinned_index,
+                        }),
+                    ),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Threshold,
@@ -427,8 +432,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         self.finish_compaction(
             ctx,
             record,
-            self.boundary_for_run(ctx.instance_id(), Some(first_kept_index)),
-            pinned_index,
+            self.boundary_for_run(
+                ctx.instance_id(),
+                Some(LiveBoundary {
+                    first_kept_index,
+                    pinned_user_index: pinned_index,
+                }),
+            ),
             from_tokens,
             to_tokens,
             CompactionReason::Threshold,
@@ -546,7 +556,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         };
         let new_folded = coords.live_index(plan.cut);
         let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
-        let pinned_index = pinned.as_ref().map(|pin| pin.live_index);
+        let boundary = LiveBoundary {
+            first_kept_index: new_folded,
+            pinned_user_index: pinned.as_ref().map(|pin| pin.live_index),
+        };
         let crate::summarization::CompactionPlan {
             to_summarize,
             to_keep,
@@ -602,8 +615,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(new_folded)),
-                    pinned_index.filter(|_| fold_extends),
+                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
@@ -652,8 +664,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(new_folded)),
-            pinned_index.filter(|_| fold_extends),
+            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
@@ -703,6 +714,15 @@ impl LiveCoords {
             None => self.folded + planned,
         }
     }
+}
+
+/// Where a compaction's verbatim tail starts in the live (pre-fold) non-system
+/// transcript, and where the user message it pinned out of the folded range
+/// sits, if it pinned one. What a [`CompactionRecord`] persists.
+#[derive(Clone, Copy, Debug)]
+struct LiveBoundary {
+    first_kept_index: usize,
+    pinned_user_index: Option<usize>,
 }
 
 /// The message `plan` pinned, as the fold remembers it. `system_len` is how
@@ -885,7 +905,7 @@ impl ContextCompressionMiddleware {
         runs.get(&run).and_then(|state| state.last_summary.clone())
     }
 
-    fn boundary_for_run(&self, run: u64, boundary: Option<usize>) -> Option<usize> {
+    fn boundary_for_run(&self, run: u64, boundary: Option<LiveBoundary>) -> Option<LiveBoundary> {
         let runs = self.runs.lock().expect("runs mutex poisoned");
         runs.get(&run)
             .filter(|state| !state.boundary_unaligned)
@@ -927,8 +947,7 @@ impl ContextCompressionMiddleware {
         &self,
         ctx: &mut RunContext<Ctx>,
         record: SummaryRecord,
-        boundary: Option<usize>,
-        pinned_user_index: Option<usize>,
+        boundary: Option<LiveBoundary>,
         tokens_before: u64,
         tokens_after: u64,
         reason: CompactionReason,
@@ -937,16 +956,19 @@ impl ContextCompressionMiddleware {
         // when it cannot be trusted as one (see the overflow path): a durable
         // boundary there would restore or duplicate the wrong messages on
         // resume, so nothing is persisted.
-        if let Some(first_kept_index) = boundary
+        if let Some(boundary) = boundary
             && let Some(sink) = &ctx.compaction_sink
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
-                first_kept_index,
+                first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
                 usage: None,
-                details: compaction_details(&record.provenance.source_ids, pinned_user_index),
+                details: compaction_details(
+                    &record.provenance.source_ids,
+                    boundary.pinned_user_index,
+                ),
                 reason,
             };
             if let Err(err) = sink.persist(&compaction_record) {
