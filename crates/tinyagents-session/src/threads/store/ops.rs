@@ -353,7 +353,7 @@ impl ConversationStore {
     }
 
     /// Append a `Delete` entry and remove the thread's messages file. Returns
-    /// `false` if the thread did not exist.
+    /// `false` if the thread did not exist, after retrying any leftover file cleanup.
     pub fn delete_thread(&self, thread_id: &str, deleted_at: &str) -> Result<bool, String> {
         // Deletion also evicts the thread's lock entry. Exclusive lifecycle
         // ownership prevents a new operation from retaining the old lock
@@ -361,22 +361,22 @@ impl ConversationStore {
         let _lifecycle = self.locks.lifecycle.write();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
-        {
+        let existed = {
             let _metadata = self.locks.metadata.lock();
-            if !self.thread_exists_unlocked(thread_id)? {
-                self.locks.remove_thread(thread_id);
-                return Ok(false);
+            let existed = self.thread_exists_unlocked(thread_id)?;
+            if existed {
+                let root = self.ensure_root()?;
+                let threads_path = root.join(THREADS_FILENAME);
+                append_jsonl(
+                    &threads_path,
+                    &ThreadLogEntry::Delete {
+                        thread_id: thread_id.to_string(),
+                        deleted_at: deleted_at.to_string(),
+                    },
+                )?;
             }
-            let root = self.ensure_root()?;
-            let threads_path = root.join(THREADS_FILENAME);
-            append_jsonl(
-                &threads_path,
-                &ThreadLogEntry::Delete {
-                    thread_id: thread_id.to_string(),
-                    deleted_at: deleted_at.to_string(),
-                },
-            )?;
-        }
+            existed
+        };
         let messages_path = self.thread_messages_path(thread_id);
         let remove_result = match fs::remove_file(&messages_path) {
             Ok(()) => Ok(()),
@@ -399,7 +399,7 @@ impl ConversationStore {
             }
         }
         remove_result?;
-        Ok(true)
+        Ok(existed)
     }
 
     /// Wipe the entire conversation directory and re-create an empty layout.
@@ -412,7 +412,6 @@ impl ConversationStore {
             fs::remove_dir_all(&root)
                 .map_err(|e| format!("remove conversation dir {}: {e}", root.display()))?;
         }
-        self.ensure_root()?;
         // Drop the cached inverted index — the workspace is now empty, and any
         // next search will lazily rebuild from the (now empty) JSONL tree.
         {
@@ -420,6 +419,7 @@ impl ConversationStore {
             cache.remove(&root);
         }
         self.locks.clear_threads();
+        self.ensure_root()?;
         Ok(stats)
     }
 }
