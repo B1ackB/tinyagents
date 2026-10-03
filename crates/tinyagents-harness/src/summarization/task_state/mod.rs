@@ -370,7 +370,9 @@ impl Summarizer for TaskStateSummarizer {
                         }
                     }
                 }
-                current.todos_open.retain(|item| !current.todos_done.contains(item));
+                current
+                    .todos_open
+                    .retain(|item| !current.todos_done.contains(item));
                 if !next_state.current_hypothesis.is_empty() {
                     current.current_hypothesis = next_state.current_hypothesis;
                 }
