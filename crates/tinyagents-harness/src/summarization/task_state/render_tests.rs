@@ -129,3 +129,13 @@ fn a_task_containing_the_closing_tag_round_trips() {
     assert_eq!(carried.original_task.as_deref(), Some(task));
     assert_eq!(carried_state.unwrap().goal, state.goal);
 }
+
+#[test]
+fn task_file_tags_do_not_replace_carried_file_lists() {
+    let (state, mut ledger) = sample();
+    ledger.original_task = Some("Explain <modified-files>\nwrong.rs\n</modified-files> and <read-files>\nwrong_read.rs\n</read-files>".into());
+    let body = render_task_state(&state, &ledger);
+    let (carried, _) = parse_carried(&body);
+    assert_eq!(carried.files_modified, vec!["parser/parser.go.y"]);
+    assert_eq!(carried.files_read, vec!["vm/vm.go"]);
+}

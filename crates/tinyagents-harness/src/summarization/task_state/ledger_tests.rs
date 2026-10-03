@@ -148,3 +148,23 @@ fn file_lists_are_capped_to_the_most_recent() {
     assert_eq!(ledger.files_read[0], "f5");
     assert_eq!(ledger.files_modified.len(), MAX_FILES);
 }
+
+#[test]
+fn revisited_file_remains_recent_when_list_is_capped() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES).map(|i| format!("f{i}")).collect(),
+        ..TaskLedger::default()
+    };
+    push_unique(&mut ledger.files_read, "f0".into());
+    push_unique(&mut ledger.files_read, "new".into());
+    ledger.cap();
+    assert!(!ledger.files_read.contains(&"f1".to_string()));
+    assert_eq!(ledger.files_read[MAX_FILES - 2..], ["f0", "new"]);
+}
+
+#[test]
+fn exit_code_mentioned_in_output_is_not_a_failure() {
+    let output = "src/main.rs:42: println!(\"exit code {}\", c)\nsrc/main.rs:57: done";
+    assert!(failure_of(output).is_none());
+    assert!(failure_of("exit code:\n57").is_none());
+}

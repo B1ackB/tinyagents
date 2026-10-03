@@ -707,3 +707,33 @@ fn deterministic_trim_shrinks_a_checkpoint_that_cannot_fit() {
     assert!(request.messages[0].text().chars().count() < 400);
     assert!(request.messages[0].text().contains("truncated"));
 }
+
+#[test]
+fn deterministic_trim_keeps_a_system_role_checkpoint() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let checkpoint = crate::summarization::checkpoint_message(
+        crate::summarization::SummaryPlacement::System,
+        &"history ".repeat(1_000),
+    );
+    let mut request = ModelRequest {
+        messages: vec![Message::system("sys"), checkpoint, chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(crate::summarization::is_checkpoint)
+    );
+    assert!(request.messages.iter().any(|m| m.text() == "sys"));
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.text().contains("truncated"))
+    );
+}
