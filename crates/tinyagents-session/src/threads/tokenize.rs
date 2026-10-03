@@ -60,10 +60,14 @@ pub fn normalize(text: &str) -> String {
     let lowered: String = text.chars().flat_map(char::to_lowercase).collect();
     let mut out = String::with_capacity(lowered.len());
     for c in lowered.chars() {
-        if matches!(c, 'ﾞ' | 'ﾟ')
+        if matches!(c, 'ﾞ' | 'ﾟ' | '\u{3099}' | '\u{309A}')
             && let Some(base) = out.pop()
         {
-            let voiced = match (base, c) {
+            let mark = match c {
+                'ﾞ' | '\u{3099}' => 'ﾞ',
+                _ => 'ﾟ',
+            };
+            let voiced = match (base, mark) {
                 ('ウ', 'ﾞ') => Some('ヴ'),
                 ('カ', 'ﾞ') => Some('ガ'),
                 ('キ', 'ﾞ') => Some('ギ'),
@@ -90,6 +94,32 @@ pub fn normalize(text: &str) -> String {
                 ('フ', 'ﾟ') => Some('プ'),
                 ('ヘ', 'ﾟ') => Some('ペ'),
                 ('ホ', 'ﾟ') => Some('ポ'),
+                ('う', 'ﾞ') => Some('ゔ'),
+                ('か', 'ﾞ') => Some('が'),
+                ('き', 'ﾞ') => Some('ぎ'),
+                ('く', 'ﾞ') => Some('ぐ'),
+                ('け', 'ﾞ') => Some('げ'),
+                ('こ', 'ﾞ') => Some('ご'),
+                ('さ', 'ﾞ') => Some('ざ'),
+                ('し', 'ﾞ') => Some('じ'),
+                ('す', 'ﾞ') => Some('ず'),
+                ('せ', 'ﾞ') => Some('ぜ'),
+                ('そ', 'ﾞ') => Some('ぞ'),
+                ('た', 'ﾞ') => Some('だ'),
+                ('ち', 'ﾞ') => Some('ぢ'),
+                ('つ', 'ﾞ') => Some('づ'),
+                ('て', 'ﾞ') => Some('で'),
+                ('と', 'ﾞ') => Some('ど'),
+                ('は', 'ﾞ') => Some('ば'),
+                ('ひ', 'ﾞ') => Some('び'),
+                ('ふ', 'ﾞ') => Some('ぶ'),
+                ('へ', 'ﾞ') => Some('べ'),
+                ('ほ', 'ﾞ') => Some('ぼ'),
+                ('は', 'ﾟ') => Some('ぱ'),
+                ('ひ', 'ﾟ') => Some('ぴ'),
+                ('ふ', 'ﾟ') => Some('ぷ'),
+                ('へ', 'ﾟ') => Some('ぺ'),
+                ('ほ', 'ﾟ') => Some('ぽ'),
                 _ => None,
             };
             out.push(voiced.unwrap_or(base));

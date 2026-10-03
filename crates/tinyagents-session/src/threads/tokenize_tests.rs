@@ -1,6 +1,6 @@
-//! Normalization + n-gram tokenization tests.
-
 use super::*;
+
+// Normalization and n-gram tokenization tests.
 
 #[test]
 fn normalize_lowercases_ascii() {
@@ -44,6 +44,14 @@ fn normalize_unifies_cjk_halfwidth_fullwidth() {
     assert_eq!(normalize(halfwidth), normalize(fullwidth));
     assert_eq!(normalize("ｶﾞｲﾄﾞ"), normalize("ガイド"));
     assert_eq!(normalize("ﾊﾟﾝ"), normalize("パン"));
+}
+
+#[test]
+fn normalize_composes_canonical_kana_voice_marks() {
+    assert_eq!(normalize("カ\u{3099}"), normalize("ガ"));
+    assert_eq!(normalize("ハ\u{309A}"), normalize("パ"));
+    assert_eq!(normalize("か\u{3099}"), normalize("が"));
+    assert_eq!(normalize("は\u{309A}"), normalize("ぱ"));
 }
 
 #[test]

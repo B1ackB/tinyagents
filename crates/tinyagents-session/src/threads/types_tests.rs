@@ -1,7 +1,7 @@
-//! Serde-contract tests for the conversation wire types.
-
 use super::*;
 use serde_json::json;
+
+// Serde contract tests for the conversation wire types.
 
 #[test]
 fn conversation_thread_serde_uses_camel_case_and_defaults_labels() {
