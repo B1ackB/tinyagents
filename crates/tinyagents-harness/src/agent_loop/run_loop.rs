@@ -1493,10 +1493,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // or a lead-in to a step that never happened, so it is not the
                 // answer the request asked for. Drop that row and ask once
                 // more, telling the model plainly that tools are gone.
-                // Replaying bench captures, this re-prompt turned 8 of 8
-                // DeepSeek V4 replies that had leaked a call into plain-text
-                // answers. Runs before the empty-reply retries: a bare
-                // re-send of the same transcript leaks the same way.
+                // Replaying the bench request that leaked (DeepSeek V4, tools
+                // withdrawn), the unchanged request leaked 6 times in 8; with
+                // the row dropped and this re-prompt added it leaked 0 times
+                // in 12. Runs before the empty-reply retries: a bare re-send
+                // of the same transcript leaks the same way.
                 let withheld_calls = recovery.dropped.withheld();
                 if withheld_calls > 0
                     && withheld_call_nudges_used < self.policy.dropped_tool_call_nudges
