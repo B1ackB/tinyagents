@@ -302,6 +302,9 @@ impl ConversationStore {
         message_id: &str,
     ) -> Result<Option<usize>, String> {
         let _lifecycle = self.locks.lifecycle.read();
+        // A cold builder may already have scanned this thread. Wait for its
+        // publication before rewriting and evicting the cached index.
+        let _build = self.locks.index_build.lock();
         let thread_lock = self.locks.thread(thread_id);
         let _thread = thread_lock.lock();
         let path = self.thread_messages_path(thread_id);

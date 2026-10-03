@@ -28,8 +28,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::{
-    CreateConversationThread, ThreadMessage, append_message, ensure_thread, get_messages,
-    list_threads,
+    ConversationStore, CreateConversationThread, ThreadMessage, append_message, ensure_thread,
+    get_messages, list_threads,
 };
 
 static CONVERSATION_PERSISTENCE_WORKSPACE: OnceLock<Arc<RwLock<PathBuf>>> = OnceLock::new();
@@ -192,7 +192,9 @@ impl ChannelEventHandler for ConversationPersistenceSubscriber {
                 ..
             } => (workspace_dir, channel.as_str(), "channel_processed"),
         };
-        if *event_workspace != my_workspace {
+        if ConversationStore::new(event_workspace.clone()).root_dir()
+            != ConversationStore::new(my_workspace.clone()).root_dir()
+        {
             return;
         }
         let channel = channel.to_string();
