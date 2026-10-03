@@ -66,7 +66,7 @@ already had.
 | `types.rs`   | `ArtifactKind`, `OffloadedArtifact`, `OffloadError`, constants.        |
 | `paths.rs`   | Fail-closed path resolution (`resolve_artifact_path` and helpers).     |
 | `policy.rs`  | `ArtifactPathPolicy`, `ArtifactRedactor` traits and their defaults.    |
-| `tool_results.rs` | Per-tool-result persistence: `ToolResultArtifactStore`, `apply_per_result_persistence`, `spill_aggregate_tool_results`, paged artifact reads. Host supplies redactor, read/wrapper tool names, read limit. |
+| `tool_results.rs` | Per-tool-result persistence: `ToolResultArtifactStore` (`new`: under `<action_dir>/artifacts/tool-results/`, relative pointers; `detached`: under a host storage dir outside the working tree, absolute pointers), `apply_per_result_persistence`, `spill_aggregate_tool_results`, paged artifact reads (`read_target`). Host supplies redactor, read/wrapper tool names, read limit, and for a detached store the read grant on its storage dir. |
 | `tool_results_test.rs` | Tests for the above, incl. a byte-stable envelope fixture. |
 | `ops.rs`     | `ArtifactOffload` writer, `offload_oversized_result`, pointer/handoff plumbing. |
 | `test.rs`    | Unit tests: happy path, fallback path, fail-closed hardening.          |
