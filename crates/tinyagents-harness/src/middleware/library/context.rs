@@ -81,7 +81,6 @@ impl ContextCompressionMiddleware {
             records: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_records: DEFAULT_COMPRESSION_RECORD_CAP,
             on_failure: CompressionFailurePolicy::default(),
-            last_summary: std::sync::Mutex::new(None),
             max_turn_tokens: None,
             overflow_classifier: OverflowClassifier::default(),
             before_compaction: None,
@@ -287,17 +286,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // itself (it was lifted out of `system` above, so the new summary
         // replaces it instead of sitting beside it). A transcript that no
         // longer matches the fold gets no previous summary: that summary
-        // describes some other history. A run that never folded keeps the
-        // legacy fallback to the last summary this instance produced.
+        // describes some other history. Otherwise fall back to the last
+        // summary this run produced.
         let previous_summary = match check {
             FoldCheck::Applies(fold) => Some(fold.summary.text()),
             FoldCheck::HostApplied(text) => Some(text),
             FoldCheck::Stale => None,
-            FoldCheck::None => self
-                .last_summary
-                .lock()
-                .expect("last_summary mutex poisoned")
-                .clone(),
+            FoldCheck::None => self.run_last_summary(ctx.run_id()),
         };
         tracing::debug!(
             folded,
@@ -524,12 +519,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         // The prior summary only describes this request's history when the
         // request still lines up with the live transcript.
         let previous_summary = if fold_extends {
-            prior.as_ref().map(|fold| fold.summary.text()).or_else(|| {
-                self.last_summary
-                    .lock()
-                    .expect("last_summary mutex poisoned")
-                    .clone()
-            })
+            prior
+                .as_ref()
+                .map(|fold| fold.summary.text())
+                .or_else(|| self.run_last_summary(ctx.run_id()))
         } else {
             None
         };
@@ -730,6 +723,12 @@ impl ContextCompressionMiddleware {
             .map(|state| (state.fold.clone(), state.live_chain.clone()))
     }
 
+    /// The last summary `run` produced, if any.
+    fn run_last_summary(&self, run: &RunId) -> Option<String> {
+        let runs = self.runs.lock().expect("runs mutex poisoned");
+        runs.get(run).and_then(|state| state.last_summary.clone())
+    }
+
     /// Records that `summary` now stands in for `run`'s first `folded` live
     /// non-system messages, whose chained fingerprints are `chain`.
     fn remember_fold(&self, run: &RunId, folded: usize, chain: &[u64], summary: &Message) {
@@ -745,7 +744,7 @@ impl ContextCompressionMiddleware {
     }
 
     /// Finalizes a successful compaction: records `record` in the in-process
-    /// history, updates [`Self::last_summary`] for the next iterative
+    /// history, updates the run's last summary for the next iterative
     /// compaction, builds a [`CompactionRecord`], persists it through
     /// [`RunContext::compaction_sink`] when attached, and emits
     /// [`AgentEvent::Compacted`]. Does **not** emit `Compressed` — callers
@@ -760,10 +759,11 @@ impl ContextCompressionMiddleware {
         reason: CompactionReason,
         persist: bool,
     ) {
-        *self
-            .last_summary
-            .lock()
-            .expect("last_summary mutex poisoned") = Some(record.summary.text());
+        touch_run(
+            &mut self.runs.lock().expect("runs mutex poisoned"),
+            ctx.run_id(),
+        )
+        .last_summary = Some(record.summary.text());
 
         let compaction_record = CompactionRecord {
             summary: record.summary.text(),

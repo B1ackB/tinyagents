@@ -875,11 +875,6 @@ pub struct ContextCompressionMiddleware {
     pub(crate) max_records: usize,
     /// Recovery behaviour when [`Summarizer::summarize`] returns `Err`.
     pub(crate) on_failure: CompressionFailurePolicy,
-    /// The most recently produced compaction summary text, threaded into the
-    /// next compaction's [`crate::summarization::SummaryRequest::previous_summary`]
-    /// so an iterative [`Summarizer`] refines rather than restarts. `None`
-    /// until the first compaction on this middleware instance.
-    pub(crate) last_summary: Mutex<Option<String>>,
     /// Token budget above which a single "turn" of messages handed to the
     /// summarizer is itself split into two halves and merged (see
     /// [`crate::summarization::summarize_with_split`]). `None` disables
@@ -917,6 +912,11 @@ pub(crate) struct RunCompaction {
     /// run's last `before_model` saw, so the overflow path can extend the fold
     /// in live-transcript coordinates.
     pub(crate) live_chain: Vec<u64>,
+    /// The most recent summary this run produced, threaded into its next
+    /// compaction's [`crate::summarization::SummaryRequest::previous_summary`]
+    /// so an iterative [`Summarizer`] refines rather than restarts, when no
+    /// fold carries it (a host that spliced the summary into its transcript).
+    pub(crate) last_summary: Option<String>,
     /// Monotonic touch stamp for least-recently-used eviction.
     pub(crate) touched: u64,
 }
