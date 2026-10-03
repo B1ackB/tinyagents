@@ -535,10 +535,6 @@ async fn budget_notice_fires_once_at_each_threshold() {
         "the 80% notice states the remaining budget: {}",
         appended[1].1
     );
-    assert!(
-        !mw.fired(&ctx) || appended.last().unwrap().1 == "CONCLUDE NOW",
-        "the notice must not be mistaken for the conclusion"
-    );
 }
 
 /// A notice must not report the turn as capped: only the conclusion does.

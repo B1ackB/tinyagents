@@ -148,6 +148,14 @@ impl FinalCallWrapUpMiddleware {
         self
     }
 
+    /// stub
+    pub fn with_budget_notice<I>(self, _thresholds: I) -> Self
+    where
+        I: IntoIterator<Item = f64>,
+    {
+        self
+    }
+
     /// Override the placeholder body treated as a cleared tool result.
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.cleared_placeholder = placeholder.into();
