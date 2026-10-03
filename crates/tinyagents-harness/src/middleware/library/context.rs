@@ -1298,7 +1298,6 @@ impl ContextCompressionMiddleware {
             }
             None => trim_tail(&request.messages, message_budget),
         };
-        };
         let to_tokens = total_message_tokens(&trimmed);
         request.messages = trimmed;
         ctx.emit(AgentEvent::Compressed {

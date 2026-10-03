@@ -423,14 +423,22 @@ pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
 pub(crate) fn failure_of(result: &str) -> Option<&str> {
     let lower = result.to_ascii_lowercase();
     for line in lower.lines().rev() {
-        for anchor in ["exit code", "exit_code\":", "exited with code", "exit status"] {
+        for anchor in [
+            "exit code",
+            "exit_code\":",
+            "exited with code",
+            "exit status",
+        ] {
             let Some(at) = line.rfind(anchor) else {
                 continue;
             };
             let rest = line[at + anchor.len()..].trim_start_matches(|c: char| {
                 c.is_ascii_whitespace() || matches!(c, ':' | '=' | '(')
             });
-            let code: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+            let code: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '-')
+                .collect();
             if let Ok(code) = code.parse::<i64>() {
                 return (code != 0 && code != 141).then_some(result);
             }
