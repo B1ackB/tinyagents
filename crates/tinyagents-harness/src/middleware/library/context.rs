@@ -482,7 +482,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         };
 
         let (system, non_system) = partition_messages_system(&request.messages);
-        let to_summarize = non_system[..cut.index].to_vec();
         // This run's fold and the live transcript its `before_model` saw. The
         // fold extends in live-transcript coordinates only when this request's
         // non-system messages still line up one-to-one with that live
@@ -496,6 +495,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             .run_state(ctx.instance_id())
             .unwrap_or_else(|| (None, fingerprint_chain(&non_system)));
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
+        // `before_model` splices the fold's pinned message in right after the
+        // summary. It is a copy of a message inside the folded range, not part
+        // of the live remainder, so it is set aside for the alignment check.
+        let prior_pin = prior
+            .as_ref()
+            .and_then(|fold| fold.pinned.clone())
+            .filter(|pin| non_system.first() == Some(&pin.message));
+        let remainder = &non_system[usize::from(prior_pin.is_some())..];
         // Content, not just count: a later step that rewrites messages in place
         // (microcompact blanking tool bodies) keeps the count but changes what
         // a summary of this request would describe.
@@ -505,15 +512,37 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             .copied()
             .unwrap_or(0);
         let fold_extends = live_chain.len() >= folded
-            && fingerprint_chain_from(seed, &non_system) == live_chain[folded..];
+            && fingerprint_chain_from(seed, remainder) == live_chain[folded..];
         // When aligned, the request's copy of the prior summary is superseded
         // by the new one built on it. When not, keep it: the new summary is
         // built without it and covers only the cut slice.
-        let mut to_keep: Vec<Message> = system
+        let kept_system: Vec<Message> = system
             .into_iter()
             .filter(|m| !fold_extends || prior.as_ref().is_none_or(|fold| *m != fold.summary))
             .collect();
-        to_keep.extend(non_system[cut.index..].iter().cloned());
+        let plan = crate::summarization::split_at_cut(
+            kept_system.clone(),
+            &non_system,
+            cut.index,
+            self.policy.pin_turn_user_message,
+        );
+        if plan.to_summarize.is_empty() {
+            // Only the pinned message lay before the cut, and it stays pinned:
+            // nothing to compact.
+            return Err(first_error);
+        }
+        let coords = LiveCoords {
+            folded,
+            prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
+        };
+        let new_folded = coords.live_index(plan.cut);
+        let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
+        let pinned_index = pinned.as_ref().map(|pin| pin.live_index);
+        let crate::summarization::CompactionPlan {
+            to_summarize,
+            to_keep,
+            ..
+        } = plan;
         let from_tokens = cut.tokens_before + cut.tokens_after;
         if !fold_extends {
             tracing::debug!(
@@ -553,9 +582,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 if fold_extends {
                     self.remember_fold(
                         ctx.instance_id(),
-                        folded + cut.index,
+                        new_folded,
                         &live_chain,
                         &record.summary,
+                        pinned.clone(),
                     );
                 }
                 let new_messages = splice_summary(to_keep, record.summary.clone());
@@ -563,10 +593,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    self.boundary_for_run(
-                        ctx.instance_id(),
-                        fold_extends.then_some(folded + cut.index),
-                    ),
+                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(new_folded)),
+                    pinned_index.filter(|_| fold_extends),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
@@ -604,9 +632,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         if fold_extends {
             self.remember_fold(
                 ctx.instance_id(),
-                folded + cut.index,
+                new_folded,
                 &live_chain,
                 &record.summary,
+                pinned,
             );
         }
         let new_messages = splice_summary(to_keep, record.summary.clone());
@@ -614,10 +643,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            self.boundary_for_run(
-                ctx.instance_id(),
-                fold_extends.then_some(folded + cut.index),
-            ),
+            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(new_folded)),
+            pinned_index.filter(|_| fold_extends),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
@@ -646,6 +673,43 @@ fn splice_summary(mut to_keep: Vec<Message>, summary: Message) -> Vec<Message> {
     new_messages.push(summary);
     new_messages.extend(recent);
     new_messages
+}
+
+/// Maps an index into the slice a compaction planned over —
+/// `[prior pinned message?, live[folded..]...]` — back to the live (pre-fold)
+/// non-system transcript, the coordinates every persisted boundary uses.
+struct LiveCoords {
+    /// Live messages the prior fold already stands in for.
+    folded: usize,
+    /// Live index of the prior fold's pinned message, which heads the planned
+    /// slice when present.
+    prior_pin: Option<usize>,
+}
+
+impl LiveCoords {
+    fn live_index(&self, planned: usize) -> usize {
+        match self.prior_pin {
+            Some(pin) if planned == 0 => pin,
+            Some(_) => self.folded + planned - 1,
+            None => self.folded + planned,
+        }
+    }
+}
+
+/// The message `plan` pinned, as the fold remembers it. `system_len` is how
+/// many system messages lead `plan.to_keep`; the pinned message follows them.
+fn pinned_from_plan(
+    plan: &crate::summarization::CompactionPlan,
+    system_len: usize,
+    coords: &LiveCoords,
+) -> Option<crate::middleware::types::PinnedTurnMessage> {
+    let index = plan.pinned?;
+    let message = plan.to_keep.get(system_len)?.clone();
+    debug_assert!(matches!(message, Message::User(_)));
+    Some(crate::middleware::types::PinnedTurnMessage {
+        live_index: coords.live_index(index),
+        message,
+    })
 }
 
 /// [`crate::summarization::pairing`] partitions operate on non-system
@@ -775,8 +839,10 @@ impl ContextCompressionMiddleware {
             // The host's transcript has its own coordinate space. Keep the
             // summary available for replacement, but stop claiming that it
             // covers a prefix of the new live transcript.
+            // The host's transcript carries the pinned message itself, too.
             if let Some(host_fold) = state.fold.as_mut() {
                 host_fold.folded = 0;
+                host_fold.pinned = None;
             }
             state.boundary_unaligned = true;
             tracing::debug!("[context_compression] host carries the fold summary itself");
@@ -819,7 +885,14 @@ impl ContextCompressionMiddleware {
 
     /// Records that `summary` now stands in for `run`'s first `folded` live
     /// non-system messages, whose chained fingerprints are `chain`.
-    fn remember_fold(&self, run: u64, folded: usize, chain: &[u64], summary: &Message) {
+    fn remember_fold(
+        &self,
+        run: u64,
+        folded: usize,
+        chain: &[u64],
+        summary: &Message,
+        pinned: Option<crate::middleware::types::PinnedTurnMessage>,
+    ) {
         let Some(fingerprint) = folded.checked_sub(1).and_then(|i| chain.get(i)).copied() else {
             return;
         };
@@ -829,6 +902,7 @@ impl ContextCompressionMiddleware {
             folded,
             fingerprint,
             summary: summary.clone(),
+            pinned,
         });
         // Only a summary attached to a valid fold is worth building on: one
         // from an unaligned overflow request describes altered history.
@@ -845,6 +919,7 @@ impl ContextCompressionMiddleware {
         ctx: &mut RunContext<Ctx>,
         record: SummaryRecord,
         boundary: Option<usize>,
+        pinned_user_index: Option<usize>,
         tokens_before: u64,
         tokens_after: u64,
         reason: CompactionReason,
@@ -862,7 +937,7 @@ impl ContextCompressionMiddleware {
                 tokens_before,
                 tokens_after,
                 usage: None,
-                details: serde_json::json!({ "source_ids": record.provenance.source_ids }),
+                details: compaction_details(&record.provenance.source_ids, pinned_user_index),
                 reason,
             };
             if let Err(err) = sink.persist(&compaction_record) {
@@ -886,6 +961,19 @@ impl ContextCompressionMiddleware {
             tokens_after,
         });
     }
+}
+
+/// [`CompactionRecord::details`] for a compaction: the summarized source ids
+/// and, when a user message was pinned out of the folded range, its live index
+/// as `pinned_user_index`. Everything before `first_kept_index` was folded
+/// into the summary *except* that message, so a sink restoring the compacted
+/// transcript must keep it after the summary.
+fn compaction_details(source_ids: &[String], pinned_user_index: Option<usize>) -> serde_json::Value {
+    let mut details = serde_json::json!({ "source_ids": source_ids });
+    if let Some(index) = pinned_user_index {
+        details["pinned_user_index"] = serde_json::json!(index);
+    }
+    details
 }
 
 // ── MicrocompactMiddleware ────────────────────────────────────────────────────
