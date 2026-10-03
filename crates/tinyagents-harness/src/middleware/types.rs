@@ -893,7 +893,7 @@ pub struct ContextCompressionMiddleware {
     /// live transcript its last `before_model` saw. Keyed by run so two
     /// invocations sharing this middleware never read each other's fold, and
     /// dropped in `after_agent`. See [`RunCompaction`].
-    pub(crate) runs: Mutex<std::collections::HashMap<crate::ids::RunId, RunCompaction>>,
+    pub(crate) runs: Mutex<std::collections::HashMap<u64, RunCompaction>>,
 }
 
 /// Most runs [`ContextCompressionMiddleware`] tracks at once. A run whose
