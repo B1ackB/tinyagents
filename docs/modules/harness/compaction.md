@@ -103,7 +103,10 @@ starts with the fingerprinted messages, the fold is dropped. If the request
 carries the fold's summary itself (a host that spliced it into its own
 transcript), that summary is lifted out and passed as `previous_summary`, so the
 next summary replaces it rather than sitting beside it. Otherwise the history is
-some other conversation: compaction starts over with no previous summary.
+some other conversation: compaction starts over with no previous summary. A
+host-carried summary keeps being recognized on every call until a compaction
+replaces it, and boundaries for that run are not persisted (the host's
+transcript no longer maps one-to-one onto the session's).
 
 All of this state is per run, keyed by `RunId`, so invocations sharing one
 middleware instance never read each other's fold or summary. `after_agent`
@@ -119,7 +122,8 @@ saw only the summary and a few recent messages.
 length after the compaction), which is what a session-backed sink maps to an
 entry id. The overflow path extends the fold the same way, provided the
 request's non-system messages still line up one-to-one with the live remainder.
-When a later middleware dropped messages and they no longer do, the overflow
+That is checked by fingerprint, not count: when a later middleware dropped or
+rewrote messages (a trim, or microcompact blanking tool bodies), the overflow
 compaction still runs (without the prior summary, which then stays in the
 request), but the fold is not extended and no boundary is persisted: a shifted
 index would restore or duplicate the wrong messages on resume. With compression
