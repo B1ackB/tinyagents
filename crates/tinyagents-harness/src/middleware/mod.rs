@@ -281,7 +281,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
         F: for<'a> Fn(
             &'a RunContext<Ctx>,
             &'a ModelRequest,
-        ) -> futures::future::BoxFuture<'a, Result<Option<tinyinference_llm::model::ModelProfile>>>,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<Option<tinyinference_llm::model::ModelProfile>>,
+        >,
     {
         let mut winning: Option<MiddlewareControl> = None;
         for mw in &self.middlewares {
