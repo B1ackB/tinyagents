@@ -639,17 +639,17 @@ enum FoldCheck {
 
 /// `run`'s state, created if needed and stamped as most recently used. Evicts
 /// the least recently used run once [`MAX_TRACKED_COMPACTION_RUNS`] are held.
-fn touch_run<'a>(
-    runs: &'a mut std::collections::HashMap<u64, crate::middleware::types::RunCompaction>,
+fn touch_run(
+    runs: &mut std::collections::HashMap<u64, crate::middleware::types::RunCompaction>,
     run: u64,
-) -> &'a mut crate::middleware::types::RunCompaction {
+) -> &mut crate::middleware::types::RunCompaction {
     let stamp = runs.values().map(|state| state.touched).max().unwrap_or(0) + 1;
     if !runs.contains_key(&run)
         && runs.len() >= crate::middleware::types::MAX_TRACKED_COMPACTION_RUNS
         && let Some(oldest) = runs
             .iter()
             .min_by_key(|(_, state)| state.touched)
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
     {
         runs.remove(&oldest);
     }
