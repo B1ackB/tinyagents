@@ -189,3 +189,30 @@ fn file_lists_have_a_rendered_size_bound() {
         &format!("{}-{}", "x".repeat(100), MAX_FILES_READ - 1)
     );
 }
+
+#[test]
+fn file_list_cap_counts_escaped_path_expansion() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES_READ)
+            .map(|i| format!("{i}-{}", "&".repeat(40)))
+            .collect(),
+        ..TaskLedger::default()
+    };
+    ledger.cap();
+    assert!(
+        ledger
+            .files_read
+            .iter()
+            .map(|path| escaped_path_len(path) + 1)
+            .sum::<usize>()
+            <= MAX_FILE_LIST_CHARS
+    );
+    assert!(ledger.files_read.len() < MAX_FILES_READ);
+    assert!(
+        ledger
+            .files_read
+            .last()
+            .unwrap()
+            .starts_with(&(MAX_FILES_READ - 1).to_string())
+    );
+}

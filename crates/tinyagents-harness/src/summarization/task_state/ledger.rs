@@ -72,7 +72,12 @@ impl TaskLedger {
             (&mut self.files_read, MAX_FILES_READ),
         ] {
             tail(files, limit);
-            while files.iter().map(String::len).sum::<usize>() > MAX_FILE_LIST_CHARS {
+            while files
+                .iter()
+                .map(|path| escaped_path_len(path) + 1)
+                .sum::<usize>()
+                > MAX_FILE_LIST_CHARS
+            {
                 files.remove(0);
             }
         }
@@ -408,6 +413,17 @@ fn clean_path(raw: &str) -> Option<String> {
         && (path.contains('/') || path.contains('.'))
         && path.len() <= 300;
     looks_like_file.then(|| path.to_string())
+}
+
+/// Bytes needed for a path after the checkpoint renderer escapes XML tags.
+fn escaped_path_len(path: &str) -> usize {
+    path.bytes()
+        .map(|byte| match byte {
+            b'&' => 5,
+            b'<' | b'>' => 4,
+            _ => 1,
+        })
+        .sum()
 }
 
 fn push_unique(list: &mut Vec<String>, value: String) {

@@ -40,9 +40,9 @@ pub struct TaskState {
 pub struct TaskLedger {
     /// The first user message (the task statement), verbatim up to a cap.
     pub original_task: Option<String>,
-    /// Files created or modified, first-seen order.
+    /// Files created or modified, most-recently observed last.
     pub files_modified: Vec<String>,
-    /// Files read, first-seen order.
+    /// Files read, most-recently observed last.
     pub files_read: Vec<String>,
     /// The most recent shell commands and how they ended.
     pub commands: Vec<CommandRecord>,
