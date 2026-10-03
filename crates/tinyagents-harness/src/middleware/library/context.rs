@@ -204,11 +204,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             FoldCheck::Stale => None,
             FoldCheck::None => self.run_last_summary(ctx.instance_id()),
         };
+        // A user message the fold pinned rides right after its summary: it is
+        // a verbatim copy of a message inside the folded range.
+        let prior_pin = prior.as_ref().and_then(|fold| fold.pinned.clone());
         if let Some(fold) = &prior {
             request.messages = splice_summary(
                 system
                     .iter()
                     .cloned()
+                    .chain(prior_pin.iter().map(|pin| pin.message.clone()))
                     .chain(live[folded..].iter().cloned())
                     .collect(),
                 fold.summary.clone(),
@@ -226,26 +230,49 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
 
         // Plan over the unfolded remainder only: the folded prefix is already
         // represented by the prior summary, which reaches the summarizer as
-        // `previous_summary` instead of as messages to re-read.
+        // `previous_summary` instead of as messages to re-read. A message the
+        // fold pinned is planned again: it stays pinned while no newer user
+        // message takes over, and is summarized once one does.
         let unfolded: Vec<Message> = system
             .iter()
             .cloned()
+            .chain(prior_pin.iter().map(|pin| pin.message.clone()))
             .chain(live[folded..].iter().cloned())
             .collect();
-        let (to_summarize, to_keep) = self.policy.plan(&unfolded);
+        let plan = self.policy.plan_split(&unfolded);
         // Nothing old enough to compress (e.g. keep_last covers everything):
         // keep the request as it stands rather than summarizing an empty set.
-        if to_summarize.is_empty() {
+        if plan.to_summarize.is_empty() {
             return Ok(());
         }
 
         let from_tokens = total_message_tokens(&request.messages);
-        // `plan` splits by count, so `to_summarize` is exactly the next
-        // `to_summarize.len()` live messages after the existing fold. The
-        // record's `first_kept_index` is in live-transcript coordinates — what
-        // a session-backed `CompactionSink` maps to an entry id — see
-        // `compaction::CompactionRecord::first_kept_index`.
-        let first_kept_index = folded + to_summarize.len();
+        // The record's `first_kept_index` is in live-transcript coordinates —
+        // what a session-backed `CompactionSink` maps to an entry id — see
+        // `compaction::CompactionRecord::first_kept_index`. The plan's indices
+        // are into `[prior pin?, live[folded..]...]`; a pinned message out of
+        // the middle of the head means the tail does not start at
+        // `folded + to_summarize.len()`.
+        let coords = LiveCoords {
+            folded,
+            prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
+        };
+        let first_kept_index = coords.live_index(plan.cut);
+        let pinned = pinned_from_plan(&plan, system.len(), &coords);
+        let pinned_index = pinned.as_ref().map(|pin| pin.live_index);
+        if let Some(pin) = &pinned {
+            tracing::debug!(
+                folded,
+                first_kept_index,
+                pinned = pin.live_index,
+                "[context_compression] pinning the turn's user message across the compaction"
+            );
+        }
+        let crate::summarization::CompactionPlan {
+            to_summarize,
+            to_keep,
+            ..
+        } = plan;
 
         match self.hook_decision(
             CompactionReason::Threshold,
@@ -267,13 +294,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                         reason: "before_compaction hook supplied the summary".to_string(),
                     },
                 };
-                self.remember_fold(ctx.instance_id(), first_kept_index, &chain, &record.summary);
+                self.remember_fold(
+                    ctx.instance_id(),
+                    first_kept_index,
+                    &chain,
+                    &record.summary,
+                    pinned.clone(),
+                );
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
                 self.finish_compaction(
                     ctx,
                     record,
                     self.boundary_for_run(ctx.instance_id(), Some(first_kept_index)),
+                    pinned_index,
                     from_tokens,
                     to_tokens,
                     CompactionReason::Threshold,
@@ -371,7 +405,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // between the system prompt and the kept recent turns, in
         // chronological position. It replaces the prior fold's summary, which
         // it was built on.
-        self.remember_fold(ctx.instance_id(), first_kept_index, &chain, &record.summary);
+        self.remember_fold(
+            ctx.instance_id(),
+            first_kept_index,
+            &chain,
+            &record.summary,
+            pinned,
+        );
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
 
@@ -379,6 +419,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             ctx,
             record,
             self.boundary_for_run(ctx.instance_id(), Some(first_kept_index)),
+            pinned_index,
             from_tokens,
             to_tokens,
             CompactionReason::Threshold,
