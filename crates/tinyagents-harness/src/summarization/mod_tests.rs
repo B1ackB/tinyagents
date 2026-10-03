@@ -1030,6 +1030,29 @@ mod plan_recent_tokens {
     }
 
     #[test]
+    fn token_budget_split_pins_the_turn_user_message() {
+        let policy = SummarizationPolicy {
+            pin_turn_user_message: true,
+            ..summarization_policy(1_000_000)
+        };
+        let split = policy.plan_split_recent_tokens(&history(), 3_500);
+
+        assert_eq!(split.pinned, Some(0));
+        assert_eq!(split.to_keep[1].text(), "task");
+        assert!(
+            !split
+                .to_summarize
+                .iter()
+                .any(|message| matches!(message, Message::User(_))),
+            "the pinned task must not be summarized"
+        );
+        assert!(crate::summarization::tool_pairing_is_intact(&split.to_keep));
+        assert!(crate::summarization::tool_pairing_is_intact(
+            &split.to_summarize
+        ));
+    }
+
+    #[test]
     fn budget_is_capped_at_half_the_trigger() {
         // Trigger at 4k tokens: a 20k tail would keep everything and never
         // compact; the cap keeps about 2k.

@@ -87,12 +87,15 @@ struct Fixture {
 /// `decline_threshold_after` declines threshold compactions once that many
 /// have been offered, so a later call reaches the overflow path.
 fn fixture(decline_threshold_after: Option<usize>) -> Fixture {
+    // Each `step` is about 60 estimated tokens. Four messages in the initial
+    // transcript are therefore about 180 tokens, so this threshold exercises
+    // compaction with a clear margin while keeping the fixture small.
     let policy = SummarizationPolicy {
         keep_last: 1,
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(300)
+    .with_context_window(320)
     .with_threshold_fraction(0.5);
     let summarizer = ShortSummarizer::default();
     let seen = summarizer.seen.clone();
@@ -343,7 +346,7 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(300)
+    .with_context_window(320)
     .with_threshold_fraction(0.5);
     let mw = Arc::new(ContextCompressionMiddleware::with_summarizer(
         policy,
