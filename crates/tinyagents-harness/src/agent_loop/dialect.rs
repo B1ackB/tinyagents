@@ -656,6 +656,11 @@ impl DeltaScrubber {
 
     fn collect(&mut self, calls: Vec<ParsedToolCall>, diagnostics: &[ParseDiagnostic]) {
         self.dropped.record(diagnostics, &self.model_call_id);
+        if self.withhold {
+            self.withheld += calls.len();
+            self.dropped.record_withheld(calls.len(), &self.model_call_id);
+            return;
+        }
         for call in calls {
             let slot = self.calls.len() + 1;
             self.calls
