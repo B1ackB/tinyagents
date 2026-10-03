@@ -266,7 +266,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         {
             state
                 .pressure
-                .note_request(request.messages.len(), schema_tokens);
+                .note_request(&request.messages, schema_tokens);
         }
         result
     }
@@ -426,12 +426,16 @@ impl ContextCompressionMiddleware {
             .chain(prior_pin.iter().map(|pin| pin.message.clone()))
             .chain(live[folded..].iter().cloned())
             .collect();
-        let mut policy = self.policy.clone();
+        let mut planning_policy = self.policy.clone();
         if let Some(tokens) = self.keep_recent_tokens {
-            policy.keep_recent_tokens = Some(tokens.min(self.policy.trigger_budget() / 2));
+            let trigger = planning_policy.trigger_budget();
+            planning_policy.keep_recent_tokens = Some(if trigger == 0 {
+                tokens
+            } else {
+                tokens.min(trigger / 2)
+            });
         }
-        let plan = policy.plan_split(&unfolded);
-
+        let plan = planning_policy.plan_split(&unfolded);
         // Nothing old enough to compress (e.g. keep_last covers everything):
         // keep the request as it stands rather than summarizing an empty set.
         if plan.to_summarize.is_empty() {
@@ -439,8 +443,12 @@ impl ContextCompressionMiddleware {
         }
 
         let from_tokens = total_message_tokens(&request.messages);
-        // The plan includes an optional pinned message before the live remainder,
-        // so its split index must be mapped back to live transcript coordinates.
+        // The record's `first_kept_index` is in live-transcript coordinates —
+        // what a session-backed `CompactionSink` maps to an entry id — see
+        // `compaction::CompactionRecord::first_kept_index`. The plan's indices
+        // are into `[prior pin?, live[folded..]...]`; a pinned message out of
+        // the middle of the head means the tail does not start at
+        // `folded + to_summarize.len()`.
         let coords = LiveCoords {
             folded,
             prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
@@ -564,7 +572,6 @@ impl ContextCompressionMiddleware {
                     // further recovery possible.
                     CompressionFailurePolicy::FallbackTrim => {
                         self.trim_to_trigger(ctx, request, from_tokens);
-
                         return Ok(());
                     }
                 }
@@ -681,7 +688,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         };
 
         let (system, non_system) = partition_messages_system(&stripped);
-
         // This run's fold and the live transcript its `before_model` saw. The
         // fold extends in live-transcript coordinates only when this request's
         // non-system messages still line up one-to-one with that live
@@ -743,7 +749,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             to_keep,
             ..
         } = plan;
-
         let from_tokens = cut.tokens_before + cut.tokens_after;
         if !fold_extends {
             tracing::debug!(
@@ -1190,7 +1195,7 @@ impl ContextCompressionMiddleware {
         tracing::info!(
             run_id = %ctx.run_id(),
             reason = reason.as_str(),
-            ?boundary,
+            boundary = ?boundary,
             tokens_before,
             tokens_after,
             latency_ms,
@@ -1209,6 +1214,10 @@ impl ContextCompressionMiddleware {
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
+                placement: match &record.summary {
+                    Message::User(_) => SummaryPlacement::User,
+                    _ => SummaryPlacement::System,
+                },
                 first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
@@ -1217,7 +1226,6 @@ impl ContextCompressionMiddleware {
                     &record.provenance.source_ids,
                     boundary.pinned_user_index,
                 ),
-
                 reason,
             };
             if let Err(err) = sink.persist(&compaction_record) {
