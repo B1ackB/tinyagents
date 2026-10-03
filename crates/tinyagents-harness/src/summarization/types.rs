@@ -607,6 +607,13 @@ pub struct CompactionRecord {
     /// the first message that survives verbatim (everything before it was
     /// folded into [`Self::summary`]). Matches [`crate::summarization::CutPoint::index`] when the
     /// record was produced from a [`crate::summarization::CutPoint`].
+    ///
+    /// One exception: when the policy pinned a user message
+    /// ([`SummarizationPolicy::pin_turn_user_message`]), that message lies
+    /// before this index yet was kept verbatim, right after the summary. Its
+    /// index (same coordinates) is in [`Self::details`] as
+    /// `pinned_user_index`; a sink rebuilding the compacted transcript must
+    /// restore it there.
     pub first_kept_index: usize,
     /// Estimated total tokens of the transcript immediately before
     /// compaction.
