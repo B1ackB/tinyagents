@@ -4,8 +4,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::context::RunContext;
-
 /// Fewest model calls that must remain after the answer for the check to run.
 /// The check takes one; leaving at least two more keeps it clear of a host's
 /// penultimate/final-call wrap-up and leaves room to act on what it finds.
@@ -34,7 +32,7 @@ impl FinishActivity {
 /// Decides whether a run's activity warrants the check.
 pub type FinishCheckTrigger = Arc<dyn Fn(&FinishActivity) -> bool + Send + Sync>;
 
-/// Per-run bookkeeping, keyed by [`RunContext::instance_id`].
+/// Per-run bookkeeping, keyed by [`crate::context::RunContext::instance_id`].
 #[derive(Default)]
 pub(super) struct RunState {
     pub(super) activity: FinishActivity,
