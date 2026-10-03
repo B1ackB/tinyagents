@@ -737,3 +737,17 @@ fn deterministic_trim_keeps_a_system_role_checkpoint() {
             .any(|m| m.text().contains("truncated"))
     );
 }
+
+#[test]
+fn deterministic_trim_charges_checkpoint_framing() {
+    let policy = SummarizationPolicy::default().with_trigger_override(50);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: vec![cp(&"history ".repeat(1_000)), chunk("tail")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(total_message_tokens(&request.messages) <= 50);
+}
