@@ -1,10 +1,12 @@
 //! Configuration and lifecycle hooks for final-answer verification.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tinyinference_llm::model::ModelResponse;
+use tinyinference_llm::message::Message;
+use tinyinference_llm::model::{ModelRequest, ModelResponse};
 
 use super::types::{
     DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
@@ -106,6 +108,19 @@ impl VerifyBeforeFinishMiddleware {
     }
 }
 
+const MAX_RETAINED_RUNS: usize = 1_024;
+
+fn state_for(runs: &mut HashMap<u64, RunState>, id: u64) -> &mut RunState {
+    // Cancellation can bypass lifecycle cleanup; evict the oldest context.
+    if !runs.contains_key(&id)
+        && runs.len() >= MAX_RETAINED_RUNS
+        && let Some(oldest) = runs.keys().copied().min()
+    {
+        runs.remove(&oldest);
+    }
+    runs.entry(id).or_default()
+}
+
 fn min_rounds_trigger(rounds: usize) -> FinishCheckTrigger {
     Arc::new(move |activity: &FinishActivity| activity.tool_rounds >= rounds)
 }
@@ -114,6 +129,49 @@ fn min_rounds_trigger(rounds: usize) -> FinishCheckTrigger {
 impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMiddleware {
     fn name(&self) -> &str {
         "verify_before_finish"
+    }
+
+    async fn before_agent(&self, ctx: &mut RunContext<C>, _state: &S) -> Result<()> {
+        if ctx.deferred_results.is_some()
+            && let Ok(mut runs) = self.runs.lock()
+        {
+            let run = state_for(&mut runs, ctx.instance_id());
+            // A deferred leg necessarily contained a tool round, even when
+            // compaction later hides the original tool-call message.
+            run.activity.tool_rounds = 1;
+            run.restore_deferred = true;
+        }
+        Ok(())
+    }
+
+    async fn before_model(
+        &self,
+        ctx: &mut RunContext<C>,
+        _state: &S,
+        request: &mut ModelRequest,
+    ) -> Result<()> {
+        if let Ok(mut runs) = self.runs.lock()
+            && let Some(run) = runs.get_mut(&ctx.instance_id())
+            && run.restore_deferred
+        {
+            run.restore_deferred = false;
+            let mut rounds = 0;
+            for message in &request.messages {
+                if let Message::Assistant(assistant) = message
+                    && !assistant.tool_calls.is_empty()
+                {
+                    rounds += 1;
+                    run.activity
+                        .tools_called
+                        .extend(assistant.tool_calls.iter().map(|call| call.name.clone()));
+                }
+                if matches!(message, Message::User(_)) && message.text() == self.check {
+                    run.fired = true;
+                }
+            }
+            run.activity.tool_rounds = run.activity.tool_rounds.max(rounds);
+        }
+        Ok(())
     }
 
     async fn after_model(
@@ -126,16 +184,7 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
             tracing::warn!("[tinyagents::mw] verify_before_finish state poisoned; not checking");
             return Ok(());
         };
-        // Interrupted runs can bypass both lifecycle hooks. Evict the oldest
-        // process-unique ID before retaining another run in a shared instance.
-        const MAX_RETAINED_RUNS: usize = 1_024;
-        if !runs.contains_key(&ctx.instance_id())
-            && runs.len() >= MAX_RETAINED_RUNS
-            && let Some(oldest) = runs.keys().copied().min()
-        {
-            runs.remove(&oldest);
-        }
-        let run = runs.entry(ctx.instance_id()).or_default();
+        let run = state_for(&mut runs, ctx.instance_id());
 
         let calls = response.tool_calls();
         if !calls.is_empty() {

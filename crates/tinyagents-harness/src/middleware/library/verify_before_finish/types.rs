@@ -37,6 +37,7 @@ pub type FinishCheckTrigger = Arc<dyn Fn(&FinishActivity) -> bool + Send + Sync>
 pub(super) struct RunState {
     pub(super) activity: FinishActivity,
     pub(super) fired: bool,
+    pub(super) restore_deferred: bool,
 }
 
 /// Asks a multi-step run, once, to check its final answer against the request
