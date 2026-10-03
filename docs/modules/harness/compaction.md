@@ -80,10 +80,9 @@ compiling. An LLM-backed implementation overrides it directly to thread the
 previous compaction's summary text into its prompt and *refine* rather than
 re-derive from scratch.
 
-`ContextCompressionMiddleware` keeps the most recent compaction's summary text
-in an internal `last_summary` slot and passes it as
-`SummaryRequest::previous_summary` on the next compaction — proactive or
-overflow-triggered — on the same middleware instance. `ConcatSummarizer`
+`ContextCompressionMiddleware` keeps each run's most recent summary text and
+passes it as `SummaryRequest::previous_summary` on that run's next compaction —
+proactive or overflow-triggered. `ConcatSummarizer`
 overrides `summarize_request` to carry that previous summary forward verbatim,
 because compaction is incremental (below) and would otherwise drop it.
 
@@ -100,8 +99,16 @@ then the live messages after the fold), and only then checks the threshold. A
 new compaction plans over the unfolded remainder alone and hands the summarizer
 just those messages plus the fold's summary as `previous_summary`; the result
 replaces the old summary and extends the fold. If the transcript no longer
-starts with the fingerprinted messages (rewritten history, or a host that
-spliced the summary in itself), the fold is dropped and compaction starts over.
+starts with the fingerprinted messages, the fold is dropped. If the request
+carries the fold's summary itself (a host that spliced it into its own
+transcript), that summary is lifted out and passed as `previous_summary`, so the
+next summary replaces it rather than sitting beside it. Otherwise the history is
+some other conversation: compaction starts over with no previous summary.
+
+All of this state is per run, keyed by `RunId`, so invocations sharing one
+middleware instance never read each other's fold or summary. `after_agent`
+drops a finished run's state; a run that never reaches it is evicted
+least-recently-used once 256 runs are tracked.
 
 Without the fold, a long run compacted on every call after the first one and
 re-sent the whole, growing history to the summarizer each time: in one 300-call
@@ -112,6 +119,12 @@ saw only the summary and a few recent messages.
 length after the compaction), which is what a session-backed sink maps to an
 entry id. The overflow path extends the fold the same way, provided the
 request's non-system messages still line up one-to-one with the live remainder.
+When a later middleware dropped messages and they no longer do, the overflow
+compaction still runs (without the prior summary, which then stays in the
+request), but the fold is not extended and no boundary is persisted: a shifted
+index would restore or duplicate the wrong messages on resume. With compression
+installed only as model middleware there is no `before_model` state, and the
+request is taken as the live transcript.
 
 ## `CompactionRecord` and `CompactionSink`
 
