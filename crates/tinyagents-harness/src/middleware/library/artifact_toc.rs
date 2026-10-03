@@ -108,7 +108,8 @@ pub fn split_input_allowance(trim_allowance: u64) -> (u64, u64) {
 /// (`ModelProfile::hoists_system_messages`, e.g. DeepSeek): there a new system
 /// message rewrites the cached prefix (#6962), so
 /// [`push_ephemeral_instruction`] appends the list to the tail tool result or
-/// user turn instead.
+/// user turn instead. If a later trim evicts that turn, the trim reattaches
+/// the harness note to the surviving request.
 pub struct ArtifactIndexTocMiddleware {
     /// This middleware's share of the turn's input allowance (a tenth, split at
     /// the install site so restoration and this list cannot each claim the

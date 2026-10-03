@@ -29,8 +29,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// A pure registry lookup (no network call), so it is cheap enough to run
     /// before every `before_model` pass and before every tool-change patch.
     /// `None` when nothing resolves or the model advertises no profile. A
-    /// hosted run's routing decision is made later, after `before_model`, and
-    /// is not consulted here.
+    /// Hosted runs use their resolver for the profile shown to middleware;
+    /// this local preview is only their initial fallback.
     pub(super) fn preview_model_profile(
         &self,
         request: &ModelRequest,
