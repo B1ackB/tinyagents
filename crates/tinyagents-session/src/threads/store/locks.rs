@@ -6,7 +6,7 @@
 //! metadata appends and purge semantics.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock, Weak};
 
 use parking_lot::{Mutex, RwLock};
@@ -111,15 +111,21 @@ pub(super) fn normalized_root(root: &Path) -> PathBuf {
     let mut ancestor = root;
     loop {
         if let Ok(canonical) = ancestor.canonicalize() {
-            return suffix
-                .iter()
-                .rev()
-                .fold(canonical, |path, component| path.join(component));
+            return suffix.iter().rev().fold(canonical, |mut path, component| {
+                if component == ".." {
+                    path.pop();
+                } else {
+                    path.push(component);
+                }
+                path
+            });
         }
-        let Some(name) = ancestor.file_name() else {
-            return root.to_path_buf();
-        };
-        suffix.push(name.to_os_string());
+        match ancestor.components().next_back() {
+            Some(Component::Normal(name)) => suffix.push(name.to_os_string()),
+            Some(Component::ParentDir) => suffix.push("..".into()),
+            Some(Component::CurDir) => {}
+            _ => return root.to_path_buf(),
+        }
         let Some(parent) = ancestor.parent() else {
             return root.to_path_buf();
         };
