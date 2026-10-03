@@ -180,68 +180,29 @@ impl ChannelEventHandler for ConversationPersistenceSubscriber {
             Ok(dir) => dir,
             Err(_) => return,
         };
-        let descriptor = match event {
+        let (event_workspace, channel, source) = match event {
             ChannelEvent::Received {
-                channel,
-                message_id,
-                sender,
-                reply_target,
-                content,
-                thread_ts,
                 workspace_dir,
-            } => {
-                // Drop events targeting a different workspace than the one this
-                // subscriber is currently bound to (workspace-switch race).
-                if *workspace_dir != my_workspace {
-                    return;
-                }
-                ChannelTurnDescriptor {
-                    channel,
-                    message_id,
-                    sender,
-                    reply_target,
-                    thread_ts: thread_ts.as_deref(),
-                    content,
-                    role: "user",
-                    success: None,
-                    elapsed_ms: None,
-                    source: "channel_received",
-                }
-            }
+                channel,
+                ..
+            } => (workspace_dir, channel.as_str(), "channel_received"),
             ChannelEvent::Processed {
-                channel,
-                message_id,
-                sender,
-                reply_target,
-                thread_ts,
-                response,
-                elapsed_ms,
-                success,
                 workspace_dir,
-            } => {
-                if *workspace_dir != my_workspace {
-                    return;
-                }
-                ChannelTurnDescriptor {
-                    channel,
-                    message_id,
-                    sender,
-                    reply_target,
-                    thread_ts: thread_ts.as_deref(),
-                    content: response,
-                    role: "assistant",
-                    success: Some(*success),
-                    elapsed_ms: Some(*elapsed_ms),
-                    source: "channel_processed",
-                }
-            }
+                channel,
+                ..
+            } => (workspace_dir, channel.as_str(), "channel_processed"),
         };
-        // Persistence failures are non-fatal: a dropped channel turn must not
-        // crash the bus handler, so the error is logged (without message
-        // content) and swallowed.
-        let channel = descriptor.channel.to_string();
-        let source = descriptor.source;
-        if let Err(error) = persist_channel_turn(&my_workspace, descriptor) {
+        if *event_workspace != my_workspace {
+            return;
+        }
+        let channel = channel.to_string();
+        let event = event.clone();
+        // File I/O and per-thread locks must not occupy a Tokio worker.
+        let result =
+            tokio::task::spawn_blocking(move || persist_channel_event(&my_workspace, &event))
+                .await
+                .unwrap_or_else(|error| Err(format!("persistence task failed: {error}")));
+        if let Err(error) = result {
             tracing::warn!(
                 channel = %channel,
                 source_event = source,
@@ -250,6 +211,61 @@ impl ChannelEventHandler for ConversationPersistenceSubscriber {
             );
         }
     }
+}
+
+fn persist_channel_event(workspace: &Path, event: &ChannelEvent) -> Result<(), String> {
+    let descriptor = match event {
+        ChannelEvent::Received {
+            channel,
+            message_id,
+            sender,
+            reply_target,
+            content,
+            thread_ts,
+            workspace_dir,
+        } => {
+            // The handler checked the workspace before dispatching.
+            let _ = workspace_dir;
+            ChannelTurnDescriptor {
+                channel,
+                message_id,
+                sender,
+                reply_target,
+                thread_ts: thread_ts.as_deref(),
+                content,
+                role: "user",
+                success: None,
+                elapsed_ms: None,
+                source: "channel_received",
+            }
+        }
+        ChannelEvent::Processed {
+            channel,
+            message_id,
+            sender,
+            reply_target,
+            thread_ts,
+            response,
+            elapsed_ms,
+            success,
+            workspace_dir,
+        } => {
+            let _ = workspace_dir;
+            ChannelTurnDescriptor {
+                channel,
+                message_id,
+                sender,
+                reply_target,
+                thread_ts: thread_ts.as_deref(),
+                content: response,
+                role: "assistant",
+                success: Some(*success),
+                elapsed_ms: Some(*elapsed_ms),
+                source: "channel_processed",
+            }
+        }
+    };
+    persist_channel_turn(workspace, descriptor)
 }
 
 /// Normalized view of a [`ChannelEvent::Received`] or [`ChannelEvent::Processed`]
