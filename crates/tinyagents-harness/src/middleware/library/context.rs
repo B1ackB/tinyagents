@@ -1221,6 +1221,10 @@ impl ContextCompressionMiddleware {
         {
             let compaction_record = CompactionRecord {
                 summary: record.summary.text(),
+                placement: match &record.summary {
+                    Message::User(_) => SummaryPlacement::User,
+                    _ => SummaryPlacement::System,
+                },
                 first_kept_index: boundary.first_kept_index,
                 tokens_before,
                 tokens_after,
