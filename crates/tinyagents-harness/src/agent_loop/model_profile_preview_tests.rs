@@ -2,6 +2,7 @@
 //! [`RunContext::model_profile`] before `before_model` middleware runs, so
 //! middleware can shape what it adds for that model (#6962).
 
+use super::*;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
