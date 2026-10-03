@@ -164,6 +164,17 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     assert!(body.contains("## Goal\nlater"));
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
+    assert!(body.contains("invalid default argument declaration"));
+}
+
+#[test]
+fn oversized_tool_pair_stays_in_one_chunk() {
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::replies(vec![])), "m")
+        .with_max_chunk_tokens(1);
+    let messages = shell("large", "cat huge.log", &"x".repeat(1000));
+    let chunks = summarizer.chunks(&messages);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].len(), 2);
 }
 
 #[test]

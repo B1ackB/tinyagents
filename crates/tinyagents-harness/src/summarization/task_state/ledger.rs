@@ -58,7 +58,8 @@ impl TaskLedger {
             self.commands.drain(..self.commands.len() - MAX_COMMANDS);
         }
         if self.files_read.len() > MAX_FILES_READ {
-            self.files_read.drain(..self.files_read.len() - MAX_FILES_READ);
+            self.files_read
+                .drain(..self.files_read.len() - MAX_FILES_READ);
         }
         if self.files_modified.len() > MAX_FILES_MODIFIED {
             self.files_modified

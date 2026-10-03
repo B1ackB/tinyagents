@@ -417,7 +417,9 @@ fn merge_state(mut first: TaskState, second: TaskState) -> TaskState {
     extend_unique(&mut first.errors_and_fixes, second.errors_and_fixes);
     extend_unique(&mut first.todos_done, second.todos_done);
     extend_unique(&mut first.todos_open, second.todos_open);
-    first.todos_open.retain(|item| !first.todos_done.contains(item));
+    first
+        .todos_open
+        .retain(|item| !first.todos_done.contains(item));
     if !second.current_hypothesis.is_empty() {
         first.current_hypothesis = second.current_hypothesis;
     }

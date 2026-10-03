@@ -48,7 +48,10 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
             .join("\n")
     };
     // Escape delimiters so a task cannot close its block and forge ledger tags.
-    let task = ledger.original_task.as_deref().unwrap_or("")
+    let task = ledger
+        .original_task
+        .as_deref()
+        .unwrap_or("")
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
@@ -177,7 +180,11 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())
-            .map(|t| t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")),
+            .map(|t| {
+                t.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+            }),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
         commands: Vec::new(),

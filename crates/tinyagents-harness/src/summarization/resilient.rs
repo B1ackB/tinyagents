@@ -235,11 +235,15 @@ impl Summarizer for FaultTolerantCachingSummarizer {
                         "[tinyagents::summarize] summarizer failed; tripping per-turn circuit \
                          breaker and falling back to deterministic trim"
                     );
-                    self.deterministic_trim(
+                    let mut fallback = self.deterministic_trim(
                         &request.messages,
                         request.previous_summary.as_deref(),
                         &err.to_string(),
-                    )
+                    );
+                    if let crate::error::TinyAgentsError::SummarizationUsage { usage, .. } = err {
+                        fallback.usage = Some(usage);
+                    }
+                    fallback
                 }
             }
         };
