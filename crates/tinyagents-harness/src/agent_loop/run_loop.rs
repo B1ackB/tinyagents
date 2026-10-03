@@ -2497,6 +2497,13 @@ const DROPPED_TOOL_CALL_NUDGE: &str = "Your previous turn indicated a tool call 
      included. If you meant to call a tool, issue the actual tool call now; otherwise answer \
      directly.";
 
+/// The re-prompt sent when the model wrote a tool call on a turn that offered
+/// no callable tool. The call was scrubbed and not run; the wording names that
+/// plainly, because a model told only to "answer" keeps trying to act.
+const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but tools are not \
+     available for this reply, so it did not run. Do not write tool calls. Answer now in plain \
+     text from the results already gathered, and state any remaining uncertainty.";
+
 /// The re-prompt sent when a text-dialect tool-call block could not be
 /// decoded: no tool ran, and the model should know why rather than assume
 /// its call went through.
