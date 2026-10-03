@@ -37,6 +37,11 @@ fn chunk(tag: &str) -> Message {
 
 /// Answers every request with a short summary naming how many requests it has
 /// seen, and records each request.
+/// The checkpoint the middleware writes for `summary` (default user placement).
+fn cp(summary: &str) -> Message {
+    crate::summarization::checkpoint_message(crate::summarization::SummaryPlacement::User, summary)
+}
+
 #[derive(Default)]
 struct ShortSummarizer {
     seen: Arc<Mutex<Vec<SummaryRequest>>>,
@@ -137,7 +142,7 @@ async fn reapplies_the_fold_instead_of_recompacting_every_call() {
     // ~90 tokens: over the 50-token trigger, so the first call compacts m1, m2.
     let sent = send(&stack, &mut c, &transcript).await;
     assert_eq!(seen.lock().unwrap().len(), 1);
-    assert_eq!(sent, vec![Message::system("summary #1"), chunk("m3")]);
+    assert_eq!(sent, vec![cp("summary #1"), chunk("m3")]);
 
     // The loop's transcript still holds m1 and m2 (it never saw the summary)
     // and grows by a small message. The fold is re-applied, so the request
@@ -147,7 +152,7 @@ async fn reapplies_the_fold_instead_of_recompacting_every_call() {
     assert_eq!(seen.lock().unwrap().len(), 1, "no second summarizer call");
     assert_eq!(
         sent,
-        vec![Message::system("summary #1"), chunk("m3"), user("ok")]
+        vec![cp("summary #1"), chunk("m3"), user("ok")]
     );
     assert_eq!(sink.records.lock().unwrap().len(), 1);
 }
@@ -174,7 +179,7 @@ async fn compacts_only_history_newer_than_the_fold() {
     assert_eq!(seen[1].messages, vec![chunk("m3"), chunk("m4")]);
     assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
     // The new summary replaces the one it was built on.
-    assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
+    assert_eq!(sent, vec![cp("summary #2"), chunk("m5")]);
 
     // Persisted boundaries are positions in the live transcript, which is
     // what a session-backed sink maps to entry ids: m3, then m5.
@@ -206,7 +211,7 @@ async fn drops_the_fold_when_the_transcript_no_longer_matches() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].messages, vec![chunk("n1"), chunk("n2")]);
-    assert_eq!(sent, vec![Message::system("summary #2"), chunk("n3")]);
+    assert_eq!(sent, vec![cp("summary #2"), chunk("n3")]);
 }
 
 #[tokio::test]
@@ -228,7 +233,7 @@ async fn keeps_system_prompts_ahead_of_the_reapplied_summary() {
         sent,
         vec![
             system,
-            Message::system("summary #1"),
+            cp("summary #1"),
             chunk("m3"),
             user("ok"),
         ]
