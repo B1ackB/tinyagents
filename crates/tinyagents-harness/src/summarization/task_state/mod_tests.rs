@@ -232,3 +232,61 @@ async fn checkpoint_size_stays_bounded_across_many_compactions() {
     // 3 lists x 12 items x ~215 chars, plus the ledger: well under 12k chars.
     assert!(last < 12_000, "checkpoint grew to {last} chars: {sizes:?}");
 }
+
+#[tokio::test]
+async fn merge_keeps_the_first_halfs_state_and_commands() {
+    let model = Arc::new(ScriptedModel::replies(vec![
+        STATE_REPLY,
+        r#"{"goal": "", "todos_open": ["second half work"]}"#,
+    ]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let a = summarizer.summarize(&history()).await.unwrap();
+    let b = summarizer
+        .summarize(&shell("c9", "cargo build", "ok"))
+        .await
+        .unwrap();
+    let body = summarizer.merge(&[a, b]).await.unwrap().summary.text();
+    // The empty later goal does not erase the earlier one; lists union.
+    assert!(body.contains("## Goal\ndefault args"));
+    assert!(body.contains("- invalid default argument declaration"));
+    assert!(body.contains("- fix error text"));
+    assert!(body.contains("- second half work"));
+    // Commands from both halves survive.
+    assert!(body.contains("- `go test ./vm/...` → FAILED: vm_test.go:9: boom"));
+    assert!(body.contains("- `cargo build` → ok"));
+}
+
+#[tokio::test]
+async fn a_second_compaction_carries_earlier_commands_forward() {
+    let model = Arc::new(ScriptedModel::replies(vec![STATE_REPLY, STATE_REPLY]));
+    let summarizer = TaskStateSummarizer::new(model, "m");
+    let first = summarizer.summarize(&history()).await.unwrap();
+    let second = summarizer
+        .summarize_request(
+            &SummaryRequest::new(vec![Message::assistant("thinking")])
+                .with_previous_summary(first.summary.text()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        second
+            .summary
+            .text()
+            .contains("- `go test ./vm/...` → FAILED: vm_test.go:9: boom")
+    );
+}
+
+#[test]
+fn an_oversized_tool_group_is_never_split() {
+    let mut messages = vec![Message::user("task")];
+    messages.extend(shell("c1", "cat big", &"x".repeat(4_000)));
+    messages.push(Message::user("after"));
+    let summarizer = TaskStateSummarizer::new(Arc::new(ScriptedModel::replies(vec!["{}"])), "m")
+        .with_max_chunk_tokens(50);
+    for chunk in summarizer.chunks(&messages) {
+        assert!(
+            !matches!(chunk.first(), Some(Message::Tool(_))),
+            "a chunk opens on an orphaned tool result"
+        );
+    }
+}
