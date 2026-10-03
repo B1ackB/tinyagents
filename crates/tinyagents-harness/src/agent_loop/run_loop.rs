@@ -523,7 +523,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     crate::model_registry::ResolvedModelBinding<State>,
                 )>,
             ));
-            let patch_request = ModelRequest::new(messages.clone());
+            let patch_request = ModelRequest::default();
             let patch_profile = if let Some(binding) =
                 self.resolve_host_model(ctx, &patch_request).await?
             {
