@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::*;
 use crate::runtime::{AgentHarness, RunPolicy};
-use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message, ToolMessage};
+use tinyinference_llm::message::{ContentBlock, Message, ToolMessage};
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::providers::MockModel;
 use tinyinference_llm::tool::ToolCall;
@@ -72,17 +72,11 @@ impl Tool for EchoTool {
 }
 
 fn tool_call_then_text() -> MockModel {
-    MockModel::with_responses(vec![
-        ModelResponse {
-            message: AssistantMessage {
-                tool_calls: vec![ToolCall::new("call-1", "lookup", json!({}))],
-                ..AssistantMessage::default()
-            },
-            finish_reason: Some("tool_calls".to_string()),
-            ..ModelResponse::assistant("")
-        },
-        ModelResponse::assistant("done"),
-    ])
+    let mut call = ModelResponse::assistant("");
+    call.message.content.clear();
+    call.message.tool_calls = vec![ToolCall::new("call-1", "lookup", json!({}))];
+    call.finish_reason = Some("tool_calls".to_string());
+    MockModel::with_responses(vec![call, ModelResponse::assistant("done")])
 }
 
 async fn tool_row_text(policy: RunPolicy) -> String {
