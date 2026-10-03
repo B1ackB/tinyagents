@@ -391,6 +391,20 @@ mod smoke {
     }
 }
 
+#[test]
+fn fallback_trim_counts_message_framing_against_the_final_budget() {
+    let mut messages = vec![Message::system("instructions"), Message::user("task")];
+    messages.extend((0..80).map(|_| Message::assistant("ok")));
+    let budget = 50;
+    let kept = trim_keeping_turn_user_message(&messages, budget);
+
+    assert!(
+        kept.iter()
+            .any(|message| matches!(message, Message::User(_)))
+    );
+    assert!(crate::token_estimation::count_tokens_approximately(&kept) <= budget);
+}
+
 /// Regression tests for the structural repair of transcript cut points.
 ///
 /// Every test here is written against the concrete provider failure it

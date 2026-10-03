@@ -528,7 +528,9 @@ fn enforce_approximate_budget(
         let oldest = messages
             .iter()
             .enumerate()
-            .find(|(index, message)| Some(*index) != pinned && !matches!(message, Message::System(_)))
+            .find(|(index, message)| {
+                Some(*index) != pinned && !matches!(message, Message::System(_))
+            })
             .or_else(|| {
                 messages
                     .iter()
@@ -545,7 +547,9 @@ fn enforce_approximate_budget(
         {
             *pin_index -= 1;
         }
-        while let Some(index) = messages.iter().position(|message| !matches!(message, Message::System(_)))
+        while let Some(index) = messages
+            .iter()
+            .position(|message| !matches!(message, Message::System(_)))
             && matches!(messages[index], Message::Tool(_))
         {
             messages.remove(index);
