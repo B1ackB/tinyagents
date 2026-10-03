@@ -731,6 +731,12 @@ impl ContextCompressionMiddleware {
             // threshold call here would forget it and a later compaction would
             // send the old summary beside the new one built on it.
             system.remove(at);
+            // The host's transcript has its own coordinate space. Keep the
+            // summary available for replacement, but stop claiming that it
+            // covers a prefix of the new live transcript.
+            if let Some(host_fold) = state.fold.as_mut() {
+                host_fold.folded = 0;
+            }
             state.boundary_unaligned = true;
             tracing::debug!("[context_compression] host carries the fold summary itself");
             return FoldCheck::HostApplied(fold.summary.text());
