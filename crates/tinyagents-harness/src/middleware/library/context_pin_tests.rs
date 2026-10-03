@@ -183,6 +183,28 @@ async fn a_threshold_compaction_keeps_the_turn_user_message_verbatim() {
 }
 
 #[tokio::test]
+async fn finished_run_carries_the_pinned_message_into_compacted_history() {
+    let Fixture { stack, mut c, .. } = fixture(None);
+    let transcript = vec![task(), step("a1"), step("a2"), step("a3")];
+    send(&stack, &mut c, &transcript).await;
+
+    let mut run = crate::middleware::AgentRun::new();
+    run.messages = transcript;
+    run.messages.push(Message::assistant("done"));
+    stack.run_after_agent(&mut c, &(), &mut run).await.unwrap();
+
+    assert_eq!(
+        run.compacted_history.expect("compacted history"),
+        vec![
+            checkpoint(1),
+            task(),
+            step("a3"),
+            Message::assistant("done")
+        ]
+    );
+}
+
+#[tokio::test]
 async fn the_fold_reapplies_the_pinned_message() {
     let Fixture {
         stack,
@@ -339,7 +361,7 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(100)
+    .with_context_window(170)
     .with_threshold_fraction(0.5);
     let mw = Arc::new(ContextCompressionMiddleware::with_summarizer(
         policy,
