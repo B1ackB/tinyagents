@@ -74,17 +74,17 @@ into both the threshold and overflow compaction paths; leaving it unset
 ## Iterative summaries
 
 `Summarizer::summarize_request(&SummaryRequest) -> Result<SummaryRecord>` is a
-default trait method delegating to `summarize` (ignoring
-`SummaryRequest::previous_summary`), so every existing `Summarizer` keeps
-compiling. An LLM-backed implementation overrides it directly to thread the
-previous compaction's summary text into its prompt and *refine* rather than
-re-derive from scratch.
+default trait method that prepends `SummaryRequest::previous_summary` as a
+system message before delegating to `summarize`, so every existing
+`Summarizer` keeps compiling and receives the prior summary. An LLM-backed
+implementation can override it to pass that context through a specialized
+prompt and *refine* rather than re-derive from scratch.
 
 `ContextCompressionMiddleware` keeps each run's most recent summary text and
 passes it as `SummaryRequest::previous_summary` on that run's next compaction —
-proactive or overflow-triggered. `ConcatSummarizer`
-overrides `summarize_request` to carry that previous summary forward verbatim,
-because compaction is incremental (below) and would otherwise drop it.
+proactive or overflow-triggered. `ConcatSummarizer` carries that previous
+summary forward verbatim as a prefix, rather than treating it as a message to
+summarize.
 
 ## The fold: compaction carries across calls
 

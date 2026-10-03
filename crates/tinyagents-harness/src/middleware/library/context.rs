@@ -267,7 +267,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                         reason: "before_compaction hook supplied the summary".to_string(),
                     },
                 };
-                self.remember_fold(&ctx.instance_id(), first_kept_index, &chain, &record.summary);
+                self.remember_fold(
+                    &ctx.instance_id(),
+                    first_kept_index,
+                    &chain,
+                    &record.summary,
+                );
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
                 self.finish_compaction(
@@ -371,7 +376,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // between the system prompt and the kept recent turns, in
         // chronological position. It replaces the prior fold's summary, which
         // it was built on.
-        self.remember_fold(&ctx.instance_id(), first_kept_index, &chain, &record.summary);
+        self.remember_fold(
+            &ctx.instance_id(),
+            first_kept_index,
+            &chain,
+            &record.summary,
+        );
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
 
@@ -492,10 +502,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
             CompactionDecision::Decline => return Err(first_error),
             CompactionDecision::Proceed => {}
             CompactionDecision::UseSummary(text) => {
-                let text = prior
-                    .as_ref()
-                    .map(|fold| format!("{}\n{text}", fold.summary.text()))
-                    .unwrap_or(text);
+                let text = if fold_extends {
+                    prior
+                        .as_ref()
+                        .map(|fold| format!("{}\n{text}", fold.summary.text()))
+                        .unwrap_or(text)
+                } else {
+                    text
+                };
                 let record = SummaryRecord {
                     summary: Message::system(text),
                     provenance: crate::summarization::CompressionProvenance {
@@ -519,11 +533,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 self.finish_compaction(
                     ctx,
                     record,
-                    self.boundary_for_run(&ctx.instance_id(), fold_extends.then_some(folded + cut.index)),
+                    self.boundary_for_run(
+                        &ctx.instance_id(),
+                        fold_extends.then_some(folded + cut.index),
+                    ),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Overflow,
                 );
+                if !fold_extends {
+                    self.clear_run_last_summary(&ctx.instance_id());
+                }
                 retried.messages = new_messages;
                 return next.run(ctx, state, retried).await;
             }
@@ -567,11 +587,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.finish_compaction(
             ctx,
             record,
-            self.boundary_for_run(&ctx.instance_id(), fold_extends.then_some(folded + cut.index)),
+            self.boundary_for_run(
+                &ctx.instance_id(),
+                fold_extends.then_some(folded + cut.index),
+            ),
             from_tokens,
             to_tokens,
             CompactionReason::Overflow,
         );
+        if !fold_extends {
+            self.clear_run_last_summary(&ctx.instance_id());
+        }
 
         let mut retried = request;
         retried.messages = new_messages;
@@ -758,6 +784,14 @@ impl ContextCompressionMiddleware {
     fn run_last_summary(&self, run: &u64) -> Option<String> {
         let runs = self.runs.lock().expect("runs mutex poisoned");
         runs.get(run).and_then(|state| state.last_summary.clone())
+    }
+
+    /// Drops fallback summary state when overflow compaction did not align
+    /// with the transcript that summary would otherwise describe.
+    fn clear_run_last_summary(&self, run: &u64) {
+        if let Some(state) = self.runs.lock().expect("runs mutex poisoned").get_mut(run) {
+            state.last_summary = None;
+        }
     }
 
     fn boundary_for_run(&self, run: &u64, boundary: Option<usize>) -> Option<usize> {
@@ -1055,7 +1089,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         request: &mut ModelRequest,
     ) -> Result<()> {
         let layout = PromptCacheLayout::from_request(request);
-        let run_id = ctx.run_id();
+        let run_id = ctx.run_id().clone();
         let mut previous = self.previous.lock().expect("previous mutex poisoned");
         // Only compare within one run. See the field docs on
         // `PromptCacheGuardMiddleware::previous`: a prefix cache is scoped to a
