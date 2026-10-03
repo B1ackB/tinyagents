@@ -47,7 +47,7 @@ fn no_band_before_half_the_budget_is_used() {
 #[test]
 fn bands_advance_every_tenth_of_the_budget_past_half() {
     let budget = 60 * MINUTE;
-    let band = |minutes: u64| {
+    let band = |minutes: u32| {
         TurnClock {
             elapsed: minutes * MINUTE,
             budget,
