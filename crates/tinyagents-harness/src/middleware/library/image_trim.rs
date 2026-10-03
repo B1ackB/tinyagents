@@ -24,7 +24,8 @@ fn dropped_harness_notes(message: &TaMessage) -> Vec<String> {
         .filter_map(|block| match block {
             ContentBlock::Text(text) => text
                 .strip_prefix("\n\n")
-                .and_then(|text| text.strip_prefix(HARNESS_NOTE_HEADER))
+                .unwrap_or(text)
+                .strip_prefix(HARNESS_NOTE_HEADER)
                 .and_then(|text| text.strip_prefix('\n'))
                 .map(str::to_owned),
             _ => None,

@@ -1777,7 +1777,9 @@ async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
         Arc::new(AllowAllSecurityGate),
         resolver.clone(),
     );
-    let harness: AgentHarness<()> = AgentHarness::new();
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.push_middleware(Arc::new(LoggingMiddleware::new()));
+    harness.push_middleware(Arc::new(LoggingMiddleware::with_label("second")));
 
     harness
         .invoke_agent(
@@ -1815,7 +1817,8 @@ async fn hosted_model_resolution_marks_only_root_contexts_as_team_leads() {
 
     assert_eq!(
         *resolver.team_lead_flags.lock().expect("resolver lock"),
-        vec![true, false]
+        vec![true, false],
+        "each hosted model call resolves once despite multiple middleware hooks"
     );
 }
 
