@@ -17,6 +17,9 @@ use crate::summarization::is_checkpoint;
 pub(crate) const MAX_TASK_CHARS: usize = 6_000;
 /// Commands kept in the ledger (the most recent ones).
 pub(crate) const MAX_COMMANDS: usize = 15;
+/// Files kept per list (the most recently seen ones), so the rendered ledger
+/// stays bounded on tasks that touch many files.
+pub(crate) const MAX_FILES: usize = 200;
 /// Longest single command line kept.
 const MAX_COMMAND_CHARS: usize = 200;
 
@@ -50,9 +53,20 @@ impl TaskLedger {
                 self.absorb_call(&call.name, &call.arguments, result);
             }
         }
-        if self.commands.len() > MAX_COMMANDS {
-            self.commands.drain(..self.commands.len() - MAX_COMMANDS);
+        self.cap();
+    }
+
+    /// Keeps the most recent [`MAX_COMMANDS`] commands and [`MAX_FILES`] files
+    /// per list.
+    pub(crate) fn cap(&mut self) {
+        fn tail<T>(items: &mut Vec<T>, keep: usize) {
+            if items.len() > keep {
+                items.drain(..items.len() - keep);
+            }
         }
+        tail(&mut self.commands, MAX_COMMANDS);
+        tail(&mut self.files_modified, MAX_FILES);
+        tail(&mut self.files_read, MAX_FILES);
     }
 
     fn absorb_call(&mut self, name: &str, arguments: &Value, result: Option<&str>) {

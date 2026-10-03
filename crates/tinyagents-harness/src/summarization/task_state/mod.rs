@@ -404,11 +404,7 @@ impl Summarizer for TaskStateSummarizer {
                 (earlier, later) => later.or(earlier),
             };
         }
-        if ledger.commands.len() > ledger::MAX_COMMANDS {
-            ledger
-                .commands
-                .drain(..ledger.commands.len() - ledger::MAX_COMMANDS);
-        }
+        ledger.cap();
         let body = render_task_state(&state.unwrap_or_default().bounded(), &ledger);
         Ok(SummaryRecord {
             provenance: CompressionProvenance {

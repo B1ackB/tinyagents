@@ -691,3 +691,19 @@ fn deterministic_trim_keeps_the_user_role_checkpoint() {
         "the newest message is kept"
     );
 }
+
+#[test]
+fn deterministic_trim_shrinks_a_checkpoint_that_cannot_fit() {
+    let policy = SummarizationPolicy::default().with_trigger_override(100);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()));
+    let mut request = ModelRequest {
+        messages: vec![cp(&"y".repeat(4_000)), chunk("m0")],
+        ..Default::default()
+    };
+    let mut c = ctx();
+    mw.trim_to_trigger(&mut c, &mut request, 0);
+    assert!(crate::summarization::is_checkpoint(&request.messages[0]));
+    assert!(request.messages[0].text().chars().count() < 400);
+    assert!(request.messages[0].text().contains("truncated"));
+}

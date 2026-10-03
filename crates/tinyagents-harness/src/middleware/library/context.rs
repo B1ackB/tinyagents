@@ -1143,7 +1143,12 @@ impl ContextCompressionMiddleware {
         let trimmed = match checkpoint_at {
             Some(at) => {
                 let mut rest = request.messages.clone();
-                let checkpoint = rest.remove(at);
+                let mut checkpoint = rest.remove(at);
+                // A checkpoint that cannot fit the budget is shrunk (to half
+                // of it, leaving room for the tail) instead of kept whole.
+                if crate::token_estimation::estimate_message_tokens(&checkpoint) >= message_budget {
+                    checkpoint = shrink_checkpoint(&checkpoint, message_budget / 2);
+                }
                 let budget = message_budget.saturating_sub(
                     crate::token_estimation::estimate_message_tokens(&checkpoint),
                 );
@@ -1173,6 +1178,23 @@ impl ContextCompressionMiddleware {
             state.pressure.pending = None;
         }
     }
+}
+
+/// `checkpoint` cut to about `tokens` estimated tokens (4 chars each), keeping
+/// the marker and a note that the body was truncated.
+fn shrink_checkpoint(checkpoint: &Message, tokens: u64) -> Message {
+    let body = checkpoint_body(checkpoint).unwrap_or_default();
+    let keep = usize::try_from(tokens.saturating_mul(4)).unwrap_or(usize::MAX);
+    let cut: String = body.chars().take(keep).collect();
+    tracing::warn!(
+        from_chars = body.chars().count(),
+        to_chars = cut.chars().count(),
+        "[context_compression] checkpoint exceeds the trim budget; truncating it"
+    );
+    checkpoint_message(
+        crate::summarization::SummaryPlacement::User,
+        &format!("{cut}\n[checkpoint truncated to fit the context budget]"),
+    )
 }
 
 /// `messages` with `fold` applied, when the fold still matches them and covers

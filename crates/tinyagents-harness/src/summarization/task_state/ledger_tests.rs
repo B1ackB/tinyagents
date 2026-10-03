@@ -135,3 +135,16 @@ fn tool_kinds_follow_common_harness_names() {
     assert_eq!(ToolKind::of("read_file"), ToolKind::Read);
     assert_eq!(ToolKind::of("web_search_tool"), ToolKind::Other);
 }
+
+#[test]
+fn file_lists_are_capped_to_the_most_recent() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES + 5).map(|i| format!("f{i}")).collect(),
+        files_modified: (0..MAX_FILES + 5).map(|i| format!("m{i}")).collect(),
+        ..TaskLedger::default()
+    };
+    ledger.absorb(&[]);
+    assert_eq!(ledger.files_read.len(), MAX_FILES);
+    assert_eq!(ledger.files_read[0], "f5");
+    assert_eq!(ledger.files_modified.len(), MAX_FILES);
+}
