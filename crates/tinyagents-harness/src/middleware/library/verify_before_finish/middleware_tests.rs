@@ -489,3 +489,37 @@ async fn deferred_resume_restores_compacted_activity_and_check_provenance() {
         .unwrap();
     assert!(final_answer.continue_turn.is_none());
 }
+
+/// Once the wrap-up middleware has announced a budget notice in this run, the
+/// check stays quiet so the two directives cannot contradict each other.
+#[tokio::test]
+async fn skips_when_the_wrap_up_already_announced_a_budget_notice() {
+    use crate::middleware::library::{CapturedOutcomes, FinalCallWrapUpMiddleware};
+    struct Nothing;
+    impl CapturedOutcomes for Nothing {
+        fn content_for(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+    let wrap = Arc::new(
+        FinalCallWrapUpMiddleware::new("CONCLUDE", "WRITE", Arc::new(Nothing), 0)
+            .with_budget_notice([0.5]),
+    );
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK).with_wrap_up(wrap.clone());
+
+    for (announce, expect_check) in [(false, true), (true, false)] {
+        let mut ctx = RunContext::new(RunConfig::new("t").with_max_model_calls(20), ());
+        for _ in 0..10 {
+            ctx.limits.record_model_call().unwrap();
+        }
+        if announce {
+            let mut req = tinyinference_llm::model::ModelRequest::new(vec![Message::user("x")]);
+            wrap.before_model(&mut ctx, &(), &mut req).await.unwrap();
+        }
+        let mut round = tool_round("c1", "lookup");
+        mw.after_model(&mut ctx, &(), &mut round).await.unwrap();
+        let mut done = answer("draft");
+        mw.after_model(&mut ctx, &(), &mut done).await.unwrap();
+        assert_eq!(done.continue_turn.is_some(), expect_check, "announce={announce}");
+    }
+}
