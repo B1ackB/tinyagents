@@ -857,6 +857,16 @@ mod turn_pin {
     }
 
     #[test]
+    fn a_user_role_checkpoint_is_never_pinned_as_the_turn_message() {
+        use crate::summarization::{SummaryPlacement, checkpoint_message};
+        let mut messages = long_turn();
+        // A host-persisted checkpoint stands where the task was.
+        messages[1] = checkpoint_message(SummaryPlacement::User, "earlier work");
+        let split = pinning_policy().plan_split(&messages);
+        assert_eq!(split.pinned, None, "{:?}", split.to_keep);
+    }
+
+    #[test]
     fn the_tail_constructor_sets_the_policy_fields() {
         let policy = summarization_policy_with_tail(100_000, 30_000);
         assert_eq!(policy.context_window, Some(100_000));
@@ -1017,6 +1027,29 @@ mod plan_recent_tokens {
         assert!((2..=4).contains(&kept_turns), "kept {kept_turns} turns");
         assert_eq!(to_summarize.len() + to_keep.len(), history().len());
         assert!(matches!(to_summarize[0], Message::User(_)));
+    }
+
+    #[test]
+    fn token_budget_split_pins_the_turn_user_message() {
+        let policy = SummarizationPolicy {
+            pin_turn_user_message: true,
+            ..summarization_policy(1_000_000)
+        };
+        let split = policy.plan_split_recent_tokens(&history(), 3_500);
+
+        assert_eq!(split.pinned, Some(0));
+        assert_eq!(split.to_keep[1].text(), "task");
+        assert!(
+            !split
+                .to_summarize
+                .iter()
+                .any(|message| matches!(message, Message::User(_))),
+            "the pinned task must not be summarized"
+        );
+        assert!(crate::summarization::tool_pairing_is_intact(&split.to_keep));
+        assert!(crate::summarization::tool_pairing_is_intact(
+            &split.to_summarize
+        ));
     }
 
     #[test]

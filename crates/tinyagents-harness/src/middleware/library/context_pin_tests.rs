@@ -7,32 +7,32 @@
 //! that the fold re-applies it, that later compactions build on it, and that
 //! the persisted [`CompactionRecord`] says where it is.
 
-use super::*;
-
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use crate::context::{RunConfig, RunContext};
+use crate::error::Result;
 use crate::middleware::{ContextCompressionMiddleware, Middleware, MiddlewareStack};
 use crate::summarization::{
     CompactionDecision, CompactionReason, CompactionRecord, CompactionSink, CompressionProvenance,
-    SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord, SummaryRequest,
-    checkpoint_message,
+    SummarizationPolicy, Summarizer, SummaryRecord, SummaryRequest,
 };
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
 
-/// ~30 estimated tokens of assistant work tagged with `tag`.
+/// ~60 estimated tokens of assistant work tagged with `tag`.
 fn step(tag: &str) -> Message {
-    Message::assistant(format!("{tag}:{}", "x".repeat(116)))
+    Message::assistant(format!("{tag}:{}", "x".repeat(236)))
+}
+
+/// The user-role checkpoint the middleware splices in for `summary`.
+fn cp(summary: &str) -> Message {
+    crate::summarization::checkpoint_message(crate::summarization::SummaryPlacement::User, summary)
 }
 
 fn task() -> Message {
     Message::user("write the report")
-}
-
-fn checkpoint(number: usize) -> Message {
-    checkpoint_message(SummaryPlacement::System, &format!("summary #{number}"))
 }
 
 /// Answers with `summary #<n>` and records each request.
@@ -83,23 +83,25 @@ struct Fixture {
     c: RunContext,
 }
 
-/// An 80-token trigger keeping the newest message, with pinning on.
+/// A 150-token trigger keeping the newest message, with pinning on.
 /// `decline_threshold_after` declines threshold compactions once that many
 /// have been offered, so a later call reaches the overflow path.
 fn fixture(decline_threshold_after: Option<usize>) -> Fixture {
+    // Each `step` is about 60 estimated tokens. Four messages in the initial
+    // transcript are therefore about 180 tokens, so this threshold exercises
+    // compaction with a clear margin while keeping the fixture small.
     let policy = SummarizationPolicy {
         keep_last: 1,
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(160)
+    .with_context_window(320)
     .with_threshold_fraction(0.5);
     let summarizer = ShortSummarizer::default();
     let seen = summarizer.seen.clone();
     let offered = Mutex::new(0usize);
     let mw = Arc::new(
         ContextCompressionMiddleware::with_summarizer(policy, Box::new(summarizer))
-            .with_summary_placement(SummaryPlacement::System)
             .with_before_compaction(move |c| {
                 if c.reason != CompactionReason::Threshold {
                     return CompactionDecision::Proceed;
@@ -170,7 +172,7 @@ async fn a_threshold_compaction_keeps_the_turn_user_message_verbatim() {
 
     assert_eq!(
         sent,
-        vec![checkpoint(1), task(), step("a3")],
+        vec![cp("summary #1"), task(), step("a3")],
         "the assignment must follow the summary verbatim"
     );
     assert_eq!(
@@ -180,28 +182,6 @@ async fn a_threshold_compaction_keeps_the_turn_user_message_verbatim() {
     // The tail starts at a3 (live index 3); the pinned task is live index 0.
     assert_eq!(first_kept(&sink), vec![3]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0)]);
-}
-
-#[tokio::test]
-async fn finished_run_carries_the_pinned_message_into_compacted_history() {
-    let Fixture { stack, mut c, .. } = fixture(None);
-    let transcript = vec![task(), step("a1"), step("a2"), step("a3")];
-    send(&stack, &mut c, &transcript).await;
-
-    let mut run = crate::middleware::AgentRun::new();
-    run.messages = transcript;
-    run.messages.push(Message::assistant("done"));
-    stack.run_after_agent(&mut c, &(), &mut run).await.unwrap();
-
-    assert_eq!(
-        run.compacted_history.expect("compacted history"),
-        vec![
-            checkpoint(1),
-            task(),
-            step("a3"),
-            Message::assistant("done")
-        ]
-    );
 }
 
 #[tokio::test]
@@ -221,7 +201,12 @@ async fn the_fold_reapplies_the_pinned_message() {
     assert_eq!(seen.lock().unwrap().len(), 1, "no second summarizer call");
     assert_eq!(
         sent,
-        vec![checkpoint(1), task(), step("a3"), Message::assistant("ok")]
+        vec![
+            cp("summary #1"),
+            task(),
+            step("a3"),
+            Message::assistant("ok")
+        ]
     );
 }
 
@@ -243,7 +228,7 @@ async fn a_second_compaction_keeps_the_pin_and_summarizes_only_new_history() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].messages, vec![step("a3"), step("a4")]);
     assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
-    assert_eq!(sent, vec![checkpoint(2), task(), step("a5")]);
+    assert_eq!(sent, vec![cp("summary #2"), task(), step("a5")]);
     assert_eq!(first_kept(&sink), vec![3, 5]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(0)]);
 }
@@ -268,7 +253,7 @@ async fn a_later_user_message_takes_over_the_pin() {
         seen.lock().unwrap()[1].messages,
         vec![task(), step("a3"), step("a4")]
     );
-    assert_eq!(sent, vec![checkpoint(2), change, step("a5")]);
+    assert_eq!(sent, vec![cp("summary #2"), change, step("a5")]);
     // live: task 0, a1 1, a2 2, a3 3, change 4, a4 5, a5 6
     assert_eq!(first_kept(&sink), vec![3, 6]);
     assert_eq!(pinned_indexes(&sink), vec![Some(0), Some(4)]);
@@ -296,8 +281,8 @@ impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
             };
             if first {
                 return Err(crate::error::TinyAgentsError::Model(
-                    "This model's maximum context length is 100 tokens. However, your \
-                     messages resulted in 900 tokens."
+                    "This model's maximum context length is 1000 tokens. However, your \
+                     messages resulted in 9000 tokens."
                         .to_string(),
                 ));
             }
@@ -332,7 +317,7 @@ async fn an_overflow_after_a_pinned_fold_extends_it_and_keeps_the_pin() {
         .unwrap();
 
     let retried = base.calls.lock().unwrap()[1].messages.clone();
-    assert_eq!(retried, vec![checkpoint(2), task(), step("a5")]);
+    assert_eq!(retried, vec![cp("summary #2"), task(), step("a5")]);
     assert_eq!(
         seen.lock().unwrap()[1].messages,
         vec![step("a3"), step("a4")]
@@ -361,7 +346,7 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         pin_turn_user_message: true,
         ..SummarizationPolicy::default()
     }
-    .with_context_window(170)
+    .with_context_window(320)
     .with_threshold_fraction(0.5);
     let mw = Arc::new(ContextCompressionMiddleware::with_summarizer(
         policy,
@@ -387,4 +372,31 @@ async fn the_fallback_trim_does_not_front_drop_the_pinned_message() {
         "the front-drop must keep the turn's assignment: {sent:?}"
     );
     assert_eq!(sent.last(), Some(&step("a3")));
+}
+
+#[tokio::test]
+async fn the_compacted_history_handed_to_the_host_keeps_the_pinned_message() {
+    let Fixture {
+        stack,
+        seen: _seen,
+        sink: _sink,
+        mut c,
+    } = fixture(None);
+    let transcript = vec![
+        Message::system("sys"),
+        task(),
+        step("a1"),
+        step("a2"),
+        step("a3"),
+    ];
+    send(&stack, &mut c, &transcript).await;
+
+    let mut run = crate::middleware::AgentRun::new();
+    run.messages = transcript;
+    stack.run_after_agent(&mut c, &(), &mut run).await.unwrap();
+
+    assert_eq!(
+        run.compacted_history.expect("compacted history"),
+        vec![Message::system("sys"), cp("summary #1"), task(), step("a3")]
+    );
 }
