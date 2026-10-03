@@ -313,6 +313,87 @@ async fn successfully_persisted_partial_refresh_keeps_new_prefix() {
 }
 
 #[tokio::test]
+async fn legacy_mixed_role_prefix_resumes_repeatedly_then_records_boundary_on_commit() {
+    let directory = tempfile::tempdir().unwrap();
+    let locator = Arc::new(FileTranscriptLocator::new(directory.path().to_path_buf()));
+    let identity = SessionRef::scoped("legacy-prefix", "agent-id");
+    let mut legacy_meta = meta();
+    legacy_meta.turn_count = 1;
+    let history = locator.open_session(&identity, legacy_meta).unwrap();
+    for (role, content) in [
+        ("system", "policy"),
+        ("user", "example"),
+        ("user", "real turn"),
+        ("user", "another real turn"),
+    ] {
+        history
+            .append(TranscriptMessage::new(role, content))
+            .unwrap();
+    }
+    let prefix = vec![Message::system("policy"), Message::user("example")];
+    let mut expected = prefix.clone();
+    expected.extend([
+        Message::user("real turn"),
+        Message::user("another real turn"),
+    ]);
+    let mut committed = expected.clone();
+    committed.push(Message::user("next turn"));
+    let driver = Arc::new(Driver::new(vec![Ok(outcome(committed.clone()))]));
+    let codec = Arc::new(RefreshCodec::default());
+    let mut session = SessionBuilder::new(driver.clone())
+        .prefix(PrefixSnapshot::new(prefix.clone()))
+        .codec(codec.clone())
+        .session(locator.clone(), identity.clone(), meta())
+        .build()
+        .unwrap();
+    let options = session_turn_options(ResumeMode::Session, "legacy-prefix");
+    for _ in 0..2 {
+        assert_eq!(session.resume(&options).await.unwrap().history, expected);
+        assert_eq!(session.history(), expected);
+        assert_eq!(
+            history
+                .read_session()
+                .unwrap()
+                .unwrap()
+                .meta
+                .prefix_message_count,
+            None
+        );
+    }
+    session
+        .turn(
+            SessionTurnRequest::new(Message::user("next turn")),
+            TurnOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(driver.requests.lock().unwrap()[0].history, committed);
+    assert_eq!(
+        locator
+            .read_session_transcript(&locator.head_generation(&identity))
+            .unwrap()
+            .read_session()
+            .unwrap()
+            .unwrap()
+            .meta
+            .prefix_message_count,
+        Some(2)
+    );
+    drop(session);
+    let mut reopened = SessionBuilder::new(Arc::new(Driver::new(vec![])))
+        .codec(codec)
+        .session(
+            Arc::new(FileTranscriptLocator::new(directory.path().to_path_buf())),
+            identity,
+            meta(),
+        )
+        .build()
+        .unwrap();
+    assert_eq!(reopened.resume(&options).await.unwrap().history, committed);
+    assert_eq!(reopened.prefix_snapshot().messages(), prefix);
+}
+
+#[tokio::test]
 async fn mixed_role_refresh_preserves_overlapping_conversation_on_request_and_cold_resume() {
     let directory = tempfile::tempdir().unwrap();
     let locator = Arc::new(FileTranscriptLocator::new(directory.path().to_path_buf()));

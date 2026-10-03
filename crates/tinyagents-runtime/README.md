@@ -68,6 +68,11 @@ history. Each committed transcript generation records the frozen prefix's
 message count so a cold resume strips that generation's stored tiers rather
 than guessing from every leading System row; older files fall back to the
 sealed generation when it can establish the boundary.
+Uncompacted legacy files without a recorded boundary reconcile overlapping
+configured few-shot messages on every resume. Their inferred leading System
+count is not cached as authoritative; the next successful persisted turn
+records the complete configured prefix count. Recorded boundaries preserve
+equal messages that belong to the conversation after the prefix.
 When all frozen tiers are System messages, the session also carries their
 count into the harness run context, so a later System compaction summary stays
 in history when the next driver invocation rebuilds its request.

@@ -321,13 +321,28 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         } else {
             stored_len.min(leading_len)
         };
-        self.persisted_prefix_len = boundary_resolved.then_some(stored_len);
+        // A legacy, uncompacted transcript has no recorded boundary for
+        // non-System few-shot messages. Leading System rows alone must not
+        // turn that unknown extent into an authoritative cached boundary.
+        let authoritative_boundary = recorded_boundary.is_some()
+            || cached_boundary.is_some()
+            || (compacted_head && boundary_resolved);
+        self.persisted_prefix_len = authoritative_boundary.then_some(stored_len);
         if self.prefix.messages().is_empty() && stored_len != 0 {
             self.prefix = PrefixSnapshot::new(decoded[..stored_len].to_vec());
         }
         decoded.drain(..stored_len);
-        let mut history = self.prefix.messages().to_vec();
-        history.extend(decoded);
+        let history = if authoritative_boundary {
+            // Equal messages after a known boundary are real conversation.
+            let mut history = self.prefix.messages().to_vec();
+            history.extend(decoded);
+            history
+        } else {
+            // Legacy few-shot rows can remain after the leading System rows
+            // were stripped. Reconcile their overlap until a successful turn
+            // persists the full configured prefix count.
+            self.with_prefix(decoded)
+        };
         self.history = history.clone();
         // Every turn already on disk counts as committed: the prefix those
         // turns were sent with is part of the conversation, in this process
