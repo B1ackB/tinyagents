@@ -109,6 +109,7 @@ impl VerifyBeforeFinishMiddleware {
 }
 
 const MAX_RETAINED_RUNS: usize = 1_024;
+const RESUME_KEY: &str = "tinyagents.verify_before_finish.v1";
 
 fn state_for<'a, C>(runs: &'a mut HashMap<u64, RunState>, ctx: &RunContext<C>) -> &'a mut RunState {
     // A cancelled run can bypass both terminal hooks. Its context marker is
@@ -132,14 +133,22 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
     }
 
     async fn before_agent(&self, ctx: &mut RunContext<C>, _state: &S) -> Result<()> {
-        if ctx.deferred_results.is_some()
+        if let Some(results) = ctx.deferred_results.as_ref()
             && let Ok(mut runs) = self.runs.lock()
         {
             let run = state_for(&mut runs, ctx);
-            // A deferred leg necessarily contained a tool round, even when
-            // compaction later hides the original tool-call message.
-            run.activity.tool_rounds = 1;
-            run.restore_deferred = true;
+            if let Some(saved) = results.resume_metadata.get(RESUME_KEY)
+                && let Ok((activity, fired)) =
+                    serde_json::from_value::<(FinishActivity, bool)>(saved.clone())
+            {
+                run.activity = activity;
+                run.fired = fired;
+            } else {
+                // Legacy result sets did not carry middleware state. Recover
+                // only what the surviving transcript can prove.
+                run.activity.tool_rounds = 1;
+                run.restore_deferred = true;
+            }
         }
         Ok(())
     }
@@ -164,9 +173,6 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
                     run.activity
                         .tools_called
                         .extend(assistant.tool_calls.iter().map(|call| call.name.clone()));
-                }
-                if matches!(message, Message::User(_)) && message.text() == self.check {
-                    run.fired = true;
                 }
             }
             run.activity.tool_rounds = run.activity.tool_rounds.max(rounds);
@@ -244,10 +250,18 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         &self,
         ctx: &mut RunContext<C>,
         _state: &S,
-        _run: &mut AgentRun,
+        run: &mut AgentRun,
     ) -> Result<()> {
         if let Ok(mut runs) = self.runs.lock() {
-            runs.remove(&ctx.instance_id());
+            if let Some(state) = runs.remove(&ctx.instance_id())
+                && let Some(deferred) = run.deferred.as_mut()
+            {
+                deferred.resume_metadata.insert(
+                    RESUME_KEY.to_string(),
+                    serde_json::to_value((&state.activity, state.fired))
+                        .expect("finish activity is serializable"),
+                );
+            }
         }
         Ok(())
     }

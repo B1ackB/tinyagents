@@ -44,6 +44,7 @@ impl DeferredToolRequests {
     /// them). Mirrors Pydantic AI's `build_results(approve_all=True)`.
     pub fn approve_all(&self) -> DeferredToolResults {
         let mut results = DeferredToolResults::default();
+        results.resume_metadata = self.resume_metadata.clone();
         for call in &self.approvals {
             results
                 .approvals
@@ -54,6 +55,12 @@ impl DeferredToolRequests {
 }
 
 impl DeferredToolResults {
+    /// Carries host-only state from the request into a manually built result.
+    #[must_use]
+    pub fn with_resume_metadata(mut self, requests: &DeferredToolRequests) -> Self {
+        self.resume_metadata = requests.resume_metadata.clone();
+        self
+    }
     /// An empty resolution set; add decisions with the builder methods.
     pub fn new() -> Self {
         Self::default()
