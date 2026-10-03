@@ -666,11 +666,11 @@ fn touch_run<'a>(
         && let Some(oldest) = runs
             .iter()
             .min_by_key(|(_, state)| state.touched)
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
     {
         runs.remove(&oldest);
     }
-    let state = runs.entry(run.clone()).or_default();
+    let state = runs.entry(*run).or_default();
     state.touched = stamp;
     state
 }

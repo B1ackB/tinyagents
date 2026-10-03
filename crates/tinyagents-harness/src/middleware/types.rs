@@ -889,9 +889,9 @@ pub struct ContextCompressionMiddleware {
     /// overflow-triggered) that can decline it or substitute a summary. See
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
-    /// Per-run compaction state: the fold each in-flight run has made and the
-    /// live transcript its last `before_model` saw. Keyed by run so two
-    /// invocations sharing this middleware never read each other's fold, and
+    /// Per-invocation compaction state: the fold and live transcript each
+    /// context instance has seen. Keyed by `RunContext::instance_id` because
+    /// caller-supplied run IDs may be shared by concurrent contexts, and
     /// dropped in `after_agent`. See [`RunCompaction`].
     pub(crate) runs: Mutex<std::collections::HashMap<u64, RunCompaction>>,
 }
