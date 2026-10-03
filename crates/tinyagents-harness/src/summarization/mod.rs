@@ -481,8 +481,8 @@ pub(crate) fn split_at_cut(
 /// Front-drop `messages` to `budget` tokens ([`TrimStrategy::MaxTokens`]) the
 /// way the compression middleware's fallback does, but keep the most recent
 /// user message — size-capped as a pin is — when the drop would remove every
-/// user message. Its tokens are reserved from `budget` first, so the result
-/// still fits.
+/// user message when it fits the residual budget. Its tokens are reserved
+/// from `budget` first, so the result still fits.
 pub(crate) fn trim_keeping_turn_user_message(messages: &[Message], budget: u64) -> Vec<Message> {
     let Some(pin) = messages
         .iter()
