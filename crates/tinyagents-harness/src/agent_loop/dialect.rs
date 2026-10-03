@@ -378,11 +378,32 @@ impl DroppedBlocks {
         self.unterminated.load(Ordering::Relaxed)
     }
 
+    /// Calls written on a turn that offered no callable tool.
+    pub(super) fn withheld(&self) -> usize {
+        self.withheld.load(Ordering::Relaxed)
+    }
+
     /// Forgets the counts: the next response comes from a new attempt, or
     /// the attempt that produced them failed and its response is discarded.
     pub(super) fn reset(&self) {
         self.malformed.store(0, Ordering::Relaxed);
         self.unterminated.store(0, Ordering::Relaxed);
+        self.withheld.store(0, Ordering::Relaxed);
+    }
+
+    /// Counts `calls` complete calls withheld on a turn that could not take
+    /// them.
+    fn record_withheld(&self, calls: usize, model_call_id: &CallId) {
+        if calls == 0 {
+            return;
+        }
+        self.withheld.fetch_add(calls, Ordering::Relaxed);
+        tracing::warn!(
+            target: "tinyagents::agent_loop",
+            call_id = %model_call_id,
+            withheld = calls,
+            "[agent_loop] tool call written on a turn with no callable tools; scrubbed, not run"
+        );
     }
 
     /// Adds the dropped blocks among `diagnostics`, logging any it finds.
