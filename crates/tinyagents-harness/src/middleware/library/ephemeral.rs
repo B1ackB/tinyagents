@@ -9,13 +9,17 @@ use tinyinference_llm::model::{ModelProfile, ModelRequest};
 pub const HARNESS_NOTE_HEADER: &str = "[harness note]";
 const EPHEMERAL_SECTION: &str = "__tinyagents_ephemeral_instruction";
 
-/// Moves tail guidance created for a non-hoisting profile out of system
-/// messages if a later middleware selected a hoisting model.
-pub(crate) fn rehome_ephemeral_system_instructions(
+/// Moves tail guidance created for an earlier profile to the placement
+/// required by the final model profile.
+pub fn rehome_ephemeral_system_instructions(
     request: &mut ModelRequest,
     profile: Option<&ModelProfile>,
 ) {
-    if !profile.is_some_and(|profile| profile.hoists_system_messages) {
+    if profile.is_none()
+        || profile.is_some_and(|profile| {
+            profile.mid_conversation_system_messages && !profile.hoists_system_messages
+        })
+    {
         return;
     }
     let mut notes = Vec::new();
@@ -38,10 +42,14 @@ pub(crate) fn rehome_ephemeral_system_instructions(
 ///
 /// Where the guidance goes depends on the target model's `profile`:
 ///
-/// - **Default** (no profile, or one without
-///   [`ModelProfile::hoists_system_messages`]): a tail `Message::System`. On a
-///   wire that keeps system messages in place, a tail message leaves the
+/// - **System-capable** (no profile, or one with
+///   [`ModelProfile::mid_conversation_system_messages`] but without
+///   [`ModelProfile::hoists_system_messages`]): a tail `Message::System`. On
+///   a wire that keeps system messages in place, a tail message leaves the
 ///   cached prefix alone.
+/// - **System-unsupported** (a profile with neither capability): a trailing
+///   user message, because the provider cannot accept a system message at
+///   this point in the conversation.
 /// - **Hoisting** (for example DeepSeek, whose chat template moves every
 ///   system turn to the prompt head): no system message, because new system
 ///   text there rewrites the cached prefix (#6962). The text is appended to
@@ -58,7 +66,11 @@ pub fn push_ephemeral_instruction(
     profile: Option<&ModelProfile>,
 ) {
     let text = text.into();
-    if !profile.is_some_and(|profile| profile.hoists_system_messages) {
+    if profile.is_none()
+        || profile.is_some_and(|profile| {
+            profile.mid_conversation_system_messages && !profile.hoists_system_messages
+        })
+    {
         tracing::trace!("[tinyagents::mw] ephemeral instruction placed as a tail system message");
         let mut message = Message::system(text);
         if let Message::System(system) = &mut message {

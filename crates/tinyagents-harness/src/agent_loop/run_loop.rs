@@ -522,6 +522,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(
                 None::<(
                     Option<String>,
+                    Vec<tinyinference_llm::model::ModelHint>,
                     Option<tinyinference_llm::model::CapabilitySet>,
                     crate::model_registry::ResolvedModelBinding<State>,
                 )>,
@@ -532,6 +533,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     let profile = binding.model.profile().cloned();
                     *resolution_cache.lock().unwrap() = Some((
                         patch_request.model.clone(),
+                        patch_request.model_hints.clone(),
                         patch_request.required_capabilities.clone(),
                         binding,
                     ));
@@ -689,18 +691,23 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     move |harness, ctx, request| {
                         let resolution_cache = profile_cache.clone();
                         Box::pin(async move {
-                            let key =
-                                (request.model.clone(), request.required_capabilities.clone());
-                            if let Some((cached_key, cached_capabilities, binding)) =
+                            let key = (
+                                request.model.clone(),
+                                request.model_hints.clone(),
+                                request.required_capabilities.clone(),
+                            );
+                            if let Some((cached_key, cached_hints, cached_capabilities, binding)) =
                                 resolution_cache.lock().unwrap().as_ref()
                                 && *cached_key == key.0
-                                && *cached_capabilities == key.1
+                                && *cached_hints == key.1
+                                && *cached_capabilities == key.2
                             {
                                 return Ok(binding.model.profile().cloned());
                             }
                             if let Some(binding) = harness.resolve_host_model(ctx, request).await? {
                                 let profile = binding.model.profile().cloned();
-                                *resolution_cache.lock().unwrap() = Some((key.0, key.1, binding));
+                                *resolution_cache.lock().unwrap() =
+                                    Some((key.0, key.1, key.2, binding));
                                 Ok(profile)
                             } else {
                                 Ok(harness.preview_model_profile(request))
@@ -747,8 +754,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // through the local registry. Context-instance identity keeps two
             // same-id concurrent runs from borrowing each other's model.
             let cached = resolution_cache.lock().unwrap().take().and_then(
-                |(model, capabilities, binding)| {
-                    (model == request.model && capabilities == request.required_capabilities)
+                |(model, hints, capabilities, binding)| {
+                    (model == request.model
+                        && hints == request.model_hints
+                        && capabilities == request.required_capabilities)
                         .then_some(binding)
                 },
             );
