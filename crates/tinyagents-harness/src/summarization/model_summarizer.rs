@@ -165,7 +165,7 @@ impl ModelSummarizer {
                 usage = Some(usage.map_or(reported, |sum| sum + reported));
             }
             let text = response.text();
-            if !contains_tool_call_markup(&text) {
+            if !tinytools_agent::contains_call_markup(&text) {
                 return Ok((text, usage));
             }
             last_chars = text.chars().count();
@@ -186,15 +186,6 @@ impl ModelSummarizer {
 /// Attempts at a summary before a reply that is tool-call markup becomes an
 /// error.
 const SUMMARY_MARKUP_ATTEMPTS: usize = 2;
-
-/// Whether `text` carries a tool call in any markup the tool-call grammars
-/// recognise (DSML, `<invoke>`, `<tool_call>`, …).
-///
-/// A bare JSON object does not count: a summary may legitimately quote one.
-pub(crate) fn contains_tool_call_markup(text: &str) -> bool {
-    let options = tinytools_agent::ParseOptions::new().without_bare_json();
-    !tinytools_agent::parse_text(text, &options).calls.is_empty()
-}
 
 /// The summarizer's user message: the transcript fenced off as data, then the
 /// instruction.
