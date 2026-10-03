@@ -416,6 +416,16 @@ pub struct RunPolicy {
     /// [`crate::error::TinyAgentsError::Validation`] rather than silently
     /// falling back to `Direct`.
     pub execution: LoopExecution,
+    /// Whether each executed tool's result row ends with how long the call
+    /// took, as a trailing `[took 12.3s]` line the model reads.
+    ///
+    /// A model that cannot see elapsed time cannot budget it: it starts a
+    /// fifteen-minute command three minutes before the run's deadline because
+    /// nothing in its context said the last one took fifteen minutes. The
+    /// duration is the same wall-clock figure `ToolCompleted` already
+    /// carries. Defaults to `false`, so a transcript stays byte-identical
+    /// unless the host opts in.
+    pub tool_result_durations: bool,
 }
 
 /// See [`RunPolicy::execution`].
@@ -588,6 +598,7 @@ impl Default for RunPolicy {
             structured_strategy_override: None,
             queue_mode: QueueMode::default(),
             execution: LoopExecution::default(),
+            tool_result_durations: false,
         }
     }
 }
