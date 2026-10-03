@@ -20,6 +20,8 @@ pub(crate) const MAX_COMMANDS: usize = 15;
 /// Files kept per list (the most recently seen ones), so the rendered ledger
 /// stays bounded on tasks that touch many files.
 pub(crate) const MAX_FILES: usize = 200;
+/// Maximum rendered path characters retained per file list.
+pub(crate) const MAX_FILE_LIST_CHARS: usize = 4_096;
 /// Longest single command line kept.
 const MAX_COMMAND_CHARS: usize = 200;
 
@@ -65,8 +67,12 @@ impl TaskLedger {
             }
         }
         tail(&mut self.commands, MAX_COMMANDS);
-        tail(&mut self.files_modified, MAX_FILES);
-        tail(&mut self.files_read, MAX_FILES);
+        for files in [&mut self.files_modified, &mut self.files_read] {
+            tail(files, MAX_FILES);
+            while files.iter().map(String::len).sum::<usize>() > MAX_FILE_LIST_CHARS {
+                files.remove(0);
+            }
+        }
     }
 
     fn absorb_call(&mut self, name: &str, arguments: &Value, result: Option<&str>) {

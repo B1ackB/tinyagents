@@ -168,3 +168,19 @@ fn exit_code_mentioned_in_output_is_not_a_failure() {
     assert!(failure_of(output).is_none());
     assert!(failure_of("exit code:\n57").is_none());
 }
+
+#[test]
+fn file_lists_have_a_rendered_size_bound() {
+    let mut ledger = TaskLedger {
+        files_read: (0..MAX_FILES)
+            .map(|i| format!("{}-{i}", "x".repeat(100)))
+            .collect(),
+        ..TaskLedger::default()
+    };
+    ledger.cap();
+    assert!(ledger.files_read.iter().map(String::len).sum::<usize>() <= MAX_FILE_LIST_CHARS);
+    assert_eq!(
+        ledger.files_read.last().unwrap(),
+        &format!("{}-{}", "x".repeat(100), MAX_FILES - 1)
+    );
+}
