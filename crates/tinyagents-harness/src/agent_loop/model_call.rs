@@ -22,6 +22,24 @@ use crate::no_progress::StreamTextStallDetector;
 use tinyinference_llm::cache::CachePolicy;
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
+    /// Previews which model `request` would reach through the local
+    /// [`crate::model_registry::ModelRegistry`] and returns its capability
+    /// profile, without dispatching anything.
+    ///
+    /// A pure registry lookup (no network call), so it is cheap enough to run
+    /// before every `before_model` pass and before every tool-change patch.
+    /// `None` when nothing resolves or the model advertises no profile. A
+    /// hosted run's routing decision is made later, after `before_model`, and
+    /// is not consulted here.
+    pub(super) fn preview_model_profile(
+        &self,
+        request: &ModelRequest,
+    ) -> Option<tinyinference_llm::model::ModelProfile> {
+        self.models
+            .resolve_request(request, None, None)
+            .and_then(|binding| binding.model.profile().cloned())
+    }
+
     /// Resolves the model binding through the host's routing authority when
     /// this run is a hosted invocation; returns `None` for a plain SDK run so
     /// the caller falls through to local [`crate::model_registry::ModelRegistry`]

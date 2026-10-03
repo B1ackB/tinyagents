@@ -64,6 +64,7 @@ mod budget;
 mod compaction_pressure;
 mod context;
 mod credential_scrub;
+mod ephemeral;
 mod image_trim;
 mod memory_protocol;
 mod memory_protocol_middleware;
@@ -83,6 +84,7 @@ pub use credential_scrub::{
     CredentialScrubMiddleware, REDACTION_PLACEHOLDER, ToolScrubber, redaction_notice,
     scrub_with_notice,
 };
+pub use ephemeral::{HARNESS_NOTE_HEADER, push_ephemeral_instruction};
 pub use image_trim::{
     IMAGE_MARKER_TOKEN_COST, ImageAwareMessageTrimMiddleware, estimate_message_tokens,
     estimate_text_tokens, legacy_max_input_tokens,
