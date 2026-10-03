@@ -205,6 +205,57 @@ over its attempts) and `latency_ms`, and `CompactionRecord::usage` is filled
 from the same value. The summarizer runs outside the run's own model calls,
 so this is the only place its spend shows up.
 
+## Typed task-state checkpoints: `TaskStateSummarizer`
+
+`TaskStateSummarizer` (`summarization/task_state/`) writes the checkpoint as
+a typed task state instead of free-form prose. It has two halves:
+
+- **Ledger**, copied from the transcript with no model call: the first user
+  message verbatim (`<original-task>`, capped at 6,000 chars), files modified
+  and files read (from edit/read tools and from shell idioms: redirects,
+  `tee`, `sed -i`, `cp`/`mv`, `cat`/`head`/`tail`/`sed -n`; heredoc bodies
+  ignored), and the last 15 shell commands with pass/fail and their key error
+  line (`Command failed (exit code N)`, `exit_code`, tracebacks, `FAIL`;
+  exit 141 counts as success).
+- **State**, written by one model call that returns JSON (`goal`,
+  `requirements` verbatim, `constraints`, `decisions`, `errors_and_fixes`,
+  `todos_done`/`todos_open`, `current_hypothesis`, `test_command`,
+  `next_step`). On a later compaction the call gets the previous state as
+  `<previous_state>` and updates it.
+
+Both halves round-trip through tagged blocks (`<modified-files>`,
+`<read-files>`, `<task-state>`), so `parse_carried` reads them back from the
+previous summary and the next checkpoint carries them exactly rather than
+re-summarizing a summary. A free-form previous summary (from another
+summarizer) carries nothing and is handed to the model as the previous state.
+
+- **Chunking.** A history longer than `with_max_chunk_tokens` (default 100k)
+  is folded in sequential chunks cut at safe points, each call updating the
+  state the previous one wrote. Set it to a fraction of a small model's
+  window.
+- **Degradation.** A reply that is tool-call markup or holds no parseable
+  JSON is retried once. If it still fails, the checkpoint keeps the previous
+  state plus the full ledger (the provenance reason says `ledger only`)
+  rather than failing the compaction. Only a model outage with nothing to
+  carry is an error.
+- **JSON mode** is opt-in (`with_response_format`). Some endpoints answer
+  nonsense when JSON mode and reasoning are both on (Qwen3 on DashScope
+  returns `"display_json"`), so the reply is parsed leniently instead.
+
+Pair it with `ContextCompressionMiddleware::with_keep_recent_tokens`: the
+verbatim tail becomes a token budget, not `keep_last` messages
+(`SummarizationPolicy::plan_recent_tokens`). The budget is capped at half the
+trigger. The tail opens on a user or assistant message, never on a tool
+result, and the newest call and its result are always kept.
+
+Selected by measurement (openhuman-benchmarks `compaction/`, 55-60
+checkpoints and 20 three-compaction chains from seven harnesses' DeepSWE
+trajectories). With a 20k tail, typed state kept 96-97% of the full-context
+probe score after one compaction and about 93% after three, against 88-90%
+and 83-86% for the free-form `ModelSummarizer` with `keep_last = 8`. On
+Qwen3-8B it scored above the full context itself, which the small model
+handles poorly.
+
 ## `CompactionRecord` and `CompactionSink`
 
 ```rust
