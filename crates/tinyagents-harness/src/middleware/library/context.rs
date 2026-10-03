@@ -857,6 +857,9 @@ impl ContextCompressionMiddleware {
             return FoldCheck::None;
         };
         if fold.folded > 0 && chain.get(fold.folded - 1) == Some(&fold.fingerprint) {
+            if let Some(replaced) = &fold.replaces {
+                system.retain(|message| message != replaced);
+            }
             return FoldCheck::Applies(Box::new(fold));
         }
         if let Some(at) = system.iter().position(|m| *m == fold.summary) {
@@ -873,11 +876,13 @@ impl ContextCompressionMiddleware {
                 host_fold.folded = 0;
                 host_fold.pinned = None;
             }
+            state.host_applied_summary = Some(fold.summary.clone());
             state.boundary_unaligned = true;
             tracing::debug!("[context_compression] host carries the fold summary itself");
             return FoldCheck::HostApplied(fold.summary.text());
         }
         state.fold = None;
+        state.host_applied_summary = None;
         state.last_summary = None;
         tracing::debug!(
             folded = fold.folded,
@@ -927,11 +932,16 @@ impl ContextCompressionMiddleware {
         };
         let mut runs = self.runs.lock().expect("runs mutex poisoned");
         let state = touch_run(&mut runs, run);
+        let replaces = state
+            .host_applied_summary
+            .take()
+            .or_else(|| state.fold.as_ref().and_then(|fold| fold.replaces.clone()));
         state.fold = Some(crate::middleware::types::CompactionFold {
             folded,
             fingerprint,
             summary: summary.clone(),
             pinned,
+            replaces,
         });
         // Only a summary attached to a valid fold is worth building on: one
         // from an unaligned overflow request describes altered history.
