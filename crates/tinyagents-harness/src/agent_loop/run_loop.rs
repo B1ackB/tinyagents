@@ -513,6 +513,31 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 }
             }
 
+            // The tool-change patch must use the hosted model's placement
+            // rules. Keep this decision for middleware and dispatch while
+            // the routing inputs remain unchanged.
+            let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(
+                None::<(
+                    Option<String>,
+                    Option<tinyinference_llm::model::CapabilitySet>,
+                    crate::model_registry::ResolvedModelBinding<State>,
+                )>,
+            ));
+            let patch_request = ModelRequest::new(messages.clone());
+            let patch_profile = if let Some(binding) =
+                self.resolve_host_model(ctx, &patch_request).await?
+            {
+                let profile = binding.model.profile().cloned();
+                *resolution_cache.lock().unwrap() = Some((
+                    patch_request.model.clone(),
+                    patch_request.required_capabilities.clone(),
+                    binding,
+                ));
+                profile
+            } else {
+                self.preview_model_profile(&patch_request)
+            };
+
             // B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
             // re-consult the toolset chain (documented as "called once per
             // turn", `ToolSet::tools`) and diff its live set against what
@@ -549,18 +574,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 if let Some(patch) =
                     tool_changes::diff_tool_set(&declared_tool_schemas, &live_schemas)
                 {
-                    // A cheap, non-mutating preview resolution against the
-                    // transcript as it stands (pre-patch) decides fold vs.
-                    // insert. It is a pure registry lookup (no network call,
-                    // see `ModelRegistry::resolve_request`), so this stays
-                    // proportional to the diff it gates. An unresolved
-                    // preview conservatively folds (`false`): folding is
-                    // always correct, only less cache-friendly. A model that
-                    // hoists system turns never folds (#6962).
-                    let in_place = tool_changes::patch_inserts_in_place(
-                        self.preview_model_profile(&ModelRequest::new(messages.clone()))
-                            .as_ref(),
-                    );
+                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
                     tool_changes::apply_tool_change_patch(messages, patch, in_place);
                     declared_tool_schemas = live_schemas.clone();
                     direct_tool_schemas = live_schemas;
@@ -576,10 +590,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .collect();
             if !newly_promoted.is_empty() {
                 if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
-                    let in_place = tool_changes::patch_inserts_in_place(
-                        self.preview_model_profile(&ModelRequest::new(messages.clone()))
-                            .as_ref(),
-                    );
+                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
                     tool_changes::apply_tool_change_patch(messages, patch, in_place);
                 }
                 recorded_promotions.extend(newly_promoted.iter().map(|schema| schema.name.clone()));
@@ -650,16 +661,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             status.mark_running(HarnessPhase::Middleware);
-            ctx.model_profile = self.preview_model_profile(&request);
-            // A host resolver may be stateful. Reuse its decision while the
-            // routing inputs stay fixed, including for the final dispatch.
-            let resolution_cache = std::sync::Arc::new(std::sync::Mutex::new(
-                None::<(
-                    Option<String>,
-                    Option<tinyinference_llm::model::CapabilitySet>,
-                    crate::model_registry::ResolvedModelBinding<State>,
-                )>,
-            ));
+            ctx.model_profile = patch_profile;
             let profile_cache = resolution_cache.clone();
             self.middleware
                 .run_before_model_with_profile(
