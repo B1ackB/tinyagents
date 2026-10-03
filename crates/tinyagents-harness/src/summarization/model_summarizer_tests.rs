@@ -222,7 +222,9 @@ const DSML_REPLY: &str = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke nam
 
 #[test]
 fn tool_call_markup_is_detected_but_quoted_json_and_prose_are_not() {
-    assert!(super::model_summarizer::contains_tool_call_markup(DSML_REPLY));
+    assert!(super::model_summarizer::contains_tool_call_markup(
+        DSML_REPLY
+    ));
     assert!(super::model_summarizer::contains_tool_call_markup(
         "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
     ));
@@ -253,7 +255,10 @@ async fn the_transcript_is_fenced_as_data_with_the_instruction_last() {
 
 #[tokio::test]
 async fn a_tool_call_reply_is_retried_once_and_a_real_summary_kept() {
-    let model = Arc::new(ScriptedModel::replies(vec![DSML_REPLY, "## Goal\nShip it."]));
+    let model = Arc::new(ScriptedModel::replies(vec![
+        DSML_REPLY,
+        "## Goal\nShip it.",
+    ]));
     let summarizer = ModelSummarizer::new(model.clone(), "m");
     let record = summarizer.summarize(&[Message::user("x")]).await.unwrap();
 

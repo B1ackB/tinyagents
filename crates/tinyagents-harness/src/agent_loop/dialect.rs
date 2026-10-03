@@ -658,7 +658,8 @@ impl DeltaScrubber {
         self.dropped.record(diagnostics, &self.model_call_id);
         if self.withhold {
             self.withheld += calls.len();
-            self.dropped.record_withheld(calls.len(), &self.model_call_id);
+            self.dropped
+                .record_withheld(calls.len(), &self.model_call_id);
             return;
         }
         for call in calls {

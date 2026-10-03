@@ -41,7 +41,10 @@ fn a_withheld_call_is_scrubbed_counted_and_never_becomes_a_call() {
 
     withhold_text_calls(&mut response, &CallId::new("model-1"), &recovery.dropped);
 
-    assert!(response.message.tool_calls.is_empty(), "nothing is dispatched");
+    assert!(
+        response.message.tool_calls.is_empty(),
+        "nothing is dispatched"
+    );
     assert_eq!(recovery.dropped.withheld(), 1);
     assert!(!has_markup(&response.text()));
     assert!(response.text().contains("implement this from the spec"));
@@ -65,7 +68,10 @@ fn withholding_leaves_a_quoted_example_and_a_json_answer_alone() {
     assert_eq!(recovery.dropped.withheld(), 0);
 }
 
-fn harness_with(model: Arc<dyn tinyinference_llm::model::ChatModel<()>>, max_calls: usize) -> AgentHarness<()> {
+fn harness_with(
+    model: Arc<dyn tinyinference_llm::model::ChatModel<()>>,
+    max_calls: usize,
+) -> AgentHarness<()> {
     let mut harness: AgentHarness<()> = AgentHarness::new();
     harness.register_model("mock", model);
     harness.with_policy(RunPolicy {
@@ -116,7 +122,11 @@ async fn with_no_call_left_the_scrubbed_reply_stands_without_markup() {
         .await
         .expect("run succeeds");
 
-    assert_eq!(model.requests().len(), 1, "no call was left for a re-prompt");
+    assert_eq!(
+        model.requests().len(),
+        1,
+        "no call was left for a re-prompt"
+    );
     let text = run.text().unwrap_or_default();
     assert!(!has_markup(&text));
     assert!(text.contains("implement this from the spec"));
@@ -124,19 +134,33 @@ async fn with_no_call_left_the_scrubbed_reply_stands_without_markup() {
 
 #[tokio::test]
 async fn a_streamed_call_on_a_turn_without_tools_never_reaches_the_answer() {
-    let chunks = ["I'll check first. ", "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"shell\">\n",
+    let chunks = [
+        "I'll check first. ",
+        "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"shell\">\n",
         "<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">ls</｜｜DSML｜｜ parameter>\n",
-        "</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>"];
+        "</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+    ];
     let mut items = vec![ModelStreamItem::Started];
-    items.extend(chunks.iter().map(|text| ModelStreamItem::MessageDelta(MessageDelta::text(*text))));
-    items.push(ModelStreamItem::Completed(ModelResponse::assistant(chunks.concat())));
+    items.extend(
+        chunks
+            .iter()
+            .map(|text| ModelStreamItem::MessageDelta(MessageDelta::text(*text))),
+    );
+    items.push(ModelStreamItem::Completed(ModelResponse::assistant(
+        chunks.concat(),
+    )));
     // The mock replays the same leak on every call, so the run spends its
     // re-prompts and then keeps the scrubbed reply.
     let model = Arc::new(StreamingMock::new(items));
     let harness = harness_with(model.clone(), 10);
 
     let run = harness
-        .invoke_streaming(&(), (), RunConfig::new("withheld-stream"), vec![Message::user("Answer now.")])
+        .invoke_streaming(
+            &(),
+            (),
+            RunConfig::new("withheld-stream"),
+            vec![Message::user("Answer now.")],
+        )
         .await
         .expect("streaming run succeeds");
 

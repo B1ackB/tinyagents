@@ -1181,9 +1181,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // A withheld call (a turn with no callable tool) was scrubbed the
             // same way, so its raw markup must not come back from the
             // terminal text either.
-            let scrubber_recovered_calls = text_scrubber.as_ref().is_some_and(|scrubber| {
-                scrubber.has_calls() || scrubber.has_withheld()
-            });
+            let scrubber_recovered_calls = text_scrubber
+                .as_ref()
+                .is_some_and(|scrubber| scrubber.has_calls() || scrubber.has_withheld());
             if let ModelStreamItem::Completed(response) = &mut item
                 && (saw_streamed_content || scrubber_recovered_calls)
             {
