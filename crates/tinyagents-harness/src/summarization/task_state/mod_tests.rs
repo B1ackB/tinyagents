@@ -318,3 +318,20 @@ fn merge_closes_open_work_the_other_half_finished() {
     assert_eq!(merged.todos_open, vec!["b"]);
     assert_eq!(merged.todos_done, vec!["a"]);
 }
+
+#[test]
+fn later_split_state_can_reopen_completed_work() {
+    let first = TaskState {
+        todos_done: vec!["run tests".into()],
+        todos_open: vec!["update docs".into()],
+        ..TaskState::default()
+    };
+    let later = TaskState {
+        todos_open: vec!["run tests".into()],
+        todos_done: vec!["update docs".into()],
+        ..TaskState::default()
+    };
+    let merged = first.merged_with(later);
+    assert_eq!(merged.todos_open, vec!["run tests"]);
+    assert_eq!(merged.todos_done, vec!["update docs"]);
+}
