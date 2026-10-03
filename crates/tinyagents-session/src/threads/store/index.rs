@@ -238,7 +238,7 @@ impl ConversationStore {
                 append_jsonl(
                     &self.ensure_root()?.join(THREADS_FILENAME),
                     &ThreadLogEntry::Stats {
-                        thread_id,
+                        thread_id: thread_id.clone(),
                         message_count: count,
                         last_message_at: resolved_last,
                         message_bytes: fs::metadata(self.thread_messages_path(&thread_id))
