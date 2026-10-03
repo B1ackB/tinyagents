@@ -5,7 +5,9 @@
 //! full middleware pipeline overview.
 
 use super::*;
+use crate::RunId;
 use crate::cache::{CacheLayoutEvent, PromptCacheLayout};
+use crate::middleware::AgentRun;
 use crate::middleware::{
     CompressionFailurePolicy, ContextCompressionMiddleware, DEFAULT_CACHE_GUARD_EVENT_CAP,
     DEFAULT_COMPRESSION_RECORD_CAP, MessageTrimMiddleware, MicrocompactMiddleware,
