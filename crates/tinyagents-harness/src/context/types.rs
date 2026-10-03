@@ -339,6 +339,9 @@ pub struct RunContext<Ctx = ()> {
     /// shared per-run bookkeeping (a middleware's in-flight reservation, say)
     /// can be keyed on it. Read it with [`RunContext::instance_id`].
     pub(crate) instance_id: u64,
+    /// Live marker used by middleware to prune state after a cancelled run
+    /// drops its context without reaching a terminal lifecycle hook.
+    pub(crate) lifecycle: std::sync::Arc<()>,
     /// The declarative configuration this context was built from.
     pub config: RunConfig,
     /// Arbitrary user-supplied run data.

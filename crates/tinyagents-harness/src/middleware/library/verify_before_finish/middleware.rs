@@ -110,15 +110,15 @@ impl VerifyBeforeFinishMiddleware {
 
 const MAX_RETAINED_RUNS: usize = 1_024;
 
-fn state_for(runs: &mut HashMap<u64, RunState>, id: u64) -> &mut RunState {
-    // Cancellation can bypass lifecycle cleanup; evict the oldest context.
-    if !runs.contains_key(&id)
-        && runs.len() >= MAX_RETAINED_RUNS
-        && let Some(oldest) = runs.keys().copied().min()
-    {
-        runs.remove(&oldest);
+fn state_for<'a, C>(runs: &'a mut HashMap<u64, RunState>, ctx: &RunContext<C>) -> &'a mut RunState {
+    // A cancelled run can bypass both terminal hooks. Its context marker is
+    // gone, so prune it without discarding any still-active run's fired flag.
+    if runs.len() >= MAX_RETAINED_RUNS {
+        runs.retain(|_, run| run.lifecycle.upgrade().is_some());
     }
-    runs.entry(id).or_default()
+    let run = runs.entry(ctx.instance_id()).or_default();
+    run.lifecycle = Arc::downgrade(&ctx.lifecycle);
+    run
 }
 
 fn min_rounds_trigger(rounds: usize) -> FinishCheckTrigger {
@@ -135,7 +135,7 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
         if ctx.deferred_results.is_some()
             && let Ok(mut runs) = self.runs.lock()
         {
-            let run = state_for(&mut runs, ctx.instance_id());
+            let run = state_for(&mut runs, ctx);
             // A deferred leg necessarily contained a tool round, even when
             // compaction later hides the original tool-call message.
             run.activity.tool_rounds = 1;
@@ -184,7 +184,7 @@ impl<S: Send + Sync, C: Send + Sync> Middleware<S, C> for VerifyBeforeFinishMidd
             tracing::warn!("[tinyagents::mw] verify_before_finish state poisoned; not checking");
             return Ok(());
         };
-        let run = state_for(&mut runs, ctx.instance_id());
+        let run = state_for(&mut runs, ctx);
 
         let calls = response.tool_calls();
         if !calls.is_empty() {
