@@ -109,13 +109,27 @@ impl ModelSummarizer {
             Message::system(SUMMARIZER_SYSTEM_PROMPT),
             Message::user(request_text),
         ]);
-        let (summary, usage) = self.summarize_once(request).await?;
+        let (summary, usage) = self.summarize_once(request).await.map_err(|failure| {
+            let (error, usage) = *failure;
+            match usage {
+                Some(usage) => TinyAgentsError::SummarizationUsage {
+                    error: Box::new(error),
+                    usage,
+                },
+                None => error,
+            }
+        })?;
 
         let summary = summary.trim();
         if summary.is_empty() {
-            return Err(TinyAgentsError::Model(
-                "summarizer returned empty response".into(),
-            ));
+            let error = TinyAgentsError::Model("summarizer returned empty response".into());
+            return Err(match usage {
+                Some(usage) => TinyAgentsError::SummarizationUsage {
+                    error: Box::new(error),
+                    usage,
+                },
+                None => error,
+            });
         }
 
         let body = format!("=== Conversation Summary (compacted) ===\n{summary}");
@@ -162,13 +176,19 @@ impl ModelSummarizer {
     async fn summarize_once(
         &self,
         request: ModelRequest,
-    ) -> Result<(String, Option<tinyinference_llm::usage::Usage>)> {
+    ) -> std::result::Result<
+        (String, Option<tinyinference_llm::usage::Usage>),
+        Box<(TinyAgentsError, Option<tinyinference_llm::usage::Usage>)>,
+    > {
         let mut last_chars = 0;
         let mut usage: Option<tinyinference_llm::usage::Usage> = None;
         for attempt in 1..=SUMMARY_MARKUP_ATTEMPTS {
             let response = self.model.invoke(&(), request.clone()).await.map_err(|e| {
                 tracing::warn!(error = %e, "[tinyagents::summarize] summarizer model call failed");
-                TinyAgentsError::Model(format!("summarizer model call failed: {e}"))
+                Box::new((
+                    TinyAgentsError::Model(format!("summarizer model call failed: {e}")),
+                    usage,
+                ))
             })?;
             if let Some(reported) = response.usage {
                 usage = Some(usage.map_or(reported, |sum| sum + reported));
@@ -185,9 +205,12 @@ impl ModelSummarizer {
                 "[tinyagents::summarize] summarizer replied with tool-call markup instead of a summary"
             );
         }
-        Err(TinyAgentsError::Model(format!(
-            "summarizer replied with tool-call markup instead of a summary ({last_chars} chars) \
+        Err(Box::new((
+            TinyAgentsError::Model(format!(
+                "summarizer replied with tool-call markup instead of a summary ({last_chars} chars) \
              after {SUMMARY_MARKUP_ATTEMPTS} attempts"
+            )),
+            usage,
         )))
     }
 }

@@ -3,7 +3,8 @@
 //!
 //! The deterministic facts are written inside XML-ish tags so the next
 //! compaction can carry them forward exactly, without asking a model to
-//! remember them: `<original-task>`, `<modified-files>` and `<read-files>`.
+//! remember them: `<original-task>`, `<modified-files>`, `<read-files>` and
+//! `<recent-commands-json>`.
 //! The model-written fields are read back from their `## ` sections, so the
 //! state is written once (a JSON copy beside the sections doubled every
 //! checkpoint).
@@ -47,7 +48,9 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let task = ledger.original_task.as_deref().unwrap_or("");
+    // Escape delimiters so a task cannot close its block and forge ledger tags.
+    let task = escape_tagged(ledger.original_task.as_deref().unwrap_or(""));
+    let command_data = escape_tagged(&serde_json::to_string(&ledger.commands).unwrap_or_default());
     format!(
         "{TASK_STATE_HEADER}\n\n\
          <original-task>\n{task}\n</original-task>\n\n\
@@ -63,7 +66,8 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
          ## Next step\n{next}\n\n\
          ## Recent commands\n{commands}\n\n\
          <modified-files>\n{modified}\n</modified-files>\n\
-         <read-files>\n{read}\n</read-files>",
+         <read-files>\n{read}\n</read-files>\n\
+         <recent-commands-json>\n{command_data}\n</recent-commands-json>",
         goal = or_none(&state.goal),
         requirements = list(&state.requirements),
         constraints = list(&state.constraints),
@@ -74,9 +78,33 @@ pub fn render_task_state(state: &TaskState, ledger: &TaskLedger) -> String {
         hypothesis = or_none(&state.current_hypothesis),
         test = or_none(&state.test_command),
         next = or_none(&state.next_step),
-        modified = ledger.files_modified.join("\n"),
-        read = ledger.read_only_files().join("\n"),
+        modified = ledger
+            .files_modified
+            .iter()
+            .map(|p| escape_tagged(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        read = ledger
+            .read_only_files()
+            .iter()
+            .map(|p| escape_tagged(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
     )
+}
+
+fn escape_tagged(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn unescape_tagged(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 const NONE: &str = "none";
@@ -101,8 +129,10 @@ fn one_line(text: &str) -> String {
 /// The body of the `heading` section: the lines up to the next `## `
 /// heading or tagged block.
 fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
-    let at = text.find(&format!("\n{heading}\n"))? + heading.len() + 2;
-    let rest = &text[at..];
+    // Only search the generated sections, never Markdown in the original task.
+    let sections = text.split_once("</original-task>")?.1;
+    let at = sections.find(&format!("\n{heading}\n"))? + heading.len() + 2;
+    let rest = &sections[at..];
     let end = rest
         .find("\n## ")
         .into_iter()
@@ -133,10 +163,11 @@ fn section_text(text: &str, heading: &str) -> String {
 }
 
 fn render_command(c: &CommandRecord) -> String {
+    let command = escape_tagged(&c.command);
     match (&c.failed, &c.error) {
-        (false, _) => format!("- `{}` → ok", c.command),
-        (true, Some(error)) => format!("- `{}` → FAILED: {error}", c.command),
-        (true, None) => format!("- `{}` → FAILED", c.command),
+        (false, _) => format!("- `{command}` → ok"),
+        (true, Some(error)) => format!("- `{command}` → FAILED: {}", escape_tagged(error)),
+        (true, None) => format!("- `{command}` → FAILED"),
     }
 }
 
@@ -150,7 +181,7 @@ fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 /// Reads the facts a previous checkpoint carries: its ledger (task and file
-/// lists; commands are not carried, the recent ones are re-read) and its
+/// lists and recent commands) and its
 /// model-written state. A previous summary that is not a task-state
 /// checkpoint (a free-form summary from another summarizer) yields an empty
 /// ledger and `None`; the caller then hands its text to the model instead.
@@ -163,7 +194,7 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
                     .lines()
                     .map(str::trim)
                     .filter(|l| !l.is_empty())
-                    .map(String::from)
+                    .map(unescape_tagged)
                     .collect()
             })
             .unwrap_or_default()
@@ -171,10 +202,12 @@ pub fn parse_carried(previous: &str) -> (TaskLedger, Option<TaskState>) {
     let ledger = TaskLedger {
         original_task: tagged(previous, "original-task")
             .filter(|t| !t.is_empty())
-            .map(String::from),
+            .map(unescape_tagged),
         files_modified: lines("modified-files"),
         files_read: lines("read-files"),
-        commands: Vec::new(),
+        commands: tagged(previous, "recent-commands-json")
+            .and_then(|block| serde_json::from_str(&unescape_tagged(block)).ok())
+            .unwrap_or_default(),
     };
     let state = previous
         .trim_start()

@@ -401,3 +401,47 @@ async fn a_share_smaller_than_the_header_renders_no_rows() {
         estimate_text_tokens(&text)
     );
 }
+
+/// A model that hoists system turns to the prompt head (DeepSeek) would have
+/// its cached prefix rewritten by a new tail system message (#6962), so the
+/// contents list rides the last tool result instead.
+#[tokio::test]
+async fn toc_for_a_hoisting_model_adds_no_system_message() {
+    let mw = ArtifactIndexTocMiddleware::new(0, STORE);
+    let mut ctx =
+        ctx_with_artifacts(&[("call-1", "fetch_issues", "outputs/issues-p1.json", 240_000)]).await;
+    ctx.model_profile = Some(tinyinference_llm::model::ModelProfile {
+        hoists_system_messages: true,
+        mid_conversation_system_messages: true,
+        ..Default::default()
+    });
+    let leading = TaMessage::system("persona");
+    let mut request = ModelRequest {
+        messages: vec![
+            leading.clone(),
+            TaMessage::user("what did you find?"),
+            TaMessage::tool("call-1", "preview"),
+        ],
+        ..Default::default()
+    };
+
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
+
+    assert_eq!(request.messages.len(), 3, "no message added");
+    assert_eq!(
+        request.messages[0], leading,
+        "leading system message untouched"
+    );
+    let systems = request
+        .messages
+        .iter()
+        .filter(|message| matches!(message, TaMessage::System(_)))
+        .count();
+    assert_eq!(systems, 1, "no new system message");
+    let tail = request.messages.last().unwrap();
+    assert!(matches!(tail, TaMessage::Tool(_)), "{tail:?}");
+    let text = tail.text();
+    assert!(text.starts_with("preview"), "{text}");
+    assert!(text.contains("## Stored results from this turn"), "{text}");
+    assert!(text.contains("outputs/issues-p1.json"), "{text}");
+}

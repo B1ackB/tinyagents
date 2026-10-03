@@ -17,6 +17,10 @@ use crate::summarization::is_checkpoint;
 pub(crate) const MAX_TASK_CHARS: usize = 6_000;
 /// Commands kept in the ledger (the most recent ones).
 pub(crate) const MAX_COMMANDS: usize = 15;
+/// Most recent read files kept in a checkpoint.
+pub(crate) const MAX_FILES_READ: usize = 60;
+/// Most recent modified files kept in a checkpoint.
+pub(crate) const MAX_FILES_MODIFIED: usize = 100;
 /// Longest single command line kept.
 const MAX_COMMAND_CHARS: usize = 200;
 
@@ -52,6 +56,14 @@ impl TaskLedger {
         }
         if self.commands.len() > MAX_COMMANDS {
             self.commands.drain(..self.commands.len() - MAX_COMMANDS);
+        }
+        if self.files_read.len() > MAX_FILES_READ {
+            self.files_read
+                .drain(..self.files_read.len() - MAX_FILES_READ);
+        }
+        if self.files_modified.len() > MAX_FILES_MODIFIED {
+            self.files_modified
+                .drain(..self.files_modified.len() - MAX_FILES_MODIFIED);
         }
     }
 

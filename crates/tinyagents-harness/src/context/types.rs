@@ -347,6 +347,16 @@ pub struct RunContext<Ctx = ()> {
     /// session. `None` lets a standalone harness infer its initial prefix.
     /// A child context starts at `None` for its own conversation.
     pub frozen_system_prefix_len: Option<usize>,
+    /// Capability profile of the model the next call is expected to reach.
+    ///
+    /// The agent loop previews model resolution and sets this just before
+    /// `before_model` middleware runs, so middleware can shape what it adds
+    /// for the target (for example
+    /// [`push_ephemeral_instruction`](crate::middleware::push_ephemeral_instruction)
+    /// avoids new system messages on a model that hoists them). `None` when no
+    /// model has been previewed — outside the agent loop, or when only a host
+    /// routing decision (made after `before_model`) can name the model.
+    pub model_profile: Option<tinyinference_llm::model::ModelProfile>,
     /// Registry of named long-term stores.
     pub stores: StoreRegistry,
     /// Optional hierarchical long-term store handed to every tool this run

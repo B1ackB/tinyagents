@@ -204,7 +204,9 @@ impl Summarizer for FaultTolerantCachingSummarizer {
                 "[tinyagents::summarize] reusing cached summary (identical input slice; \
                  no summarizer LLM call)"
             );
-            return Ok(cached.record.clone());
+            let mut record = cached.record.clone();
+            record.usage = None;
+            return Ok(record);
         }
 
         // Circuit open from an earlier failure this turn: skip the known-bad LLM
@@ -235,11 +237,15 @@ impl Summarizer for FaultTolerantCachingSummarizer {
                         "[tinyagents::summarize] summarizer failed; tripping per-turn circuit \
                          breaker and falling back to deterministic trim"
                     );
-                    self.deterministic_trim(
+                    let mut fallback = self.deterministic_trim(
                         &request.messages,
                         request.previous_summary.as_deref(),
                         &err.to_string(),
-                    )
+                    );
+                    if let crate::error::TinyAgentsError::SummarizationUsage { usage, .. } = err {
+                        fallback.usage = Some(usage);
+                    }
+                    fallback
                 }
             }
         };
