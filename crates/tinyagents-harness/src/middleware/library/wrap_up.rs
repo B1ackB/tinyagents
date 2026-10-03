@@ -344,7 +344,8 @@ impl FinalCallWrapUpMiddleware {
         let crossed = self
             .budget_thresholds
             .iter()
-            .take_while(|t| used as f64 >= **t * max as f64)
+            // The epsilon keeps `0.7 * 10` (6.999…) landing on call 7.
+            .take_while(|t| used as f64 + 1e-9 >= **t * max as f64)
             .count();
         let Ok(mut noticed) = self.budget_noticed.lock() else {
             return false;

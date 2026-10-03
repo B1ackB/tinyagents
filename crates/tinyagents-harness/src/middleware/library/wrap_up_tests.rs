@@ -560,12 +560,28 @@ async fn budget_notice_does_not_mark_the_turn_capped() {
 #[tokio::test]
 async fn thresholds_crossed_together_produce_one_notice() {
     let mw = mw(sink_with(&[])).with_budget_notice([0.5, 0.6]);
-    let mut ctx = RunContext::new(RunConfig::new("mw-test").with_max_model_calls(10), ());
+    // The first call this middleware sees is already past both thresholds
+    // (6 of 10 used), as on a run whose earlier calls it did not observe.
+    let mut ctx = ctx_at(10, 4);
+    let mut request = ModelRequest {
+        messages: vec![TaMessage::user("hi")],
+        tools: mixed_belt(),
+        ..Default::default()
+    };
 
-    let appended = appended_per_call(&mw, &mut ctx, 10).await;
+    mw.before_model(&mut ctx, &(), &mut request).await.unwrap();
 
-    let calls: Vec<usize> = appended.iter().map(|(call, _)| *call).collect();
-    assert_eq!(calls, vec![5, 6, 9, 10], "{appended:?}");
+    assert_eq!(request.messages.len(), 2, "exactly one notice for both");
+    assert!(request.messages[1].text().contains("4 model calls left"));
+
+    ctx.limits.record_model_call().unwrap();
+    let mut next = ModelRequest {
+        messages: vec![TaMessage::user("hi")],
+        tools: mixed_belt(),
+        ..Default::default()
+    };
+    mw.before_model(&mut ctx, &(), &mut next).await.unwrap();
+    assert_eq!(next.messages.len(), 1, "neither threshold fires again");
 }
 
 /// A notice never lands on the penultimate or final call: those carry their
