@@ -165,6 +165,8 @@ async fn merge_unions_files_and_keeps_the_later_state() {
     assert!(body.contains("<modified-files>\nnew/file.rs\n</modified-files>"));
     assert!(body.contains("Implement default arguments in anko."));
     assert!(body.contains("invalid default argument declaration"));
+    let (ledger, _) = parse_carried(&body);
+    assert!(ledger.commands.iter().any(|command| command.failed));
 }
 
 #[test]

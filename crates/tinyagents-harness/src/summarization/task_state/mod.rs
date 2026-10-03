@@ -360,6 +360,7 @@ impl Summarizer for TaskStateSummarizer {
                     ledger.files_read.push(f);
                 }
             }
+            ledger.commands.extend(next.commands);
             if let Some(next_state) = next_state {
                 state = Some(match state {
                     Some(previous) => merge_state(previous, next_state),
