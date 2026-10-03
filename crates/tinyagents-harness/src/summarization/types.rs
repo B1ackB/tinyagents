@@ -306,14 +306,18 @@ pub trait Summarizer: Send + Sync {
     /// compaction of a run), so an LLM-backed implementation can *refine* the
     /// running summary instead of re-deriving it from scratch every time.
     ///
-    /// The default implementation ignores
-    /// [`SummaryRequest::previous_summary`] and delegates to [`Self::summarize`],
-    /// so every existing implementor (in particular [`ConcatSummarizer`))
-    /// keeps compiling and behaving exactly as before. Override this method
-    /// directly (instead of, not in addition to, `summarize`) to thread the
-    /// previous summary into a real prompt.
+    /// The default implementation prepends a previous summary as a system
+    /// message before delegating to [`Self::summarize`]. Override this method
+    /// to pass prior context through a specialized prompt.
     async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
-        self.summarize(&request.messages).await
+        if let Some(previous) = request.previous_summary.as_deref() {
+            let mut messages = Vec::with_capacity(request.messages.len() + 1);
+            messages.push(Message::system(previous));
+            messages.extend(request.messages.iter().cloned());
+            self.summarize(&messages).await
+        } else {
+            self.summarize(&request.messages).await
+        }
     }
 
     /// Merges two or more per-half [`SummaryRecord`]s produced by
