@@ -1368,7 +1368,7 @@ async fn truncated_empty_nudge_after_spent_retries_reaches_the_tool_call() {
         "the third request ends with the truncation nudge; got {nudge:?}"
     );
     assert!(
-        nudged.iter().all(|m| m.role() != crate::message::Role::Assistant),
+        nudged.iter().all(|m| !matches!(m, Message::Assistant(_))),
         "the blank assistant rows are not replayed"
     );
     assert!(
