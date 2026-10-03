@@ -161,12 +161,12 @@ fn appends_to_legacy_thread_in_the_legacy_format() {
 
     let threads_log = fs::read_to_string(root.join("threads.jsonl")).expect("read threads log");
     assert!(threads_log.starts_with(LEGACY_THREADS_JSONL));
-    assert_eq!(
-        threads_log.lines().last(),
-        Some(
-            r#"{"op":"message_appended","thread_id":"default:chat-1","last_message_at":"2026-01-05T00:00:00Z"}"#
-        )
-    );
+    let appended: serde_json::Value =
+        serde_json::from_str(threads_log.lines().last().unwrap()).unwrap();
+    assert_eq!(appended["op"], "message_appended");
+    assert_eq!(appended["thread_id"], "default:chat-1");
+    assert_eq!(appended["last_message_at"], "2026-01-05T00:00:00Z");
+    assert_eq!(appended["message_bytes"], chat_log.len() as u64);
 
     let chat = store
         .list_threads()
