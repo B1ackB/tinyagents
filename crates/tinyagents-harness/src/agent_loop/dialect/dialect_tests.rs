@@ -259,3 +259,101 @@ fn a_host_that_renders_the_catalogue_still_learns_a_turn_synthesized_tool() {
     assert!(system.contains("You must call the `emit_result` tool."));
     assert_eq!(request.tool_choice, ToolChoice::Auto);
 }
+
+/// The model-call id OpenHuman's headless core mints: a 54-character
+/// `openhuman-session-<uuid>` run id plus `-model-{n}`.
+const UUID_SCOPED_MODEL_CALL: &str =
+    "openhuman-session-6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b-model-3";
+
+#[test]
+fn a_recovered_call_keeps_the_verbatim_model_call_id_when_it_fits() {
+    use super::recovered_tool_call_id;
+    use crate::ids::CallId;
+
+    let model_call = CallId::new("agent_turn-model-1");
+
+    assert_eq!(
+        recovered_tool_call_id(&model_call, 1),
+        "agent_turn-model-1-tool-1"
+    );
+}
+
+#[test]
+fn a_recovered_call_id_fits_the_openai_ceiling_for_a_uuid_scoped_run() {
+    use super::{RECOVERED_TOOL_CALL_ID_MAX_LEN, recovered_tool_call_id};
+    use crate::ids::CallId;
+
+    let model_call = CallId::new(UUID_SCOPED_MODEL_CALL);
+    assert!(
+        format!("{model_call}-tool-1").chars().count() > RECOVERED_TOOL_CALL_ID_MAX_LEN,
+        "fixture must be long enough to need the fingerprint shape"
+    );
+
+    let id = recovered_tool_call_id(&model_call, 12);
+
+    assert!(id.chars().count() <= RECOVERED_TOOL_CALL_ID_MAX_LEN, "{id}");
+    assert!(id.starts_with("mc") && id.ends_with("-tool-12"), "{id}");
+    assert!(
+        id.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+        "{id}"
+    );
+}
+
+#[test]
+fn fingerprinted_ids_are_deterministic_and_distinct_per_model_call_and_slot() {
+    use super::recovered_tool_call_id;
+    use crate::ids::CallId;
+
+    let third = CallId::new(UUID_SCOPED_MODEL_CALL);
+    let fourth = CallId::new(UUID_SCOPED_MODEL_CALL.replace("-model-3", "-model-4"));
+    let other_run = CallId::new(UUID_SCOPED_MODEL_CALL.replace("6f1c2a3b", "00000000"));
+
+    let third_1 = recovered_tool_call_id(&third, 1);
+
+    assert_eq!(third_1, recovered_tool_call_id(&third, 1));
+    assert_ne!(third_1, recovered_tool_call_id(&third, 2));
+    assert_ne!(third_1, recovered_tool_call_id(&fourth, 1));
+    assert_ne!(third_1, recovered_tool_call_id(&other_run, 1));
+}
+
+#[test]
+fn text_recovery_mints_bounded_ids_for_a_uuid_scoped_model_call() {
+    use super::{DroppedBlocks, RECOVERED_TOOL_CALL_ID_MAX_LEN, recover_text_calls};
+    use crate::ids::CallId;
+    use tinyinference_llm::model::ModelResponse;
+    use tinyinference_llm::tool::ToolSchema;
+
+    let lookup = ToolSchema::new("lookup", "look something up", serde_json::json!({}));
+    let mut response = ModelResponse::assistant(concat!(
+        r#"<tool_call>{"name":"lookup","arguments":{"q":"a"}}</tool_call>"#,
+        r#"<tool_call>{"name":"lookup","arguments":{"q":"b"}}</tool_call>"#,
+    ));
+    let model_call = CallId::new(UUID_SCOPED_MODEL_CALL);
+
+    recover_text_calls(
+        &mut response,
+        &model_call,
+        std::slice::from_ref(&lookup),
+        None,
+        &DroppedBlocks::default(),
+    );
+
+    let ids: Vec<&str> = response
+        .message
+        .tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(
+        ids.iter()
+            .all(|id| id.chars().count() <= RECOVERED_TOOL_CALL_ID_MAX_LEN),
+        "{ids:?}"
+    );
+    assert!(
+        ids[0].ends_with("-tool-1") && ids[1].ends_with("-tool-2"),
+        "{ids:?}"
+    );
+    assert_ne!(ids[0], ids[1]);
+}

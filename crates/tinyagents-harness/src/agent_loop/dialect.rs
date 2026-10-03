@@ -13,6 +13,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use sha2::{Digest, Sha256};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{
     ModelRequest, ModelResponse, PromptSegment, SegmentRole, ToolChoice,
@@ -504,23 +505,65 @@ pub(super) struct CallShape {
     pub(super) retry_empty_final: bool,
 }
 
-/// Converts a recovered call into the harness's [`ToolCall`], minting an id
-/// scoped to the model call it came from.
+/// Longest tool-call id the harness mints for a call recovered from text.
 ///
-/// `{model_call_id}-tool-{n}` is unique per run by construction — model call
-/// ids already are — and visibly distinct from any provider's, so a
-/// recovered call can never be confused with a native one in a transcript.
+/// OpenAI's Chat Completions API rejects a replayed `tool_calls[].id` over
+/// 40 characters (`string too long. Expected a string with maximum length
+/// 40`); OCI Generative AI's OpenAI-compatible endpoint and Anthropic's
+/// Messages API cap theirs at 64. The tightest published ceiling wins, so one
+/// minted id replays against every OpenAI-compatible surface.
+pub(super) const RECOVERED_TOOL_CALL_ID_MAX_LEN: usize = 40;
+
+/// Bytes of the SHA-256 digest (two hex digits each) that stand in for a
+/// model-call id too long to carry verbatim. 64 bits is collision-resistant
+/// across the handful of model calls one thread's transcript ever replays.
+const MODEL_CALL_FINGERPRINT_BYTES: usize = 8;
+
+/// Converts a recovered call into the harness's [`ToolCall`], minting an id
+/// scoped to the model call it came from (see [`recovered_tool_call_id`]).
 fn to_tool_call(call: ParsedToolCall, model_call_id: &CallId, slot: usize) -> ToolCall {
     // `call.id` is intentionally never used, even when a grammar or a future
     // change to `tinytools-agent` happens to populate one: this function's
-    // whole contract (see its doc comment) is that a text-recovered call's id
-    // is always host-minted and unique per run, so it can never collide with
-    // another recovered call or be confused with a native provider one. A
-    // parser-supplied id would be model-controlled input; trusting it here
-    // would let two calls collide on an id the model chose, or let a
-    // narrated call impersonate a specific native one.
-    let id = format!("{model_call_id}-tool-{slot}");
-    ToolCall::new(id, call.name, call.arguments)
+    // whole contract (see `recovered_tool_call_id`) is that a text-recovered
+    // call's id is always host-minted and unique per run, so it can never
+    // collide with another recovered call or be confused with a native
+    // provider one. A parser-supplied id would be model-controlled input;
+    // trusting it here would let two calls collide on an id the model chose,
+    // or let a narrated call impersonate a specific native one.
+    ToolCall::new(
+        recovered_tool_call_id(model_call_id, slot),
+        call.name,
+        call.arguments,
+    )
+}
+
+/// Mints the id of the `slot`-th call recovered from `model_call_id`'s text.
+///
+/// `{model_call_id}-tool-{slot}` when that fits
+/// [`RECOVERED_TOOL_CALL_ID_MAX_LEN`]; otherwise `mc{fingerprint}-tool-{slot}`,
+/// the model-call id replaced by the leading
+/// [`MODEL_CALL_FINGERPRINT_BYTES`] bytes of its SHA-256 in hex. A host that
+/// scopes run ids with a UUID (`openhuman-session-<uuid>-model-3`, 62
+/// characters) otherwise minted 69-character ids that OpenAI-compatible
+/// endpoints reject with HTTP 400 once the call is replayed, ending the turn
+/// (tinyhumansai/openhuman#6933).
+///
+/// Both shapes keep what callers rely on: the slot keeps the calls of one
+/// model call apart, the model-call id (or its fingerprint) keeps model calls
+/// apart within and across runs, and the `-tool-{slot}` tail marks the call
+/// as host-minted rather than provider-assigned. The verbatim shape is kept
+/// whenever it fits, so a short run id's transcripts and traces are unchanged.
+pub(super) fn recovered_tool_call_id(model_call_id: &CallId, slot: usize) -> String {
+    let verbatim = format!("{model_call_id}-tool-{slot}");
+    if verbatim.chars().count() <= RECOVERED_TOOL_CALL_ID_MAX_LEN {
+        return verbatim;
+    }
+    let fingerprint: String = Sha256::digest(model_call_id.as_str().as_bytes())
+        .iter()
+        .take(MODEL_CALL_FINGERPRINT_BYTES)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("mc{fingerprint}-tool-{slot}")
 }
 
 /// Reads text-dialect calls out of a response that carries no structured

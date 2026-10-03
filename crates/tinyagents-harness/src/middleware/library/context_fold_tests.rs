@@ -219,7 +219,7 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
     let Fixture {
         stack,
         seen,
-        sink: _sink,
+        sink,
         mut c,
     } = fixture();
     let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
@@ -231,10 +231,110 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
     transcript.extend([chunk("m4"), chunk("m5")]);
     let sent = send(&stack, &mut c, &transcript).await;
 
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    }
     assert_eq!(sent, vec![cp("summary #2"), chunk("m5")]);
+    // The host's transcript has its own coordinates now: no boundary in them
+    // is persisted.
+    assert_eq!(sink.records.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn keeps_recognizing_a_host_spliced_summary_until_it_is_replaced() {
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        mut c,
+    } = fixture();
+    let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
+
+    // The host feeds the compacted request back, first below the threshold...
+    let mut transcript = first.clone();
+    transcript.push(user("ok"));
+    let sent = send(&stack, &mut c, &transcript).await;
+    assert_eq!(
+        sent, transcript,
+        "below the threshold the request is left alone"
+    );
+
+    // ...then over it. The old summary is still recognized and replaced.
+    transcript.extend([chunk("m4"), chunk("m5")]);
+    let sent = send(&stack, &mut c, &transcript).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    }
+    assert_eq!(sent, vec![cp("summary #2"), chunk("m5")]);
+
+    // Until the host persists summary #2, it still sends summary #1. The
+    // replacement fold must remove that obsolete host summary on reapply.
+    let reapplied = send(&stack, &mut c, &transcript).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "the replacement fold is reused");
+    assert_eq!(reapplied, vec![cp("summary #2"), chunk("m5")]);
+}
+
+/// [`keeps_recognizing_a_host_spliced_summary_until_it_is_replaced`] with the
+/// opt-in system placement: the host's summary sits in `system`, is lifted out
+/// and remembered as the one the next fold replaces.
+#[tokio::test]
+async fn keeps_recognizing_a_host_spliced_system_summary_until_it_is_replaced() {
+    let policy = SummarizationPolicy {
+        keep_last: 1,
+        ..SummarizationPolicy::default()
+    }
+    .with_context_window(300)
+    .with_threshold_fraction(0.5);
+    let summarizer = ShortSummarizer::default();
+    let seen = summarizer.seen.clone();
+    let mw: Arc<dyn Middleware<()>> = Arc::new(
+        ContextCompressionMiddleware::with_summarizer(policy, Box::new(summarizer))
+            .with_summary_placement(crate::summarization::SummaryPlacement::System),
+    );
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push(mw);
+    let sink = Arc::new(RecordingSink::default());
+    let mut c = ctx().with_compaction_sink(sink.clone());
+    let sys_cp = |summary: &str| {
+        crate::summarization::checkpoint_message(
+            crate::summarization::SummaryPlacement::System,
+            summary,
+        )
+    };
+
+    let first = send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
+    assert_eq!(first, vec![sys_cp("summary #1"), chunk("m3")]);
+
+    let mut transcript = first.clone();
+    transcript.push(user("ok"));
+    let sent = send(&stack, &mut c, &transcript).await;
+    assert_eq!(
+        sent, transcript,
+        "below the threshold the request is left alone"
+    );
+
+    transcript.extend([chunk("m4"), chunk("m5")]);
+    let sent = send(&stack, &mut c, &transcript).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
+    }
+    assert_eq!(sent, vec![sys_cp("summary #2"), chunk("m5")]);
+
+    let reapplied = send(&stack, &mut c, &transcript).await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "the replacement fold is reused"
+    );
+    assert_eq!(reapplied, vec![sys_cp("summary #2"), chunk("m5")]);
+    assert_eq!(sink.records.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -246,7 +346,9 @@ async fn keeps_each_runs_fold_separate() {
         c: mut run_a,
     } = fixture();
     let sink = Arc::new(RecordingSink::default());
-    let mut run_b = RunContext::new(RunConfig::new("run-b"), ()).with_compaction_sink(sink);
+    // Independent contexts may share a caller-supplied RunId; their folds
+    // must still remain isolated by context instance.
+    let mut run_b = RunContext::new(RunConfig::new("test-run"), ()).with_compaction_sink(sink);
 
     let mut a = vec![chunk("a1"), chunk("a2"), chunk("a3")];
     send(&stack, &mut run_a, &a).await;
@@ -258,6 +360,41 @@ async fn keeps_each_runs_fold_separate() {
     // Run A's fold survived B and still applies, with no new summarizer call.
     a.push(user("ok"));
     let sent_a = send(&stack, &mut run_a, &a).await;
+    assert_eq!(sent_a, vec![cp("summary #1"), chunk("a3"), user("ok")]);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn keeps_concurrent_contexts_with_the_same_run_id_separate() {
+    // A `RunId` is a caller label: two live invocations may share one. Their
+    // folds must still not mix.
+    let Fixture {
+        stack,
+        seen,
+        sink: _sink,
+        c: mut first,
+    } = fixture();
+    let mut second = ctx();
+    assert_eq!(first.run_id(), second.run_id());
+
+    let mut a = vec![chunk("a1"), chunk("a2"), chunk("a3")];
+    send(&stack, &mut first, &a).await;
+    let sent_b = send(
+        &stack,
+        &mut second,
+        &[chunk("b1"), chunk("b2"), chunk("b3")],
+    )
+    .await;
+    assert_eq!(sent_b, vec![cp("summary #2"), chunk("b3")]);
+    assert_eq!(seen.lock().unwrap()[1].previous_summary, None);
+
+    // The second context finishing must not erase the first one's fold.
+    stack
+        .run_after_agent(&mut second, &(), &mut crate::middleware::AgentRun::new())
+        .await
+        .unwrap();
+    a.push(user("ok"));
+    let sent_a = send(&stack, &mut first, &a).await;
     assert_eq!(sent_a, vec![cp("summary #1"), chunk("a3"), user("ok")]);
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
@@ -316,13 +453,19 @@ impl crate::middleware::ModelBaseCall<(), ()> for OverflowOnce {
     }
 }
 
-/// Drops the oldest non-system message, as a later trim step would.
-struct DropOldest;
+/// A later `before_model` step that alters the oldest non-system message.
+#[derive(Clone, Copy)]
+enum LaterStep {
+    /// Drops it, as a trim step would.
+    DropOldest,
+    /// Rewrites it in place, as microcompact blanking a tool body would.
+    RewriteOldest,
+}
 
 #[async_trait]
-impl Middleware<()> for DropOldest {
+impl Middleware<()> for LaterStep {
     fn name(&self) -> &str {
-        "drop_oldest"
+        "later_step"
     }
 
     async fn before_model(
@@ -336,7 +479,12 @@ impl Middleware<()> for DropOldest {
             .iter()
             .position(|m| !matches!(m, Message::System(_)))
         {
-            request.messages.remove(at);
+            match self {
+                LaterStep::DropOldest => {
+                    request.messages.remove(at);
+                }
+                LaterStep::RewriteOldest => request.messages[at] = user("[cleared]"),
+            }
         }
         Ok(())
     }
@@ -344,7 +492,7 @@ impl Middleware<()> for DropOldest {
 
 /// Runs one call through `before_model` and the overflow-recovering model
 /// wrap, with threshold compaction declined so only the overflow path fires.
-async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
+async fn overflow_call(later: Option<LaterStep>) -> Vec<CompactionRecord> {
     let mw = Arc::new(
         ContextCompressionMiddleware::new(
             SummarizationPolicy::default()
@@ -360,8 +508,8 @@ async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
     );
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push(mw.clone());
-    if drop_oldest {
-        stack.push(Arc::new(DropOldest));
+    if let Some(step) = later {
+        stack.push(Arc::new(step));
     }
     stack.push_model_middleware(mw);
     let sink = Arc::new(RecordingSink::default());
@@ -390,7 +538,7 @@ async fn overflow_call(drop_oldest: bool) -> Vec<CompactionRecord> {
 
 #[tokio::test]
 async fn overflow_persists_a_boundary_when_the_request_is_aligned() {
-    let persisted = overflow_call(false).await;
+    let persisted = overflow_call(None).await;
     assert_eq!(persisted.len(), 1);
     assert_eq!(
         persisted[0].reason,
@@ -403,7 +551,18 @@ async fn overflow_persists_a_boundary_when_the_request_is_aligned() {
 async fn overflow_skips_persistence_when_a_later_step_dropped_messages() {
     // The boundary would be shifted by the dropped message; a resumed session
     // would restore or duplicate the wrong history from it.
-    assert!(overflow_call(true).await.is_empty());
+    assert!(overflow_call(Some(LaterStep::DropOldest)).await.is_empty());
+}
+
+#[tokio::test]
+async fn overflow_skips_persistence_when_a_later_step_rewrote_a_message() {
+    // Same count, different content: the summary would describe the rewritten
+    // placeholder, not what the persisted boundary would fold away.
+    assert!(
+        overflow_call(Some(LaterStep::RewriteOldest))
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -439,4 +598,72 @@ async fn concat_summarizer_carries_the_previous_summary_forward() {
     let text = record.summary.text();
     assert!(text.starts_with("earlier\n"), "{text}");
     assert!(text.contains("new"), "{text}");
+}
+
+#[tokio::test]
+async fn an_unaligned_overflow_summary_is_not_built_on_later() {
+    // Threshold compaction is declined until the overflow has happened, so the
+    // overflow path fires first, on a request a later step rewrote.
+    let allow_threshold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = allow_threshold.clone();
+    let summarizer = ShortSummarizer::default();
+    let seen = summarizer.seen.clone();
+    let mw = Arc::new(
+        ContextCompressionMiddleware::with_summarizer(
+            SummarizationPolicy {
+                keep_last: 1,
+                ..SummarizationPolicy::default()
+            }
+            .with_context_window(100)
+            .with_threshold_fraction(0.5),
+            Box::new(summarizer),
+        )
+        .with_before_compaction(move |c| match c.reason {
+            crate::summarization::CompactionReason::Threshold
+                if !gate.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                crate::summarization::CompactionDecision::Decline
+            }
+            _ => crate::summarization::CompactionDecision::Proceed,
+        }),
+    );
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    stack.push(mw.clone());
+    stack.push(Arc::new(LaterStep::RewriteOldest));
+    stack.push_model_middleware(mw);
+    let mut c = ctx();
+
+    let big = "word ".repeat(60);
+    let transcript: Vec<Message> = (1..=5).map(|i| user(&format!("{i} {big}"))).collect();
+    let mut request = ModelRequest {
+        messages: transcript.clone(),
+        ..Default::default()
+    };
+    stack
+        .run_before_model(&mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let base = OverflowOnce {
+        calls: Mutex::new(0),
+    };
+    stack
+        .run_wrapped_model(&mut c, &(), request, &base)
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1, "the overflow compaction ran");
+
+    // The next threshold compaction summarizes the original transcript from
+    // scratch; the overflow's summary of the rewritten request is not its base.
+    allow_threshold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut request = ModelRequest {
+        messages: transcript,
+        ..Default::default()
+    };
+    stack
+        .run_before_model(&mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].previous_summary, None);
 }

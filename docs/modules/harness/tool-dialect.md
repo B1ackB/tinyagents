@@ -55,9 +55,13 @@ offered tool and an unknown one reaches the unknown-tool policy as written.
 
 `tinytools-agent` never mints call ids. The harness mints
 `{model_call_id}-tool-{n}` for every call recovered from text — unique per run
-by construction and visibly distinct from any provider's. (The
-OpenAI-compatible adapter mints `text-{seq}-{slot}` for calls it recovers
-itself; the harness leaves those alone.)
+by construction and visibly distinct from any provider's. When that id would
+exceed 40 characters (OpenAI's ceiling for a replayed `tool_calls[].id`; a
+UUID-scoped run id gets there), the model-call id is replaced by the leading
+16 hex digits of its SHA-256 — `mc{fingerprint}-tool-{n}` — which stays unique
+per model call and slot. (The OpenAI-compatible adapter mints
+`text-{seq}-{slot}` for calls it recovers itself; the harness leaves those
+alone.)
 
 Streamed visible text passes through a `StreamScrubber` whenever tools were
 offered, so a consumer of `AgentEvent::ModelDelta` never sees a partial

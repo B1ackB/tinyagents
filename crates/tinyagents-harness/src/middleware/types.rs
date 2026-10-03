@@ -901,10 +901,11 @@ pub struct ContextCompressionMiddleware {
     /// [`crate::summarization::CompactionDecision`].
     pub(crate) before_compaction: Option<BeforeCompactionHook>,
     /// Per-run compaction state: the fold each in-flight run has made and the
-    /// live transcript its last `before_model` saw. Keyed by run so two
-    /// invocations sharing this middleware never read each other's fold, and
-    /// dropped in `after_agent`. See [`RunCompaction`].
-    pub(crate) runs: Mutex<std::collections::HashMap<crate::ids::RunId, RunCompaction>>,
+    /// live transcript its last `before_model` saw. Keyed by the context's
+    /// process-unique [`RunContext::instance_id`] (a `RunId` is a caller label
+    /// two concurrent runs may share), so invocations sharing this middleware
+    /// never read each other's fold, and dropped in `after_agent`. See [`RunCompaction`].
+    pub(crate) runs: Mutex<std::collections::HashMap<u64, RunCompaction>>,
     /// Role the summary is written with. See
     /// [`crate::summarization::SummaryPlacement`].
     pub(crate) placement: crate::summarization::SummaryPlacement,
@@ -943,6 +944,11 @@ pub(crate) struct RunCompaction {
     /// so an iterative [`Summarizer`] refines rather than restarts, when no
     /// fold carries it (a host that spliced the summary into its transcript).
     pub(crate) last_summary: Option<String>,
+    /// A summary found in the host transcript that a subsequent fold replaces.
+    pub(crate) host_applied_summary: Option<tinyinference_llm::message::Message>,
+    /// Once the host has persisted a compressed transcript, subsequent
+    /// boundaries are in that shortened transcript's coordinates.
+    pub(crate) boundary_unaligned: bool,
     /// Monotonic touch stamp for least-recently-used eviction.
     pub(crate) touched: u64,
     /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
@@ -1009,6 +1015,9 @@ pub(crate) struct CompactionFold {
     pub(crate) fingerprint: u64,
     /// The summary message spliced in place of the folded messages.
     pub(crate) summary: tinyinference_llm::message::Message,
+    /// Summary previously spliced by the host and incorporated into this one.
+    /// Remove it when rebuilding requests from the host's unchanged transcript.
+    pub(crate) replaces: Option<tinyinference_llm::message::Message>,
 }
 
 // ── MicrocompactMiddleware ────────────────────────────────────────────────────
