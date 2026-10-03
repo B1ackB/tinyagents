@@ -144,9 +144,12 @@ impl Summarizer for ConcatSummarizer {
     ///
     /// Compaction is incremental: once a transcript has been folded, the next
     /// compaction hands the summarizer only the messages since that fold, plus
-    /// the prior summary. The trait default ignores the prior summary, which
-    /// for this deterministic stand-in would silently drop everything folded
-    /// before.
+    /// the prior summary, which must survive into the result. The trait default
+    /// would forward it as a leading system message rendered through
+    /// [`render_message_for_summary`] and given a positional `msg-N` id, so it
+    /// would read as one more transcript entry. This override keeps it verbatim
+    /// ahead of the concatenation instead, and is the only forwarding: it
+    /// replaces the default rather than adding to it.
     async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
         let mut record = self.summarize(&request.messages).await?;
         if let Some(previous) = request.previous_summary.as_deref() {
