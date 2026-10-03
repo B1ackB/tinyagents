@@ -152,9 +152,10 @@ async fn fires_with_three_model_calls_remaining() {
     assert_eq!(check_count(&run), 1);
 }
 
-/// A run close to its wall-clock deadline keeps its first answer.
+/// A run close to the policy wall-clock cap the host declared keeps its first
+/// answer. The policy cap is not on the run context, so the host passes it in.
 #[tokio::test]
-async fn skips_when_the_wall_clock_is_short() {
+async fn skips_when_the_policy_wall_clock_is_short() {
     let (run, _) = drive(
         vec![
             tool_round("c1", "lookup"),
@@ -162,6 +163,7 @@ async fn skips_when_the_wall_clock_is_short() {
             answer("never reached"),
         ],
         VerifyBeforeFinishMiddleware::new(CHECK)
+            .with_wall_clock_limit(Duration::from_secs(60))
             .with_min_remaining_wall_clock(Duration::from_secs(600)),
         RunLimits::default()
             .with_max_model_calls(10)
@@ -173,7 +175,28 @@ async fn skips_when_the_wall_clock_is_short() {
     assert_eq!(check_count(&run), 0);
 }
 
-/// A run with no wall-clock deadline is not bounded by time.
+/// The run config's own deadline (`RunConfig::timeout_ms`) is honoured too.
+#[tokio::test]
+async fn skips_when_the_run_deadline_is_short() {
+    let mw = VerifyBeforeFinishMiddleware::new(CHECK)
+        .with_min_remaining_wall_clock(Duration::from_secs(600));
+    let mut ctx = RunContext::new(
+        RunConfig::new("vbf")
+            .with_max_model_calls(10)
+            .with_timeout_ms(60_000),
+        (),
+    );
+    ctx.limits.record_model_call().unwrap();
+    mw.after_model(&mut ctx, &(), &mut tool_round("c1", "lookup"))
+        .await
+        .unwrap();
+    ctx.limits.record_model_call().unwrap();
+    let mut draft = answer("draft");
+    mw.after_model(&mut ctx, &(), &mut draft).await.unwrap();
+    assert!(draft.continue_turn.is_none());
+}
+
+/// A deadline with room to spare does not block the check.
 #[tokio::test]
 async fn fires_when_the_wall_clock_has_room() {
     let (run, _) = drive(
@@ -183,6 +206,7 @@ async fn fires_when_the_wall_clock_has_room() {
             answer("checked"),
         ],
         VerifyBeforeFinishMiddleware::new(CHECK)
+            .with_wall_clock_limit(Duration::from_secs(600))
             .with_min_remaining_wall_clock(Duration::from_secs(1)),
         RunLimits::default()
             .with_max_model_calls(10)
