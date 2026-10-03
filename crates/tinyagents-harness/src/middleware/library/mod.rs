@@ -104,6 +104,7 @@ pub use policy_gate::{
 pub use repeat_progress::{
     HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
 };
+pub(crate) use turn_clock::is_json_document;
 pub use turn_clock::{TurnClock, TurnClockMiddleware};
 pub use verify_before_finish::{
     DEFAULT_MIN_REMAINING_WALL_CLOCK, FinishActivity, FinishCheckTrigger,
