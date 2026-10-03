@@ -199,6 +199,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
             _ => None,
         };
         let folded = prior.as_ref().map_or(0, |fold| fold.folded);
+        let prior_summary = match &check {
+            FoldCheck::Applies(fold) => Some(fold.summary.text()),
+            FoldCheck::HostApplied(text) => Some(text.clone()),
+            FoldCheck::Stale => None,
+            FoldCheck::None => self.run_last_summary(ctx.run_id()),
+        };
         if let Some(fold) = &prior {
             request.messages = splice_summary(
                 system
@@ -250,6 +256,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         ) {
             CompactionDecision::Decline => return Ok(()),
             CompactionDecision::UseSummary(text) => {
+                let text = prior_summary
+                    .as_deref()
+                    .map_or(text.clone(), |previous| format!("{previous}\n{text}"));
                 let record = SummaryRecord {
                     summary: Message::system(text),
                     provenance: crate::summarization::CompressionProvenance {
@@ -265,7 +274,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
                 self.finish_compaction(
                     ctx,
                     record,
-                    Some(first_kept_index),
+                    self.boundary_for_run(ctx.run_id(), Some(first_kept_index)),
                     from_tokens,
                     to_tokens,
                     CompactionReason::Threshold,
@@ -287,12 +296,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         // longer matches the fold gets no previous summary: that summary
         // describes some other history. Otherwise fall back to the last
         // summary this run produced.
-        let previous_summary = match check {
-            FoldCheck::Applies(fold) => Some(fold.summary.text()),
-            FoldCheck::HostApplied(text) => Some(text),
-            FoldCheck::Stale => None,
-            FoldCheck::None => self.run_last_summary(ctx.run_id()),
-        };
+        let previous_summary = prior_summary;
         tracing::debug!(
             folded,
             to_summarize = to_summarize.len(),
@@ -375,7 +379,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         self.finish_compaction(
             ctx,
             record,
-            Some(first_kept_index),
+            self.boundary_for_run(ctx.run_id(), Some(first_kept_index)),
             from_tokens,
             to_tokens,
             CompactionReason::Threshold,
