@@ -448,7 +448,12 @@ impl ToolResultArtifactStore {
     /// written before a host moved to a detached store keeps paging correctly,
     /// and a detached store additionally recognises an absolute path inside its
     /// storage directory, which is the pointer it hands out.
-    pub fn read_target(&self, tool_name: &str, args: &Value, wrapper_tool: &str) -> Option<ArtifactRead> {
+    pub fn read_target(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        wrapper_tool: &str,
+    ) -> Option<ArtifactRead> {
         read_target_matching(tool_name, args, &self.read_tool, wrapper_tool, &|path| {
             is_relative_artifact_path(path)
                 || (self.is_detached() && is_absolute_path_under(path, &self.root))
@@ -463,9 +468,9 @@ impl ToolResultArtifactStore {
     /// Delete artifact directories for sessions other than this one that have
     /// not been touched within `max_age`.
     ///
-    /// Artifacts are written under the user's action workspace and nothing else
-    /// removes them, so without a bound the directory grows for the life of the
-    /// install — a connector returning 17-65 KB across 8-14 calls per question
+    /// Nothing else removes artifacts (from the action workspace, or from a
+    /// detached store's storage directory), so without a bound the directory
+    /// grows for the life of the install — a connector returning 17-65 KB across 8-14 calls per question
     /// (#6408) writes a file per call. Trading a token-burn bug for a
     /// disk-growth bug is not a fix.
     ///
@@ -582,8 +587,12 @@ impl ToolResultArtifactStore {
         // Keeps the action-relative envelope byte-identical to what it was
         // before detached stores existed (`contract_expected.txt`).
         let location_note = match self.layout {
-            StoreLayout::ActionRelative => "Full scrubbed output was persisted under the action workspace.",
-            StoreLayout::Detached => "Full scrubbed output was persisted outside the working tree, at the absolute artifact_path above (not part of the project).",
+            StoreLayout::ActionRelative => {
+                "Full scrubbed output was persisted under the action workspace."
+            }
+            StoreLayout::Detached => {
+                "Full scrubbed output was persisted outside the working tree, at the absolute artifact_path above (not part of the project)."
+            }
         };
 
         let (preview, preview_outcome) =

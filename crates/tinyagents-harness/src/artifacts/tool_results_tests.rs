@@ -620,3 +620,163 @@ notes: Full scrubbed output was persisted under the action workspace.\n\n\
     assert_eq!(persisted.output, expected);
     assert!(!persisted.redacted);
 }
+
+fn detached_store(dir: &Path, session: &str) -> ToolResultArtifactStore {
+    ToolResultArtifactStore::detached(
+        dir.to_path_buf(),
+        session,
+        Arc::new(TestRedactor),
+        "file_read",
+        10 * 1024 * 1024,
+    )
+}
+
+/// The reason detached stores exist: a coding agent's action directory is the
+/// project it is editing, and an artifact written there is a stray file in its
+/// diff. A detached store writes only under its storage directory and points at
+/// the file by absolute path.
+#[tokio::test]
+async fn detached_store_writes_outside_the_action_dir_with_an_absolute_pointer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let action = tmp.path().join("project");
+    let storage = tmp.path().join("state").join("tool-results");
+    std::fs::create_dir_all(&action).unwrap();
+    let store = detached_store(&storage, "session/one");
+    assert!(store.is_detached());
+    assert_eq!(store.root(), storage.as_path());
+
+    let raw = format!("{} {}", "x".repeat(4096), test_github_token());
+    let (out, outcome) =
+        apply_per_result_persistence(raw, None, Some(&store), "shell", Some("call-1"), 1024).await;
+
+    let expected = storage.join("session_one/shell/call-1.txt");
+    let pointer = expected.to_string_lossy().into_owned();
+    assert!(outcome.persisted);
+    assert_eq!(outcome.artifact_path.as_deref(), Some(pointer.as_str()));
+    assert!(out.contains(&format!("artifact_path: {pointer}\n")));
+    assert!(out.contains(&format!("read_with: file_read {{\"path\":\"{pointer}\"}}")));
+    assert!(out.contains("persisted outside the working tree"));
+    assert!(!out.contains("under the action workspace"));
+
+    let stored = std::fs::read_to_string(&expected).unwrap();
+    assert!(stored.contains("[REDACTED_SECRET]"));
+    assert!(!stored.contains(&test_github_token()));
+    // Nothing at all lands in the project.
+    assert_eq!(std::fs::read_dir(&action).unwrap().count(), 0);
+}
+
+#[test]
+fn detached_store_makes_a_relative_storage_dir_absolute() {
+    let store = detached_store(Path::new("relative/state"), "s");
+    assert!(store.root().is_absolute());
+    assert!(Path::new(&store.path_for_read_tool("shell", Some("c"))).is_absolute());
+}
+
+#[test]
+fn detached_read_target_recognises_its_absolute_pointers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("tool-results");
+    let store = detached_store(&storage, "s");
+    let pointer = store.path_for_read_tool("shell", Some("c"));
+
+    let direct = store.read_target(
+        "file_read",
+        &json!({"path": pointer, "offset": 7}),
+        "use_skill",
+    );
+    assert_eq!(
+        direct,
+        Some(ArtifactRead {
+            path: pointer.clone(),
+            offset: 7
+        })
+    );
+    // The orchestrator reaches `file_read` through `use_skill`.
+    let wrapped = store.read_target(
+        "use_skill",
+        &json!({"skill": "files", "tool": "file_read", "args": {"path": pointer}}),
+        "use_skill",
+    );
+    assert_eq!(wrapped.map(|read| read.offset), Some(0));
+    // Pointers written before the host moved to a detached store still page.
+    assert!(
+        store
+            .read_target(
+                "file_read",
+                &json!({"path": "artifacts/tool-results/s/shell/c.txt"}),
+                "use_skill"
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn detached_read_target_rejects_paths_that_are_not_its_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("tool-results");
+    let store = detached_store(&storage, "s");
+    let read = |path: String| store.read_target("file_read", &json!({"path": path}), "use_skill");
+
+    // A sibling directory sharing the prefix.
+    let sibling = format!("{}-backup/s/shell/c.txt", storage.display());
+    assert_eq!(read(sibling), None);
+    // `..` would make the read tool open a different file.
+    let escape = format!("{}/s/../../secret.txt", storage.display());
+    assert_eq!(read(escape), None);
+    // The storage directory itself is not an artifact.
+    assert_eq!(read(storage.to_string_lossy().into_owned()), None);
+    // Some other absolute file.
+    assert_eq!(read("/etc/hosts".to_string()), None);
+    // Only the read tool's result is the stored body.
+    let pointer = store.path_for_read_tool("shell", Some("c"));
+    assert_eq!(
+        store.read_target("file_write", &json!({"path": pointer}), "use_skill"),
+        None
+    );
+}
+
+/// An action-relative store must not start matching absolute paths just
+/// because the method exists: its pointers are relative.
+#[test]
+fn action_relative_read_target_ignores_absolute_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path(), "s");
+    let absolute = tmp
+        .path()
+        .join("artifacts/tool-results/s/shell/c.txt")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        store.read_target("file_read", &json!({"path": absolute}), "use_skill"),
+        None
+    );
+    assert!(
+        store
+            .read_target(
+                "file_read",
+                &json!({"path": "artifacts/tool-results/s/shell/c.txt"}),
+                "use_skill"
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn detached_prune_sweeps_stale_sessions_in_the_storage_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().join("tool-results");
+    let stale = storage.join("old-session/shell");
+    let current = storage.join("current/shell");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::write(stale.join("c.txt"), "old").unwrap();
+    std::fs::write(current.join("c.txt"), "new").unwrap();
+
+    let store = detached_store(&storage, "current");
+    // Everything is "stale" at a zero max age; the current session is kept.
+    let removed = store.prune_stale_sessions(Duration::ZERO).unwrap();
+
+    assert_eq!(removed, 1);
+    assert!(!storage.join("old-session").exists());
+    assert!(current.join("c.txt").exists());
+}
