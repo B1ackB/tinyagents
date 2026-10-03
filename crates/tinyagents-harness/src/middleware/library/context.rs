@@ -814,6 +814,7 @@ impl ContextCompressionMiddleware {
     /// [`RunContext::compaction_sink`] when attached, and emits
     /// [`AgentEvent::Compacted`]. Does **not** emit `Compressed` — callers
     /// that also want the legacy event emit it themselves.
+    #[allow(clippy::too_many_arguments)]
     fn finish_compaction<Ctx: Send + Sync>(
         &self,
         ctx: &mut RunContext<Ctx>,
