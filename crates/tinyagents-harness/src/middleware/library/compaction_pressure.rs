@@ -64,6 +64,8 @@ impl CompactionPressure {
         messages: &[Message],
         schema_tokens: u64,
     ) -> (u64, PromptSource) {
+        let full_estimate =
+            crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens;
         if let Some(measured) = self.measured
             && measured.messages <= messages.len()
             && schema_tokens >= measured.schema_tokens
@@ -73,14 +75,11 @@ impl CompactionPressure {
                 crate::token_estimation::estimate_slice_tokens(&messages[measured.messages..]);
             let schema_growth = schema_tokens.saturating_sub(measured.schema_tokens);
             return (
-                measured.prompt_tokens + appended + schema_growth,
+                (measured.prompt_tokens + appended + schema_growth).max(full_estimate),
                 PromptSource::Measured,
             );
         }
-        (
-            crate::token_estimation::estimate_slice_tokens(messages) + schema_tokens,
-            PromptSource::Estimated,
-        )
+        (full_estimate, PromptSource::Estimated)
     }
 
     /// Records the shape of the request this middleware let through, so the

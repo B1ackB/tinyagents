@@ -140,3 +140,11 @@ Grouped by extension shape:
 - **Wrap middleware in `resilience.rs` are responsible for their own retry
   budget.** `MiddlewareStack` does not cap how many times a `ModelMiddleware`
   calls `next.run(..)`.
+- **Per-call guidance goes through `push_ephemeral_instruction`.** Middleware
+  that adds a note to one request (a contents list, a nudge) should not push a
+  raw `Message::system`: on a model whose profile sets
+  `hoists_system_messages` (DeepSeek moves every system turn to the prompt
+  head) a new system message rewrites the cached prefix. The helper reads the
+  target profile the loop previews onto `RunContext::model_profile` and, for
+  such a model, appends the text to the tail tool result or user turn under a
+  `[harness note]` header instead.

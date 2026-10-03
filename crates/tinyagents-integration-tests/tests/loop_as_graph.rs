@@ -522,3 +522,58 @@ async fn iter_steps_node_by_node_and_honors_override_next() {
     let state = iter.run_to_end().await.expect("run finishes");
     assert!(state.finished);
 }
+
+// ── Model profile preview (#6962) ───────────────────────────────────────────
+
+/// Both loops expose the target model's profile to `before_model` middleware
+/// on `RunContext::model_profile`, so middleware can avoid shapes the model
+/// handles badly (a new system message on a model that hoists them).
+#[tokio::test]
+async fn before_model_sees_the_model_profile_in_direct_and_graph() {
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+    use tinyagents_harness::middleware::Middleware;
+    use tinyinference_llm::model::{ChatModel, ModelProfile, ModelRequest};
+
+    struct SeenProfiles(Arc<Mutex<Vec<Option<ModelProfile>>>>);
+
+    #[async_trait]
+    impl Middleware<(), ()> for SeenProfiles {
+        fn name(&self) -> &str {
+            "seen-profiles"
+        }
+
+        async fn before_model(
+            &self,
+            ctx: &mut RunContext<()>,
+            _state: &(),
+            _request: &mut ModelRequest,
+        ) -> tinyagents_harness::Result<()> {
+            self.0.lock().unwrap().push(ctx.model_profile.clone());
+            Ok(())
+        }
+    }
+
+    for execution in [LoopExecution::Direct, LoopExecution::Graph] {
+        let model = Arc::new(MockModel::with_responses(vec![ModelResponse::assistant(
+            "done",
+        )]));
+        let expected = ChatModel::<()>::profile(model.as_ref()).cloned();
+        assert!(expected.is_some(), "the mock advertises a profile");
+        let mut harness = harness_for(execution, model);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        harness.push_middleware(Arc::new(SeenProfiles(seen.clone())));
+
+        let ctx = RunContext::new(RunConfig::new("profile-preview"), ());
+        harness
+            .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+            .await
+            .expect("run completes");
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [expected],
+            "{execution:?} loop must expose the target profile to before_model"
+        );
+    }
+}

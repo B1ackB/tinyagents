@@ -7,7 +7,7 @@ of a transcript with one checkpoint that has two halves.
 
 - **Ledger** (`ledger.rs`, `TaskLedger`): facts copied from the transcript
   without a model. The first user message (the task, verbatim up to a cap),
-  files modified and read (first-seen order), and the last 15 shell commands
+  files modified and read (most-recent order), and the last 15 shell commands
   with how each ended and the most informative error line.
 - **State** (`types.rs`, `TaskState`): fields only a reader of the
   conversation can state (goal, requirements, constraints, decisions, errors
@@ -38,7 +38,7 @@ of a transcript with one checkpoint that has two halves.
 - **Failure degrades, it does not fail.** A model error, tool-call markup, or
   no parseable JSON after two attempts keeps the previous state and the full
   ledger. Only a failure with nothing to fall back on is an error.
-- **Bounded size.** `TaskState::bounded` caps every list and scalar so a
+- **Bounded size.** `TaskState::bounded` and `TaskLedger::cap` cap every list and scalar so a
   checkpoint stays a few thousand tokens however many times it is carried.
 - **No sensitive logging.** Logs carry counts and the model id, never message
   text.

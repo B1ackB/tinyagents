@@ -252,7 +252,7 @@ impl<'a> EntryTree<'a> {
     /// chronological order and this reasons over it that way) to find the
     /// **newest** [`EntryKind::Compaction`] entry on the path, and never
     /// includes anything older than it: the result is
-    /// `[summary as a system message] + kept entries in chronological
+    /// `[summary in its recorded role] + kept entries in chronological
     /// order`, where "kept" is everything from the compaction's
     /// `first_kept_entry_id` (inclusive) to `tip`. When there is no
     /// compaction on the path, every entry from the root is kept.
@@ -282,10 +282,17 @@ impl<'a> EntryTree<'a> {
         let mut messages = Vec::new();
         let start_idx = match compaction {
             Some((idx, compaction)) => {
-                messages.push(Message::System(SystemMessage {
-                    content: vec![ContentBlock::Text(compaction.summary.clone())],
-                    ..SystemMessage::default()
-                }));
+                messages.push(match compaction.placement {
+                    tinyagents_harness::summarization::SummaryPlacement::User => {
+                        Message::user(compaction.summary.clone())
+                    }
+                    tinyagents_harness::summarization::SummaryPlacement::System => {
+                        Message::System(SystemMessage {
+                            content: vec![ContentBlock::Text(compaction.summary.clone())],
+                            ..SystemMessage::default()
+                        })
+                    }
+                });
                 let start_idx = chain
                     .iter()
                     .position(|e| e.id == compaction.first_kept_entry_id)

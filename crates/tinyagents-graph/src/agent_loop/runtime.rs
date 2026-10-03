@@ -339,6 +339,10 @@ where
     {
         request.reasoning = Some(mapped.clone());
     }
+    // Mirror the direct loop: `before_model` middleware reads the target
+    // model's profile (e.g. to avoid new system messages on a model that
+    // hoists them, #6962).
+    ctx.model_profile = binding.model.profile().cloned();
     harness
         .middleware()
         .run_before_model(ctx, app_state, &mut request)

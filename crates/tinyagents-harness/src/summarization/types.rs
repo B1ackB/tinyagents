@@ -644,6 +644,9 @@ impl CompactionReason {
 pub struct CompactionRecord {
     /// The replacement summary text installed as the new leading context.
     pub summary: String,
+    /// Role used when restoring this checkpoint. Older records used system.
+    #[serde(default = "legacy_compaction_placement")]
+    pub placement: SummaryPlacement,
     /// Index, into the non-system message slice compaction operated over, of
     /// the first message that survives verbatim (everything before it was
     /// folded into [`Self::summary`]). Matches [`crate::summarization::CutPoint::index`] when the
@@ -673,6 +676,10 @@ pub struct CompactionRecord {
     pub details: serde_json::Value,
     /// Why this compaction ran.
     pub reason: CompactionReason,
+}
+
+fn legacy_compaction_placement() -> SummaryPlacement {
+    SummaryPlacement::System
 }
 
 /// A durable sink a host attaches to a [`crate::context::RunContext`] so

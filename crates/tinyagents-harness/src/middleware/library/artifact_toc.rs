@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use crate::context::RunContext;
 use crate::error::Result as TaResult;
 use crate::middleware::Middleware;
-use tinyinference_llm::message::Message as TaMessage;
 use tinyinference_llm::model::ModelRequest;
 
+use super::ephemeral::push_ephemeral_instruction;
 use super::image_trim::estimate_text_tokens;
 
 // ── ArtifactIndexTocMiddleware (issue #6014) ─────────────────────────────────
@@ -103,6 +103,13 @@ pub fn split_input_allowance(trim_allowance: u64) -> (u64, u64) {
 /// says where the data went is the one thing the ladder may not take. It is
 /// appended at the tail rather than the head so the cacheable prompt prefix is
 /// untouched.
+///
+/// The exception is a model that hoists system turns to the prompt head
+/// (`ModelProfile::hoists_system_messages`, e.g. DeepSeek): there a new system
+/// message rewrites the cached prefix (#6962), so
+/// [`push_ephemeral_instruction`] appends the list to the tail tool result or
+/// user turn instead. If a later trim evicts that turn, the trim reattaches
+/// the harness note to the surviving request.
 pub struct ArtifactIndexTocMiddleware {
     /// This middleware's share of the turn's input allowance (a tenth, split at
     /// the install site so restoration and this list cannot each claim the
@@ -251,7 +258,7 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
                 // over the bound makes the trim evict transcript instead, which
                 // is worse.
                 if estimate_text_tokens(&compact) <= cap {
-                    request.messages.push(TaMessage::system(compact));
+                    push_ephemeral_instruction(request, compact, ctx.model_profile.as_ref());
                 }
                 return Ok(());
             }
@@ -290,7 +297,7 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
             artifacts = count,
             "[tinyagents::mw] rendering the persisted-artifact contents list"
         );
-        request.messages.push(TaMessage::system(format!(
+        let list = format!(
             "{header}{}{}",
             rows.join("\n"),
             if omitted > 0 {
@@ -301,7 +308,8 @@ impl<C: Send + Sync> Middleware<(), C> for ArtifactIndexTocMiddleware {
             } else {
                 String::new()
             }
-        )));
+        );
+        push_ephemeral_instruction(request, list, ctx.model_profile.as_ref());
         Ok(())
     }
 }

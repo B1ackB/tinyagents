@@ -17,9 +17,10 @@ use crate::summarization::is_checkpoint;
 pub(crate) const MAX_TASK_CHARS: usize = 6_000;
 /// Commands kept in the ledger (the most recent ones).
 pub(crate) const MAX_COMMANDS: usize = 15;
-/// Files kept per list (the most recently seen ones), so the rendered ledger
-/// stays bounded on tasks that touch many files.
-pub(crate) const MAX_FILES: usize = 200;
+/// Most recent read files kept in a checkpoint.
+pub(crate) const MAX_FILES_READ: usize = 60;
+/// Most recent modified files kept in a checkpoint.
+pub(crate) const MAX_FILES_MODIFIED: usize = 100;
 /// Maximum rendered path characters retained per file list.
 pub(crate) const MAX_FILE_LIST_CHARS: usize = 4_096;
 /// Longest single command line kept.
@@ -58,8 +59,7 @@ impl TaskLedger {
         self.cap();
     }
 
-    /// Keeps the most recent [`MAX_COMMANDS`] commands and [`MAX_FILES`] files
-    /// per list.
+    /// Keeps the most recent [`MAX_COMMANDS`] commands and bounded file lists.
     pub(crate) fn cap(&mut self) {
         fn tail<T>(items: &mut Vec<T>, keep: usize) {
             if items.len() > keep {
@@ -67,8 +67,11 @@ impl TaskLedger {
             }
         }
         tail(&mut self.commands, MAX_COMMANDS);
-        for files in [&mut self.files_modified, &mut self.files_read] {
-            tail(files, MAX_FILES);
+        for (files, limit) in [
+            (&mut self.files_modified, MAX_FILES_MODIFIED),
+            (&mut self.files_read, MAX_FILES_READ),
+        ] {
+            tail(files, limit);
             while files.iter().map(String::len).sum::<usize>() > MAX_FILE_LIST_CHARS {
                 files.remove(0);
             }

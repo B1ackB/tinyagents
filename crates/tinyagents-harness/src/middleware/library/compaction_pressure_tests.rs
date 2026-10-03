@@ -133,3 +133,33 @@ fn shrunken_tool_schemas_fall_back_to_the_estimate() {
         crate::token_estimation::estimate_slice_tokens(&sent) + 10
     );
 }
+
+#[test]
+fn changed_prefix_uses_full_request_estimate() {
+    let mut pressure = CompactionPressure::default();
+    pressure.begin_call();
+    pressure.note_request(&[Message::user("small")], 0);
+    pressure.observe(Some(&usage(2)), &policy(100_000), 2, 10);
+    let messages = vec![Message::user("large".repeat(1_000))];
+    let (tokens, source) = pressure.prompt_tokens(&messages, 0);
+    assert_eq!(source, PromptSource::Estimated);
+    assert_eq!(
+        tokens,
+        crate::token_estimation::estimate_slice_tokens(&messages)
+    );
+}
+
+#[test]
+fn measured_usage_never_understates_the_full_request_estimate() {
+    let mut pressure = CompactionPressure::default();
+    let messages = vec![Message::user("large".repeat(1_000))];
+    pressure.begin_call();
+    pressure.note_request(&messages, 0);
+    pressure.observe(Some(&usage(2)), &policy(100_000), 2, 10);
+    let (tokens, source) = pressure.prompt_tokens(&messages, 0);
+    assert_eq!(source, PromptSource::Measured);
+    assert_eq!(
+        tokens,
+        crate::token_estimation::estimate_slice_tokens(&messages)
+    );
+}

@@ -109,6 +109,7 @@ impl CompactionSink for SessionCompactionSink<'_> {
 
         let entry = EntryKind::Compaction(CompactionEntry {
             summary: record.summary.clone(),
+            placement: record.placement,
             first_kept_entry_id,
             tokens_before: record.tokens_before,
             usage: record.usage,
