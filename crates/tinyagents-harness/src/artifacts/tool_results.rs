@@ -395,24 +395,45 @@ impl ToolResultArtifactStore {
         read_tool: impl Into<String>,
         max_readable_bytes: u64,
     ) -> Self {
+        Self::try_detached(
+            storage_dir,
+            session_key,
+            redactor,
+            read_tool,
+            max_readable_bytes,
+        )
+        .expect("detached artifact storage directory must be absolute and UTF-8 representable")
+    }
+
+    /// Fallible form of [`Self::detached`]. Returns an error when a relative
+    /// root cannot be made absolute or when the root cannot be represented in
+    /// the UTF-8 path string passed to the model's read tool.
+    pub fn try_detached(
+        storage_dir: PathBuf,
+        session_key: impl Into<String>,
+        redactor: Arc<dyn ArtifactRedactor>,
+        read_tool: impl Into<String>,
+        max_readable_bytes: u64,
+    ) -> anyhow::Result<Self> {
         // The pointer is this path, so it must be absolute: a relative one would
         // resolve against whatever directory the reading tool works in.
         let storage_dir = if storage_dir.is_absolute() {
             storage_dir
         } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(&storage_dir))
-                .unwrap_or(storage_dir)
+            std::env::current_dir()?.join(&storage_dir)
         };
         let storage_dir = normalize_absolute_path(&storage_dir);
-        Self::with_layout(
+        if storage_dir.to_str().is_none() {
+            anyhow::bail!("detached artifact storage path is not valid UTF-8");
+        }
+        Ok(Self::with_layout(
             storage_dir,
             StoreLayout::Detached,
             session_key,
             redactor,
             read_tool,
             max_readable_bytes,
-        )
+        ))
     }
 
     fn with_layout(

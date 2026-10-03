@@ -735,6 +735,16 @@ fn detached_store_normalizes_parent_components() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn fallible_detached_constructor_rejects_non_utf8_roots() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    let result =
+        ToolResultArtifactStore::try_detached(root, "s", Arc::new(TestRedactor), "file_read", 1024);
+    assert!(result.is_err());
+}
+
 #[test]
 fn detached_read_target_recognises_its_absolute_pointers() {
     let tmp = tempfile::tempdir().unwrap();
