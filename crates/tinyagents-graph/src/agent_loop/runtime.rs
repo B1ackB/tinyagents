@@ -362,6 +362,10 @@ where
             )
         })?;
     ctx.model_profile = binding.model.profile().cloned();
+    tinyagents_harness::middleware::library::rehome_ephemeral_system_instructions(
+        &mut request,
+        ctx.model_profile.as_ref(),
+    );
     let model_name = binding.resolved.name.clone();
 
     // Mirror the direct loop: a named effort picks up the resolved model's

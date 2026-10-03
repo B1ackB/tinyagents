@@ -9,9 +9,9 @@ use tinyinference_llm::model::{ModelProfile, ModelRequest};
 pub const HARNESS_NOTE_HEADER: &str = "[harness note]";
 const EPHEMERAL_SECTION: &str = "__tinyagents_ephemeral_instruction";
 
-/// Moves tail guidance created for a non-hoisting profile out of system
-/// messages if a later middleware selected a hoisting model.
-pub(crate) fn rehome_ephemeral_system_instructions(
+/// Moves tail guidance created for an earlier profile to the placement
+/// required by the final model profile.
+pub fn rehome_ephemeral_system_instructions(
     request: &mut ModelRequest,
     profile: Option<&ModelProfile>,
 ) {

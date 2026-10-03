@@ -58,6 +58,41 @@ fn a_later_hoisting_selection_rehomes_earlier_ephemeral_system_text() {
 }
 
 #[test]
+fn a_mid_conversation_non_hoisting_selection_keeps_ephemeral_system_text() {
+    let mut profile = ModelProfile::default();
+    profile.mid_conversation_system_messages = true;
+    let mut req = request(vec![Message::system("persona"), Message::user("question")]);
+    push_ephemeral_instruction(&mut req, "check your work", None);
+
+    rehome_ephemeral_system_instructions(&mut req, Some(&profile));
+
+    assert_eq!(system_count(&req), 2);
+    assert_eq!(req.messages.last().unwrap().text(), "check your work");
+}
+
+#[test]
+fn a_hoisting_selection_rehomes_even_without_mid_conversation_system_support() {
+    let profile = ModelProfile {
+        hoists_system_messages: true,
+        ..ModelProfile::default()
+    };
+    let mut req = request(vec![Message::system("persona"), Message::user("question")]);
+    push_ephemeral_instruction(&mut req, "check your work", None);
+
+    rehome_ephemeral_system_instructions(&mut req, Some(&profile));
+
+    assert_eq!(system_count(&req), 1);
+    assert!(
+        req.messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("check your work")
+    );
+    assert!(matches!(req.messages.last(), Some(Message::User(_))));
+}
+
+#[test]
 fn hoisting_profile_appends_to_the_last_tool_result_without_a_system_message() {
     let leading = Message::system("persona");
     let mut req = request(vec![

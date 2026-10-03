@@ -86,7 +86,7 @@ pub use credential_scrub::{
     CredentialScrubMiddleware, REDACTION_PLACEHOLDER, ToolScrubber, redaction_notice,
     scrub_with_notice,
 };
-pub(crate) use ephemeral::rehome_ephemeral_system_instructions;
+pub use ephemeral::rehome_ephemeral_system_instructions;
 pub use ephemeral::{HARNESS_NOTE_HEADER, push_ephemeral_instruction};
 pub use image_trim::{
     IMAGE_MARKER_TOKEN_COST, ImageAwareMessageTrimMiddleware, estimate_message_tokens,
