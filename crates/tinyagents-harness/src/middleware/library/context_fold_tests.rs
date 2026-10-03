@@ -192,7 +192,7 @@ async fn drops_the_fold_when_the_transcript_no_longer_matches() {
     let Fixture {
         stack,
         seen,
-        sink: _sink,
+        sink,
         mut c,
     } = fixture();
     send(&stack, &mut c, &[chunk("m1"), chunk("m2"), chunk("m3")]).await;
@@ -231,6 +231,7 @@ async fn replaces_a_summary_the_host_spliced_in_itself() {
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].previous_summary.as_deref(), Some("summary #1"));
     assert_eq!(sent, vec![Message::system("summary #2"), chunk("m5")]);
+    assert_eq!(sink.records.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
