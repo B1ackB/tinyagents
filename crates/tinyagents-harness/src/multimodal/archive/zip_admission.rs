@@ -16,6 +16,25 @@ fn number(bytes: &[u8], offset: usize, width: usize) -> Result<u64, ArchiveError
         .fold(0, |value, (i, byte)| value | ((*byte as u64) << (8 * i))))
 }
 
+fn zip64_eocd_offset(bytes: &[u8], locator: usize) -> Result<usize, ArchiveError> {
+    let archive_relative = number(bytes, locator + 8, 8)?;
+    bytes
+        .get(..locator)
+        .ok_or_else(invalid)?
+        .windows(4)
+        .enumerate()
+        .rev()
+        .find_map(|(offset, signature)| {
+            if signature != b"PK\x06\x06" || (offset as u64) < archive_relative {
+                return None;
+            }
+            let record_size = number(bytes, offset + 4, 8).ok()?;
+            ((offset as u64).checked_add(12)?.checked_add(record_size)? == locator as u64)
+                .then_some(offset)
+        })
+        .ok_or_else(invalid)
+}
+
 fn footer_offset(bytes: &[u8]) -> Result<usize, ArchiveError> {
     let end = (bytes.len().saturating_sub(65_557)..bytes.len().saturating_sub(21))
         .rev()
@@ -45,11 +64,12 @@ pub(in crate::multimodal) fn zip_preflight(
     let mut size = number(bytes, end + 12, 4)?;
     let mut directory_end = end;
     let mut relative = number(bytes, end + 16, 4)?;
+    let mut zip64_locator_offset = None;
+    let mut zip64_eocd_absolute_offset = None;
     if end >= 20 && bytes.get(end - 20..end - 16) == Some(b"PK\x06\x07") {
-        let offset = usize::try_from(number(bytes, end - 12, 8)?).map_err(|_| invalid())?;
-        if bytes.get(offset..offset.saturating_add(4)) != Some(b"PK\x06\x06") {
-            return Err(invalid());
-        }
+        let offset = zip64_eocd_offset(bytes, end - 20)?;
+        zip64_locator_offset = Some(number(bytes, end - 12, 8)?);
+        zip64_eocd_absolute_offset = Some(offset as u64);
         let record_size = number(bytes, offset + 4, 8)?;
         if record_size < 44
             || (offset as u64)
@@ -89,6 +109,13 @@ pub(in crate::multimodal) fn zip_preflight(
     let size = usize::try_from(size).map_err(|_| invalid())?;
     let start = directory_end.checked_sub(size).ok_or_else(invalid)?;
     if relative > start as u64 {
+        return Err(invalid());
+    }
+    let archive_offset = start as u64 - relative;
+    if zip64_locator_offset.is_some_and(|declared| {
+        zip64_eocd_absolute_offset.and_then(|offset| offset.checked_sub(archive_offset))
+            != Some(declared)
+    }) {
         return Err(invalid());
     }
     // The eager reader retries earlier footer candidates. Embedded footers in
@@ -216,7 +243,7 @@ pub(in crate::multimodal) fn open_admitted_zip(
     let end = footer_offset(bytes)?;
     let (directory_end, size, relative) =
         if end >= 20 && bytes.get(end - 20..end - 16) == Some(b"PK\x06\x07") {
-            let offset = number(bytes, end - 12, 8)? as usize;
+            let offset = zip64_eocd_offset(bytes, end - 20)?;
             (
                 offset,
                 number(bytes, offset + 40, 8)?,

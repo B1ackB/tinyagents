@@ -35,7 +35,11 @@ impl ArchiveFormat {
             || bytes.starts_with(b"PK\x05\x06")
         {
             Some(Self::Zip)
-        } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        } else if name.ends_with(".tar.gz")
+            || name.ends_with(".tgz")
+            || mime == "application/gzip"
+            || bytes.starts_with(b"\x1f\x8b")
+        {
             Some(Self::TarGzip)
         } else if mime == "application/x-tar"
             || name.ends_with(".tar")

@@ -1,17 +1,10 @@
 //! MIME detection for image and file attachments.
 //!
-//! Three signals, consulted in a deliberate order:
-//!
-//! 1. **The `Content-Type` header**, when one came from a fetch.
-//! 2. **The file extension**, when the reference was a path.
-//! 3. **Magic bytes.**
-//!
-//! Images and files order these differently, and the difference is not an
-//! oversight. For images the header wins outright: an image server is
-//! authoritative about what it served. For files the header wins only if it
-//! names a format the allowlist could contain — a great many servers answer
-//! `application/octet-stream` for everything, and taking that at face value
-//! would degrade every fetched PDF to a metadata-only reference.
+//! Images and files use different MIME signals. For images the header wins
+//! outright, then the extension, then magic bytes. For files a recognized
+//! content type or file signature wins before extensions; unknown or generic
+//! headers defer to signatures and extensions because many servers answer
+//! `application/octet-stream` for everything.
 //!
 //! Office containers are recognized from standard parts in the ZIP central
 //! directory before generic ZIP headers are consulted. An extension remains a
@@ -73,6 +66,21 @@ pub fn detect_file_mime(
         && file_mime_known(&header_mime)
     {
         return Some(header_mime);
+    }
+
+    // A recognized signature outranks misleading media extensions. ZIP magic
+    // remains ambiguous, so an OOXML extension still supplies its subtype.
+    if let Some(mime) = file_mime_from_magic(bytes) {
+        let extension_is_ooxml = path
+            .and_then(|path| path.extension())
+            .and_then(|ext| ext.to_str())
+            .and_then(file_mime_from_extension)
+            .is_some_and(|extension_mime| {
+                extension_mime.starts_with("application/vnd.openxmlformats-officedocument.")
+            });
+        if mime != "application/zip" || !extension_is_ooxml {
+            return Some(mime.to_string());
+        }
     }
 
     if let Some(path) = path

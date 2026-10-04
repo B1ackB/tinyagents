@@ -154,7 +154,11 @@ fn archive_detection_does_not_mistake_office_documents_for_archives() {
         Some(ArchiveFormat::Zip)
     );
     assert_eq!(
-        ArchiveFormat::detect("archive.tgz", "application/gzip", b"\x1f\x8b"),
+        ArchiveFormat::detect("attachment", "application/gzip", b"\x1f\x8b"),
+        Some(ArchiveFormat::TarGzip)
+    );
+    assert_eq!(
+        ArchiveFormat::detect("attachment", "application/octet-stream", b"\x1f\x8b"),
         Some(ArchiveFormat::TarGzip)
     );
     assert_eq!(
@@ -269,6 +273,16 @@ fn zip_admission_checks_counts_and_names_before_constructing_parser() {
     assert_eq!(zip_preflight(&valid64).unwrap(), None);
     assert_eq!(
         inspect_archive(&valid64, ArchiveFormat::Zip, &ArchiveLimits::default())
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    let mut prefixed64 = b"executable preamble".to_vec();
+    prefixed64.extend_from_slice(&valid64);
+    assert_eq!(zip_preflight(&prefixed64).unwrap(), None);
+    assert_eq!(
+        inspect_archive(&prefixed64, ArchiveFormat::Zip, &ArchiveLimits::default())
             .unwrap()
             .entries
             .len(),
