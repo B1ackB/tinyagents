@@ -286,6 +286,7 @@ async fn generic_local_media_uses_extensions_and_magic() {
         ("recording.mp3", &b"ID3"[..], "audio/mpeg"),
         ("sound.flac", &b"fLaC"[..], "audio/flac"),
         ("sound.ogg", &b"OggS"[..], "audio/ogg"),
+        ("clip.ogv", &b"OggS"[..], "video/ogg"),
         ("sound.opus", &b"opaque"[..], "audio/opus"),
         ("sound.m4a", &b"opaque"[..], "audio/mp4"),
         ("sound.aac", &b"opaque"[..], "audio/aac"),

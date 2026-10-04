@@ -1,5 +1,7 @@
 //! Archive inspection types and caller-selected resource caps.
 
+use std::io::Read;
+
 /// Supported archive wire formats; Office ZIP containers are documents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -12,8 +14,8 @@ pub enum ArchiveFormat {
 }
 
 impl ArchiveFormat {
-    /// Identify archive formats by MIME and a display filename. Office MIME
-    /// types and extensions take precedence over ZIP container magic.
+    /// Identify archive formats by MIME, signatures, and a display filename.
+    /// Office MIME types and extensions take precedence over ZIP container magic.
     pub fn detect(name: &str, mime: &str, bytes: &[u8]) -> Option<Self> {
         let name = name.to_ascii_lowercase();
         let mime = mime
@@ -29,27 +31,41 @@ impl ArchiveFormat {
         {
             return None;
         }
-        if mime == "application/zip"
-            || name.ends_with(".zip")
-            || bytes.starts_with(b"PK\x03\x04")
-            || bytes.starts_with(b"PK\x05\x06")
-        {
-            Some(Self::Zip)
-        } else if name.ends_with(".tar.gz")
-            || name.ends_with(".tgz")
-            || mime == "application/gzip"
-            || bytes.starts_with(b"\x1f\x8b")
-        {
-            Some(Self::TarGzip)
-        } else if mime == "application/x-tar"
-            || name.ends_with(".tar")
-            || bytes.get(257..262) == Some(b"ustar")
-        {
-            Some(Self::Tar)
-        } else {
-            None
+        if mime == "application/gzip" || bytes.starts_with(b"\x1f\x8b") {
+            return is_tar_gzip(bytes).then_some(Self::TarGzip);
         }
+        if bytes.get(257..262) == Some(b"ustar") {
+            return Some(Self::Tar);
+        }
+        if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+            return Some(Self::Zip);
+        }
+        if mime == "application/x-tar" {
+            return Some(Self::Tar);
+        }
+        if mime == "application/zip" {
+            return Some(Self::Zip);
+        }
+        if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+            return Some(Self::TarGzip);
+        }
+        if name.ends_with(".tar") {
+            return Some(Self::Tar);
+        }
+        if name.ends_with(".zip") {
+            return Some(Self::Zip);
+        }
+        None
     }
+}
+
+fn is_tar_gzip(bytes: &[u8]) -> bool {
+    let mut header = [0; 512];
+    flate2::read::GzDecoder::new(bytes)
+        .take(header.len() as u64)
+        .read_exact(&mut header)
+        .is_ok()
+        && &header[257..262] == b"ustar"
 }
 
 /// Inspection resource budget. Zero values are honored; values above the

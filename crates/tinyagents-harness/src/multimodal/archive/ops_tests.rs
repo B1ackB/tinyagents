@@ -153,13 +153,35 @@ fn archive_detection_does_not_mistake_office_documents_for_archives() {
         ArchiveFormat::detect("archive.zip", "application/zip", b"PK\x03\x04"),
         Some(ArchiveFormat::Zip)
     );
+    let mut tar_gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    tar_gzip.write_all(&tar_fixture()).unwrap();
+    let tar_gzip = tar_gzip.finish().unwrap();
     assert_eq!(
-        ArchiveFormat::detect("attachment", "application/gzip", b"\x1f\x8b"),
+        ArchiveFormat::detect("attachment", "application/gzip", &tar_gzip),
         Some(ArchiveFormat::TarGzip)
     );
     assert_eq!(
-        ArchiveFormat::detect("attachment", "application/octet-stream", b"\x1f\x8b"),
+        ArchiveFormat::detect("stale.zip", "application/gzip", &tar_gzip),
         Some(ArchiveFormat::TarGzip)
+    );
+    let tar = tar_fixture();
+    assert_eq!(
+        ArchiveFormat::detect("stale.zip", "application/x-tar", &tar),
+        Some(ArchiveFormat::Tar)
+    );
+    assert_eq!(
+        ArchiveFormat::detect("attachment.tgz", "application/octet-stream", &[]),
+        Some(ArchiveFormat::TarGzip)
+    );
+    let mut text_gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    text_gzip.write_all(b"compressed text").unwrap();
+    assert_eq!(
+        ArchiveFormat::detect(
+            "attachment",
+            "application/gzip",
+            &text_gzip.finish().unwrap()
+        ),
+        None
     );
     assert_eq!(
         ArchiveFormat::detect("archive.tar", "application/x-tar", b""),

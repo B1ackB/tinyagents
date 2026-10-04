@@ -121,26 +121,31 @@ pub(super) fn detect_attachment_mime(
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase);
-    let media = attachment_media_magic(bytes)
-        .or_else(|| image_mime_from_magic(bytes))
-        .or(match extension.as_deref() {
-            Some("wav" | "wave") => Some("audio/wav"),
-            Some("mp3") => Some("audio/mpeg"),
-            Some("flac") => Some("audio/flac"),
-            Some("ogg" | "oga") => Some("audio/ogg"),
-            Some("opus") => Some("audio/opus"),
-            Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
-            Some("avif") => Some("image/avif"),
-            Some("heic") => Some("image/heic"),
-            Some("heif") => Some("image/heif"),
-            Some("aac") => Some("audio/aac"),
-            Some("mp4" | "m4v") => Some("video/mp4"),
-            Some("mov") => Some("video/quicktime"),
-            Some("webm") => Some("video/webm"),
-            Some("mkv") => Some("video/x-matroska"),
-            Some("avi") => Some("video/x-msvideo"),
-            _ => None,
-        });
+    let media = if extension.as_deref() == Some("ogv") && bytes.starts_with(b"OggS") {
+        Some("video/ogg")
+    } else {
+        attachment_media_magic(bytes)
+            .or_else(|| image_mime_from_magic(bytes))
+            .or(match extension.as_deref() {
+                Some("wav" | "wave") => Some("audio/wav"),
+                Some("mp3") => Some("audio/mpeg"),
+                Some("flac") => Some("audio/flac"),
+                Some("ogg" | "oga") => Some("audio/ogg"),
+                Some("ogv") => Some("video/ogg"),
+                Some("opus") => Some("audio/opus"),
+                Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
+                Some("avif") => Some("image/avif"),
+                Some("heic") => Some("image/heic"),
+                Some("heif") => Some("image/heif"),
+                Some("aac") => Some("audio/aac"),
+                Some("mp4" | "m4v") => Some("video/mp4"),
+                Some("mov") => Some("video/quicktime"),
+                Some("webm") => Some("video/webm"),
+                Some("mkv") => Some("video/x-matroska"),
+                Some("avi") => Some("video/x-msvideo"),
+                _ => None,
+            })
+    };
     media
         .map(ToString::to_string)
         .or_else(|| detect_file_mime(Some(path), bytes, header))
