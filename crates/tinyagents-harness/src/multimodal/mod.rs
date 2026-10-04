@@ -71,7 +71,6 @@
 //!    zero.
 
 pub mod archive;
-mod archive_types;
 pub mod config;
 pub mod data_uri;
 pub mod error;
@@ -83,7 +82,6 @@ pub use png::optimize_png_lossless;
 pub mod resolve;
 pub mod stash;
 pub mod types;
-mod zip_admission;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

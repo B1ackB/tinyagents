@@ -184,7 +184,8 @@ fn office_container_contents_override_generic_zip_headers() {
             (member, b"<document/>"),
         ]);
         assert_eq!(
-            super::super::mime::detect_file_mime(None, &bytes, Some("application/zip")).as_deref(),
+            crate::multimodal::mime::detect_file_mime(None, &bytes, Some("application/zip"))
+                .as_deref(),
             Some(expected)
         );
     }
@@ -275,7 +276,7 @@ fn zip_admission_checks_counts_and_names_before_constructing_parser() {
     );
     assert!(inspect_archive(&zip64, ArchiveFormat::Zip, &ArchiveLimits::default()).is_err());
     assert_eq!(
-        super::super::mime::detect_file_mime(None, &zip64, None).as_deref(),
+        crate::multimodal::mime::detect_file_mime(None, &zip64, None).as_deref(),
         Some("application/zip")
     );
     let entries: Vec<_> = (0..10_001)

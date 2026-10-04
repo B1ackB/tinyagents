@@ -1,6 +1,6 @@
 //! Allocation-free ZIP central-directory admission before the eager ZIP parser.
 
-use super::archive_types::{ArchiveError, ArchiveTruncation};
+use super::types::{ArchiveError, ArchiveTruncation};
 
 fn invalid() -> ArchiveError {
     ArchiveError::Invalid("invalid ZIP central directory".into())
@@ -31,7 +31,9 @@ fn footer_offset(bytes: &[u8]) -> Result<usize, ArchiveError> {
 /// before `ZipArchive::new` allocates. The safety ceilings are independent of
 /// the caller's smaller listing budget so small listings retain their prefix.
 /// Archives above a safety ceiling return an empty, truncated listing.
-pub(super) fn zip_preflight(bytes: &[u8]) -> Result<Option<ArchiveTruncation>, ArchiveError> {
+pub(in crate::multimodal) fn zip_preflight(
+    bytes: &[u8],
+) -> Result<Option<ArchiveTruncation>, ArchiveError> {
     let end = footer_offset(bytes)?;
     let mut count = number(bytes, end + 10, 2)?;
     if number(bytes, end + 8, 2)? != count
@@ -171,7 +173,7 @@ pub(super) fn zip_preflight(bytes: &[u8]) -> Result<Option<ArchiveTruncation>, A
 
 /// A reader that hides payload footers while the ZIP parser indexes metadata.
 /// This prevents fallback to unchecked footers embedded in a member's bytes.
-pub(super) struct AdmittedReader<'a> {
+pub(in crate::multimodal) struct AdmittedReader<'a> {
     cursor: std::io::Cursor<&'a [u8]>,
     start: u64,
     indexing: std::rc::Rc<std::cell::Cell<bool>>,
@@ -208,7 +210,7 @@ impl std::io::Seek for AdmittedReader<'_> {
 /// Construct only after successful preflight. Pin the metadata offset and hide
 /// all earlier member footer signatures until indexing finishes; payload reads then work
 /// normally, including CRC and decompression validation.
-pub(super) fn open_admitted_zip(
+pub(in crate::multimodal) fn open_admitted_zip(
     bytes: &[u8],
 ) -> Result<zip::ZipArchive<AdmittedReader<'_>>, ArchiveError> {
     let end = footer_offset(bytes)?;

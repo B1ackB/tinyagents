@@ -39,7 +39,7 @@ format contributes a header naming it plus a content hash.
   path in that order.
 - [`types`] — [`ResolvedAttachment`] and [`UnknownMimePolicy`] for generic intake.
 - [`archive`] — [`inspect_archive`] for bounded ZIP/TAR/TAR.GZ listing;
-  [`archive_types`] holds formats, budgets, entries, truncation and errors.
+  `archive/types.rs` holds formats, budgets, entries, truncation and errors.
 - [`png`] — [`optimize_png_lossless`] for optional faithful PNG derivatives.
 - [`payload`] — [`FilePayload`] (`Extracted` / `Reference`),
   [`compose_multimodal_message`] (renders the final provider-bound message),
@@ -60,13 +60,14 @@ format contributes a header naming it plus a content hash.
 | `data_uri.rs` | `data:` URI parsing, gzip decompression, percent-decoding.         |
 | `resolve.rs`  | `TextExtractor`, `resolve_attachment`, `resolve_image`/`resolve_file`.   |
 | `types.rs` | Generic resolved-attachment metadata and unknown-MIME policy. |
-| `archive.rs` | Bounded archive listing, without filesystem extraction. |
-| `archive_types.rs` | Archive format, budgets, entries, errors and truncation. |
-| `zip_admission.rs` | Allocation-free ZIP preflight and admitted reader. |
+| `archive/mod.rs` | Archive module wiring and public exports. |
+| `archive/ops.rs` | Bounded archive listing, without filesystem extraction. |
+| `archive/types.rs` | Archive format, budgets, entries, errors and truncation. |
+| `archive/zip_admission.rs` | Allocation-free ZIP preflight and admitted reader. |
 | `png.rs` | Optional lossless PNG optimization. |
 | `payload.rs`  | `FilePayload`, message composition, truncation, hashing.           |
 | `error.rs`    | `MultimodalError`, `Result`.                                       |
-| `mod_tests.rs`, `resolve_tests.rs`, `archive_tests.rs`, `png_tests.rs`, `stash_tests.rs` | Marker, MIME, size, path, intake, archive, PNG and stash behavior. |
+| `mod_tests.rs`, `resolve_tests.rs`, `archive/ops_tests.rs`, `png_tests.rs`, `stash_tests.rs` | Marker, MIME, size, path, intake, archive, PNG and stash behavior. |
 
 ## Operational constraints
 
@@ -135,8 +136,8 @@ member footer signatures during metadata indexing so parser retries cannot
 select unchecked embedded ZIPs. Member data is restored for normal CRC and
 expansion validation. Office probing reads metadata and local headers only.
 
-`types.rs` owns generic intake types; `archive_types.rs` owns listing types
-and budgets; `archive.rs` owns inspection; sibling `*_tests.rs` cover fixtures
+`types.rs` owns generic intake types; `archive/types.rs` owns listing types
+and budgets; `archive/ops.rs` owns inspection; sibling `*_tests.rs` cover fixtures
 and error/limit behavior. No transcript or inference content-block variants
 are introduced by these APIs.
 

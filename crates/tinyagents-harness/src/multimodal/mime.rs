@@ -113,54 +113,57 @@ pub(super) fn detect_attachment_mime(
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase);
-    let media = match extension.as_deref() {
-        Some("wav" | "wave") => Some("audio/wav"),
-        Some("mp3") => Some("audio/mpeg"),
-        Some("flac") => Some("audio/flac"),
-        Some("ogg" | "oga") => Some("audio/ogg"),
-        Some("opus") => Some("audio/opus"),
-        Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
-        Some("avif") => Some("image/avif"),
-        Some("heic") => Some("image/heic"),
-        Some("heif") => Some("image/heif"),
-        Some("aac") => Some("audio/aac"),
-        Some("mp4" | "m4v") => Some("video/mp4"),
-        Some("mov") => Some("video/quicktime"),
-        Some("webm") => Some("video/webm"),
-        Some("mkv") => Some("video/x-matroska"),
-        Some("avi") => Some("video/x-msvideo"),
-        _ => None,
-    }
-    .or_else(|| {
-        if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
-            Some("audio/wav")
-        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI ") {
-            Some("video/x-msvideo")
-        } else if bytes.starts_with(b"ID3") {
-            Some("audio/mpeg")
-        } else if bytes.starts_with(b"fLaC") {
-            Some("audio/flac")
-        } else if bytes.starts_with(b"OggS") {
-            Some("audio/ogg")
-        } else if bytes.get(4..8) == Some(b"ftyp") {
-            match bytes.get(8..12) {
-                Some(b"M4A " | b"M4B " | b"M4P ") => Some("audio/mp4"),
-                Some(b"qt  ") => Some("video/quicktime"),
-                Some(b"avif" | b"avis") => Some("image/avif"),
-                Some(b"heic" | b"heix") => Some("image/heic"),
-                Some(b"mif1" | b"msf1") => Some("image/heif"),
-                Some(b"isom" | b"iso2" | b"mp41" | b"mp42" | b"M4V " | b"avc1" | b"dash") => {
-                    Some("video/mp4")
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    });
+    let media = attachment_media_magic(bytes)
+        .or_else(|| image_mime_from_magic(bytes))
+        .or(match extension.as_deref() {
+            Some("wav" | "wave") => Some("audio/wav"),
+            Some("mp3") => Some("audio/mpeg"),
+            Some("flac") => Some("audio/flac"),
+            Some("ogg" | "oga") => Some("audio/ogg"),
+            Some("opus") => Some("audio/opus"),
+            Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
+            Some("avif") => Some("image/avif"),
+            Some("heic") => Some("image/heic"),
+            Some("heif") => Some("image/heif"),
+            Some("aac") => Some("audio/aac"),
+            Some("mp4" | "m4v") => Some("video/mp4"),
+            Some("mov") => Some("video/quicktime"),
+            Some("webm") => Some("video/webm"),
+            Some("mkv") => Some("video/x-matroska"),
+            Some("avi") => Some("video/x-msvideo"),
+            _ => None,
+        });
     media
         .map(ToString::to_string)
         .or_else(|| detect_file_mime(Some(path), bytes, header))
+}
+
+fn attachment_media_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        Some("audio/wav")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI ") {
+        Some("video/x-msvideo")
+    } else if bytes.starts_with(b"ID3") {
+        Some("audio/mpeg")
+    } else if bytes.starts_with(b"fLaC") {
+        Some("audio/flac")
+    } else if bytes.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else if bytes.get(4..8) == Some(b"ftyp") {
+        match bytes.get(8..12) {
+            Some(b"M4A " | b"M4B " | b"M4P ") => Some("audio/mp4"),
+            Some(b"qt  ") => Some("video/quicktime"),
+            Some(b"avif" | b"avis") => Some("image/avif"),
+            Some(b"heic" | b"heix") => Some("image/heic"),
+            Some(b"mif1" | b"msf1") => Some("image/heif"),
+            Some(b"isom" | b"iso2" | b"mp41" | b"mp42" | b"M4V " | b"avc1" | b"dash") => {
+                Some("video/mp4")
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 /// Strip parameters from a `Content-Type` header and lower-case it.
@@ -289,10 +292,13 @@ fn office_container_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() > 50 * 1024 * 1024 || !bytes.starts_with(b"PK\x03\x04") {
         return None;
     }
-    if super::zip_admission::zip_preflight(bytes).ok()?.is_some() {
+    if super::archive::zip_admission::zip_preflight(bytes)
+        .ok()?
+        .is_some()
+    {
         return None;
     }
-    let archive = super::zip_admission::open_admitted_zip(bytes).ok()?;
+    let archive = super::archive::zip_admission::open_admitted_zip(bytes).ok()?;
     if archive.len() > 10_000 || archive.index_for_name("[Content_Types].xml").is_none() {
         return None;
     }

@@ -3,7 +3,7 @@
 
 use std::io::{self, Cursor, Read};
 
-pub use super::archive_types::*;
+use super::types::*;
 use super::zip_admission::{open_admitted_zip, zip_preflight};
 
 /// List an archive in memory. Malformed headers and compressed streams are
@@ -171,5 +171,5 @@ fn inspect_tar(bytes: &[u8], limits: &ArchiveLimits) -> Result<ArchiveListing, A
 }
 
 #[cfg(test)]
-#[path = "archive_tests.rs"]
+#[path = "ops_tests.rs"]
 mod tests;

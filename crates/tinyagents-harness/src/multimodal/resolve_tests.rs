@@ -426,3 +426,23 @@ async fn generic_data_uris_detect_media_like_local_sources_without_changing_lega
         assert_eq!(legacy.bytes, bytes);
     }
 }
+
+#[test]
+fn generic_media_signatures_precede_misleading_extensions() {
+    for (name, bytes, expected) in [
+        ("photo.avif", b"\0\0\0\x18ftypmp42".as_slice(), "video/mp4"),
+        ("movie.mp4", b"\0\0\0\x18ftypavif".as_slice(), "image/avif"),
+        ("movie.mp4", b"RIFF\0\0\0\0WAVE".as_slice(), "audio/wav"),
+        ("movie.mp4", b"\xff\xd8\xffbinary".as_slice(), "image/jpeg"),
+    ] {
+        assert_eq!(
+            crate::multimodal::mime::detect_attachment_mime(
+                std::path::Path::new(name),
+                bytes,
+                None
+            )
+            .as_deref(),
+            Some(expected)
+        );
+    }
+}
