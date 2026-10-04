@@ -13,10 +13,9 @@
 //! `application/octet-stream` for everything, and taking that at face value
 //! would degrade every fetched PDF to a metadata-only reference.
 //!
-//! [`file_mime_from_magic`] cannot separate the OOXML formats from a plain
-//! zip: `.xlsx`, `.docx`, `.pptx` and `.zip` all begin `PK\x03\x04`, and
-//! telling them apart means parsing the central directory. The extension is
-//! what discriminates, which is why it is consulted before magic.
+//! Office containers are recognized from standard parts in the ZIP central
+//! directory before generic ZIP headers are consulted. An extension remains a
+//! fallback for incomplete containers; no member contents are extracted.
 
 use std::path::Path;
 
@@ -47,13 +46,29 @@ pub fn detect_image_mime(
     image_mime_from_magic(bytes).map(ToString::to_string)
 }
 
-/// Detect a file's MIME type: header (only if recognised), then extension,
-/// then magic bytes, then a UTF-8 sniff.
+/// Detect a file's MIME type: Office container parts, known header, extension,
+/// magic bytes, then a UTF-8 sniff. Generic ZIP/octet-stream headers defer to
+/// Office extensions.
 pub fn detect_file_mime(
     path: Option<&Path>,
     bytes: &[u8],
     header_content_type: Option<&str>,
 ) -> Option<String> {
+    if let Some(mime) = office_container_mime(bytes) {
+        return Some(mime.to_string());
+    }
+    // A generic ZIP/octet-stream header must not hide an Office extension.
+    if header_content_type
+        .and_then(normalize_content_type)
+        .is_some_and(|mime| mime == "application/zip" || mime == "application/octet-stream")
+        && let Some(ext) = path
+            .and_then(|path| path.extension())
+            .and_then(|ext| ext.to_str())
+        && let Some(mime) = file_mime_from_extension(ext)
+        && mime.starts_with("application/vnd.openxmlformats-officedocument.")
+    {
+        return Some(mime.to_string());
+    }
     if let Some(header_mime) = header_content_type.and_then(normalize_content_type)
         && file_mime_known(&header_mime)
     {
@@ -71,6 +86,9 @@ pub fn detect_file_mime(
         return Some(mime.to_string());
     }
 
+    if let Some(mime) = image_mime_from_magic(bytes) {
+        return Some(mime.to_string());
+    }
     if looks_like_utf8_text(bytes) {
         return Some("text/plain".to_string());
     }
@@ -145,6 +163,8 @@ pub fn file_mime_known(mime: &str) -> bool {
                 | "text/csv"
                 | "text/markdown"
                 | "application/zip"
+                | "application/x-tar"
+                | "application/gzip"
                 | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -160,6 +180,8 @@ pub fn file_mime_from_extension(ext: &str) -> Option<&'static str> {
         "md" | "markdown" => Some("text/markdown"),
         "csv" => Some("text/csv"),
         "zip" => Some("application/zip"),
+        "tar" => Some("application/x-tar"),
+        "gz" | "tgz" => Some("application/gzip"),
         "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
@@ -184,6 +206,44 @@ pub fn file_mime_from_magic(bytes: &[u8]) -> Option<&'static str> {
         return Some("application/zip");
     }
 
+    if bytes.starts_with(b"\x1f\x8b") {
+        return Some("application/gzip");
+    }
+    if bytes.get(257..262) == Some(b"ustar") {
+        return Some("application/x-tar");
+    }
+    None
+}
+
+/// Identify standard Office parts using bounded container metadata, without
+/// reading document contents. Invalid/incomplete ZIPs retain extension-based
+/// detection for compatibility. No archive member is extracted.
+fn office_container_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() > 50 * 1024 * 1024 || !bytes.starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    if archive.len() > 10_000 || archive.index_for_name("[Content_Types].xml").is_none() {
+        return None;
+    }
+    for (part, mime) in [
+        (
+            "word/document.xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            "xl/workbook.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "ppt/presentation.xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+    ] {
+        if archive.index_for_name(part).is_some() {
+            return Some(mime);
+        }
+    }
     None
 }
 

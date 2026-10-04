@@ -33,7 +33,7 @@ format contributes a header naming it plus a content hash.
 - [`data_uri`] — `data:` URI parsing (including gzip-compressed attachments
   with a required `original_mime` parameter), percent-decoding, and encoding.
 - [`resolve`] — [`TextExtractor`] (host-pluggable document text extraction),
-  [`NoTextExtractor`], and the two resolution entry points
+  [`NoTextExtractor`], generic [`resolve_attachment`], and legacy entry points
   [`resolve_image`]/[`resolve_file`] that turn one marker reference into a
   payload, trying `data:` → `http(s)` (gated by `allow_remote_fetch`) → local
   path in that order.
@@ -57,7 +57,7 @@ format contributes a header naming it plus a content hash.
 | `resolve.rs`  | `TextExtractor` trait, `resolve_image`/`resolve_file` pipelines.   |
 | `payload.rs`  | `FilePayload`, message composition, truncation, hashing.           |
 | `error.rs`    | `MultimodalError`, `Result`.                                       |
-| `test.rs`     | Unit tests for the marker/MIME/size/path edge cases across both pipelines. |
+| `mod_tests.rs`     | Unit tests for the marker/MIME/size/path edge cases across both pipelines. |
 
 ## Operational constraints
 
@@ -74,6 +74,47 @@ format contributes a header naming it plus a content hash.
   message type). This module never decides which local paths may be read —
   that is `FileLimits::files_disabled`'s lever, not a filesystem allowlist
   here.
-- Every extraction/fetch/read failure degrades to a `FilePayload::Reference`
-  or a skipped attachment rather than failing the whole turn — a damaged PDF
-  should cost the model its text, not the conversation.
+- Text extraction failures degrade to a `FilePayload::Reference`. Resolution
+  errors (read/fetch/MIME/size) remain typed errors for the host to present or
+  skip according to its own policy.
+
+## Generic intake and archives
+
+`resolve_attachment(source, &FileLimits, max_bytes, &Client, UnknownMimePolicy)`
+returns `ResolvedAttachment { bytes, name, mime, size_bytes }`. It neither
+extracts text nor writes files. `Reject` requires the existing MIME allowlist
+and preserves rejection of undetected local bytes; `Accept` lets a host retain
+arbitrary media or unknown formats without disabling byte limits, remote
+fetch gates, or `max_files == 0`. The host authorizes local paths and chooses
+storage locations. Names are untrusted display metadata.
+
+Transport gzip is identified by `application/gzip` plus `original_mime` in a
+data URI and decoded exactly once under the byte cap. A `.tar.gz` attachment
+without that parameter retains its compressed bytes. Remote URL display names
+come from the decoded final path segment, without query parameters. Local reads
+and remote streams stop at the configured byte budget, including files that
+change after their metadata is read. `resolve_file` uses the generic resolver
+with `Reject`, then retains its existing extractor/degrade-to-reference flow.
+
+`ArchiveFormat::detect(name, mime, bytes)` identifies ZIP, TAR, and TAR.GZ;
+Office document MIME types/extensions are excluded. `inspect_archive(bytes,
+format, &ArchiveLimits)` returns `ArchiveListing` entries with `name`, `kind`,
+and `declared_size`. It performs no disk extraction and follows no links.
+Traversal paths are displayed as recorded. ZIP members are streamed to a sink
+for CRC validation under a cumulative expansion cap; TAR.GZ is inflated once
+under a stream-byte cap. GNU/PAX extension records are listed as `Other`
+rather than interpreted into potentially unbounded names.
+
+Limits cap input bytes, entry count, individual and aggregate UTF-8 name bytes,
+and decompressed bytes. Exhaustion returns `truncation` with the applicable
+reason; malformed headers/CRC/streams return `ArchiveError`. A TAR/TAR.GZ
+stream beyond its decoded budget produces an empty truncated listing; a ZIP
+member whose declared size exceeds the remaining budget appears in the
+partial listing without being inflated. A partial listing does not validate
+members beyond the stopping point. Container parsing itself is bounded by the
+50 MiB input ceiling; Office probing is additionally limited to 10,000 entries.
+
+`types.rs` owns generic intake types; `archive_types.rs` owns listing types
+and budgets; `archive.rs` owns inspection; sibling `*_tests.rs` cover fixtures
+and error/limit behavior. No transcript or inference content-block variants
+are introduced by these APIs.

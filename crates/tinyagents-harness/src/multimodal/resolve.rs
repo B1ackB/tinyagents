@@ -40,6 +40,7 @@ use super::data_uri::{data_uri_param, encode_data_uri, gunzip, parse_data_uri};
 use super::error::{MultimodalError, Result};
 use super::mime::{detect_file_mime, detect_image_mime, is_allowed_image_mime};
 use super::payload::FilePayload;
+use super::types::{ResolvedAttachment, UnknownMimePolicy};
 
 /// Host-supplied text extraction for formats this crate cannot decode itself.
 ///
@@ -287,47 +288,19 @@ pub async fn resolve_file(
     remote_client: &Client,
     extractor: &dyn TextExtractor,
 ) -> Result<FilePayload> {
-    if source.starts_with("data:") {
-        let (bytes, name, mime) = resolve_file_data_uri(source, max_bytes)?;
-        return build_file_payload(
-            source,
-            bytes,
-            name,
-            mime,
-            limits,
-            max_extracted_text_chars,
-            extractor,
-        )
-        .await;
-    }
-
-    let (bytes, path_hint, name, header_content_type) =
-        if source.starts_with("http://") || source.starts_with("https://") {
-            if !limits.allow_remote_fetch {
-                return Err(MultimodalError::RemoteFileFetchDisabled {
-                    input: source.to_string(),
-                });
-            }
-            let (bytes, name, content_type) =
-                fetch_remote_file(source, max_bytes, remote_client).await?;
-            (bytes, None, name, content_type)
-        } else {
-            let (bytes, path, name) = read_local_file(source, max_bytes).await?;
-            (bytes, Some(path), name, None)
-        };
-
-    let mime = detect_file_mime(path_hint.as_deref(), &bytes, header_content_type.as_deref())
-        .ok_or_else(|| MultimodalError::UnsupportedFileMime {
-            input: source.to_string(),
-            mime: "unknown".to_string(),
-            supported: limits.supported_rendered(),
-        })?;
-
+    let resolved = resolve_attachment(
+        source,
+        limits,
+        max_bytes,
+        remote_client,
+        UnknownMimePolicy::Reject,
+    )
+    .await?;
     build_file_payload(
         source,
-        bytes,
-        name,
-        mime,
+        resolved.bytes,
+        resolved.name,
+        resolved.mime,
         limits,
         max_extracted_text_chars,
         extractor,
@@ -335,23 +308,99 @@ pub async fn resolve_file(
     .await
 }
 
+/// Resolve bytes and metadata without extracting text or writing to disk.
+///
+/// The host must authorize local paths before calling. Unknown MIME acceptance
+/// is explicit and does not affect legacy [`resolve_file`] callers. Only a gzip
+/// data URI with `original_mime` is a transport envelope: a gzip attachment
+/// without that parameter remains compressed for archive inspection.
+pub async fn resolve_attachment(
+    source: &str,
+    limits: &FileLimits,
+    max_bytes: usize,
+    remote_client: &Client,
+    unknown_mime: UnknownMimePolicy,
+) -> Result<ResolvedAttachment> {
+    if limits.files_disabled() {
+        return Err(MultimodalError::TooManyFiles {
+            max_files: 0,
+            found: 1,
+        });
+    }
+    let max_bytes = max_bytes.min(limits.max_file_bytes());
+    let (bytes, name, mime) = if source.starts_with("data:") {
+        resolve_file_data_uri(source, max_bytes)?
+    } else {
+        let (bytes, name, header) =
+            if source.starts_with("http://") || source.starts_with("https://") {
+                if !limits.allow_remote_fetch {
+                    return Err(MultimodalError::RemoteFileFetchDisabled {
+                        input: source.to_string(),
+                    });
+                }
+                fetch_remote_file(source, max_bytes, remote_client).await?
+            } else {
+                let (bytes, _path, name) = read_local_file(source, max_bytes).await?;
+                (bytes, name, None)
+            };
+        let detected = detect_file_mime(Some(Path::new(&name)), &bytes, header.as_deref());
+        if detected.is_none() && unknown_mime == UnknownMimePolicy::Reject {
+            return Err(MultimodalError::UnsupportedFileMime {
+                input: source.to_string(),
+                mime: "unknown".to_string(),
+                supported: limits.supported_rendered(),
+            });
+        }
+        let mime = detected
+            .or_else(|| {
+                header
+                    .as_deref()
+                    .and_then(super::mime::normalize_content_type)
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        (bytes, name, mime)
+    };
+    if !limits.is_mime_allowed(&mime) && unknown_mime == UnknownMimePolicy::Reject {
+        return Err(MultimodalError::UnsupportedFileMime {
+            input: source.to_string(),
+            mime,
+            supported: limits.supported_rendered(),
+        });
+    }
+    Ok(ResolvedAttachment {
+        size_bytes: bytes.len(),
+        bytes,
+        name,
+        mime,
+    })
+}
+
 /// Resolve a `data:` file source: decompresses a gzip-wrapped payload when
 /// present, extracts the `name` parameter, and checks size. MIME allowlisting
 /// happens later in [`build_file_payload`].
 fn resolve_file_data_uri(source: &str, max_bytes: usize) -> Result<(Vec<u8>, String, String)> {
+    // Reject payloads whose minimum decoded size is over cap before allocating.
+    if let Some((header, encoded)) = source.split_once(',') {
+        let minimum_size = if header
+            .split(';')
+            .any(|part| part.trim().eq_ignore_ascii_case("base64"))
+        {
+            (encoded.len() / 4).saturating_mul(3).saturating_sub(2)
+        } else {
+            encoded.len() / 3
+        };
+        check_file_size(source, minimum_size, max_bytes)?;
+    }
     let parsed = parse_data_uri(source).map_err(|reason| MultimodalError::InvalidFileMarker {
         input: source.to_string(),
         reason,
     })?;
     let name = data_uri_param(&parsed.params, "name").unwrap_or_else(|| "attachment".to_string());
 
-    let (mime, bytes) = if parsed.mime == "application/gzip" {
-        let original_mime = data_uri_param(&parsed.params, "original_mime").ok_or_else(|| {
-            MultimodalError::InvalidFileMarker {
-                input: source.to_string(),
-                reason: "compressed file data URI missing original_mime parameter".to_string(),
-            }
-        })?;
+    check_file_size(source, parsed.bytes.len(), max_bytes)?;
+    let (mime, bytes) = if parsed.mime == "application/gzip"
+        && let Some(original_mime) = data_uri_param(&parsed.params, "original_mime")
+    {
         let bytes = gunzip(&parsed.bytes, max_bytes).map_err(|reason| {
             MultimodalError::InvalidFileMarker {
                 input: source.to_string(),
@@ -365,6 +414,11 @@ fn resolve_file_data_uri(source: &str, max_bytes: usize) -> Result<(Vec<u8>, Str
 
     check_file_size(source, bytes.len(), max_bytes)?;
 
+    let mime = if mime == "application/zip" || mime == "application/octet-stream" {
+        detect_file_mime(Some(Path::new(&name)), &bytes, Some(&mime)).unwrap_or(mime)
+    } else {
+        mime
+    };
     Ok((bytes, name, mime))
 }
 
@@ -461,13 +515,21 @@ async fn read_local_file(source: &str, max_bytes: usize) -> Result<(Vec<u8>, Pat
 
     check_file_size(source, metadata.len() as usize, max_bytes)?;
 
-    let bytes =
-        tokio::fs::read(&path)
-            .await
-            .map_err(|error| MultimodalError::LocalFileReadFailed {
-                input: source.to_string(),
-                reason: error.to_string(),
-            })?;
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(&path).await.map_err(|error| {
+        MultimodalError::LocalFileReadFailed {
+            input: source.to_string(),
+            reason: error.to_string(),
+        }
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|error| MultimodalError::LocalFileReadFailed {
+            input: source.to_string(),
+            reason: error.to_string(),
+        })?;
 
     check_file_size(source, bytes.len(), max_bytes)?;
 
@@ -514,25 +576,34 @@ async fn fetch_remote_file(
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string);
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| MultimodalError::RemoteFileFetchFailed {
-            input: source.to_string(),
-            reason: error.to_string(),
-        })?;
-
-    check_file_size(source, bytes.len(), max_bytes)?;
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) =
+        response
+            .chunk()
+            .await
+            .map_err(|error| MultimodalError::RemoteFileFetchFailed {
+                input: source.to_string(),
+                reason: error.to_string(),
+            })?
+    {
+        check_file_size(source, bytes.len().saturating_add(chunk.len()), max_bytes)?;
+        bytes.extend_from_slice(&chunk);
+    }
 
     // The last path segment, not a `Content-Disposition` filename: the header
     // is attacker-controlled on a fetched URL and has its own escaping rules,
     // and the payload header escapes whatever lands here anyway.
-    let name = source
-        .rsplit('/')
-        .next()
+    let name = reqwest::Url::parse(source)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .map(str::to_owned)
+        })
         .filter(|segment| !segment.is_empty())
-        .unwrap_or(source)
-        .to_string();
+        .and_then(|segment| super::data_uri::percent_decode(&segment))
+        .unwrap_or_else(|| "attachment".to_string());
 
     Ok((bytes.to_vec(), name, content_type))
 }
@@ -548,3 +619,7 @@ fn check_file_size(source: &str, size_bytes: usize, max_bytes: usize) -> Result<
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "resolve_tests.rs"]
+mod tests;

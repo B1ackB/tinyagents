@@ -65,3 +65,20 @@ counter (alongside the existing `images: usize`) that counts `Audio`/`Video`/
 `ContentBlock::estimated_char_weight` charges each of them the same flat
 `IMAGE_CHAR_WEIGHT` an image gets, so a transcript dominated by non-text
 attachments is not under-counted by token-budgeting/compaction gating.
+
+## Generic attachment intake
+
+For uploads that must retain their original media, use the optional
+`multimodal` feature's `resolve_attachment` API. It returns decoded bytes plus
+display name, MIME, and size without text extraction. `UnknownMimePolicy::Accept`
+is the host's explicit choice to admit arbitrary formats; existing
+`resolve_file` callers use `Reject` and keep their MIME allowlist. Only gzip
+data URIs with `original_mime` are transport-decoded, exactly once. Hosts own
+local path authorization, storage, and choice of native `ContentBlock` variants.
+
+ZIP/TAR/TAR.GZ inspection uses `ArchiveFormat::detect` and `inspect_archive`.
+Typed listings report names, kinds, declared sizes, and resource truncation;
+inspection never extracts files or follows archive paths/links. Office ZIP
+containers are detected from standard document parts and remain documents.
+See [the module README](../../../crates/tinyagents-harness/src/multimodal/README.md)
+for byte/name/entry budgets and partial-validation semantics.
