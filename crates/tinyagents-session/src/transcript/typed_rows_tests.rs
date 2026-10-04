@@ -568,3 +568,31 @@ fn durable_media_parts_round_trip_without_inline_bytes() {
     assert!(!stored.contains("data:"));
     assert!(row.display_content().contains("[AUDIO:uploads/a/song.mp3]"));
 }
+
+#[test]
+fn arbitrary_json_is_not_a_media_compatibility_envelope() {
+    let audio = TranscriptMessage::user_with_parts(vec![TranscriptPart::Audio {
+        source: TranscriptMediaRef::Path {
+            path: "uploads/song.mp3".into(),
+        },
+        mime_type: "audio/mpeg".into(),
+    }]);
+    let canonical = audio.legacy_content();
+    let mut extra: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    extra["user_note"] = serde_json::json!("keep this ordinary JSON");
+    let image_only = serde_json::json!({"_tinyagents_media_parts":[TranscriptPart::Image {url:"https://example.com/image.png".into()}]}).to_string();
+    let pretty = serde_json::to_string_pretty(
+        &serde_json::from_str::<serde_json::Value>(&canonical).unwrap(),
+    )
+    .unwrap();
+    for text in [extra.to_string(), image_only, pretty] {
+        let row = TranscriptMessage::from_legacy("user", &text);
+        assert_eq!(row.content, text);
+        assert!(row.parts.is_none());
+        assert_eq!(row.legacy_content(), text);
+    }
+    assert_eq!(
+        TranscriptMessage::from_legacy("user", canonical).parts,
+        audio.parts
+    );
+}

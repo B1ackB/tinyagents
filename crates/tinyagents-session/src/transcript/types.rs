@@ -297,9 +297,16 @@ impl TranscriptMessage {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.content)
                     && let Some(parts) = value.get("_tinyagents_media_parts")
                     && let Ok(parts) = serde_json::from_value::<Vec<TranscriptPart>>(parts.clone())
-                    && parts
-                        .iter()
-                        .any(|part| !matches!(part, TranscriptPart::Text { .. }))
+                    && parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            TranscriptPart::Audio { .. }
+                                | TranscriptPart::Video { .. }
+                                | TranscriptPart::Document { .. }
+                        )
+                    })
+                    && serde_json::json!({"_tinyagents_media_parts": parts}).to_string()
+                        == self.content
                 {
                     self.content = parts_text(&parts);
                     self.parts = Some(parts);
