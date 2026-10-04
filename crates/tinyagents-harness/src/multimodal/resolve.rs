@@ -418,7 +418,10 @@ fn resolve_file_data_uri(source: &str, max_bytes: usize) -> Result<(Vec<u8>, Str
 
     check_file_size(source, bytes.len(), max_bytes)?;
 
-    let mime = if mime == "application/zip" || mime == "application/octet-stream" {
+    let mime = if mime.is_empty() {
+        // RFC 2397 defaults an omitted media type to text/plain.
+        "text/plain".to_string()
+    } else if mime == "application/zip" || mime == "application/octet-stream" {
         detect_file_mime(Some(Path::new(&name)), &bytes, Some(&mime)).unwrap_or(mime)
     } else {
         mime

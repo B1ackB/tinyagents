@@ -317,3 +317,76 @@ async fn generic_local_media_uses_extensions_and_magic() {
         assert_eq!(resolved.bytes, bytes);
     }
 }
+
+#[test]
+fn iso_bmff_brands_distinguish_images_audio_and_known_video() {
+    for (brand, expected) in [
+        ("avif", "image/avif"),
+        ("avis", "image/avif"),
+        ("heic", "image/heic"),
+        ("heix", "image/heic"),
+        ("mif1", "image/heif"),
+        ("msf1", "image/heif"),
+        ("M4A ", "audio/mp4"),
+        ("M4B ", "audio/mp4"),
+        ("M4P ", "audio/mp4"),
+        ("qt  ", "video/quicktime"),
+        ("mp42", "video/mp4"),
+        ("isom", "video/mp4"),
+    ] {
+        let bytes = [b"\0\0\0\x18ftyp".as_slice(), brand.as_bytes()].concat();
+        assert_eq!(
+            crate::multimodal::mime::detect_attachment_mime(
+                std::path::Path::new("attachment"),
+                &bytes,
+                None
+            )
+            .as_deref(),
+            Some(expected),
+            "{brand}"
+        );
+    }
+    let unknown = b"\0\0\0\x18ftypzzzz";
+    assert_ne!(
+        crate::multimodal::mime::detect_attachment_mime(
+            std::path::Path::new("attachment"),
+            unknown,
+            None
+        )
+        .as_deref(),
+        Some("video/mp4")
+    );
+    for (name, expected) in [
+        ("photo.avif", "image/avif"),
+        ("photo.heic", "image/heic"),
+        ("photo.heif", "image/heif"),
+        ("book.m4b", "audio/mp4"),
+    ] {
+        assert_eq!(
+            crate::multimodal::mime::detect_attachment_mime(
+                std::path::Path::new(name),
+                unknown,
+                None
+            )
+            .as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+#[tokio::test]
+async fn omitted_data_uri_media_type_uses_rfc_text_default() {
+    for (uri, expected) in [
+        ("data:,hello", b"hello".as_slice()),
+        ("data:;base64,aGVsbG8=", b"hello".as_slice()),
+    ] {
+        for policy in [UnknownMimePolicy::Accept, UnknownMimePolicy::Reject] {
+            let resolved =
+                resolve_attachment(uri, &FileLimits::default(), 1024, &Client::new(), policy)
+                    .await
+                    .unwrap();
+            assert_eq!(resolved.mime, "text/plain");
+            assert_eq!(resolved.bytes, expected);
+        }
+    }
+}

@@ -37,6 +37,10 @@ format contributes a header naming it plus a content hash.
   [`resolve_image`]/[`resolve_file`] that turn one marker reference into a
   payload, trying `data:` → `http(s)` (gated by `allow_remote_fetch`) → local
   path in that order.
+- [`types`] — [`ResolvedAttachment`] and [`UnknownMimePolicy`] for generic intake.
+- [`archive`] — [`inspect_archive`] for bounded ZIP/TAR/TAR.GZ listing;
+  [`archive_types`] holds formats, budgets, entries, truncation and errors.
+- [`png`] — [`optimize_png_lossless`] for optional faithful PNG derivatives.
 - [`payload`] — [`FilePayload`] (`Extracted` / `Reference`),
   [`compose_multimodal_message`] (renders the final provider-bound message),
   and supporting helpers (`truncate_chars`, `sha256_prefix`, `format_size`,
@@ -54,10 +58,15 @@ format contributes a header naming it plus a content hash.
 | `markers.rs`  | Marker prefixes and pure string transforms over them.              |
 | `mime.rs`     | MIME detection: header, extension, and magic-byte sniffing.        |
 | `data_uri.rs` | `data:` URI parsing, gzip decompression, percent-decoding.         |
-| `resolve.rs`  | `TextExtractor` trait, `resolve_image`/`resolve_file` pipelines.   |
+| `resolve.rs`  | `TextExtractor`, `resolve_attachment`, `resolve_image`/`resolve_file`.   |
+| `types.rs` | Generic resolved-attachment metadata and unknown-MIME policy. |
+| `archive.rs` | Bounded archive listing, without filesystem extraction. |
+| `archive_types.rs` | Archive format, budgets, entries, errors and truncation. |
+| `zip_admission.rs` | Allocation-free ZIP preflight and admitted reader. |
+| `png.rs` | Optional lossless PNG optimization. |
 | `payload.rs`  | `FilePayload`, message composition, truncation, hashing.           |
 | `error.rs`    | `MultimodalError`, `Result`.                                       |
-| `mod_tests.rs`     | Unit tests for the marker/MIME/size/path edge cases across both pipelines. |
+| `mod_tests.rs`, `resolve_tests.rs`, `archive_tests.rs`, `png_tests.rs`, `stash_tests.rs` | Marker, MIME, size, path, intake, archive, PNG and stash behavior. |
 
 ## Operational constraints
 

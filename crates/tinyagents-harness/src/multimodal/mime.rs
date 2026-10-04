@@ -119,7 +119,10 @@ pub(super) fn detect_attachment_mime(
         Some("flac") => Some("audio/flac"),
         Some("ogg" | "oga") => Some("audio/ogg"),
         Some("opus") => Some("audio/opus"),
-        Some("m4a") => Some("audio/mp4"),
+        Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
+        Some("avif") => Some("image/avif"),
+        Some("heic") => Some("image/heic"),
+        Some("heif") => Some("image/heif"),
         Some("aac") => Some("audio/aac"),
         Some("mp4" | "m4v") => Some("video/mp4"),
         Some("mov") => Some("video/quicktime"),
@@ -140,12 +143,16 @@ pub(super) fn detect_attachment_mime(
         } else if bytes.starts_with(b"OggS") {
             Some("audio/ogg")
         } else if bytes.get(4..8) == Some(b"ftyp") {
-            if bytes.get(8..12) == Some(b"M4A ") {
-                Some("audio/mp4")
-            } else if bytes.get(8..12) == Some(b"qt  ") {
-                Some("video/quicktime")
-            } else {
-                Some("video/mp4")
+            match bytes.get(8..12) {
+                Some(b"M4A " | b"M4B " | b"M4P ") => Some("audio/mp4"),
+                Some(b"qt  ") => Some("video/quicktime"),
+                Some(b"avif" | b"avis") => Some("image/avif"),
+                Some(b"heic" | b"heix") => Some("image/heic"),
+                Some(b"mif1" | b"msf1") => Some("image/heif"),
+                Some(b"isom" | b"iso2" | b"mp41" | b"mp42" | b"M4V " | b"avc1" | b"dash") => {
+                    Some("video/mp4")
+                }
+                _ => None,
             }
         } else {
             None
