@@ -204,8 +204,11 @@ pub struct ResumePreparation {
 /// Values prepared by `SessionHooks::before_turn` for exactly one driver call.
 #[derive(Clone, Default)]
 pub struct TurnPreparation {
-    /// A replacement prefix allowed before the first committed turn. It is
-    /// reconciled against any decoded resumed history without duplication.
+    /// A replacement prefix, normally allowed only before the first committed turn.
+    /// Opt into later replacement with [`PrefixSnapshot::refreshing`]. Later refreshes
+    /// preserve conversation rows and become committed only after persistence succeeds;
+    /// identical prefixes are no-ops. Session targets record a successor generation,
+    /// while stem targets use compaction. Initial prefixes reconcile resumed history.
     pub prefix: Option<PrefixSnapshot>,
     /// The immutable tool declarations for this driver request. `None` uses
     /// the builder's compatibility default and is never retained from a prior

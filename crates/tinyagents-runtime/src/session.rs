@@ -52,7 +52,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             codec,
             hooks,
             history: prefix.messages().to_vec(),
-            prefix,
+            prefix: prefix.frozen(),
             default_tools,
             persisted: Vec::new(),
             target,
@@ -237,14 +237,14 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             .as_ref()
             .is_some_and(|session| session.generation > 0)
             || transcript.meta.parent_session_id.is_some();
-        let mut boundary_resolved = true;
+        let mut recovered_boundary = None;
         if recorded_boundary.is_none() && cached_boundary.is_none() && compacted_head {
             // Without the sealed root there is no safe boundary in a head
             // containing a System summary. If a replacement prefix was
             // supplied, fail rather than replaying unverifiable old System
             // instructions beside it.
             stored_len = 0;
-            boundary_resolved = false;
+            let mut boundary_resolved = false;
             let bound_session = session_binding.as_ref().or(target.session.as_ref());
             if let Some(head) = bound_session
                 .map(|session| target.locator.head_generation(session))
@@ -259,18 +259,31 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     match read.read_session() {
                         Ok(Some(root_transcript)) => match codec.decode_history(&root_transcript) {
                             Ok(root_messages) => {
-                                let root_prefix = root_messages
-                                    .iter()
-                                    .take_while(|message| matches!(message, Message::System(_)))
-                                    .collect::<Vec<_>>();
+                                let root_len = root_transcript
+                                    .meta
+                                    .prefix_message_count
+                                    .unwrap_or_else(|| {
+                                        root_messages
+                                            .iter()
+                                            .take_while(|message| {
+                                                matches!(message, Message::System(_))
+                                            })
+                                            .count()
+                                    })
+                                    .min(root_messages.len());
+                                let root_prefix = &root_messages[..root_len];
                                 if decoded.len() >= root_prefix.len()
                                     && root_prefix
                                         .iter()
                                         .zip(decoded.iter())
-                                        .all(|(root, head)| *root == head)
+                                        .all(|(root, head)| root == head)
                                 {
                                     stored_len = root_prefix.len();
                                     boundary_resolved = true;
+                                    recovered_boundary = root_transcript
+                                        .meta
+                                        .prefix_message_count
+                                        .map(|_| stored_len);
                                 } else {
                                     tracing::warn!(
                                         session = %root.session_id(),
@@ -313,7 +326,10 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 ));
             }
         }
-        let stored_len = if recorded_boundary.is_some() || cached_boundary.is_some() {
+        let authoritative_boundary = recorded_boundary.is_some()
+            || cached_boundary.is_some()
+            || recovered_boundary.is_some();
+        let stored_len = if authoritative_boundary {
             // An explicit frozen prefix may include non-System few-shot rows.
             // Only the legacy inferred boundary is limited to leading System
             // messages; a recorded count is bounded by the transcript itself.
@@ -321,12 +337,25 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         } else {
             stored_len.min(leading_len)
         };
-        self.persisted_prefix_len = boundary_resolved.then_some(stored_len);
+        // A legacy transcript has no recorded boundary for
+        // non-System few-shot messages. Leading System rows alone must not
+        // turn that unknown extent into an authoritative cached boundary.
+        self.persisted_prefix_len = authoritative_boundary.then_some(stored_len);
         if self.prefix.messages().is_empty() && stored_len != 0 {
             self.prefix = PrefixSnapshot::new(decoded[..stored_len].to_vec());
         }
         decoded.drain(..stored_len);
-        let history = self.with_prefix(decoded);
+        let history = if authoritative_boundary {
+            // Equal messages after a known boundary are real conversation.
+            let mut history = self.prefix.messages().to_vec();
+            history.extend(decoded);
+            history
+        } else {
+            // Legacy few-shot rows can remain after the leading System rows
+            // were stripped. Reconcile their overlap until a successful turn
+            // persists the full configured prefix count.
+            self.with_prefix(decoded)
+        };
         self.history = history.clone();
         // Every turn already on disk counts as committed: the prefix those
         // turns were sent with is part of the conversation, in this process
@@ -514,10 +543,14 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 .before_turn(request, options, self.state_view(resumed)),
         )
         .await?;
+        let previous_history = self.history.clone();
         let (tools, prepared_prefix) = self.apply_preparation(preparation)?;
-        if let Some(prefix) = prepared_prefix {
-            self.apply_prefix(prefix)?;
-        }
+        // Preparation stays local until persistence succeeds. Errors, cancellation,
+        // and dropping this future cannot publish an uncommitted prefix.
+        let (prefix, prepared_history) = match prepared_prefix {
+            Some(prefix) => self.prepare_prefix(prefix)?,
+            None => (self.prefix.clone(), self.history.clone()),
+        };
         let exact_tools = tools.is_exact();
         let tools = if exact_tools {
             tools
@@ -528,7 +561,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         // sent, unless the host marked the turn's set as one-off.
         let record_tools = (!exact_tools).then(|| tools.clone());
 
-        let mut input = self.history.clone();
+        let mut input = prepared_history;
         if input.last() != Some(&request.input) {
             input.push(request.input.clone());
         }
@@ -547,13 +580,12 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             ),
         )
         .with_cancellation(cancellation.clone());
-        let run_context = if self
-            .prefix
+        let run_context = if prefix
             .messages()
             .iter()
             .all(|message| matches!(message, Message::System(_)))
         {
-            run_context.with_frozen_system_prefix_len(self.prefix.messages().len())
+            run_context.with_frozen_system_prefix_len(prefix.messages().len())
         } else {
             // A mixed-role prefix is still restored by its recorded count,
             // but the harness's System-tier cache layout cannot represent its
@@ -571,18 +603,19 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                     if cancellation.is_cancelled() {
                         return Err(RuntimeError::Cancelled);
                     }
-                    let partial_history = self.with_prefix(partial.history);
-                    let raw = self.encode(&self.history, &partial_history, &codec_options)?;
+                    let partial_history = Self::with_prefix_snapshot(&prefix, partial.history);
+                    let raw = self.encode(&previous_history, &partial_history, &codec_options)?;
                     let turn_usage = self.turn_usage(&codec_options)?;
                     let receipt = self.persist(
                         &raw,
-                        request_id.as_deref(),
-                        thread_id.as_deref(),
+                        (request_id.as_deref(), thread_id.as_deref()),
                         partial.partial.as_ref(),
                         turn_usage.as_ref(),
                         record_tools.as_ref(),
+                        &prefix,
                     )?;
                     self.remember_sent_tools(record_tools.as_ref());
+                    self.prefix = prefix;
                     self.history = partial_history;
                     self.persisted = raw;
                     if receipt.is_some() {
@@ -592,7 +625,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
                 return Err(failure.error);
             }
         };
-        let candidate = self.with_prefix(outcome.history);
+        let candidate = Self::with_prefix_snapshot(&prefix, outcome.history);
         let committed = SessionTurnOutcome {
             history: candidate.clone(),
             output: outcome.output,
@@ -606,17 +639,18 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         if cancellation.is_cancelled() {
             return Err(RuntimeError::Cancelled);
         }
-        let raw = self.encode(&self.history, &candidate, &codec_options)?;
+        let raw = self.encode(&previous_history, &candidate, &codec_options)?;
         let turn_usage = self.turn_usage(&codec_options)?;
         let transcript = self.persist(
             &raw,
-            request_id.as_deref(),
-            thread_id.as_deref(),
+            (request_id.as_deref(), thread_id.as_deref()),
             None,
             turn_usage.as_ref(),
             record_tools.as_ref(),
+            &prefix,
         )?;
         self.remember_sent_tools(record_tools.as_ref());
+        self.prefix = prefix;
         self.history = committed.history.clone();
         self.persisted = raw;
         self.committed_turns += 1;
@@ -706,23 +740,29 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         Ok(())
     }
 
-    fn apply_prefix(&mut self, prefix: PrefixSnapshot) -> Result<(), RuntimeError> {
+    fn prepare_prefix(
+        &self,
+        prefix: PrefixSnapshot,
+    ) -> Result<(PrefixSnapshot, Vec<Message>), RuntimeError> {
+        let refresh = prefix.allows_refresh();
+        let prefix = prefix.frozen();
         if prefix == self.prefix {
-            return Ok(());
+            return Ok((prefix, self.history.clone()));
         }
-        if self.committed_turns != 0 {
+        if self.committed_turns != 0 && !refresh {
             return Err(RuntimeError::InvalidSessionState(
                 "cannot change a session prefix after a committed turn".into(),
             ));
         }
-        let history = std::mem::take(&mut self.history);
-        let history = history
+        let conversation = self
+            .history
             .strip_prefix(self.prefix.messages())
-            .unwrap_or(&history)
-            .to_vec();
-        self.prefix = prefix;
-        self.history = self.with_prefix(history);
-        Ok(())
+            .unwrap_or(&self.history);
+        // These rows are conversation data after stripping the known prefix,
+        // even when they equal a suffix of the replacement prefix.
+        let mut history = prefix.messages().to_vec();
+        history.extend_from_slice(conversation);
+        Ok((prefix, history))
     }
 
     fn state_view(&self, resumed: bool) -> SessionStateView<'_> {
@@ -761,12 +801,18 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
     fn persist(
         &mut self,
         raw: &[TranscriptMessage],
-        request_id: Option<&str>,
-        thread_id: Option<&str>,
+        identifiers: (Option<&str>, Option<&str>),
         partial: Option<&TranscriptPartial>,
         turn_usage: Option<&TurnUsage>,
         tools: Option<&ToolSnapshot>,
+        prefix: &PrefixSnapshot,
     ) -> Result<Option<TranscriptCommitReceipt>, RuntimeError> {
+        // A committed prefix refresh is a replacement even when its rows
+        // happen to begin with every old raw row. Never reclassify conversation
+        // rows as prefix in the old generation, including persisted partials.
+        let prefix_changed = self.committed_turns != 0 && prefix != &self.prefix;
+        let prefix_len = prefix.messages().len();
+        let (request_id, thread_id) = identifiers;
         let Some(target) = self.target.as_mut() else {
             return Ok(None);
         };
@@ -810,7 +856,8 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         let common_len = previous_len.min(next_len);
         // Compare in normalized form: a legacy-string row from the host and the
         // typed row the transcript lifted from it are the same row.
-        let extends = next_len >= previous_len
+        let extends = !prefix_changed
+            && next_len >= previous_len
             && raw[..common_len]
                 .iter()
                 .zip(&self.persisted[..common_len])
@@ -857,7 +904,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             None => self.transcript.as_deref().expect("bound above"),
         };
         meta.turn_count += 1;
-        meta.prefix_message_count = Some(self.prefix.messages().len());
+        meta.prefix_message_count = Some(prefix_len);
         meta.updated = chrono::Utc::now().to_rfc3339();
         // Record every ordinary turn's declarations. Comparing against this
         // session's cached snapshot is unsafe when another live Session has
@@ -897,7 +944,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             self.transcript = Some(handle);
         }
         target.meta = meta;
-        self.persisted_prefix_len = Some(self.prefix.messages().len());
+        self.persisted_prefix_len = Some(prefix_len);
         let delta = if extends {
             TranscriptDelta::Append {
                 previous_len,
@@ -931,7 +978,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
     }
 
     fn with_prefix(&self, history: Vec<Message>) -> Vec<Message> {
-        let prefix = self.prefix.messages();
+        Self::with_prefix_snapshot(&self.prefix, history)
+    }
+
+    fn with_prefix_snapshot(snapshot: &PrefixSnapshot, history: Vec<Message>) -> Vec<Message> {
+        let prefix = snapshot.messages();
         let overlap = (0..=prefix.len().min(history.len()))
             .rev()
             .find(|&len| prefix[prefix.len() - len..] == history[..len])
