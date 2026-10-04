@@ -32,7 +32,10 @@ impl ArchiveFormat {
             return None;
         }
         if mime == "application/gzip" || bytes.starts_with(b"\x1f\x8b") {
-            return is_tar_gzip(bytes).then_some(Self::TarGzip);
+            if is_tar_gzip(bytes) || name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+                return Some(Self::TarGzip);
+            }
+            return None;
         }
         if bytes.get(257..262) == Some(b"ustar") {
             return Some(Self::Tar);

@@ -183,6 +183,17 @@ fn archive_detection_does_not_mistake_office_documents_for_archives() {
         ),
         None
     );
+    let mut empty_tar_gzip =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    empty_tar_gzip.write_all(&[0; 1024]).unwrap();
+    assert_eq!(
+        ArchiveFormat::detect(
+            "empty.tar.gz",
+            "application/gzip",
+            &empty_tar_gzip.finish().unwrap()
+        ),
+        Some(ArchiveFormat::TarGzip)
+    );
     assert_eq!(
         ArchiveFormat::detect("archive.tar", "application/x-tar", b""),
         Some(ArchiveFormat::Tar)
