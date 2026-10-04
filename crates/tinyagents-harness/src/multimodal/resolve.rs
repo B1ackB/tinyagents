@@ -329,7 +329,7 @@ pub async fn resolve_attachment(
     }
     let max_bytes = max_bytes.min(limits.max_file_bytes());
     let (bytes, name, mime) = if source.starts_with("data:") {
-        resolve_file_data_uri(source, max_bytes)?
+        resolve_file_data_uri(source, max_bytes, unknown_mime)?
     } else {
         let (bytes, name, header) =
             if source.starts_with("http://") || source.starts_with("https://") {
@@ -382,7 +382,11 @@ pub async fn resolve_attachment(
 /// Resolve a `data:` file source: decompresses a gzip-wrapped payload when
 /// present, extracts the `name` parameter, and checks size. MIME allowlisting
 /// happens later in [`build_file_payload`].
-fn resolve_file_data_uri(source: &str, max_bytes: usize) -> Result<(Vec<u8>, String, String)> {
+fn resolve_file_data_uri(
+    source: &str,
+    max_bytes: usize,
+    unknown_mime: UnknownMimePolicy,
+) -> Result<(Vec<u8>, String, String)> {
     // Reject payloads whose minimum decoded size is over cap before allocating.
     if let Some((header, encoded)) = source.split_once(',') {
         let minimum_size = if header
@@ -422,7 +426,12 @@ fn resolve_file_data_uri(source: &str, max_bytes: usize) -> Result<(Vec<u8>, Str
         // RFC 2397 defaults an omitted media type to text/plain.
         "text/plain".to_string()
     } else if mime == "application/zip" || mime == "application/octet-stream" {
-        detect_file_mime(Some(Path::new(&name)), &bytes, Some(&mime)).unwrap_or(mime)
+        if unknown_mime == UnknownMimePolicy::Accept {
+            super::mime::detect_attachment_mime(Path::new(&name), &bytes, Some(&mime))
+        } else {
+            detect_file_mime(Some(Path::new(&name)), &bytes, Some(&mime))
+        }
+        .unwrap_or(mime)
     } else {
         mime
     };

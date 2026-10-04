@@ -390,3 +390,39 @@ async fn omitted_data_uri_media_type_uses_rfc_text_default() {
         }
     }
 }
+
+#[tokio::test]
+async fn generic_data_uris_detect_media_like_local_sources_without_changing_legacy() {
+    for (name, bytes, expected) in [
+        ("clip.mp4", b"\0\0\0\x18ftypmp42".as_slice(), "video/mp4"),
+        ("photo.avif", b"\0\0\0\x18ftypavif".as_slice(), "image/avif"),
+        ("sound.wav", b"RIFF\0\0\0\0WAVE".as_slice(), "audio/wav"),
+    ] {
+        let uri = format!(
+            "data:application/octet-stream;name={name};base64,{}",
+            STANDARD.encode(bytes)
+        );
+        let accepted = resolve_attachment(
+            &uri,
+            &FileLimits::default(),
+            1024,
+            &Client::new(),
+            UnknownMimePolicy::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted.mime, expected);
+        assert_eq!(accepted.bytes, bytes);
+        let legacy = resolve_attachment(
+            &uri,
+            &FileLimits::default(),
+            1024,
+            &Client::new(),
+            UnknownMimePolicy::Reject,
+        )
+        .await
+        .unwrap();
+        assert_eq!(legacy.mime, "application/octet-stream");
+        assert_eq!(legacy.bytes, bytes);
+    }
+}
