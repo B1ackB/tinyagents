@@ -16,10 +16,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = "2"
 parking_lot = "0.12"
-tinyagents-graph = { path = "../tinyagents-graph", version = "2.1.2", default-features = false }
-tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.2", default-features = false }
-tinyagents-session = { path = "../tinyagents-session", version = "2.1.2", default-features = false }
-tinyagents-runtime = { path = "../tinyagents-runtime", version = "2.1.2", default-features = false }
+tinyagents-graph = { path = "../tinyagents-graph", version = "2.1.3", default-features = false }
+tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.3", default-features = false }
+tinyagents-session = { path = "../tinyagents-session", version = "2.1.3", default-features = false }
+tinyagents-runtime = { path = "../tinyagents-runtime", version = "2.1.3", default-features = false }
 tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm", version = "0.3.0" }
 tinytools = { path = "../../vendor/tinytools/crates/tinytools", version = "0.5.0" }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
@@ -35,9 +35,9 @@ tracing = [
 dotenvy = "0.15"
 futures = { workspace = true }
 tempfile = "3"
-tinyagents-definition = { path = "../tinyagents-definition", version = "2.1.2" }
-tinyagents-graph = { path = "../tinyagents-graph", version = "2.1.2" }
-tinyagents-registry = { path = "../tinyagents-registry", version = "2.1.2" }
+tinyagents-definition = { path = "../tinyagents-definition", version = "2.1.3" }
+tinyagents-graph = { path = "../tinyagents-graph", version = "2.1.3" }
+tinyagents-registry = { path = "../tinyagents-registry", version = "2.1.3" }
 tokio = { workspace = true, default-features = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

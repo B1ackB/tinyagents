@@ -17,7 +17,7 @@ thiserror = "2"
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.2", default-features = false, features = ["sqlite"] }
+tinyagents-harness = { path = "../tinyagents-harness", version = "2.1.3", default-features = false, features = ["sqlite"] }
 tinytools-agent = { path = "../../vendor/tinytools/crates/tinytools-agent", version = "0.5.0", default-features = false }
 glob = "0.3"
 hex = "0.4"
