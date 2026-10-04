@@ -81,6 +81,7 @@ pub mod payload;
 pub mod resolve;
 pub mod stash;
 pub mod types;
+mod zip_admission;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

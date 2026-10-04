@@ -343,7 +343,11 @@ pub async fn resolve_attachment(
                 let (bytes, _path, name) = read_local_file(source, max_bytes).await?;
                 (bytes, name, None)
             };
-        let detected = detect_file_mime(Some(Path::new(&name)), &bytes, header.as_deref());
+        let detected = if unknown_mime == UnknownMimePolicy::Accept {
+            super::mime::detect_attachment_mime(Path::new(&name), &bytes, header.as_deref())
+        } else {
+            detect_file_mime(Some(Path::new(&name)), &bytes, header.as_deref())
+        };
         if detected.is_none() && unknown_mime == UnknownMimePolicy::Reject {
             return Err(MultimodalError::UnsupportedFileMime {
                 input: source.to_string(),

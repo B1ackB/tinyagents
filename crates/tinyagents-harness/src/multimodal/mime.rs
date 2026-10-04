@@ -96,6 +96,66 @@ pub fn detect_file_mime(
     None
 }
 
+/// Generic attachments preserve explicit media types and recognize local media
+/// before the legacy UTF-8 fallback. ZIP/octet-stream still allow Office probing.
+pub(super) fn detect_attachment_mime(
+    path: &Path,
+    bytes: &[u8],
+    header: Option<&str>,
+) -> Option<String> {
+    if let Some(mime) = header.and_then(normalize_content_type)
+        && mime != "application/zip"
+        && mime != "application/octet-stream"
+    {
+        return Some(mime);
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    let media = match extension.as_deref() {
+        Some("wav" | "wave") => Some("audio/wav"),
+        Some("mp3") => Some("audio/mpeg"),
+        Some("flac") => Some("audio/flac"),
+        Some("ogg" | "oga") => Some("audio/ogg"),
+        Some("opus") => Some("audio/opus"),
+        Some("m4a") => Some("audio/mp4"),
+        Some("aac") => Some("audio/aac"),
+        Some("mp4" | "m4v") => Some("video/mp4"),
+        Some("mov") => Some("video/quicktime"),
+        Some("webm") => Some("video/webm"),
+        Some("mkv") => Some("video/x-matroska"),
+        Some("avi") => Some("video/x-msvideo"),
+        _ => None,
+    }
+    .or_else(|| {
+        if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+            Some("audio/wav")
+        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI ") {
+            Some("video/x-msvideo")
+        } else if bytes.starts_with(b"ID3") {
+            Some("audio/mpeg")
+        } else if bytes.starts_with(b"fLaC") {
+            Some("audio/flac")
+        } else if bytes.starts_with(b"OggS") {
+            Some("audio/ogg")
+        } else if bytes.get(4..8) == Some(b"ftyp") {
+            if bytes.get(8..12) == Some(b"M4A ") {
+                Some("audio/mp4")
+            } else if bytes.get(8..12) == Some(b"qt  ") {
+                Some("video/quicktime")
+            } else {
+                Some("video/mp4")
+            }
+        } else {
+            None
+        }
+    });
+    media
+        .map(ToString::to_string)
+        .or_else(|| detect_file_mime(Some(path), bytes, header))
+}
+
 /// Strip parameters from a `Content-Type` header and lower-case it.
 pub fn normalize_content_type(content_type: &str) -> Option<String> {
     let mime = content_type.split(';').next()?.trim().to_ascii_lowercase();
@@ -222,7 +282,10 @@ fn office_container_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() > 50 * 1024 * 1024 || !bytes.starts_with(b"PK\x03\x04") {
         return None;
     }
-    let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    if super::zip_admission::zip_preflight(bytes).ok()?.is_some() {
+        return None;
+    }
+    let archive = super::zip_admission::open_admitted_zip(bytes).ok()?;
     if archive.len() > 10_000 || archive.index_for_name("[Content_Types].xml").is_none() {
         return None;
     }

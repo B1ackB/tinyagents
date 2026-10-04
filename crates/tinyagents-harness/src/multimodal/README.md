@@ -86,7 +86,10 @@ extracts text nor writes files. `Reject` requires the existing MIME allowlist
 and preserves rejection of undetected local bytes; `Accept` lets a host retain
 arbitrary media or unknown formats without disabling byte limits, remote
 fetch gates, or `max_files == 0`. The host authorizes local paths and chooses
-storage locations. Names are untrusted display metadata.
+storage locations. Names are untrusted display metadata. In `Accept` mode,
+explicit HTTP media MIME types precede content sniffing, and common audio/video
+extensions and signatures are recognized before the UTF-8 fallback. `Reject`
+continues to use the legacy file detector.
 
 Transport gzip is identified by `application/gzip` plus `original_mime` in a
 data URI and decoded exactly once under the byte cap. A `.tar.gz` attachment
@@ -111,8 +114,17 @@ reason; malformed headers/CRC/streams return `ArchiveError`. A TAR/TAR.GZ
 stream beyond its decoded budget produces an empty truncated listing; a ZIP
 member whose declared size exceeds the remaining budget appears in the
 partial listing without being inflated. A partial listing does not validate
-members beyond the stopping point. Container parsing itself is bounded by the
-50 MiB input ceiling; Office probing is additionally limited to 10,000 entries.
+members beyond the stopping point. ZIP listing and Office probing share an allocation-free central-directory
+preflight before the eager ZIP parser. It checks ordinary and ZIP64 counts
+against available directory bytes and caps eager metadata at 10,000 entries,
+4096 bytes per name, 1 MiB across names, and 4 MiB of directory metadata.
+Archives above those safety ceilings produce an empty truncated listing;
+Office probing falls back to the usual extension/header detection. Smaller
+caller listing budgets retain a prefix as usual. Invalid directory counts and
+records are errors. The reader pins the admitted directory offset and hides
+member footer signatures during metadata indexing so parser retries cannot
+select unchecked embedded ZIPs. Member data is restored for normal CRC and
+expansion validation. Office probing reads metadata and local headers only.
 
 `types.rs` owns generic intake types; `archive_types.rs` owns listing types
 and budgets; `archive.rs` owns inspection; sibling `*_tests.rs` cover fixtures

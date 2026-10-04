@@ -223,3 +223,97 @@ async fn malformed_and_oversized_data_uri_payloads_fail_before_extraction() {
         Err(MultimodalError::FileTooLarge { .. })
     ));
 }
+
+#[tokio::test]
+async fn generic_http_mime_precedes_utf8_sniff_and_legacy_stays_narrow() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/media", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            let mut received = 0;
+            loop {
+                let amount = stream.read(&mut request[received..]).await.unwrap();
+                assert!(amount > 0);
+                received += amount;
+                if request[..received]
+                    .windows(4)
+                    .any(|part| part == b"\r\n\r\n")
+                {
+                    break;
+                }
+                assert!(received < request.len());
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav; charset=binary\r\nContent-Length: 12\r\nConnection: close\r\n\r\nRIFF\0\0\0\0WAVE").await.unwrap();
+        }
+    });
+    let limits = FileLimits {
+        allow_remote_fetch: true,
+        ..FileLimits::default()
+    };
+    let resolved = resolve_attachment(
+        &url,
+        &limits,
+        1024,
+        &Client::new(),
+        UnknownMimePolicy::Accept,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolved.mime, "audio/wav");
+    assert_eq!(resolved.bytes, b"RIFF\0\0\0\0WAVE");
+    let legacy = resolve_attachment(
+        &url,
+        &limits,
+        1024,
+        &Client::new(),
+        UnknownMimePolicy::Reject,
+    )
+    .await
+    .unwrap();
+    assert_eq!(legacy.mime, "text/plain");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn generic_local_media_uses_extensions_and_magic() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, bytes, mime) in [
+        ("sound.wav", &b"RIFF\0\0\0\0WAVE"[..], "audio/wav"),
+        ("movie.mp4", &b"\0\0\0\x18ftypmp42"[..], "video/mp4"),
+        ("recording.mp3", &b"ID3"[..], "audio/mpeg"),
+        ("sound.flac", &b"fLaC"[..], "audio/flac"),
+        ("sound.ogg", &b"OggS"[..], "audio/ogg"),
+        ("sound.opus", &b"opaque"[..], "audio/opus"),
+        ("sound.m4a", &b"opaque"[..], "audio/mp4"),
+        ("sound.aac", &b"opaque"[..], "audio/aac"),
+        ("movie.mov", &b"opaque"[..], "video/quicktime"),
+        ("movie.webm", &b"opaque"[..], "video/webm"),
+        ("movie.mkv", &b"opaque"[..], "video/x-matroska"),
+        ("movie.avi", &b"opaque"[..], "video/x-msvideo"),
+        ("magic-mp3", &b"ID3"[..], "audio/mpeg"),
+        ("magic-flac", &b"fLaC"[..], "audio/flac"),
+        ("magic-ogg", &b"OggS"[..], "audio/ogg"),
+        ("magic-avi", &b"RIFF\0\0\0\0AVI "[..], "video/x-msvideo"),
+        ("magic-mp4", &b"\0\0\0\x18ftypmp42"[..], "video/mp4"),
+        ("magic-m4a", &b"\0\0\0\x18ftypM4A "[..], "audio/mp4"),
+        ("magic-mov", &b"\0\0\0\x18ftypqt  "[..], "video/quicktime"),
+        ("unlabelled", &b"RIFF\0\0\0\0WAVE"[..], "audio/wav"),
+    ] {
+        let path = dir.path().join(name);
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let resolved = resolve_attachment(
+            path.to_str().unwrap(),
+            &FileLimits::default(),
+            1024,
+            &Client::new(),
+            UnknownMimePolicy::Accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.mime, mime);
+        assert_eq!(resolved.bytes, bytes);
+    }
+}

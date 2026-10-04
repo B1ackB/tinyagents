@@ -4,6 +4,7 @@
 use std::io::{self, Cursor, Read};
 
 pub use super::archive_types::*;
+use super::zip_admission::{open_admitted_zip, zip_preflight};
 
 /// List an archive in memory. Malformed headers and compressed streams are
 /// errors; resource caps return a partial listing with a truncation reason.
@@ -60,8 +61,13 @@ fn add_entry(
 }
 
 fn inspect_zip(bytes: &[u8], limits: &ArchiveLimits) -> Result<ArchiveListing, ArchiveError> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| ArchiveError::Invalid(e.to_string()))?;
+    if let Some(reason) = zip_preflight(bytes)? {
+        return Ok(ArchiveListing {
+            entries: Vec::new(),
+            truncation: Some(reason),
+        });
+    }
+    let mut archive = open_admitted_zip(bytes)?;
     let mut list = ArchiveListing::default();
     let mut names = 0;
     let mut expanded = 0u64;
