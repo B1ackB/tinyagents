@@ -305,8 +305,7 @@ impl TranscriptMessage {
                                 | TranscriptPart::Document { .. }
                         )
                     })
-                    && serde_json::json!({"_tinyagents_media_parts": parts}).to_string()
-                        == self.content
+                    && encode_media_parts(&parts) == self.content
                 {
                     self.content = parts_text(&parts);
                     self.parts = Some(parts);
@@ -378,7 +377,7 @@ impl TranscriptMessage {
                         | TranscriptPart::Document { .. }
                 )
             }) {
-                return serde_json::json!({"_tinyagents_media_parts": parts}).to_string();
+                return encode_media_parts(parts);
             }
             let parts: Vec<ContentPart> = parts
                 .iter()
@@ -542,6 +541,10 @@ impl From<TranscriptMessage> for TranscriptMessageWire {
 }
 
 /// The concatenated text parts.
+fn encode_media_parts(parts: &[TranscriptPart]) -> String {
+    serde_json::json!({"_tinyagents_media_parts": parts}).to_string()
+}
+
 fn parts_text(parts: &[TranscriptPart]) -> String {
     parts
         .iter()
