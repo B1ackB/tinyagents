@@ -11,6 +11,7 @@ use crate::middleware::Middleware;
 use tinyinference_llm::message::{ContentBlock, Message as TaMessage};
 use tinyinference_llm::model::ModelRequest;
 
+use super::ephemeral::push_ephemeral_instruction;
 use super::image_trim::{estimate_message_tokens, estimate_text_tokens};
 
 /// The body microcompact swaps in for a cleared tool result, and therefore the
@@ -116,6 +117,13 @@ pub struct FinalCallWrapUpMiddleware {
     /// terminal condition — so the old `final_response.is_none()` tell no
     /// longer distinguishes a capped turn from a finished one.
     fired: std::sync::Mutex<std::collections::HashSet<u64>>,
+    /// Ascending fractions of the model-call budget at which a budget notice
+    /// is appended (see [`with_budget_notice`](Self::with_budget_notice)).
+    /// Empty disables the notice.
+    budget_thresholds: Vec<f64>,
+    /// Per run ([`RunContext::instance_id`]), how many of `budget_thresholds`
+    /// have already been announced.
+    budget_noticed: std::sync::Mutex<std::collections::HashMap<u64, usize>>,
 }
 
 impl FinalCallWrapUpMiddleware {
@@ -135,6 +143,8 @@ impl FinalCallWrapUpMiddleware {
             outcomes,
             input_budget,
             fired: std::sync::Mutex::default(),
+            budget_thresholds: Vec::new(),
+            budget_noticed: std::sync::Mutex::default(),
         }
     }
 
@@ -148,6 +158,33 @@ impl FinalCallWrapUpMiddleware {
         self
     }
 
+    /// Warn the model about its model-call budget partway through the turn.
+    ///
+    /// Each threshold is a fraction of `max_model_calls` (`0.5` = half the
+    /// budget spent). The first call at or past a threshold gets a short note
+    /// appended saying how many calls are left and that it should start, or
+    /// keep, producing the deliverable instead of gathering. Each threshold
+    /// fires once per run; thresholds crossed by the same call share one note.
+    ///
+    /// Without this the model learns about the budget only on the penultimate
+    /// call, when the belt is already narrowed to the writers, which is too
+    /// late to make a multi-file change (openhuman#6958). A note never lands on
+    /// the penultimate or final call, which carry their own instruction.
+    /// Thresholds outside `(0, 1)` (or NaN) are ignored.
+    pub fn with_budget_notice<I>(mut self, thresholds: I) -> Self
+    where
+        I: IntoIterator<Item = f64>,
+    {
+        let mut thresholds: Vec<f64> = thresholds
+            .into_iter()
+            .filter(|t| t.is_finite() && *t > 0.0 && *t < 1.0)
+            .collect();
+        thresholds.sort_by(f64::total_cmp);
+        thresholds.dedup();
+        self.budget_thresholds = thresholds;
+        self
+    }
+
     /// Override the placeholder body treated as a cleared tool result.
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.cleared_placeholder = placeholder.into();
@@ -157,6 +194,15 @@ impl FinalCallWrapUpMiddleware {
     /// Whether a tool is one the penultimate call keeps.
     fn is_deliverable_tool(&self, name: &str) -> bool {
         self.deliverable_tools.iter().any(|tool| tool == name)
+    }
+
+    /// Whether a budget notice was announced in the run owning this context.
+    /// Lets other middleware (for example `VerifyBeforeFinishMiddleware`)
+    /// stay quiet once the model has been told how few calls remain.
+    pub fn budget_notice_announced<C>(&self, ctx: &RunContext<C>) -> bool {
+        self.budget_noticed
+            .lock()
+            .is_ok_and(|noticed| noticed.get(&ctx.instance_id()).is_some_and(|n| *n > 0))
     }
 
     /// Whether the wrap-up injection fired for this run context.
@@ -283,7 +329,59 @@ impl FinalCallWrapUpMiddleware {
     }
 }
 
+/// The note [`FinalCallWrapUpMiddleware::with_budget_notice`] appends.
+fn budget_notice_text(remaining: usize, max: usize) -> String {
+    format!(
+        "Budget notice: {remaining} model calls left in this turn (of {max}). Stop gathering \
+         and start (or continue) producing the deliverable now: make the actual changes, for \
+         example by editing the files, rather than reading more. Near the end the tools are \
+         withdrawn, so anything not done by then will not get done."
+    )
+}
+
 impl FinalCallWrapUpMiddleware {
+    /// Append a budget notice when this call is the first at or past one or
+    /// more not-yet-announced thresholds. Returns `true` when it did.
+    ///
+    /// Only called while more than one call remains, so a notice never
+    /// competes with the final-write or concluding instruction.
+    fn maybe_notice_budget<C>(&self, ctx: &RunContext<C>, request: &mut ModelRequest) -> bool {
+        if self.budget_thresholds.is_empty() {
+            return false;
+        }
+        let max = ctx.limits.limits().max_model_calls;
+        let used = ctx.limits.model_calls();
+        let crossed = self
+            .budget_thresholds
+            .iter()
+            // The epsilon keeps `0.7 * 10` (6.999…) landing on call 7.
+            .take_while(|t| used as f64 + 1e-9 >= **t * max as f64)
+            .count();
+        let Ok(mut noticed) = self.budget_noticed.lock() else {
+            return false;
+        };
+        let announced = noticed.entry(ctx.instance_id()).or_insert(0);
+        if crossed <= *announced {
+            return false;
+        }
+        *announced = crossed;
+        drop(noticed);
+        let remaining = ctx.limits.remaining_model_calls();
+        tracing::info!(
+            model_calls = used,
+            max_model_calls = max,
+            remaining,
+            thresholds_crossed = crossed,
+            "[tinyagents::mw] budget notice — telling the model how many calls are left"
+        );
+        push_ephemeral_instruction(
+            request,
+            budget_notice_text(remaining, max),
+            ctx.model_profile.as_ref(),
+        );
+        true
+    }
+
     /// The call *before* the conclusion: narrow the belt to
     /// the deliverable tools so a turn that owes a file can still write it.
     ///
@@ -331,9 +429,11 @@ impl FinalCallWrapUpMiddleware {
         // this call is being asked to write the findings into a file, so it
         // needs to be able to read them.
         self.restore_cleared_outcomes(request, &self.final_write_instruction);
-        request
-            .messages
-            .push(TaMessage::user(self.final_write_instruction.clone()));
+        push_ephemeral_instruction(
+            request,
+            self.final_write_instruction.clone(),
+            ctx.model_profile.as_ref(),
+        );
         true
     }
 }
@@ -352,6 +452,7 @@ impl<C: Send + Sync> Middleware<(), C> for FinalCallWrapUpMiddleware {
     ) -> TaResult<()> {
         let remaining = ctx.limits.remaining_model_calls();
         if remaining > 1 {
+            self.maybe_notice_budget(ctx, request);
             return Ok(());
         }
         // A budget of one call would make the very first call the concluding
@@ -426,9 +527,11 @@ impl<C: Send + Sync> Middleware<(), C> for FinalCallWrapUpMiddleware {
         // before the request is built), and the earliest ones are most likely
         // already reflected in the compression summary above.
         self.restore_cleared_outcomes(request, &self.instruction);
-        request
-            .messages
-            .push(TaMessage::user(self.instruction.clone()));
+        push_ephemeral_instruction(
+            request,
+            self.instruction.clone(),
+            ctx.model_profile.as_ref(),
+        );
         if let Ok(mut fired) = self.fired.lock() {
             fired.insert(ctx.instance_id());
         }

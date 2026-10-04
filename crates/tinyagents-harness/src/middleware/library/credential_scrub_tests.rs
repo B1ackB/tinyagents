@@ -206,6 +206,18 @@ async fn scrubs_markdown_and_follow_up_fields() {
     }
 }
 
+#[tokio::test]
+async fn scrubs_a_bare_alphabetic_password_in_tool_result_fields() {
+    let out = run(
+        CredentialScrubMiddleware::new(),
+        "fetch",
+        r#"{"password":"correcthorse"}"#,
+    )
+    .await;
+    assert!(!out.contains("correcthorse"), "{out}");
+    assert!(out.contains(REDACTION_PLACEHOLDER), "{out}");
+}
+
 async fn run(mw: CredentialScrubMiddleware, tool: &str, body: &'static str) -> String {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_tool_middleware(Arc::new(mw));

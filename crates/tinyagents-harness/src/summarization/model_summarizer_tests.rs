@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::json;
 use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message, ToolMessage};
+use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::tool::ToolCall;
+use tinyinference_llm::usage::Usage;
 
 use super::{
     DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
@@ -52,8 +54,31 @@ fn policy_is_context_window_aware_at_the_default_threshold() {
 #[test]
 fn default_threshold_leaves_headroom_below_the_window() {
     let policy = summarization_policy(100_000);
-    let effective = (policy.context_window.unwrap() as f64 * policy.threshold_fraction) as u64;
-    assert_eq!(effective, 90_000);
+    assert_eq!(policy.trigger_budget(), 80_000);
+}
+
+#[test]
+fn default_trigger_is_capped_for_large_windows() {
+    // min(80% of the window, 350k): small windows compact at 80%, a 1M window
+    // at 350k rather than ~840k.
+    for (window, trigger) in [
+        (32_768, 26_214),
+        (128_000, 102_400),
+        (200_000, 160_000),
+        (437_500, 350_000),
+        (1_048_576, 350_000),
+        (2_000_000, 350_000),
+    ] {
+        let budget = summarization_policy(window).trigger_budget();
+        assert!(
+            budget.abs_diff(trigger) <= 1,
+            "window {window}: trigger {budget}, want {trigger}"
+        );
+    }
+    assert_eq!(
+        super::default_threshold_fraction_for(0),
+        DEFAULT_SUMMARIZE_THRESHOLD_FRACTION
+    );
 }
 
 #[test]
@@ -220,22 +245,6 @@ const DSML_REPLY: &str = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke nam
 <｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /app && cat src/lib.rs</｜｜DSML｜｜ parameter>\n\
 </｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
 
-#[test]
-fn tool_call_markup_is_detected_but_quoted_json_and_prose_are_not() {
-    assert!(super::model_summarizer::contains_tool_call_markup(
-        DSML_REPLY
-    ));
-    assert!(super::model_summarizer::contains_tool_call_markup(
-        "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
-    ));
-    assert!(!super::model_summarizer::contains_tool_call_markup(
-        "## Goal\nShip the parser.\n\n## Active State\nConfig is {\"retries\": 3}."
-    ));
-    assert!(!super::model_summarizer::contains_tool_call_markup(
-        "{\"name\":\"shell\",\"arguments\":{}}"
-    ));
-}
-
 #[tokio::test]
 async fn the_transcript_is_fenced_as_data_with_the_instruction_last() {
     let model = Arc::new(ScriptedModel::replies(vec!["## Goal\nx"]));
@@ -286,4 +295,67 @@ async fn a_summarizer_that_keeps_calling_tools_fails_so_the_fallback_trims() {
     let record = guarded.summarize(&long_slice()).await.unwrap();
     assert!(record.summary.text().contains("deterministic trim"));
     assert!(!record.summary.text().contains("DSML"));
+}
+
+#[tokio::test]
+async fn fallback_reports_usage_from_failed_markup_attempts() {
+    let usage = Usage {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        ..Usage::default()
+    };
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse::assistant(DSML_REPLY).with_usage(usage),
+        ModelResponse::assistant(DSML_REPLY).with_usage(usage),
+    ]));
+    let policy = SummarizationPolicy::default().with_context_window(1_000);
+    let guarded =
+        FaultTolerantCachingSummarizer::new(Box::new(ModelSummarizer::new(model, "m")), &policy);
+    let record = guarded.summarize(&[Message::user("x")]).await.unwrap();
+    assert_eq!(record.usage.unwrap().total_tokens, 30);
+}
+
+#[tokio::test]
+async fn fallback_reports_usage_from_empty_summary() {
+    let usage = Usage {
+        total_tokens: 15,
+        ..Usage::default()
+    };
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse::assistant("").with_usage(usage),
+    ]));
+    let policy = SummarizationPolicy::default().with_context_window(1_000);
+    let guarded =
+        FaultTolerantCachingSummarizer::new(Box::new(ModelSummarizer::new(model, "m")), &policy);
+    let record = guarded.summarize(&[Message::user("x")]).await.unwrap();
+    assert_eq!(record.usage, Some(usage));
+}
+/// Issue tinyhumansai/openhuman#6960: a compaction that fires mid-turn folds
+/// work the agent is still doing. The summary's pending section must hand that
+/// work on as in progress, not tell the model it is stale.
+#[tokio::test]
+async fn pending_work_is_handed_on_as_in_progress_not_stale() {
+    let model = Arc::new(ScriptedModel::replies(vec!["## Goal\nx"]));
+    let summarizer = ModelSummarizer::new(model.clone(), "m");
+    summarizer
+        .summarize(&[
+            Message::user("write the report"),
+            Message::assistant("drafting"),
+        ])
+        .await
+        .unwrap();
+
+    let prompt = model.requests()[0].messages[0].text();
+    assert!(
+        !prompt.contains("STALE"),
+        "pending work must not be labelled stale: {prompt}"
+    );
+    assert!(
+        prompt
+            .contains("In progress — continue these unless a later live message changes direction"),
+        "{prompt}"
+    );
+    // The guard against redoing requests that were already answered stays.
+    assert!(prompt.contains("already answered"), "{prompt}");
 }

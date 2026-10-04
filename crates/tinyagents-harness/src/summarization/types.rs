@@ -281,6 +281,12 @@ pub struct SummaryRecord {
 
     /// Provenance metadata linking this summary back to its source messages.
     pub provenance: CompressionProvenance,
+
+    /// Provider-reported usage of the summarization call(s) that produced
+    /// [`Self::summary`], when the summarizer made a model call and the
+    /// provider reported it. `None` for deterministic summarizers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<tinyinference_llm::usage::Usage>,
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +365,10 @@ pub trait Summarizer: Send + Sync {
                 summary_token_estimate,
                 reason: "merged split-turn summaries (default concatenation)".to_string(),
             },
+            usage: summaries
+                .iter()
+                .filter_map(|record| record.usage)
+                .reduce(|sum, usage| sum + usage),
         })
     }
 }
@@ -472,10 +482,64 @@ pub struct SummarizationPolicy {
     pub context_window: Option<u64>,
 
     /// Fraction of [`context_window`][Self::context_window] that must be
-    /// reached before summarization triggers. Defaults to `0.9` (90%). Ignored
+    /// reached before summarization triggers. Defaults to `0.9` (90%) for a
+    /// bare policy; [`crate::summarization::summarization_policy`] uses
+    /// `min(80% of the window, 350k tokens)` instead. Ignored
     /// when `context_window` is `None`.
     #[serde(default = "default_threshold_fraction")]
     pub threshold_fraction: f64,
+
+    /// Keep at least this many estimated tokens of the most recent
+    /// non-system messages verbatim, instead of a fixed
+    /// [`keep_last`][Self::keep_last] message count.
+    ///
+    /// When set, [`plan`][SummarizationPolicy::plan] cuts with
+    /// [`find_cut_point`][crate::summarization::find_cut_point] and
+    /// `keep_last` is ignored. A count says nothing about size: eight
+    /// messages of a tool loop can be a few hundred tokens or most of the
+    /// window. `None` (the default) keeps the count-based split.
+    #[serde(default)]
+    pub keep_recent_tokens: Option<u64>,
+
+    /// Keep the turn's originating user message verbatim across a compaction.
+    ///
+    /// A long tool-driven turn crosses the threshold mid-turn, and its only
+    /// user message — the assignment being worked on — is the oldest message
+    /// in it, so the split folds it into the summary. When this is set and
+    /// the kept tail holds no user message, [`plan`][SummarizationPolicy::plan]
+    /// moves the most recent user message out of the summarized head to the
+    /// front of the kept tail, verbatim up to
+    /// [`PINNED_USER_MESSAGE_MAX_TOKENS`] (truncated with a marker beyond).
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub pin_turn_user_message: bool,
+}
+
+/// Size cap, in estimated tokens, of a user message pinned by
+/// [`SummarizationPolicy::pin_turn_user_message`]. A larger message is cut to
+/// this size with a truncation marker, so a pasted document cannot pin most of
+/// the window in place.
+pub const PINNED_USER_MESSAGE_MAX_TOKENS: u64 = 8_192;
+
+/// The result of [`SummarizationPolicy::plan_split`]: the split itself plus
+/// where it was taken, in the coordinates of the non-system messages of the
+/// slice that was planned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionPlan {
+    /// The messages to fold into a summary, in order. Never contains a system
+    /// message or the pinned user message.
+    pub to_summarize: Vec<Message>,
+    /// System messages, then the pinned user message (when one was pinned),
+    /// then the recent tail kept verbatim.
+    pub to_keep: Vec<Message>,
+    /// Index, into the non-system messages, of the first message of the
+    /// recent tail. Everything before it was summarized, except
+    /// [`Self::pinned`].
+    pub cut: usize,
+    /// Index, into the non-system messages, of the user message moved from
+    /// the summarized head to the front of the kept tail, when one was.
+    /// Always `< cut`.
+    pub pinned: Option<usize>,
 }
 
 /// The default [`SummarizationPolicy::threshold_fraction`] (90% of the context
@@ -491,8 +555,39 @@ impl Default for SummarizationPolicy {
             keep_last: 0,
             context_window: None,
             threshold_fraction: default_threshold_fraction(),
+            keep_recent_tokens: None,
+            pin_turn_user_message: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Summary placement
+// ---------------------------------------------------------------------------
+
+/// Where a compaction summary is placed in the rebuilt transcript.
+///
+/// Either way the summary sits *after* the leading system prompt and *before*
+/// the kept recent messages; the variants differ only in the role it carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryPlacement {
+    /// A `user`-role message opening with
+    /// [`crate::summarization::CHECKPOINT_PREFIX`], a reference-only marker
+    /// telling the model the content is background data, not instructions.
+    /// It sits after the system prompt and before the kept messages.
+    ///
+    /// The default: the system prompt and tool declarations stay
+    /// byte-identical across a compaction, so the provider's prefix cache
+    /// for them survives, and the summary cannot be mistaken for a new
+    /// system instruction.
+    #[default]
+    User,
+    /// A `system`-role message carrying the same marker (the original
+    /// placement). Kept for hosts that relied on it; it adds a second system
+    /// message after the prompt, which churns the cacheable prefix on every
+    /// compaction.
+    System,
 }
 
 // ---------------------------------------------------------------------------
@@ -549,10 +644,20 @@ impl CompactionReason {
 pub struct CompactionRecord {
     /// The replacement summary text installed as the new leading context.
     pub summary: String,
+    /// Role used when restoring this checkpoint. Older records used system.
+    #[serde(default = "legacy_compaction_placement")]
+    pub placement: SummaryPlacement,
     /// Index, into the non-system message slice compaction operated over, of
     /// the first message that survives verbatim (everything before it was
     /// folded into [`Self::summary`]). Matches [`crate::summarization::CutPoint::index`] when the
     /// record was produced from a [`crate::summarization::CutPoint`].
+    ///
+    /// One exception: when the policy pinned a user message
+    /// ([`SummarizationPolicy::pin_turn_user_message`]), that message lies
+    /// before this index yet was kept verbatim, right after the summary. Its
+    /// index (same coordinates) is in [`Self::details`] as
+    /// `pinned_user_index`; a sink rebuilding the compacted transcript must
+    /// restore it there.
     pub first_kept_index: usize,
     /// Estimated total tokens of the transcript immediately before
     /// compaction.
@@ -571,6 +676,10 @@ pub struct CompactionRecord {
     pub details: serde_json::Value,
     /// Why this compaction ran.
     pub reason: CompactionReason,
+}
+
+fn legacy_compaction_placement() -> SummaryPlacement {
+    SummaryPlacement::System
 }
 
 /// A durable sink a host attaches to a [`crate::context::RunContext`] so

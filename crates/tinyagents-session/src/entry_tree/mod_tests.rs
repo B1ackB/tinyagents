@@ -211,6 +211,7 @@ fn build_context_stops_at_newest_compaction_and_orders_chronologically() {
             Some(&kept_start),
             EntryKind::Compaction(CompactionEntry {
                 summary: "summary of one/two".to_string(),
+                placement: tinyagents_harness::summarization::SummaryPlacement::System,
                 first_kept_entry_id: kept_start.clone(),
                 tokens_before: 500,
                 usage: None,
@@ -239,6 +240,7 @@ fn build_context_stops_at_newest_compaction_and_orders_chronologically() {
             Some(&second_kept),
             EntryKind::Compaction(CompactionEntry {
                 summary: "summary through four".to_string(),
+                placement: tinyagents_harness::summarization::SummaryPlacement::System,
                 first_kept_entry_id: second_kept.clone(),
                 tokens_before: 800,
                 usage: None,
@@ -436,6 +438,7 @@ fn every_entry_kind_round_trips_through_serde() {
         message_kind("user", "hi"),
         EntryKind::Compaction(CompactionEntry {
             summary: "sum".to_string(),
+            placement: tinyagents_harness::summarization::SummaryPlacement::System,
             first_kept_entry_id: EntryId::from("sess:2"),
             tokens_before: 100,
             usage: None,
@@ -490,6 +493,7 @@ fn compaction_sink_persists_a_record_anchored_at_the_tip() {
 
     let record = CompactionRecord {
         summary: "one and two, summarized".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
         // Skip "one" only; keep "two" and "three" verbatim.
         first_kept_index: 1,
         tokens_before: 300,
@@ -511,6 +515,86 @@ fn compaction_sink_persists_a_record_anchored_at_the_tip() {
     assert_eq!(context[2].text(), "three");
 }
 
+/// A compaction that pinned the turn's user message out of the folded range
+/// (`details.pinned_user_index`) restores it right after the summary.
+#[test]
+fn compaction_sink_restores_a_pinned_user_message_after_the_summary() {
+    use tinyagents_harness::summarization::{CompactionReason, CompactionRecord, CompactionSink};
+
+    let ws = workspace();
+    let tree = EntryTree::new(ws.path(), "sess-1");
+    tree.append(None, message_kind("user", "the task")).unwrap();
+    tree.append_to_head(message_kind("assistant", "step one"))
+        .unwrap();
+    tree.append_to_head(message_kind("assistant", "step two"))
+        .unwrap();
+    tree.append_to_head(message_kind("assistant", "step three"))
+        .unwrap();
+
+    let sink = SessionCompactionSink::new(ws.path(), "sess-1").expect("sink");
+    let record = CompactionRecord {
+        summary: "steps one and two".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
+        first_kept_index: 3,
+        tokens_before: 300,
+        tokens_after: 120,
+        usage: None,
+        details: serde_json::json!({ "pinned_user_index": 0 }),
+        reason: CompactionReason::Threshold,
+    };
+    sink.persist(&record).expect("persist");
+
+    let context = tree
+        .build_context(&sink.tip().expect("tip"))
+        .expect("context");
+    let texts: Vec<String> = context.iter().map(|m| m.text()).collect();
+    assert_eq!(texts, vec!["steps one and two", "the task", "step three"]);
+}
+
+#[test]
+fn compaction_sink_restores_user_checkpoint_role() {
+    use tinyagents_harness::summarization::{
+        CompactionReason, CompactionRecord, CompactionSink, SummaryPlacement,
+    };
+
+    let ws = workspace();
+    let tree = EntryTree::new(ws.path(), "sess-1");
+    tree.append(None, message_kind("user", "the task")).unwrap();
+    tree.append_to_head(message_kind("assistant", "work"))
+        .unwrap();
+    let sink = SessionCompactionSink::new(ws.path(), "sess-1").unwrap();
+    sink.persist(&CompactionRecord {
+        summary: "reference checkpoint".into(),
+        placement: SummaryPlacement::User,
+        first_kept_index: 1,
+        tokens_before: 100,
+        tokens_after: 20,
+        usage: None,
+        details: serde_json::json!({}),
+        reason: CompactionReason::Threshold,
+    })
+    .unwrap();
+
+    let context = tree.build_context(&sink.tip().unwrap()).unwrap();
+    assert!(matches!(&context[0], Message::User(_)));
+    assert_eq!(context[0].text(), "reference checkpoint");
+}
+
+#[test]
+fn legacy_compaction_entry_defaults_to_system_role() {
+    let entry: CompactionEntry = serde_json::from_value(serde_json::json!({
+        "summary": "old summary",
+        "first_kept_entry_id": "sess:1",
+        "tokens_before": 100,
+        "details": {}
+    }))
+    .unwrap();
+    assert_eq!(
+        entry.placement,
+        tinyagents_harness::summarization::SummaryPlacement::System
+    );
+}
+
 #[test]
 fn compaction_sink_advances_its_tip_across_repeated_compactions() {
     use tinyagents_harness::summarization::{CompactionReason, CompactionRecord, CompactionSink};
@@ -525,6 +609,7 @@ fn compaction_sink_advances_its_tip_across_repeated_compactions() {
 
     sink.persist(&CompactionRecord {
         summary: "first summary".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
         first_kept_index: 1,
         tokens_before: 100,
         tokens_after: 40,
@@ -541,6 +626,7 @@ fn compaction_sink_advances_its_tip_across_repeated_compactions() {
 
     sink.persist(&CompactionRecord {
         summary: "second summary".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
         first_kept_index: 0,
         tokens_before: 200,
         tokens_after: 20,
@@ -568,6 +654,7 @@ fn compaction_sink_is_a_no_op_on_an_empty_session() {
 
     sink.persist(&CompactionRecord {
         summary: "nothing to compact".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
         first_kept_index: 0,
         tokens_before: 10,
         tokens_after: 5,
@@ -592,6 +679,7 @@ fn compaction_sink_skips_an_out_of_range_index_rather_than_corrupting_the_tree()
 
     sink.persist(&CompactionRecord {
         summary: "bogus".to_string(),
+        placement: tinyagents_harness::summarization::SummaryPlacement::System,
         first_kept_index: 5, // out of range: only one message entry exists
         tokens_before: 10,
         tokens_after: 5,

@@ -26,6 +26,8 @@ parking_lot = "0.12"
 tempfile = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, default-features = true, features = ["sync"] }
+# `threads` names its atomic-rewrite temp files `.conversations-<uuid>.tmp`.
+uuid = { workspace = true }
 
 [features]
 default = []
