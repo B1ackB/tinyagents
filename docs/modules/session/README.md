@@ -281,3 +281,19 @@ Like every other bridge method in this crate, each trait method is a single
 bounded synchronous SQLite statement — no `spawn_blocking`, matching the
 tradeoff `store::with_connection`/`with_transaction` already make
 throughout.
+
+## Durable media parts
+
+`TranscriptMessage::user_with_parts` preserves ordered text, image, audio, video
+and document parts. Text remains in `content`; media lives in typed `parts` in
+the JSONL row, including on replay. Existing image URL rows keep their wire shape.
+Audio/video/document parts use `TranscriptMediaRef::Path { path }` or
+`TranscriptMediaRef::Url { url }`, with a `mime_type`; there is deliberately no
+inline-byte variant. Hosts store originals and resolve these references only on
+ephemeral provider requests, applying their own workspace/fetch policy.
+
+Legacy image markers continue to round-trip unchanged. `legacy_content` for new
+media uses a `_tinyagents_media_parts` JSON envelope that `normalized` can lift
+back into ordered parts. Older binaries cannot read these new media types.
+Display projection shows compact `[AUDIO:<location>]`, `[VIDEO:<location>]` and
+`[DOCUMENT:<location>]` markers without reading or encoding media bytes.

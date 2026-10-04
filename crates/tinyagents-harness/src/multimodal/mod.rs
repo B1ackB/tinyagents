@@ -78,6 +78,8 @@ pub mod error;
 pub mod markers;
 pub mod mime;
 pub mod payload;
+pub mod png;
+pub use png::optimize_png_lossless;
 pub mod resolve;
 pub mod stash;
 pub mod types;

@@ -21,7 +21,27 @@ pub struct TranscriptToolCall {
     pub extra_content: Option<serde_json::Value>,
 }
 
-/// One ordered part of a user row that mixes text and images.
+/// A durable media location. Inline bytes are deliberately absent: hosts resolve
+/// these references only on ephemeral provider requests.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TranscriptMediaRef {
+    /// A path relative to the agent's acting workspace, or a host-approved path.
+    Path { path: String },
+    /// An external location. Hosts apply fetch policy before resolving it.
+    Url { url: String },
+}
+
+impl TranscriptMediaRef {
+    fn location(&self) -> &str {
+        match self {
+            Self::Path { path } => path,
+            Self::Url { url } => url,
+        }
+    }
+}
+
+/// One ordered part of a user row that mixes text and media.
 ///
 /// Serialized as `{"type":"text","text":..}` / `{"type":"image","url":..}`,
 /// which is also the on-disk `parts` shape of a typed `user_parts` line.
@@ -32,6 +52,21 @@ pub enum TranscriptPart {
     Text { text: String },
     /// An image reference (a `data:` URI, an `http(s)` URL or a path).
     Image { url: String },
+    /// Audio whose original bytes remain at the referenced location.
+    Audio {
+        source: TranscriptMediaRef,
+        mime_type: String,
+    },
+    /// Video whose original bytes remain at the referenced location.
+    Video {
+        source: TranscriptMediaRef,
+        mime_type: String,
+    },
+    /// A document whose original bytes remain at the referenced location.
+    Document {
+        source: TranscriptMediaRef,
+        mime_type: String,
+    },
 }
 
 /// The legacy string a row was lifted from ([`TranscriptMessage::normalized`]),
@@ -202,14 +237,14 @@ impl TranscriptMessage {
         row
     }
 
-    /// A `user` row from ordered text/image parts. `content` becomes the
-    /// concatenated text parts. A parts list with no image is just text.
+    /// A `user` row from ordered text/media parts. `content` becomes the
+    /// concatenated text parts. A parts list with only text is just text.
     pub fn user_with_parts(parts: Vec<TranscriptPart>) -> Self {
         let text = parts_text(&parts);
         let mut row = Self::user(text);
         if parts
             .iter()
-            .any(|part| matches!(part, TranscriptPart::Image { .. }))
+            .any(|part| !matches!(part, TranscriptPart::Text { .. }))
         {
             row.parts = Some(parts);
         }
@@ -259,6 +294,18 @@ impl TranscriptMessage {
                 }
             }
             "user" => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.content)
+                    && let Some(parts) = value.get("_tinyagents_media_parts")
+                    && let Ok(parts) = serde_json::from_value::<Vec<TranscriptPart>>(parts.clone())
+                    && parts
+                        .iter()
+                        .any(|part| !matches!(part, TranscriptPart::Text { .. }))
+                {
+                    self.content = parts_text(&parts);
+                    self.parts = Some(parts);
+                    self.legacy = LegacyText(Some(original));
+                    return self;
+                }
                 let parts = split_image_parts(&self.content);
                 if parts
                     .iter()
@@ -286,7 +333,9 @@ impl TranscriptMessage {
     /// The string a flat `{role, content}` row would have held for this row:
     /// the native envelope for an assistant row with calls (`content` as its
     /// text), the tool-result envelope for a tool row with a call id, and
-    /// `[OH_IMAGE:<url>]` markers for a user row with parts. Everything else is
+    /// `[OH_IMAGE:<url>]` markers for image-only media rows. Audio/video/document
+    /// rows use a `_tinyagents_media_parts` JSON compatibility envelope; old
+    /// binaries cannot interpret those new media types. Everything else is
     /// `content` as is.
     ///
     /// For the compatibility adapters that must keep writing the old string
@@ -314,11 +363,26 @@ impl TranscriptMessage {
             return encode_tool_envelope(id, &self.content);
         }
         if let Some(parts) = self.parts.as_deref() {
+            if parts.iter().any(|part| {
+                matches!(
+                    part,
+                    TranscriptPart::Audio { .. }
+                        | TranscriptPart::Video { .. }
+                        | TranscriptPart::Document { .. }
+                )
+            }) {
+                return serde_json::json!({"_tinyagents_media_parts": parts}).to_string();
+            }
             let parts: Vec<ContentPart> = parts
                 .iter()
                 .map(|part| match part {
                     TranscriptPart::Text { text } => ContentPart::Text(text.clone()),
                     TranscriptPart::Image { url } => ContentPart::Image(url.clone()),
+                    TranscriptPart::Audio { .. }
+                    | TranscriptPart::Video { .. }
+                    | TranscriptPart::Document { .. } => {
+                        unreachable!("new media uses the typed compatibility envelope")
+                    }
                 })
                 .collect();
             return join_image_parts(&parts);
@@ -327,7 +391,7 @@ impl TranscriptMessage {
     }
 
     /// The row's text as a person reads it: `content`, except that a user row's
-    /// image parts render in place as `[IMAGE:<url>]`.
+    /// media parts render in place as `[IMAGE:<url>]`, `[AUDIO:<path>]`, etc.
     #[must_use]
     pub fn display_content(&self) -> String {
         let Some(parts) = self.parts.as_deref() else {
@@ -341,6 +405,16 @@ impl TranscriptMessage {
                     out.push_str(DISPLAY_IMAGE_PREFIX);
                     out.push_str(url);
                     out.push(']');
+                }
+                TranscriptPart::Audio { source, .. }
+                | TranscriptPart::Video { source, .. }
+                | TranscriptPart::Document { source, .. } => {
+                    let label = match part {
+                        TranscriptPart::Audio { .. } => "AUDIO",
+                        TranscriptPart::Video { .. } => "VIDEO",
+                        _ => "DOCUMENT",
+                    };
+                    out.push_str(&format!("[{label}:{}]", source.location()));
                 }
             }
         }
@@ -466,7 +540,10 @@ fn parts_text(parts: &[TranscriptPart]) -> String {
         .iter()
         .filter_map(|part| match part {
             TranscriptPart::Text { text } => Some(text.as_str()),
-            TranscriptPart::Image { .. } => None,
+            TranscriptPart::Image { .. }
+            | TranscriptPart::Audio { .. }
+            | TranscriptPart::Video { .. }
+            | TranscriptPart::Document { .. } => None,
         })
         .collect()
 }

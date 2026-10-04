@@ -525,3 +525,46 @@ fn rows_lifted_from_different_legacy_envelopes_are_different_rows() {
     );
     assert!(redacted.same_row_as(&built));
 }
+
+#[test]
+fn durable_media_parts_round_trip_without_inline_bytes() {
+    let parts = vec![
+        TranscriptPart::Text {
+            text: "inspect these".into(),
+        },
+        TranscriptPart::Audio {
+            source: TranscriptMediaRef::Path {
+                path: "uploads/a/song.mp3".into(),
+            },
+            mime_type: "audio/mpeg".into(),
+        },
+        TranscriptPart::Video {
+            source: TranscriptMediaRef::Url {
+                url: "https://example.com/movie.mp4".into(),
+            },
+            mime_type: "video/mp4".into(),
+        },
+        TranscriptPart::Document {
+            source: TranscriptMediaRef::Path {
+                path: "uploads/a/report.pdf".into(),
+            },
+            mime_type: "application/pdf".into(),
+        },
+    ];
+    let row = TranscriptMessage::user_with_parts(parts.clone());
+    assert_eq!(row.content, "inspect these");
+    assert_eq!(row.parts, Some(parts));
+    assert_eq!(
+        TranscriptMessage::from_legacy("user", row.legacy_content()).parts,
+        row.parts
+    );
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("media.jsonl");
+    write_transcript(&path, std::slice::from_ref(&row), &meta(), None).unwrap();
+    let read = read_transcript(&path).unwrap();
+    assert_eq!(read.messages[0].parts, row.parts);
+    let stored = fs::read_to_string(&path).unwrap();
+    assert!(!stored.contains("base64"));
+    assert!(!stored.contains("data:"));
+    assert!(row.display_content().contains("[AUDIO:uploads/a/song.mp3]"));
+}

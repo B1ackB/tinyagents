@@ -130,3 +130,13 @@ expansion validation. Office probing reads metadata and local headers only.
 and budgets; `archive.rs` owns inspection; sibling `*_tests.rs` cover fixtures
 and error/limit behavior. No transcript or inference content-block variants
 are introduced by these APIs.
+
+PNG derivatives use `optimize_png_lossless`: it changes only IDAT compression
+and filtering, preserving pixel format, hidden RGB, interlacing and every other
+chunk byte-for-byte. Animated, malformed and oversized inputs are skipped; the
+caller retains the original and decides where to store the optional smaller copy.
+
+ZIP admission conservatively rejects footer signature bytes in central-directory
+metadata or archive comments, even where ZIP permits those bytes. This prevents
+the eager reader from falling back to a different allocation-heavy footer; hosts
+should retain the original and report unavailable listing rather than extracting.

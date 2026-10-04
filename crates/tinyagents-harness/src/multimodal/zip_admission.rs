@@ -91,7 +91,9 @@ pub(super) fn zip_preflight(bytes: &[u8]) -> Result<Option<ArchiveTruncation>, A
     }
     // The eager reader retries earlier footer candidates. Embedded footers in
     // admitted metadata are rejected; payload footers are hidden by the reader
-    // below while it constructs its metadata index.
+    // below while it constructs its metadata index. This deliberately excludes
+    // otherwise-valid names, extras and comments containing those byte sequences:
+    // listing availability is sacrificed rather than allowing an eager fallback.
     for (i, signature) in bytes[start..].windows(4).enumerate() {
         let position = start + i;
         if (signature == b"PK\x05\x06" && position != end)
