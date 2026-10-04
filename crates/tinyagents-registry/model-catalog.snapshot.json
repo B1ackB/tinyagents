@@ -41,7 +41,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -107,7 +108,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -172,7 +174,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -240,7 +243,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -307,7 +311,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -374,7 +379,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -441,7 +447,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -508,7 +515,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -574,7 +582,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -640,7 +649,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -706,7 +716,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -785,7 +796,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -865,7 +877,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -939,7 +952,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1013,7 +1027,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1095,7 +1110,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1177,7 +1193,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1260,7 +1277,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1356,7 +1374,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -1458,7 +1477,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -1560,7 +1580,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1639,7 +1660,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -1719,7 +1741,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -1786,7 +1809,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -1882,7 +1906,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -1974,7 +1999,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": true
       },
       "source": "models.dev",
       "source_url": null,
@@ -2055,7 +2081,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2118,7 +2145,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2182,7 +2210,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2246,7 +2275,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2310,7 +2340,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2374,7 +2405,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2438,7 +2470,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2499,7 +2532,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2562,7 +2596,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2625,7 +2660,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": false,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2688,7 +2724,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2771,7 +2808,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2854,7 +2892,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -2937,7 +2976,8 @@
         "audio_output": false,
         "pdf_input": false,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -3033,7 +3073,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": false
+        "reasoning": false,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -3131,7 +3172,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -3230,7 +3272,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,
@@ -3339,7 +3382,8 @@
         "audio_output": false,
         "pdf_input": true,
         "prompt_caching": true,
-        "reasoning": true
+        "reasoning": true,
+        "video_input": false
       },
       "source": "models.dev",
       "source_url": null,

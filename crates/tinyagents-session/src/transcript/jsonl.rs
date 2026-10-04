@@ -520,11 +520,27 @@ fn rebuild_content(
         }
         TypedShape::ToolResult => Some(encode_tool_envelope(tool_call_id?, content)),
         TypedShape::UserParts => {
-            let parts: Vec<ContentPart> = parts?
+            let original = parts?;
+            if original.iter().any(|part| {
+                matches!(
+                    part,
+                    TranscriptPart::Audio { .. }
+                        | TranscriptPart::Video { .. }
+                        | TranscriptPart::Document { .. }
+                )
+            }) {
+                return Some(serde_json::json!({"_tinyagents_media_parts": original}).to_string());
+            }
+            let parts: Vec<ContentPart> = original
                 .iter()
                 .map(|part| match part {
                     TranscriptPart::Text { text } => ContentPart::Text(text.clone()),
                     TranscriptPart::Image { url } => ContentPart::Image(url.clone()),
+                    TranscriptPart::Audio { .. }
+                    | TranscriptPart::Video { .. }
+                    | TranscriptPart::Document { .. } => {
+                        unreachable!("new media uses the typed compatibility envelope")
+                    }
                 })
                 .collect();
             Some(join_image_parts(&parts))

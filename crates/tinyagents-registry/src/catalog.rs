@@ -417,6 +417,9 @@ pub struct ModelCapabilities {
     /// The model accepts audio input.
     #[serde(default)]
     pub audio_input: bool,
+    /// The model accepts video input.
+    #[serde(default)]
+    pub video_input: bool,
     /// The model can produce audio output.
     #[serde(default)]
     pub audio_output: bool,
@@ -449,6 +452,8 @@ fn profile_from_entry(entry: &ModelCatalogEntry) -> tinyinference_llm::model::Mo
             image_in: caps.vision,
             audio_in: caps.audio_input,
             audio_out: caps.audio_output,
+            video_in: caps.video_input,
+            document_in: caps.pdf_input,
             ..Modalities::default()
         },
         tool_calling: caps.tool_calling,

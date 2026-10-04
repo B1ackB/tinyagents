@@ -208,3 +208,57 @@ fn from_json_rejects_an_invalid_snapshot() {
     let json = serde_json::to_string(&snapshot).unwrap();
     assert!(ModelCatalog::from_json(&json).is_err());
 }
+
+#[test]
+fn media_profile_facts_are_explicit_and_unknown_models_stay_unknown() {
+    let mut entry = base_entry();
+    let profile = profile_from_entry(&entry);
+    assert!(!profile.modalities.image_in);
+    assert!(!profile.modalities.audio_in);
+    assert!(!profile.modalities.video_in);
+    assert!(!profile.modalities.document_in);
+    entry.capabilities.pdf_input = true;
+    entry.capabilities.audio_input = true;
+    entry.capabilities.video_input = true;
+    let profile = profile_from_entry(&entry);
+    assert!(profile.modalities.audio_in);
+    assert!(profile.modalities.video_in);
+    assert!(profile.modalities.document_in);
+    assert!(
+        ModelCatalog::seed()
+            .unwrap()
+            .profile("unknown", "unknown")
+            .is_none()
+    );
+}
+
+#[test]
+fn bundled_video_capabilities_match_raw_input_modalities() {
+    let catalog = ModelCatalog::seed().unwrap();
+    let mut video_models = 0;
+    for entry in &catalog.snapshot().models {
+        let expected = entry.raw["modalities"]["input"]
+            .as_array()
+            .is_some_and(|inputs| inputs.iter().any(|input| input == "video"));
+        assert_eq!(
+            entry.capabilities.video_input, expected,
+            "{}",
+            entry.model_id
+        );
+        assert_eq!(
+            profile_from_entry(entry).modalities.video_in,
+            expected,
+            "{}",
+            entry.model_id
+        );
+        video_models += usize::from(expected);
+    }
+    assert_eq!(video_models, 6);
+    assert!(
+        catalog
+            .profile("gemini", "gemini-2.5-pro")
+            .unwrap()
+            .modalities
+            .video_in
+    );
+}

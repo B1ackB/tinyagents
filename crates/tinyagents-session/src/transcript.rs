@@ -163,8 +163,8 @@ pub use thread_lookup::{
 };
 pub use types::{
     CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, LegacyText,
-    MessageUsage, SessionTranscript, ToolFailure, TranscriptMessage, TranscriptMeta,
-    TranscriptPart, TranscriptToolCall, TurnUsage,
+    MessageUsage, SessionTranscript, ToolFailure, TranscriptMediaRef, TranscriptMessage,
+    TranscriptMeta, TranscriptPart, TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,

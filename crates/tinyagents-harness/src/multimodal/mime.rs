@@ -1,22 +1,14 @@
 //! MIME detection for image and file attachments.
 //!
-//! Three signals, consulted in a deliberate order:
+//! Images and files use different MIME signals. For images the header wins
+//! outright, then the extension, then magic bytes. For files a recognized
+//! content type or file signature wins before extensions; unknown or generic
+//! headers defer to signatures and extensions because many servers answer
+//! `application/octet-stream` for everything.
 //!
-//! 1. **The `Content-Type` header**, when one came from a fetch.
-//! 2. **The file extension**, when the reference was a path.
-//! 3. **Magic bytes.**
-//!
-//! Images and files order these differently, and the difference is not an
-//! oversight. For images the header wins outright: an image server is
-//! authoritative about what it served. For files the header wins only if it
-//! names a format the allowlist could contain — a great many servers answer
-//! `application/octet-stream` for everything, and taking that at face value
-//! would degrade every fetched PDF to a metadata-only reference.
-//!
-//! [`file_mime_from_magic`] cannot separate the OOXML formats from a plain
-//! zip: `.xlsx`, `.docx`, `.pptx` and `.zip` all begin `PK\x03\x04`, and
-//! telling them apart means parsing the central directory. The extension is
-//! what discriminates, which is why it is consulted before magic.
+//! Office containers are recognized from standard parts in the ZIP central
+//! directory before generic ZIP headers are consulted. An extension remains a
+//! fallback for incomplete containers; no member contents are extracted.
 
 use std::path::Path;
 
@@ -47,17 +39,48 @@ pub fn detect_image_mime(
     image_mime_from_magic(bytes).map(ToString::to_string)
 }
 
-/// Detect a file's MIME type: header (only if recognised), then extension,
-/// then magic bytes, then a UTF-8 sniff.
+/// Detect a file's MIME type: Office container parts, known header, extension,
+/// magic bytes, then a UTF-8 sniff. Generic ZIP/octet-stream headers defer to
+/// Office extensions.
 pub fn detect_file_mime(
     path: Option<&Path>,
     bytes: &[u8],
     header_content_type: Option<&str>,
 ) -> Option<String> {
+    if let Some(mime) = office_container_mime(bytes) {
+        return Some(mime.to_string());
+    }
+    // A generic ZIP/octet-stream header must not hide an Office extension.
+    if header_content_type
+        .and_then(normalize_content_type)
+        .is_some_and(|mime| mime == "application/zip" || mime == "application/octet-stream")
+        && let Some(ext) = path
+            .and_then(|path| path.extension())
+            .and_then(|ext| ext.to_str())
+        && let Some(mime) = file_mime_from_extension(ext)
+        && mime.starts_with("application/vnd.openxmlformats-officedocument.")
+    {
+        return Some(mime.to_string());
+    }
     if let Some(header_mime) = header_content_type.and_then(normalize_content_type)
         && file_mime_known(&header_mime)
     {
         return Some(header_mime);
+    }
+
+    // A recognized signature outranks misleading media extensions. ZIP magic
+    // remains ambiguous, so an OOXML extension still supplies its subtype.
+    if let Some(mime) = file_mime_from_magic(bytes) {
+        let extension_is_ooxml = path
+            .and_then(|path| path.extension())
+            .and_then(|ext| ext.to_str())
+            .and_then(file_mime_from_extension)
+            .is_some_and(|extension_mime| {
+                extension_mime.starts_with("application/vnd.openxmlformats-officedocument.")
+            });
+        if mime != "application/zip" || !extension_is_ooxml {
+            return Some(mime.to_string());
+        }
     }
 
     if let Some(path) = path
@@ -71,11 +94,89 @@ pub fn detect_file_mime(
         return Some(mime.to_string());
     }
 
+    if let Some(mime) = image_mime_from_magic(bytes) {
+        return Some(mime.to_string());
+    }
     if looks_like_utf8_text(bytes) {
         return Some("text/plain".to_string());
     }
 
     None
+}
+
+/// Generic attachments preserve explicit media types and recognize local media
+/// before the legacy UTF-8 fallback. ZIP/octet-stream still allow Office probing.
+pub(super) fn detect_attachment_mime(
+    path: &Path,
+    bytes: &[u8],
+    header: Option<&str>,
+) -> Option<String> {
+    if let Some(mime) = header.and_then(normalize_content_type)
+        && mime != "application/zip"
+        && mime != "application/octet-stream"
+    {
+        return Some(mime);
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    let media = if extension.as_deref() == Some("ogv") && bytes.starts_with(b"OggS") {
+        Some("video/ogg")
+    } else {
+        attachment_media_magic(bytes)
+            .or_else(|| image_mime_from_magic(bytes))
+            .or(match extension.as_deref() {
+                Some("wav" | "wave") => Some("audio/wav"),
+                Some("mp3") => Some("audio/mpeg"),
+                Some("flac") => Some("audio/flac"),
+                Some("ogg" | "oga") => Some("audio/ogg"),
+                Some("ogv") => Some("video/ogg"),
+                Some("opus") => Some("audio/opus"),
+                Some("m4a" | "m4b" | "m4p") => Some("audio/mp4"),
+                Some("avif") => Some("image/avif"),
+                Some("heic") => Some("image/heic"),
+                Some("heif") => Some("image/heif"),
+                Some("aac") => Some("audio/aac"),
+                Some("mp4" | "m4v") => Some("video/mp4"),
+                Some("mov") => Some("video/quicktime"),
+                Some("webm") => Some("video/webm"),
+                Some("mkv") => Some("video/x-matroska"),
+                Some("avi") => Some("video/x-msvideo"),
+                _ => None,
+            })
+    };
+    media
+        .map(ToString::to_string)
+        .or_else(|| detect_file_mime(Some(path), bytes, header))
+}
+
+fn attachment_media_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        Some("audio/wav")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"AVI ") {
+        Some("video/x-msvideo")
+    } else if bytes.starts_with(b"ID3") {
+        Some("audio/mpeg")
+    } else if bytes.starts_with(b"fLaC") {
+        Some("audio/flac")
+    } else if bytes.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else if bytes.get(4..8) == Some(b"ftyp") {
+        match bytes.get(8..12) {
+            Some(b"M4A " | b"M4B " | b"M4P ") => Some("audio/mp4"),
+            Some(b"qt  ") => Some("video/quicktime"),
+            Some(b"avif" | b"avis") => Some("image/avif"),
+            Some(b"heic" | b"heix") => Some("image/heic"),
+            Some(b"mif1" | b"msf1") => Some("image/heif"),
+            Some(b"isom" | b"iso2" | b"mp41" | b"mp42" | b"M4V " | b"avc1" | b"dash") => {
+                Some("video/mp4")
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 /// Strip parameters from a `Content-Type` header and lower-case it.
@@ -145,6 +246,8 @@ pub fn file_mime_known(mime: &str) -> bool {
                 | "text/csv"
                 | "text/markdown"
                 | "application/zip"
+                | "application/x-tar"
+                | "application/gzip"
                 | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -160,6 +263,8 @@ pub fn file_mime_from_extension(ext: &str) -> Option<&'static str> {
         "md" | "markdown" => Some("text/markdown"),
         "csv" => Some("text/csv"),
         "zip" => Some("application/zip"),
+        "tar" => Some("application/x-tar"),
+        "gz" | "tgz" => Some("application/gzip"),
         "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
@@ -184,6 +289,50 @@ pub fn file_mime_from_magic(bytes: &[u8]) -> Option<&'static str> {
         return Some("application/zip");
     }
 
+    if bytes.starts_with(b"\x1f\x8b") {
+        return Some("application/gzip");
+    }
+    if bytes.get(257..262) == Some(b"ustar") {
+        return Some("application/x-tar");
+    }
+    None
+}
+
+/// Identify standard Office parts using bounded container metadata, without
+/// reading document contents. Invalid/incomplete ZIPs retain extension-based
+/// detection for compatibility. No archive member is extracted.
+fn office_container_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() > 50 * 1024 * 1024 || !bytes.starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    if super::archive::zip_admission::zip_preflight(bytes)
+        .ok()?
+        .is_some()
+    {
+        return None;
+    }
+    let archive = super::archive::zip_admission::open_admitted_zip(bytes).ok()?;
+    if archive.len() > 10_000 || archive.index_for_name("[Content_Types].xml").is_none() {
+        return None;
+    }
+    for (part, mime) in [
+        (
+            "word/document.xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            "xl/workbook.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "ppt/presentation.xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+    ] {
+        if archive.index_for_name(part).is_some() {
+            return Some(mime);
+        }
+    }
     None
 }
 

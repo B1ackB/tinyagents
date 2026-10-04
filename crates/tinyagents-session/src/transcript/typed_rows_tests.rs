@@ -525,3 +525,74 @@ fn rows_lifted_from_different_legacy_envelopes_are_different_rows() {
     );
     assert!(redacted.same_row_as(&built));
 }
+
+#[test]
+fn durable_media_parts_round_trip_without_inline_bytes() {
+    let parts = vec![
+        TranscriptPart::Text {
+            text: "inspect these".into(),
+        },
+        TranscriptPart::Audio {
+            source: TranscriptMediaRef::Path {
+                path: "uploads/a/song.mp3".into(),
+            },
+            mime_type: "audio/mpeg".into(),
+        },
+        TranscriptPart::Video {
+            source: TranscriptMediaRef::Url {
+                url: "https://example.com/movie.mp4".into(),
+            },
+            mime_type: "video/mp4".into(),
+        },
+        TranscriptPart::Document {
+            source: TranscriptMediaRef::Path {
+                path: "uploads/a/report.pdf".into(),
+            },
+            mime_type: "application/pdf".into(),
+        },
+    ];
+    let row = TranscriptMessage::user_with_parts(parts.clone());
+    assert_eq!(row.content, "inspect these");
+    assert_eq!(row.parts, Some(parts));
+    assert_eq!(
+        TranscriptMessage::from_legacy("user", row.legacy_content()).parts,
+        row.parts
+    );
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("media.jsonl");
+    write_transcript(&path, std::slice::from_ref(&row), &meta(), None).unwrap();
+    let read = read_transcript(&path).unwrap();
+    assert_eq!(read.messages[0].parts, row.parts);
+    let stored = fs::read_to_string(&path).unwrap();
+    assert!(!stored.contains("base64"));
+    assert!(!stored.contains("data:"));
+    assert!(row.display_content().contains("[AUDIO:uploads/a/song.mp3]"));
+}
+
+#[test]
+fn arbitrary_json_is_not_a_media_compatibility_envelope() {
+    let audio = TranscriptMessage::user_with_parts(vec![TranscriptPart::Audio {
+        source: TranscriptMediaRef::Path {
+            path: "uploads/song.mp3".into(),
+        },
+        mime_type: "audio/mpeg".into(),
+    }]);
+    let canonical = audio.legacy_content();
+    let mut extra: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    extra["user_note"] = serde_json::json!("keep this ordinary JSON");
+    let image_only = serde_json::json!({"_tinyagents_media_parts":[TranscriptPart::Image {url:"https://example.com/image.png".into()}]}).to_string();
+    let pretty = serde_json::to_string_pretty(
+        &serde_json::from_str::<serde_json::Value>(&canonical).unwrap(),
+    )
+    .unwrap();
+    for text in [extra.to_string(), image_only, pretty] {
+        let row = TranscriptMessage::from_legacy("user", &text);
+        assert_eq!(row.content, text);
+        assert!(row.parts.is_none());
+        assert_eq!(row.legacy_content(), text);
+    }
+    assert_eq!(
+        TranscriptMessage::from_legacy("user", canonical).parts,
+        audio.parts
+    );
+}

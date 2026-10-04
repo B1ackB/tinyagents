@@ -266,6 +266,27 @@ fn the_extension_is_what_separates_ooxml_from_a_plain_zip() {
 }
 
 #[test]
+fn recognized_file_signatures_precede_misleading_extensions() {
+    for (name, bytes, expected) in [
+        (
+            "report.mp4",
+            b"%PDF-1.7 document".as_slice(),
+            "application/pdf",
+        ),
+        (
+            "archive.txt",
+            b"PK\x03\x04archive".as_slice(),
+            "application/zip",
+        ),
+    ] {
+        assert_eq!(
+            detect_file_mime(Some(&PathBuf::from(name)), bytes, None).as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
 fn an_unlabeled_text_file_falls_back_to_the_utf8_sniff() {
     assert!(looks_like_utf8_text(b"log line\n"));
     assert!(!looks_like_utf8_text(b""));

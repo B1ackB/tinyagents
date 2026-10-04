@@ -241,6 +241,7 @@ fn to_entry(catalog_provider: &str, model_id: &str, model: &Value) -> Option<Mod
         system_messages: true,
         vision: modalities_in.contains(&"image"),
         audio_input: modalities_in.contains(&"audio"),
+        video_input: modalities_in.contains(&"video"),
         audio_output: modalities_out.contains(&"audio"),
         pdf_input: modalities_in.contains(&"pdf"),
         prompt_caching: base_cache_read.is_some(),

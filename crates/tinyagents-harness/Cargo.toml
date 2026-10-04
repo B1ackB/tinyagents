@@ -17,7 +17,10 @@ base64 = "0.22"
 chrono = { workspace = true }
 chrono-tz = { version = "0.10", optional = true }
 dirs = { version = "6", optional = true }
+tar = { version = "0.4", default-features = false, optional = true }
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
 flate2 = { version = "1", optional = true }
+oxipng = { version = "9", default-features = false, optional = true }
 futures = { workspace = true }
 regex = "1"
 rustix = { version = "1", features = ["fs"] }
@@ -48,7 +51,7 @@ sqlite = ["dep:rusqlite"]
 # still spell out the old name keep compiling.
 tools = ["builtin-tools"]
 builtin-tools = ["dep:chrono-tz"]
-multimodal = ["dep:flate2", "dep:reqwest"]
+multimodal = ["dep:flate2", "dep:reqwest", "dep:tar", "dep:zip", "dep:oxipng"]
 # Image and video generation tools over tinyinference-image / -video.
 media = ["dep:tinyinference-image", "dep:tinyinference-video"]
 # Gates the Claude Code CLI and Claude Agent SDK provider adapters, which are
@@ -63,6 +66,7 @@ langfuse = ["dep:reqwest"]
 tracing = ["tinytools-agent/tracing"]
 
 [dev-dependencies]
+png = "0.17"
 tokio = { workspace = true, default-features = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
 [lints]

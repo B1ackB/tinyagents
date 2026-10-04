@@ -366,6 +366,7 @@ impl From<tinyinference_embeddings::Error> for TinyAgentsError {
             tinyinference_embeddings::Error::Serialization(error) => Self::Serialization(error),
             tinyinference_embeddings::Error::Embedding(message) => Self::Embedding(message),
             tinyinference_embeddings::Error::Cancelled => Self::Cancelled,
+            tinyinference_embeddings::Error::Rerank(error) => Self::Embedding(error.to_string()),
         }
     }
 }
@@ -457,3 +458,7 @@ impl From<rusqlite::Error> for TinyAgentsError {
         Self::Storage(err.to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;

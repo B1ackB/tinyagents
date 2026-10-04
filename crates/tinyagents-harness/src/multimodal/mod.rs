@@ -1,4 +1,10 @@
-//! Attachment resolution for `[IMAGE:…]` and `[FILE:…]` markers.
+//! Generic attachment intake, bounded archive inspection, and legacy
+//! resolution for `[IMAGE:…]` and `[FILE:…]` markers.
+//!
+//! [`resolve_attachment`] returns original decoded bytes and metadata before
+//! extraction. [`inspect_archive`] lists ZIP/TAR/TAR.GZ contents without disk
+//! extraction. Hosts authorize paths and select storage and provider media
+//! blocks; the APIs here introduce no new transcript variants.
 //!
 //! A user attaches a picture or a document. Somewhere between the text box and
 //! the provider, that attachment has to become bytes the model can read —
@@ -64,19 +70,27 @@
 //!    clamped value admits exactly one attachment from a source that asked for
 //!    zero.
 
+pub mod archive;
 pub mod config;
 pub mod data_uri;
 pub mod error;
 pub mod markers;
 pub mod mime;
 pub mod payload;
+pub mod png;
+pub use png::optimize_png_lossless;
 pub mod resolve;
 pub mod stash;
+pub mod types;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
 
+pub use archive::{
+    ArchiveEntry, ArchiveEntryKind, ArchiveError, ArchiveFormat, ArchiveLimits, ArchiveListing,
+    ArchiveTruncation, inspect_archive,
+};
 pub use config::{ALLOWED_IMAGE_MIME_TYPES, FileLimits, ImageLimits};
 pub use error::{MultimodalError, Result};
 pub use markers::{
@@ -86,5 +100,9 @@ pub use markers::{
     text_has_image_placeholders,
 };
 pub use payload::{FilePayload, compose_multimodal_message, sha256_prefix, truncate_chars};
-pub use resolve::{NoTextExtractor, TextExtractor, resolve_file, resolve_image};
+pub use resolve::{
+    NoTextExtractor, TextExtractor, resolve_attachment, resolve_file, resolve_image,
+};
 pub use stash::AttachmentStash;
+
+pub use types::{ResolvedAttachment, UnknownMimePolicy};
