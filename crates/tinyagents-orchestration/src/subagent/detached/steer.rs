@@ -14,7 +14,7 @@ use tinyagents_graph::orchestration::{
 };
 use tinyagents_harness::ids::TaskId;
 use tinyagents_harness::run_queue::QueueLane;
-use tinyagents_harness::steering::{SteeringCommand, SteeringHandle};
+use tinyagents_harness::steering::{RecentRequestIds, SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::Message;
 
 use super::types::{DetachedSubagentStatus, SubagentIdentity, WaitError};
@@ -50,6 +50,17 @@ pub enum SteerRoute {
     Registry,
     /// The host fallback (the child had no live handle).
     Fallback,
+}
+
+/// Result of an idempotent steer ([`steer_detached_with_request_id`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SteerReceipt {
+    /// The path that delivered the steer; `None` when `duplicate` is set,
+    /// because nothing was delivered this time.
+    pub route: Option<SteerRoute>,
+    /// The `request_id` was already applied to this task, so the steer was
+    /// acknowledged without being enqueued again.
+    pub duplicate: bool,
 }
 
 /// Whose authority a steer is made under.
@@ -113,6 +124,33 @@ where
     F: FnOnce(M, QueueLane, String) -> Fut,
     Fut: Future<Output = ()>,
 {
+    let receipt =
+        steer_detached_with_request_id(registry, task_id, access, text, lane, None, fallback)
+            .await?;
+    Ok(receipt
+        .route
+        .expect("a steer without a request id is never a duplicate"))
+}
+
+/// Idempotent [`steer_detached`]: when `request_id` was already applied to
+/// `task_id`, returns a [`SteerReceipt`] with `duplicate: true` and delivers
+/// nothing. The last [`RecentRequestIds::DEFAULT_CAPACITY`] ids per task are
+/// remembered. Validation (lane, unknown / unowned / terminal) runs first, so
+/// a rejected steer never consumes its id and can be retried.
+pub async fn steer_detached_with_request_id<M, F, Fut>(
+    registry: &DetachedTaskRegistry<M, DetachedSubagentStatus>,
+    task_id: &str,
+    access: SteerAccess<'_>,
+    text: String,
+    lane: QueueLane,
+    request_id: Option<&str>,
+    fallback: F,
+) -> Result<SteerReceipt, SteerError>
+where
+    M: Clone + Send + Sync + 'static,
+    F: FnOnce(M, QueueLane, String) -> Fut,
+    Fut: Future<Output = ()>,
+{
     if !matches!(lane, QueueLane::Steer | QueueLane::Collect) {
         return Err(SteerError::UnsupportedLane);
     }
@@ -124,6 +162,15 @@ where
     if snapshot.status.is_terminal() {
         return Err(SteerError::AlreadyDone);
     }
+    if let Some(request_id) = request_id
+        && !registry.claim_steer_request(&key, request_id)?
+    {
+        tracing::debug!("[subagent-steer] duplicate request_id task_id={task_id}");
+        return Ok(SteerReceipt {
+            route: None,
+            duplicate: true,
+        });
+    }
     let handle = match access {
         SteerAccess::Owner(owner) => registry.steering_handle(&key, owner),
         SteerAccess::Trusted => registry.steering_handle_trusted(&key),
@@ -132,10 +179,16 @@ where
         .map(|handle| send_registered(&handle, &text, lane))
         .unwrap_or(false)
     {
-        return Ok(SteerRoute::Registry);
+        return Ok(SteerReceipt {
+            route: Some(SteerRoute::Registry),
+            duplicate: false,
+        });
     }
     fallback(snapshot.metadata, lane, text).await;
-    Ok(SteerRoute::Fallback)
+    Ok(SteerReceipt {
+        route: Some(SteerRoute::Fallback),
+        duplicate: false,
+    })
 }
 
 /// Abort every registered subagent whose [`SubagentIdentity::parent_thread_id`]
