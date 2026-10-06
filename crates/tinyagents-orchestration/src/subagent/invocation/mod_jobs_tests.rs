@@ -1,0 +1,178 @@
+//! Job-control contracts for [`SubAgentTool`]: independent per-job
+//! cancellation, parent-cancel cascade, panic safety.
+
+use std::sync::Arc;
+
+use serde_json::json;
+
+use super::test::{BlockedModel, spawned_job_id, wait_for_terminal};
+use super::{
+    ChildDataPolicy, SubAgent, SubAgentJobStatus, SubAgentJobsTool, SubAgentTool,
+};
+use tinyagents_harness::context::{RunConfig, RunContext};
+use tinyagents_harness::ids::new_call_id;
+use tinyagents_harness::runtime::AgentHarness;
+use tinyagents_harness::tool::ToolDispatch;
+use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse};
+
+struct PanickingModel;
+
+#[async_trait::async_trait]
+impl ChatModel<()> for PanickingModel {
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        panic!("child model exploded");
+    }
+}
+
+fn blocked_tool() -> (
+    Arc<SubAgentTool<(), ()>>,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+) {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut harness = AgentHarness::new();
+    harness.register_model(
+        "blocked",
+        Arc::new(BlockedModel {
+            started: started.clone(),
+            release: release.clone(),
+        }),
+    );
+    let tool = Arc::new(SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    ));
+    (tool, started, release)
+}
+
+async fn spawn(tool: &SubAgentTool<(), ()>, parent: &RunContext<()>) -> String {
+    let result = tool
+        .invoke_in_parent_context(
+            &(),
+            json!({"input": "work"}),
+            tinytools::ToolCallOptions::default(),
+            parent,
+        )
+        .await
+        .expect("spawn succeeds");
+    spawned_job_id(&result)
+}
+
+async fn cancel_via_tool(
+    jobs: &SubAgentJobsTool,
+    parent: &RunContext<()>,
+    job_id: &str,
+) -> anyhow::Result<tinytools::ToolResult> {
+    ToolDispatch::<(), ()>::execute(
+        jobs,
+        &(),
+        new_call_id(),
+        json!({"action": "cancel", "job_id": job_id}),
+        tinytools::ToolCallOptions::default(),
+        parent,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn cancelling_one_job_leaves_its_sibling_running() {
+    let (tool, started, release) = blocked_tool();
+    let jobs = tool.job_registry().clone();
+    let jobs_tool = SubAgentJobsTool::new(jobs.clone());
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+    let owner = parent.instance_id();
+
+    let first = spawn(&tool, &parent).await;
+    let second = spawn(&tool, &parent).await;
+    started.notified().await;
+    started.notified().await;
+
+    let result = cancel_via_tool(&jobs_tool, &parent, &first)
+        .await
+        .expect("owner may cancel");
+    assert!(result.output().contains("cancelled"));
+    let cancelled = wait_for_terminal(&jobs, &first, owner).await;
+    assert_eq!(cancelled.status, SubAgentJobStatus::Cancelled);
+
+    assert_eq!(
+        jobs.get_owned(&second, owner).unwrap().status,
+        SubAgentJobStatus::Running,
+        "sibling keeps running"
+    );
+    assert!(
+        !parent.cancellation.is_cancelled(),
+        "child cancel must not cancel the parent"
+    );
+
+    release.notify_waiters();
+    let done = wait_for_terminal(&jobs, &second, owner).await;
+    assert_eq!(done.status, SubAgentJobStatus::Completed);
+}
+
+#[tokio::test]
+async fn cancel_is_owner_checked_and_rejects_terminal_jobs() {
+    let (tool, started, release) = blocked_tool();
+    let jobs = tool.job_registry().clone();
+    let jobs_tool = SubAgentJobsTool::new(jobs.clone());
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+    let stranger = RunContext::new(RunConfig::new("stranger"), ());
+
+    let job = spawn(&tool, &parent).await;
+    started.notified().await;
+
+    assert!(
+        cancel_via_tool(&jobs_tool, &stranger, &job).await.is_err(),
+        "a non-owner cannot cancel"
+    );
+    assert_eq!(
+        jobs.get_owned(&job, parent.instance_id()).unwrap().status,
+        SubAgentJobStatus::Running
+    );
+
+    release.notify_waiters();
+    wait_for_terminal(&jobs, &job, parent.instance_id()).await;
+    assert!(
+        cancel_via_tool(&jobs_tool, &parent, &job).await.is_err(),
+        "terminal jobs cannot be cancelled again"
+    );
+}
+
+#[tokio::test]
+async fn parent_cancellation_cascades_to_running_jobs() {
+    let (tool, started, _release) = blocked_tool();
+    let jobs = tool.job_registry().clone();
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+
+    let job = spawn(&tool, &parent).await;
+    started.notified().await;
+    parent.cancellation.cancel();
+
+    let job = wait_for_terminal(&jobs, &job, parent.instance_id()).await;
+    assert_eq!(job.status, SubAgentJobStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn panicking_child_marks_the_job_failed() {
+    let mut harness = AgentHarness::new();
+    harness.register_model("boom", Arc::new(PanickingModel));
+    let tool = SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    );
+    let jobs = tool.job_registry().clone();
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+
+    let job_id = spawn(&tool, &parent).await;
+    let job = wait_for_terminal(&jobs, &job_id, parent.instance_id()).await;
+    assert_eq!(job.status, SubAgentJobStatus::Failed);
+    assert!(
+        job.error.as_deref().is_some_and(|e| e.contains("panicked")),
+        "error explains the panic: {:?}",
+        job.error
+    );
+}

@@ -759,3 +759,7 @@ impl tinytools::Tool for SubAgentToolDeclaration {
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+
+#[cfg(test)]
+#[path = "mod_jobs_tests.rs"]
+mod jobs_test;

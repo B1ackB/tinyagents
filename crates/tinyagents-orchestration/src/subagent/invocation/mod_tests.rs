@@ -37,9 +37,9 @@ fn child_harness<Ctx: Send + Sync>(answer: &str) -> AgentHarness<(), Ctx> {
     harness
 }
 
-struct BlockedModel {
-    started: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
+pub(super) struct BlockedModel {
+    pub(super) started: Arc<tokio::sync::Notify>,
+    pub(super) release: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait::async_trait]
@@ -55,7 +55,7 @@ impl ChatModel<()> for BlockedModel {
     }
 }
 
-fn spawned_job_id(result: &tinytools::ToolResult) -> String {
+pub(super) fn spawned_job_id(result: &tinytools::ToolResult) -> String {
     serde_json::from_str::<serde_json::Value>(&result.output())
         .expect("spawn result is JSON")
         .get("job_id")
@@ -64,7 +64,7 @@ fn spawned_job_id(result: &tinytools::ToolResult) -> String {
         .to_owned()
 }
 
-async fn wait_for_terminal(jobs: &SubAgentJobRegistry, job_id: &str, owner: u64) -> SubAgentJob {
+pub(super) async fn wait_for_terminal(jobs: &SubAgentJobRegistry, job_id: &str, owner: u64) -> SubAgentJob {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             let job = jobs
