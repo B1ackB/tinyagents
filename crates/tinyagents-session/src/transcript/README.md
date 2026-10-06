@@ -52,6 +52,28 @@ Re-exported from `transcript::` (see `../transcript.rs`); reachable as
   answer when a stream was cancelled mid-turn; skipped by the model-context
   reader.
 
+### Background appends (`background.rs`, `turn_lock.rs`)
+
+- `append_background_message(&FileTranscriptLocator, &SessionRef,
+  TranscriptMessage, BackgroundAppend) -> Result<BackgroundAppendOutcome>`
+  (async) — appends one plain assistant message to a session's **head**
+  generation from outside any turn (e.g. a scheduled job reporting back into
+  the chat that created it). Outcomes: `Appended { generation }`,
+  `Duplicate { generation }` (the idempotency key is already in the head),
+  `StaleGeneration { expected, head }` (a pinned `expected_generation` no
+  longer matches), `NoSession` (no transcript; none is created). The line is
+  an ordinary message line plus an additive top-level
+  `"background": {"idempotency_key", "provenance"}` field, so the
+  model-context reader resumes it as an assistant row and the display reader
+  exposes the origin as `DisplayMessage::background`.
+- `lock_session_turn(&dyn TranscriptLocator, &SessionRef) ->
+  Option<SessionTurnGuard>` (async) — the per-session, in-process turn lock,
+  keyed by `destination_key()` + the generation-0 stem. A live turn holds it
+  from its resume read through its persist (`tinyagents-runtime`'s
+  `Session::turn` does so for session-bound targets); the background append
+  awaits it, so it always lands between turns. Not reentrant: never await a
+  background append into a session from inside that session's own turn.
+
 ### Reading (`reader.rs`)
 
 - `read_transcript` — model-context replay: compaction records replace the
@@ -108,6 +130,8 @@ Re-exported from `transcript::` (see `../transcript.rs`); reachable as
 | `markdown.rs` | Human-readable `.md` companion rendering (never read back). |
 | `legacy_md.rs` | Legacy HTML-comment `.md` reader (migration compat). |
 | `history.rs` | `TranscriptHistory` / `TranscriptRead` / `TranscriptLocator` seam. |
+| `background.rs` | Out-of-band, idempotent assistant appends into a session's head. |
+| `turn_lock.rs` | Per-session async turn lock shared by live turns and background appends. |
 | `test.rs` | Module-local unit tests. |
 
 `../transcript.rs` (the module root, one level up) wires these together,
