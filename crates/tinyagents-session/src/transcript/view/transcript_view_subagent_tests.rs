@@ -137,3 +137,97 @@ fn subagent_correlates_by_ledger_parent_call_id_over_the_heuristic() {
         projected.items
     );
 }
+
+/// Parent transcript with two identically-shaped spawn calls, the second of
+/// which carries `result_for_real` as its tool result. Returns the child's
+/// resolved `call_id` after projecting a child whose `_meta` says `task_id` /
+/// `thread_id`.
+fn project_two_spawns(
+    result_for_decoy: &str,
+    result_for_real: &str,
+    child_task_id: &str,
+    child_thread_id: &str,
+) -> Option<String> {
+    let dir = TempDir::new().unwrap();
+    let root_stem = "800_orch_link";
+    let thread_id = "thr_link";
+    let commit_ts = chrono::DateTime::from_timestamp(1_900_000, 0)
+        .unwrap()
+        .to_rfc3339();
+    let call = |id: &str| format!(r#"{{"id":"{id}","name":"worker","arguments":"{{}}"}}"#);
+    let root_body = [
+        r#"{"role":"user","content":"go","request_id":"req-1"}"#.to_string(),
+        format!(
+            r#"{{"role":"assistant","content":"","provider":"test","model":"test","usage":{{"input":1,"output":1,"cached_input":0,"cost_usd":0.0}},"tool_calls":[{},{}],"iteration":1,"request_id":"req-1","ts":"{commit_ts}"}}"#,
+            call("call-decoy"),
+            call("call-real")
+        ),
+        format!(
+            r#"{{"role":"tool","content":{},"id":"call-decoy","request_id":"req-1"}}"#,
+            serde_json::to_string(result_for_decoy).unwrap()
+        ),
+        format!(
+            r#"{{"role":"tool","content":{},"id":"call-real","request_id":"req-1"}}"#,
+            serde_json::to_string(result_for_real).unwrap()
+        ),
+    ];
+    let root_refs: Vec<&str> = root_body.iter().map(String::as_str).collect();
+    write_raw(dir.path(), root_stem, thread_id, &root_refs);
+
+    let child_stem = format!("{root_stem}__2000000_000000001_worker");
+    let child = transcript::resolve_keyed_transcript_path(dir.path(), &child_stem).unwrap();
+    let meta = format!(
+        r#"{{"_meta":{{"version":1,"agent":"worker","agent_id":"worker","agent_type":"subagent","dispatcher":"native","created":"2026-07-21T00:00:00Z","updated":"2026-07-21T00:00:10Z","turn_count":1,"input_tokens":1,"output_tokens":1,"cached_input_tokens":0,"charged_amount_usd":0.0,"thread_id":"{child_thread_id}","task_id":"{child_task_id}"}}}}"#
+    );
+    std::fs::write(
+        &child,
+        format!("{meta}\n{{\"role\":\"assistant\",\"content\":\"done\"}}\n"),
+    )
+    .unwrap();
+
+    let projected = project_thread(dir.path(), thread_id).expect("project thread");
+    projected.items.iter().find_map(|item| match item {
+        DisplayItem::Subagent { call_id, .. } => call_id.clone(),
+        _ => None,
+    })
+}
+
+/// Explicit link: the parent's tool result names the child's run id
+/// (`subagent_run_id`), which the child's `_meta.task_id` repeats. That must
+/// beat the first-unclaimed heuristic, which would pick `call-decoy`.
+#[test]
+fn subagent_correlates_by_explicit_run_id_in_the_parent_tool_result() {
+    let call_id = project_two_spawns(
+        r#"{"job_id":"subagent-job-1","status":"queued","subagent_run_id":"worker-d1-parent-0"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1"}"#,
+        "worker-d1-parent-1",
+        "thr_link",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-real"));
+}
+
+/// The run id is also recoverable from the child thread id the harness derives
+/// (`{parent_thread}-subagent-{run_id}`) when no task id was written.
+#[test]
+fn subagent_correlates_by_run_id_embedded_in_the_child_thread_id() {
+    let call_id = project_two_spawns(
+        r#"{"job_id":"subagent-job-1","status":"queued","subagent_run_id":"worker-d1-parent-0"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1"}"#,
+        "",
+        "thr_link-subagent-worker-d1-parent-1",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-real"));
+}
+
+/// Old transcripts (results carry no ids) keep the heuristic: the first
+/// unclaimed delegation-shaped call that targets the child's agent.
+#[test]
+fn subagent_without_explicit_ids_falls_back_to_the_heuristic() {
+    let call_id = project_two_spawns(
+        "Accepted async sub-agent",
+        "Accepted async sub-agent",
+        "worker-d1-parent-1",
+        "thr_link",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-decoy"));
+}
