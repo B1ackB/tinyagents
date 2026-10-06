@@ -537,7 +537,7 @@ fn genuinely_different_outputs_do_not_trip_the_recurrence_halt() {
         assert_eq!(
             tracker.record_call_outcome(
                 "get_status\u{1}abc",
-                &format!("ok at 2026-10-06T12:00:0{}Z rows={i}", i % 10)
+                &format!("ok at 2026-10-06T12:00:0{i}Z rows={i}")
             ),
             SuccessfulRepeat::Continue,
             "outputs that differ outside volatile spans are progress"
@@ -640,4 +640,40 @@ fn custom_fingerprinter_is_honored_by_the_failure_ladder() {
         NoProgress::Continue,
         "a verbatim fingerprinter must not normalize the clock time"
     );
+}
+
+#[test]
+fn distinct_hex_only_outputs_do_not_trip_the_recurrence_halt() {
+    let tracker = SuccessfulRepeatTracker::new(4, 3);
+    for sha in [
+        "0123456789abcdef0123456789abcdef01234567\n",
+        "fedcba9876543210fedcba9876543210fedcba98\n",
+        "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\n",
+        "99999999aaaaaaaa99999999aaaaaaaa99999999\n",
+    ] {
+        assert_eq!(
+            tracker.record_call_outcome("git_rev_parse\u{1}abc", sha),
+            SuccessfulRepeat::Continue,
+            "a bare id is the content, not noise around it"
+        );
+    }
+}
+
+#[test]
+fn distinct_epoch_and_byte_count_outputs_do_not_trip_the_recurrence_halt() {
+    let tracker = SuccessfulRepeatTracker::new(4, 3);
+    for out in [
+        "1759752896\n",
+        "1759752897\n",
+        "1759752898\n",
+        "1759752899\n",
+        "-rw-r--r-- 1 u g 1073741824 Oct 6 a.bin\n",
+        "-rw-r--r-- 1 u g 1073741825 Oct 6 a.bin\n",
+        "-rw-r--r-- 1 u g 1073741826 Oct 6 a.bin\n",
+    ] {
+        assert_eq!(
+            tracker.record_call_outcome("poll\u{1}abc", out),
+            SuccessfulRepeat::Continue
+        );
+    }
 }

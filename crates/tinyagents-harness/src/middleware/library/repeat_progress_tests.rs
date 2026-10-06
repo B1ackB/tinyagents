@@ -311,3 +311,25 @@ async fn custom_fingerprinter_is_honored_by_the_middleware() {
         "with a verbatim fingerprinter, fresh timestamps keep each result distinct"
     );
 }
+
+#[tokio::test]
+async fn distinct_hex_only_results_do_not_halt_on_recurrence() {
+    let handle = SteeringHandle::allow_all();
+    let mw = new_mw(handle.clone(), Arc::new(std::sync::Mutex::new(None)));
+    for (i, sha) in [
+        "0123456789abcdef0123456789abcdef01234567",
+        "fedcba9876543210fedcba9876543210fedcba98",
+        "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "99999999aaaaaaaa99999999aaaaaaaa99999999",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run_alternating_round(&mw, sha, &format!("hits-{i}")).await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        0,
+        "three different commit ids are three different results"
+    );
+}

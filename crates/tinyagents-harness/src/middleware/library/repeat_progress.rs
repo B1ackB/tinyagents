@@ -146,7 +146,7 @@ pub struct RepeatProgressMiddleware {
     halt_summary: HaltSummarySlot,
     exempt: RepeatExemption,
     state: Arc<RepeatState>,
-    /// Handed to every per-run tracker for comparing tool results.
+    /// Reduces a tool result to the identity the recurrence ledger keys on.
     fingerprinter: Arc<dyn OutcomeFingerprinter>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
     pending: Mutex<HashMap<u64, PendingCallBatch>>,
@@ -194,12 +194,6 @@ impl RepeatProgressMiddleware {
         RepeatEvictionObserver {
             state: Arc::clone(&self.state),
         }
-    }
-
-    /// A fresh per-run tracker that compares tool results through this
-    /// guard's fingerprinter.
-    fn new_tracker(&self) -> SuccessfulRepeatTracker {
-        SuccessfulRepeatTracker::default().with_fingerprinter(Arc::clone(&self.fingerprinter))
     }
 
     /// Latch a root-cause halt: record the summary the turn surfaces instead of an
@@ -330,7 +324,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if let Ok(mut trackers) = self.state.tracker.lock() {
             let _ = trackers
                 .entry(ctx.instance_id())
-                .or_insert_with(|| self.new_tracker())
+                .or_default()
                 .record_output(&output_sig, all_exempt);
         }
 
@@ -361,6 +355,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
+        // Fingerprint outside the mutexes below: it scans the whole result.
+        let identity =
+            (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
@@ -382,8 +379,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                 if let Ok(mut trackers) = self.state.tracker.lock() {
                     recurrence = trackers
                         .entry(ctx.instance_id())
-                        .or_insert_with(|| self.new_tracker())
-                        .record_call_outcome(&sig, &result.output());
+                        .or_default()
+                        .record_call_identity(&sig, &identity);
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded
@@ -411,7 +408,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             {
                 let _ = trackers
                     .entry(ctx.instance_id())
-                    .or_insert_with(|| self.new_tracker())
+                    .or_default()
                     .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
             }
             return Ok(());
@@ -421,7 +418,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             self.state.tracker.lock().ok().map(|mut trackers| {
                 trackers
                     .entry(ctx.instance_id())
-                    .or_insert_with(|| self.new_tracker())
+                    .or_default()
                     .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
             })
         });

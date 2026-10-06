@@ -156,6 +156,19 @@ impl SuccessfulRepeatTracker {
         outcome_signature: &str,
     ) -> SuccessfulRepeat {
         let outcome_identity = self.fingerprinter.fingerprint(outcome_signature);
+        self.record_call_identity(call_signature, &outcome_identity)
+    }
+
+    /// [`record_call_outcome`](Self::record_call_outcome) for a caller that has
+    /// already reduced the result to its identity with an
+    /// [`OutcomeFingerprinter`]. Fingerprinting scans the whole result, so a
+    /// host that shares this tracker behind a lock should fingerprint first
+    /// and call this while holding the lock.
+    pub fn record_call_identity(
+        &self,
+        call_signature: &str,
+        outcome_identity: &str,
+    ) -> SuccessfulRepeat {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (call_signature, outcome_identity).hash(&mut hasher);
         let mut recurrences = self.recurrences.lock().unwrap();

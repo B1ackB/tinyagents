@@ -35,7 +35,7 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
         "at 2026-10-07T01:02:03.999-05:00 ok",
     );
     same("2026-10-06 12:34:56 started", "2026-10-06 12:34:57 started");
-    same("2026-10-06T12:34Z x", "2026-10-06T12:35Z x");
+    same("2026-10-06T12:34Z started", "2026-10-06T12:35Z started");
     differ(
         "2026-10-06T12:34:56Z started",
         "2026-10-06T12:34:56Z stopped",
@@ -50,11 +50,44 @@ fn clock_times_are_normalized() {
 }
 
 #[test]
-fn epoch_like_numbers_are_normalized() {
+fn epoch_numbers_are_normalized_only_under_a_time_key() {
     same("ts=1759752896 ok", "ts=1759752999 ok");
     same("ts=1759752896123 ok", "ts=1759752999456 ok");
     same("ts=1759752896.25 ok", "ts=1759752999.5 ok");
+    same(r#"{"timestamp": 1759752896, "ok": true}"#, r#"{"timestamp": 1759752999, "ok": true}"#);
+    same("updated_at: 1759752896 saved", "updated_at: 1759752999 saved");
+    same("createdAt=1759752896 saved", "createdAt=1759752999 saved");
+    same("mtime=1759752896 file", "mtime=1759752999 file");
     differ("ts=1759752896 ok", "ts=1759752896 bad");
+}
+
+#[test]
+fn bare_epoch_sized_numbers_are_not_normalized() {
+    untouched("1759752896");
+    untouched("1759752896123");
+    untouched("Content-Length: 1048576000");
+    untouched("-rw-r--r-- 1 u g 1073741824 Oct 6 notes.bin");
+    untouched("order 1234567890 shipped");
+    untouched("size=1073741824");
+    untouched("uptime=1759752896 s");
+    untouched("bytes: 1500000000");
+}
+
+#[test]
+fn outputs_that_are_only_volatile_fall_back_to_the_raw_text() {
+    differ(
+        "0123456789abcdef0123456789abcdef01234567\n",
+        "fedcba9876543210fedcba9876543210fedcba98\n",
+    );
+    differ(
+        "123e4567-e89b-12d3-a456-426614174000",
+        "00000000-1111-2222-3333-444444444444",
+    );
+    differ("2026-10-06T12:34:56Z", "2026-10-06T12:34:57Z");
+    differ("12:34:56", "12:34:57");
+    differ("123ms", "456ms");
+    // Enough non-volatile content remains, so the spans are still blanked.
+    same("failed 2026-10-06T12:34:56Z", "failed 2026-10-06T12:34:57Z");
 }
 
 #[test]
@@ -92,7 +125,7 @@ fn uuids_and_long_hex_ids_are_normalized() {
         "commit 0123456789abcdef0123456789abcdef01234567",
         "commit fedcba9876543210fedcba9876543210fedcba98",
     );
-    same("id 0x0123456789abcdef", "id 0xfedcba9876543210");
+    same("request id 0x0123456789abcdef", "request id 0xfedcba9876543210");
     differ("req 0123456789abcdef failed", "req 0123456789abcdef passed");
 }
 
@@ -113,13 +146,16 @@ fn ordinary_numbers_and_identifiers_are_not_normalized() {
     untouched("deadbeef cafebabe");
     untouched("a_very_long_identifier_name_without_hex");
     untouched("2 minutes ago");
+    untouched("music from the 1990s");
+    untouched("hundreds: 100s of files");
+    untouched("a few 100s of times");
     untouched("1234567890123456789012");
 }
 
 #[test]
 fn epoch_lookalikes_inside_other_numbers_are_left_alone() {
-    untouched("ver 1.1759752896");
-    untouched("2759752896");
+    untouched("ts=1.1759752896");
+    untouched("ts=2759752896");
 }
 
 #[test]

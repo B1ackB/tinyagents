@@ -199,6 +199,10 @@ impl NoProgressTracker {
     /// the ladder's verdict. On a [`NoProgress::Halt`] the internal state is
     /// reset for the caller.
     pub fn record(&self, step: usize, attempt: &ToolAttempt) -> NoProgress {
+        // Fingerprint before taking the lock: it scans the whole line.
+        let err_identity = attempt
+            .error
+            .map(|err| self.fingerprinter.fingerprint(err.lines().next().unwrap_or(err)));
         let mut state = self.state.lock().unwrap();
 
         let Some(err) = attempt.error else {
@@ -211,8 +215,7 @@ impl NoProgressTracker {
         // error line (the deterministic parts; a huge payload tail must not
         // dominate the identical-repeat comparison, and a volatile span such as
         // a timestamp must not make a repeated failure look novel).
-        let err_line = err.lines().next().unwrap_or(err);
-        let err_identity = self.fingerprinter.fingerprint(err_line);
+        let err_identity = err_identity.unwrap_or_default();
         let sig = format!(
             "{}\u{1f}{}\u{1f}{err_identity}",
             attempt.tool, attempt.arg_fingerprint
