@@ -15,7 +15,7 @@ use tokio::task::AbortHandle;
 use crate::{Result, TinyAgentsError};
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::ids::TaskId;
-use tinyagents_harness::steering::SteeringHandle;
+use tinyagents_harness::steering::{RecentRequestIds, SteeringHandle};
 
 use super::{
     CancelledDetachedTask, DetachedTaskRegistryError, DetachedTaskSnapshot,
