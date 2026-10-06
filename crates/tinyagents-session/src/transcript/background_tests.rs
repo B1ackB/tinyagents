@@ -263,7 +263,10 @@ async fn the_append_lands_in_the_head_generation() {
 /// The cron job finishes while the user is mid-turn in the same thread. The
 /// live turn holds the turn lock from its resume read to its persist, so the
 /// background append waits for it, and the next turn resumes over both.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+///
+/// Single-threaded on purpose: the spawned delivery runs only when this task
+/// yields, so "it is still waiting" is decided by the lock, not by timing.
+#[tokio::test]
 async fn a_background_append_waits_for_the_live_turn_and_keeps_both_in_order() {
     let dir = tempdir().unwrap();
     let locator = FileTranscriptLocator::new(dir.path());
