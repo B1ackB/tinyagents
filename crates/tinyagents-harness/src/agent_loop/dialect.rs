@@ -576,9 +576,8 @@ fn fingerprinted_id_prefix(model_call_id: &CallId) -> String {
 /// native tool channel.
 pub(super) fn is_recovered_tool_call_id(model_call_id: &CallId, id: &str) -> bool {
     let is_slot = |prefix: String| {
-        id.strip_prefix(prefix.as_str()).is_some_and(|slot| {
-            !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit())
-        })
+        id.strip_prefix(prefix.as_str())
+            .is_some_and(|slot| !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit()))
     };
     is_slot(format!("{model_call_id}-tool-")) || is_slot(fingerprinted_id_prefix(model_call_id))
 }

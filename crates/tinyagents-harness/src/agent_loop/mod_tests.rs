@@ -1562,7 +1562,10 @@ fn length_truncated_tool_calls_response(calls: &[(&str, &str)]) -> ModelResponse
     response
 }
 
-fn tool_started_and_completed(recorder: &crate::testkit::EventRecorder, id: &str) -> (usize, usize) {
+fn tool_started_and_completed(
+    recorder: &crate::testkit::EventRecorder,
+    id: &str,
+) -> (usize, usize) {
     let events = recorder.events();
     let started = events
         .iter()
@@ -1676,7 +1679,11 @@ async fn max_tokens_finish_reason_counts_as_a_length_stop() {
         .await
         .expect("run succeeds");
 
-    assert_eq!(*tool.calls.lock().unwrap(), 0, "the cut-off call must not run");
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        0,
+        "the cut-off call must not run"
+    );
 }
 
 #[tokio::test]
@@ -1958,7 +1965,11 @@ async fn terminate_in_a_mixed_batch_does_not_end_the_run() {
                     concurrent,
                     0,
                 ),
-                tool_for_mode(terminating_tool("lookup", "found", Hint::None), concurrent, 0),
+                tool_for_mode(
+                    terminating_tool("lookup", "found", Hint::None),
+                    concurrent,
+                    0,
+                ),
             ],
         );
 
@@ -2041,7 +2052,11 @@ async fn return_direct_in_a_mixed_batch_still_ends_the_run() {
                     concurrent,
                     0,
                 ),
-                tool_for_mode(terminating_tool("lookup", "found", Hint::None), concurrent, 0),
+                tool_for_mode(
+                    terminating_tool("lookup", "found", Hint::None),
+                    concurrent,
+                    0,
+                ),
             ],
         );
 

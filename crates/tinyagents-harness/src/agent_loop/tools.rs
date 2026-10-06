@@ -513,11 +513,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             );
             return;
         }
-        let output = votes
-            .into_iter()
-            .next_back()
-            .flatten()
-            .expect("every vote is Some, and asked > 0");
+        let Some(output) = votes.into_iter().next_back().flatten() else {
+            return;
+        };
         tracing::debug!(
             target: "tinyagents::agent_loop",
             run_id = %ctx.run_id(),
@@ -554,6 +552,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Err(TinyAgentsError::Timeout(format!(
                 "run `{}` exceeded its wall-clock deadline",
                 ctx.run_id()
+            )));
+        }
+        // A call a length stop may have cut off is answered, not run, and spends
+        // no budget slot (see `RunPolicy::reject_truncated_tool_calls`).
+        if ctx.truncated_call_ids.remove(&call.id) {
+            tracing::debug!(
+                target: "tinyagents::agent_loop",
+                run_id = %ctx.run_id(),
+                tool = %call.name,
+                call_id = %call.id,
+                "[agent_loop] answering a possibly-truncated tool call with an error"
+            );
+            return Ok(ResolvedToolCall::Answered(tinytools::ToolResult::error(
+                truncated_tool_call_message(&call.name),
             )));
         }
         // The context's `LimitTracker` (synced with `RunPolicy::limits` at run

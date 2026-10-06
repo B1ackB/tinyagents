@@ -1418,7 +1418,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     truncated_tool_call_retries_used += 1;
                     turn_had_truncated_calls = true;
                     // Give the retry room to finish the call.
-                    boost_max_tokens(attempt_max_tokens, &mut truncation_base, &mut boosted_max_tokens);
+                    boost_max_tokens(
+                        attempt_max_tokens,
+                        &mut truncation_base,
+                        &mut boosted_max_tokens,
+                    );
                     tracing::info!(
                         target: "tinyagents::agent_loop",
                         run_id = %ctx.run_id(),
@@ -1449,7 +1453,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         // no other path that answers it. Fail the whole turn.
                         status.mark_running(HarnessPhase::Tools);
                         self.fail_truncated_tool_calls(
-                            state, ctx, run, status, messages, &tool_calls,
+                            state,
+                            ctx,
+                            run,
+                            status,
+                            messages,
+                            &tool_calls,
                         )
                         .await?;
                         self.apply_queued_lane(
@@ -1618,12 +1627,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 dropped_tool_call_nudges_used = 0;
                 withheld_call_nudges_used = 0;
                 empty_response_retries_used = 0;
-                reset_truncated_empty_recovery(
-                    &mut truncated_empty_retries_used,
-                    &mut truncated_empty_nudges_used,
-                    &mut boosted_max_tokens,
-                    &mut truncation_base,
-                );
+                // A turn whose call was cut off keeps its retry budget and
+                // boosted output cap for the retry.
+                if !turn_had_truncated_calls {
+                    truncated_tool_call_retries_used = 0;
+                    reset_truncated_empty_recovery(
+                        &mut truncated_empty_retries_used,
+                        &mut truncated_empty_nudges_used,
+                        &mut boosted_max_tokens,
+                        &mut truncation_base,
+                    );
+                }
 
                 status.mark_running(HarnessPhase::Tools);
                 let deferred = self
@@ -1711,7 +1725,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // A structured tool hit carries a real payload, so it is never
                 // treated as truncated-empty.
                 let truncated_empty = tool_calls.is_empty()
-                    && response.finish_reason.as_deref() == Some("length")
+                    && is_length_stop(response.finish_reason.as_deref())
                     && response.text().trim().is_empty();
                 if truncated_empty
                     && truncated_empty_retries_used < self.policy.truncated_empty_retries
@@ -1792,7 +1806,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && response.continue_turn.is_none()
                     && structured_plan.is_none()
                     && run.structured.is_none()
-                    && response.finish_reason.as_deref() != Some("length")
+                    && !is_length_stop(response.finish_reason.as_deref())
                     && response.finish_reason.as_deref() != Some("tool_calls")
                     && !response.served_from_cache;
                 if nontruncated_empty
@@ -1832,7 +1846,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // Native models with text recovery on parse the same grammars
                 // out of their prose, so the same drop applies to them.
                 let malformed_blocks = recovery.dropped.malformed();
-                let unterminated_blocks = if response.finish_reason.as_deref() == Some("length") {
+                let unterminated_blocks = if is_length_stop(response.finish_reason.as_deref()) {
                     0
                 } else {
                     recovery.dropped.unterminated()
@@ -1877,6 +1891,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // a stale `boosted_max_tokens` would override the caller's
                 // per-turn cap on every subsequent call, and a spent retry
                 // counter would deny recovery to a later turn that needs it.
+                truncated_tool_call_retries_used = 0;
                 reset_truncated_empty_recovery(
                     &mut truncated_empty_retries_used,
                     &mut truncated_empty_nudges_used,
@@ -1987,12 +2002,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             dropped_tool_call_nudges_used = 0;
             withheld_call_nudges_used = 0;
             empty_response_retries_used = 0;
-            reset_truncated_empty_recovery(
-                &mut truncated_empty_retries_used,
-                &mut truncated_empty_nudges_used,
-                &mut boosted_max_tokens,
-                &mut truncation_base,
-            );
+            // A turn whose call was cut off keeps its retry budget and boosted
+            // output cap for the retry.
+            if !turn_had_truncated_calls {
+                truncated_tool_call_retries_used = 0;
+                reset_truncated_empty_recovery(
+                    &mut truncated_empty_retries_used,
+                    &mut truncated_empty_nudges_used,
+                    &mut boosted_max_tokens,
+                    &mut truncation_base,
+                );
+            }
 
             // Execute requested tools: serial admission -> serial or
             // concurrent execution -> ordered fold. Multi-call turns run
@@ -2173,6 +2193,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             )));
         }
         ctx.terminate_votes.clear();
+        // `terminate` is a whole-batch decision, so a resume may only end the
+        // run when the resumed calls *are* the original batch. Siblings that
+        // answered before the pause (and whose votes are gone) may not have
+        // asked to terminate, so a partial resume must not.
+        let original_batch_len = messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::Assistant(assistant) => Some(assistant.tool_calls.len()),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let resumes_whole_batch = pending.len() == original_batch_len;
         let mut deferred = crate::tool::DeferredToolRequests::default();
         // Follow-up user messages (B2) trail the whole resumed batch, for
         // the same provider-ordering reason as in `execute_tools`.
@@ -2244,9 +2277,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
         }
         super::tools::append_follow_ups(messages, follow_ups);
-        // The resumed calls are the batch here: siblings answered before the
-        // pause already settled (and dropped) their own votes.
-        self.settle_batch_termination(ctx, run, deferred.is_empty());
+        // Siblings answered before the pause already settled (and dropped)
+        // their own votes, so only a resume of the whole original batch can
+        // judge whether every call asked to terminate.
+        self.settle_batch_termination(ctx, run, deferred.is_empty() && resumes_whole_batch);
         Ok(deferred)
     }
 
@@ -2797,6 +2831,56 @@ fn resolve_call_cap(config_cap: Option<usize>, policy_cap: usize) -> usize {
         Some(explicit) => explicit.min(policy_cap),
         None => policy_cap,
     }
+}
+
+/// Whether a provider's finish reason says the output cap cut the reply off.
+///
+/// Providers disagree on the spelling — OpenAI-compatible endpoints report
+/// `length`, Anthropic `max_tokens`, some gateways pass `MAX_TOKENS` through —
+/// and `tinyinference` does not normalise it, so the loop matches the known
+/// spellings itself. (Normalisation belongs upstream in `tinyinference`; this
+/// helper then collapses to the single canonical value.)
+pub(super) fn is_length_stop(finish_reason: Option<&str>) -> bool {
+    matches!(finish_reason, Some("length" | "max_tokens" | "MAX_TOKENS"))
+}
+
+/// Grows the next request's output cap after a length-truncated reply: double
+/// the cap last sent, clamped at 4x the original. An unset cap stays unset (a
+/// plain retry is still worthwhile — the failure is stochastic).
+fn boost_max_tokens(
+    attempt_max_tokens: Option<u32>,
+    truncation_base: &mut Option<u32>,
+    boosted_max_tokens: &mut Option<u32>,
+) {
+    if let Some(sent) = attempt_max_tokens {
+        let base = *truncation_base.get_or_insert(sent);
+        *boosted_max_tokens = Some(
+            boosted_max_tokens
+                .unwrap_or(sent)
+                .saturating_mul(2)
+                .min(base.saturating_mul(4)),
+        );
+    }
+}
+
+/// The ids of the calls of a length-stopped response that may be incomplete:
+/// the last *native* call (the provider finished streaming every earlier one),
+/// and any call the provider flagged `invalid` (a repair could make it look
+/// whole). Calls recovered from text are never listed — an unterminated block
+/// never becomes a call.
+fn truncated_call_ids(
+    calls: &[ToolCall],
+    model_call_id: &CallId,
+) -> std::collections::HashSet<String> {
+    let last_native = calls
+        .iter()
+        .rposition(|call| !super::dialect::is_recovered_tool_call_id(model_call_id, &call.id));
+    calls
+        .iter()
+        .enumerate()
+        .filter(|(index, call)| Some(*index) == last_native || call.invalid.is_some())
+        .map(|(_, call)| call.id.clone())
+        .collect()
 }
 
 /// Clears the per-turn truncated-empty recovery state (see

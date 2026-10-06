@@ -316,6 +316,7 @@ impl<Ctx> RunContext<Ctx> {
             state_updates: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             tool_state_updates: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             terminate_votes: Vec::new(),
+            truncated_call_ids: std::collections::HashSet::new(),
             workspace: None,
             on_error_dispatched: false,
             streaming: false,
