@@ -841,3 +841,7 @@ mod jobs_test;
 #[cfg(test)]
 #[path = "mod_link_tests.rs"]
 mod link_test;
+
+#[cfg(test)]
+#[path = "mod_inline_tests.rs"]
+mod inline_test;
