@@ -18,6 +18,9 @@ pub async fn append_background_message(
 ) -> anyhow::Result<BackgroundAppendOutcome> {
     let _ = options;
     let head = locator.head_generation(&session.first_generation());
+    if !locator.session_exists(&head) {
+        return Ok(BackgroundAppendOutcome::NoSession);
+    }
     let path = resolve_keyed_transcript_path(locator.workspace_dir(), &session_stem(&head))?;
     let line = build_message_line(&message, None, None, false);
     let mut buf = serde_json::to_string(&line).context("serialise background message line")?;
