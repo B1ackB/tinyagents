@@ -1,7 +1,9 @@
 use super::*;
 use crate::transcript::{
-    DisplayRecord, TranscriptLocator, TranscriptTurn, read_transcript, read_transcript_display,
+    DisplayRecord, TranscriptLocator, TranscriptMeta, TranscriptTurn, read_transcript,
+    read_transcript_display, resolve_keyed_transcript_path, session_stem,
 };
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn meta() -> TranscriptMeta {

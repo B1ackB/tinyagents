@@ -149,6 +149,7 @@ pub mod view;
 mod writer;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
+pub use background::append_background_message;
 pub use history::{
     FileTranscriptHistory, FileTranscriptLocator, TranscriptHistory, TranscriptLocator,
     TranscriptPartial, TranscriptRead, TranscriptTurn, TruncateCut,
@@ -163,9 +164,10 @@ pub use thread_lookup::{
     find_root_transcripts_for_thread, read_thread_usage_summary,
 };
 pub use types::{
-    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, LegacyText,
-    MessageUsage, SessionTranscript, ToolFailure, TranscriptMediaRef, TranscriptMessage,
-    TranscriptMeta, TranscriptPart, TranscriptToolCall, TurnUsage,
+    BackgroundAppend, BackgroundAppendOutcome, BackgroundOrigin, CompactionMarker, DisplayMessage,
+    DisplayRecord, DisplaySessionTranscript, LegacyText, MessageUsage, SessionTranscript,
+    ToolFailure, TranscriptMediaRef, TranscriptMessage, TranscriptMeta, TranscriptPart,
+    TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,
