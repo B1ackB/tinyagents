@@ -54,12 +54,14 @@ impl TranscriptCodec for RoleCodec {
         _: &crate::TranscriptTurnOptions,
     ) -> Result<Vec<TranscriptMessage>, RuntimeError> {
         let mut rows = prior.to_vec();
-        rows.extend(next[prior.len().min(next.len())..].iter().map(|message| {
-            match message {
-                Message::User(_) => TranscriptMessage::user(message.text()),
-                _ => TranscriptMessage::assistant(message.text()),
-            }
-        }));
+        rows.extend(
+            next[prior.len().min(next.len())..]
+                .iter()
+                .map(|message| match message {
+                    Message::User(_) => TranscriptMessage::user(message.text()),
+                    _ => TranscriptMessage::assistant(message.text()),
+                }),
+        );
         Ok(rows)
     }
 }
@@ -94,8 +96,8 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let directory = tempfile::tempdir().unwrap();
     let locator = Arc::new(FileTranscriptLocator::new(directory.path()));
     let session_ref = SessionRef::scoped("thread-1", "agent");
-    let path = resolve_keyed_transcript_path(directory.path(), &session_stem(&session_ref))
-        .unwrap();
+    let path =
+        resolve_keyed_transcript_path(directory.path(), &session_stem(&session_ref)).unwrap();
     tinyagents_session::transcript::write_transcript(
         &path,
         &[

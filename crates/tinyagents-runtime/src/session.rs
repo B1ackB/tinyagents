@@ -1065,3 +1065,7 @@ async fn cancelable<T>(
         result = future => result,
     }
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;
