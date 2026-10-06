@@ -174,3 +174,68 @@ async fn panicking_child_marks_the_job_failed() {
         job.error
     );
 }
+
+async fn message_via_tool(
+    tool: &SubAgentMessageTool,
+    parent: &RunContext<()>,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let result = ToolDispatch::<(), ()>::execute(
+        tool,
+        &(),
+        new_call_id(),
+        args,
+        tinytools::ToolCallOptions::default(),
+        parent,
+    )
+    .await
+    .expect("message accepted");
+    serde_json::from_str(&result.output()).expect("JSON result")
+}
+
+#[tokio::test]
+async fn message_with_a_repeated_request_id_is_queued_once() {
+    let jobs = SubAgentJobRegistry::new();
+    let tool = SubAgentMessageTool::new(jobs.clone());
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+    let (job_id, steering) = jobs.create("worker", parent.instance_id());
+    let args = json!({"job_id": job_id.as_str(), "message": "look here", "request_id": "r1"});
+
+    let first = message_via_tool(&tool, &parent, args.clone()).await;
+    assert_eq!(first["status"], "message_queued");
+    assert!(first.get("duplicate").is_none());
+    assert_eq!(steering.pending(), 1);
+
+    let again = message_via_tool(&tool, &parent, args).await;
+    assert_eq!(again["duplicate"], true);
+    assert_eq!(steering.pending(), 1, "duplicate is not enqueued again");
+
+    // A new id and an id-less message are both delivered.
+    message_via_tool(
+        &tool,
+        &parent,
+        json!({"job_id": job_id.as_str(), "message": "m", "request_id": "r2"}),
+    )
+    .await;
+    message_via_tool(&tool, &parent, json!({"job_id": job_id.as_str(), "message": "m"})).await;
+    assert_eq!(steering.pending(), 3);
+}
+
+#[tokio::test]
+async fn message_request_ids_are_bounded_per_job() {
+    let jobs = SubAgentJobRegistry::new();
+    let (job_id, steering) = jobs.create("worker", 1);
+    for index in 0..=tinyagents_harness::steering::RecentRequestIds::DEFAULT_CAPACITY {
+        let duplicate = jobs
+            .send_message_with_request_id(job_id.as_str(), 1, "m", Some(&format!("r{index}")))
+            .unwrap();
+        assert!(!duplicate);
+    }
+    // `r0` aged out of the 64-id window, so it is delivered again.
+    assert!(
+        !jobs
+            .send_message_with_request_id(job_id.as_str(), 1, "m", Some("r0"))
+            .unwrap()
+    );
+    assert_eq!(steering.pending(), 66);
+}
