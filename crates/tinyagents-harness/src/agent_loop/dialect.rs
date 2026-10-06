@@ -558,12 +558,29 @@ pub(super) fn recovered_tool_call_id(model_call_id: &CallId, slot: usize) -> Str
     if verbatim.chars().count() <= RECOVERED_TOOL_CALL_ID_MAX_LEN {
         return verbatim;
     }
+    format!("{}{slot}", fingerprinted_id_prefix(model_call_id))
+}
+
+/// The `mc{fingerprint}-tool-` stem of an over-long recovered call id.
+fn fingerprinted_id_prefix(model_call_id: &CallId) -> String {
     let fingerprint: String = Sha256::digest(model_call_id.as_str().as_bytes())
         .iter()
         .take(MODEL_CALL_FINGERPRINT_BYTES)
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    format!("mc{fingerprint}-tool-{slot}")
+    format!("mc{fingerprint}-tool-")
+}
+
+/// Whether `id` was minted by [`recovered_tool_call_id`] for `model_call_id`,
+/// i.e. the call came from text-dialect markup rather than the provider's
+/// native tool channel.
+pub(super) fn is_recovered_tool_call_id(model_call_id: &CallId, id: &str) -> bool {
+    let is_slot = |prefix: String| {
+        id.strip_prefix(prefix.as_str()).is_some_and(|slot| {
+            !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    };
+    is_slot(format!("{model_call_id}-tool-")) || is_slot(fingerprinted_id_prefix(model_call_id))
 }
 
 /// Reads text-dialect calls out of a response that carries no structured
