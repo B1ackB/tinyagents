@@ -1,15 +1,16 @@
 use super::*;
-use crate::transcript::FileTranscriptLocator;
-use std::time::Duration;
+use crate::transcript::{FileTranscriptLocator, TranscriptHistory, TranscriptMeta, TranscriptRead};
 
 /// Whether `lock_session_turn` for `session` would have to wait right now.
+///
+/// No clock: an uncontended tokio mutex is acquired on its first poll, so a
+/// lock still pending after that poll is held by someone else.
 async fn is_held(locator: &dyn TranscriptLocator, session: &SessionRef) -> bool {
-    tokio::time::timeout(
-        Duration::from_millis(20),
-        lock_session_turn(locator, session),
-    )
-    .await
-    .is_err()
+    tokio::select! {
+        biased;
+        _guard = lock_session_turn(locator, session) => false,
+        () = tokio::task::yield_now() => true,
+    }
 }
 
 #[tokio::test]
@@ -57,17 +58,13 @@ async fn other_sessions_and_other_workspaces_are_independent() {
 struct Anonymous;
 
 impl TranscriptLocator for Anonymous {
-    fn latest_for_agent(&self, _: &str) -> Option<Arc<dyn super::super::TranscriptRead>> {
+    fn latest_for_agent(&self, _: &str) -> Option<Arc<dyn TranscriptRead>> {
         None
     }
-    fn root_for_thread(&self, _: &str) -> Option<Arc<dyn super::super::TranscriptRead>> {
+    fn root_for_thread(&self, _: &str) -> Option<Arc<dyn TranscriptRead>> {
         None
     }
-    fn open_stem(
-        &self,
-        _: &str,
-        _: super::super::TranscriptMeta,
-    ) -> anyhow::Result<Arc<dyn super::super::TranscriptHistory>> {
+    fn open_stem(&self, _: &str, _: TranscriptMeta) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
         anyhow::bail!("not file backed")
     }
 }

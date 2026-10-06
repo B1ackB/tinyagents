@@ -164,6 +164,7 @@ pub use thread_lookup::{
     find_root_transcript_for_thread, find_root_transcript_for_thread_scoped,
     find_root_transcripts_for_thread, read_thread_usage_summary,
 };
+pub use turn_lock::{SessionTurnGuard, lock_session_turn};
 pub use types::{
     BackgroundAppend, BackgroundAppendOutcome, BackgroundOrigin, CompactionMarker, DisplayMessage,
     DisplayRecord, DisplaySessionTranscript, LegacyText, MessageUsage, SessionTranscript,
