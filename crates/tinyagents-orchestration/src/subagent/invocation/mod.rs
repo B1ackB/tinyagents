@@ -683,7 +683,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
     /// parent's `call_id` as the explicit parent-call -> child-run link.
     ///
     /// The link is carried by the queued result (`subagent_run_id`,
-    /// `tool_call_id`, `job_id`), the job snapshot, and the child run's
+    /// `parent_tool_call_id`, `job_id`), the job snapshot, and the child run's
     /// metadata (`subagent_run_id`, `subagent_job_id`, `parent_tool_call_id`).
     pub async fn invoke_in_parent_context_for_call(
         &self,
@@ -734,7 +734,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             child.cancellation.clone(),
             JobLink {
                 subagent_run_id: Some(subagent_run_id.clone()),
-                tool_call_id: tool_call_id.clone(),
+                parent_tool_call_id: tool_call_id.clone(),
             },
         );
         tracing::debug!(
@@ -804,7 +804,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             "subagent_run_id": subagent_run_id,
         });
         if let Some(tool_call_id) = tool_call_id {
-            queued["tool_call_id"] = Value::String(tool_call_id);
+            queued["parent_tool_call_id"] = Value::String(tool_call_id);
         }
         Ok(tinytools::ToolResult::json(queued))
     }

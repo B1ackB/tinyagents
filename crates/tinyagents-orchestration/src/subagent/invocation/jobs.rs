@@ -84,7 +84,7 @@ impl SubAgentJobRegistry {
                 output: None,
                 error: None,
                 subagent_run_id: link.subagent_run_id,
-                tool_call_id: link.tool_call_id,
+                parent_tool_call_id: link.parent_tool_call_id,
             },
             owner,
             steering: steering.clone(),

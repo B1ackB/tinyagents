@@ -227,7 +227,7 @@ fn link_ids(task_id: Option<&str>, thread_id: Option<&str>) -> Vec<String> {
 /// and `subagent_run_id`. `subagent_jobs` query/cancel snapshots (keyed `id`)
 /// and `subagent_message` acknowledgements do not, so a later status check
 /// cannot steal the match. When the payload records the spawning
-/// `tool_call_id` it must equal the item's own `call_id`.
+/// `parent_tool_call_id` it must equal the item's own `call_id`.
 ///
 /// Ids are unique per run, so the whole item list is searched rather than a
 /// turn range. `None` when no result carries an id (a transcript written
@@ -263,7 +263,7 @@ fn find_explicit_spawning_call(
             return false;
         }
         if let Some(recorded) = payload
-            .get("tool_call_id")
+            .get("parent_tool_call_id")
             .and_then(serde_json::Value::as_str)
             && recorded != call_id
         {

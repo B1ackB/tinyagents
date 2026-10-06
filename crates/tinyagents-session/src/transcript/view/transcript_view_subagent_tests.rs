@@ -259,21 +259,21 @@ fn subagent_correlates_a_grandchild_thread_id_by_its_last_marker() {
 #[test]
 fn a_job_query_result_does_not_steal_the_spawning_call() {
     let call_id = project_two_spawns(
-        r#"{"id":"subagent-job-2","agent":"worker","status":"completed","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-real"}"#,
-        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-real"}"#,
+        r#"{"id":"subagent-job-2","agent":"worker","status":"completed","subagent_run_id":"worker-d1-parent-1","parent_tool_call_id":"call-real"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","parent_tool_call_id":"call-real"}"#,
         "worker-d1-parent-1",
         "thr_link",
     );
     assert_eq!(call_id.as_deref(), Some("call-real"));
 }
 
-/// A spawn payload that records a different `tool_call_id` than the call
+/// A spawn payload that records a different `parent_tool_call_id` than the call
 /// carrying it is not trusted.
 #[test]
 fn a_spawn_payload_naming_another_call_is_not_trusted() {
     let call_id = project_two_spawns(
         "Accepted async sub-agent",
-        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-elsewhere"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","parent_tool_call_id":"call-elsewhere"}"#,
         "worker-d1-parent-1",
         "thr_link",
     );

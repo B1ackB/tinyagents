@@ -56,7 +56,7 @@ async fn inline_mode_returns_the_final_output_in_the_same_call() {
     let payload = json_of(&result);
     assert_eq!(payload["status"], "completed");
     assert_eq!(payload["output"], "inline answer");
-    assert_eq!(payload["tool_call_id"], "call-inline");
+    assert_eq!(payload["parent_tool_call_id"], "call-inline");
     let job_id = payload["job_id"].as_str().expect("job id");
     assert!(
         payload["subagent_run_id"]

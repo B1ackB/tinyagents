@@ -53,14 +53,14 @@ async fn queued_result_and_completed_job_carry_the_explicit_link() {
         .as_str()
         .expect("run id in queued result");
     assert!(run_id.starts_with("worker-d1-parent-"), "run id: {run_id}");
-    assert_eq!(queued["tool_call_id"], "call-42");
+    assert_eq!(queued["parent_tool_call_id"], "call-42");
 
     let job = wait_for_terminal(&jobs, &job_id, parent.instance_id()).await;
     assert_eq!(job.subagent_run_id.as_deref(), Some(run_id));
-    assert_eq!(job.tool_call_id.as_deref(), Some("call-42"));
+    assert_eq!(job.parent_tool_call_id.as_deref(), Some("call-42"));
     let completed = serde_json::to_value(&job).unwrap();
     assert_eq!(completed["subagent_run_id"], run_id);
-    assert_eq!(completed["tool_call_id"], "call-42");
+    assert_eq!(completed["parent_tool_call_id"], "call-42");
 
     // The child run itself is stamped with the same ids.
     let started = recorder
@@ -141,7 +141,7 @@ async fn tool_call_id_is_omitted_when_the_caller_has_none() {
         .await
         .unwrap();
     let queued = json_of(&result);
-    assert!(queued.get("tool_call_id").is_none());
+    assert!(queued.get("parent_tool_call_id").is_none());
     assert!(queued.get("subagent_run_id").is_some());
 }
 

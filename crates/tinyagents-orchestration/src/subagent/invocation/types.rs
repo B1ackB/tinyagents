@@ -245,14 +245,14 @@ pub struct SubAgentJob {
     /// Id of the parent tool call that spawned this job, when the dispatcher
     /// supplied one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
+    pub parent_tool_call_id: Option<String>,
 }
 
 /// Explicit link from a spawned job back to the parent call and child run.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct JobLink {
     pub(crate) subagent_run_id: Option<String>,
-    pub(crate) tool_call_id: Option<String>,
+    pub(crate) parent_tool_call_id: Option<String>,
 }
 
 /// Shared registry behind asynchronous subagent spawning and host controls.
