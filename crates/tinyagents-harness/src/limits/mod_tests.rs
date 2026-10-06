@@ -192,3 +192,35 @@ fn limit_kind_labels_match_the_event_layer() {
         crate::events::LimitKind::ToolCalls.as_str()
     );
 }
+
+// ── Stream idle-timeout settings and breaker counter ─────────────────────────
+
+#[test]
+fn stream_idle_defaults_are_on_with_a_breaker_and_no_separate_first_event_window() {
+    let limits = RunLimits::default();
+    assert_eq!(limits.stream_idle_timeout_ms, Some(120_000));
+    assert_eq!(limits.stream_first_event_timeout_ms, None);
+    assert_eq!(limits.max_consecutive_stream_idle_timeouts, Some(5));
+}
+
+#[test]
+fn stream_idle_setters_override_and_disable() {
+    let limits = RunLimits::default()
+        .with_stream_idle_timeout_ms(None)
+        .with_stream_first_event_timeout_ms(Some(300_000))
+        .with_max_consecutive_stream_idle_timeouts(Some(2));
+    assert_eq!(limits.stream_idle_timeout_ms, None);
+    assert_eq!(limits.stream_first_event_timeout_ms, Some(300_000));
+    assert_eq!(limits.max_consecutive_stream_idle_timeouts, Some(2));
+}
+
+#[test]
+fn stream_idle_timeouts_count_consecutively_until_reset() {
+    let mut tracker = LimitTracker::new(RunLimits::default());
+    assert_eq!(tracker.consecutive_stream_idle_timeouts(), 0);
+    assert_eq!(tracker.record_stream_idle_timeout(), 1);
+    assert_eq!(tracker.record_stream_idle_timeout(), 2);
+    tracker.reset_stream_idle_timeouts();
+    assert_eq!(tracker.consecutive_stream_idle_timeouts(), 0);
+    assert_eq!(tracker.record_stream_idle_timeout(), 1);
+}

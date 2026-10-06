@@ -196,11 +196,11 @@ async fn idle_timeout_is_rearmed_by_every_event() {
 
 #[tokio::test(start_paused = true)]
 async fn first_event_timeout_is_separate_from_the_idle_timeout() {
-    // The provider takes 3s to emit anything: past the 1s idle window but
-    // inside the 5s first-event window.
+    // The stream opens at once but the first token takes 3s: past the 1s idle
+    // window, inside the 5s first-event window (the open marker is not output).
     let model = ScriptedStreams::new(vec![vec![
-        Step::Sleep(Duration::from_secs(3)),
         started(),
+        Step::Sleep(Duration::from_secs(3)),
         delta("ok"),
         completed("ok"),
     ]]);
