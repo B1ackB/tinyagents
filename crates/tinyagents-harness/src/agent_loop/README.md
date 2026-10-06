@@ -198,7 +198,11 @@ follows the caller's normal
   `ChatModel::stream` instead of `ChatModel::invoke`, threading deltas through
   every middleware's `on_model_delta` hook. Visible text also crosses the
   streamed-text stall detector; repeated process narration drops the provider
-  stream and returns non-retryable `GenerationStalled`.
+  stream and returns non-retryable `GenerationStalled`. A stream that goes
+  silent past `RunLimits::stream_idle_timeout_ms` (first output event:
+  `stream_first_event_timeout_ms`) fails with retryable `CallTimeout`; after
+  `max_consecutive_stream_idle_timeouts` in a row the run fails with
+  `LimitExceeded` instead of retrying or falling back.
 - `AgentHarness::invoke_stream` / `invoke_stream_in_context` — a caller-facing
   event stream (`stream.rs`): yields every `AgentEvent` emitted during the run
   as `AgentStreamItem::Event`, then a single terminal
