@@ -743,7 +743,7 @@ fn same_transcript_messages(left: &[TranscriptMessage], right: &[TranscriptMessa
 /// [`FileTranscriptHistory`] is one type serving both roles; giving read-only
 /// handles a `None` meta would mean an `Option` field every write path then has
 /// to unwrap for no benefit.
-fn seed_meta_for_discovered(agent_name: &str) -> TranscriptMeta {
+pub(super) fn seed_meta_for_discovered(agent_name: &str) -> TranscriptMeta {
     TranscriptMeta {
         session_id: None,
         parent_session_id: None,

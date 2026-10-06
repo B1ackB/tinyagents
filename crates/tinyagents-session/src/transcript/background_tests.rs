@@ -336,3 +336,81 @@ async fn a_background_append_waits_for_the_live_turn_and_keeps_both_in_order() {
     .collect();
     assert_eq!(contents, expected);
 }
+
+#[tokio::test]
+async fn only_plain_assistant_messages_with_a_key_are_accepted() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    let before = std::fs::read(head_path(dir.path(), &session())).unwrap();
+    let mut interrupted = TranscriptMessage::assistant("half an ans");
+    interrupted.interrupted = true;
+    let calls = TranscriptMessage::assistant_with_calls(
+        "",
+        vec![crate::transcript::TranscriptToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: "{}".into(),
+            extra_content: None,
+        }],
+    );
+
+    for (message, key) in [
+        (TranscriptMessage::user("hi"), "run-1"),
+        (TranscriptMessage::system("hi"), "run-1"),
+        (calls, "run-1"),
+        (interrupted, "run-1"),
+        (TranscriptMessage::assistant("fine"), "  "),
+    ] {
+        let result = append_background_message(&locator, &session(), message, options(key)).await;
+        assert!(result.is_err(), "{result:?}");
+    }
+    assert_eq!(
+        std::fs::read(head_path(dir.path(), &session())).unwrap(),
+        before
+    );
+}
+
+/// A line whose `background` value is not a [`BackgroundOrigin`] (a newer or
+/// foreign writer) still resumes as a message; only the origin is dropped.
+#[tokio::test]
+async fn an_unreadable_origin_does_not_cost_the_message() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    let path = head_path(dir.path(), &session());
+    append_bytes(
+        &path,
+        b"{\"role\":\"assistant\",\"content\":\"from elsewhere\",\"background\":42}\n",
+    )
+    .unwrap();
+
+    let resumed = read_transcript(&path).unwrap();
+    assert_eq!(resumed.messages.last().unwrap().content, "from elsewhere");
+    let display = read_transcript_display(&path).unwrap();
+    let Some(DisplayRecord::Message(last)) = display.records.last() else {
+        panic!("expected a message record last");
+    };
+    assert_eq!(last.background, None);
+}
+
+#[test]
+fn an_attempt_against_a_sealed_head_writes_nothing_and_asks_to_re_resolve() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    compact(&locator, &[TranscriptMessage::system("summary")]);
+    let sealed = resolve_keyed_transcript_path(dir.path(), &session_stem(&session())).unwrap();
+    let before = std::fs::read(&sealed).unwrap();
+
+    let attempt = append_to_head(
+        &locator,
+        &session(),
+        &TranscriptMessage::assistant("Time to stretch!"),
+        &options("run-1"),
+    )
+    .unwrap();
+
+    assert!(matches!(attempt, Attempt::HeadMoved));
+    assert_eq!(std::fs::read(&sealed).unwrap(), before);
+}
