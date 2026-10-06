@@ -76,9 +76,49 @@ pub(crate) struct Worker<State: Send + Sync, Ctx: Send + Sync> {
     pub(crate) tool_timeout: Duration,
 }
 
-/// The text a tool message carries.
-fn message_text(messages: &[Message]) -> Option<String> {
-    messages.first().map(Message::text)
+/// What the model is told when a tool succeeded without saying anything.
+pub(crate) const EMPTY_OUTPUT: &str = "(the tool returned no output)";
+
+/// The output a folded tool message carries, as the provider should see it:
+/// a single JSON block stays structured, text and JSON blocks are joined as
+/// text, and an empty message becomes [`EMPTY_OUTPUT`] (providers reject an
+/// empty tool result). `None` when there is no tool message at all.
+pub(crate) fn tool_output(messages: &[Message]) -> Option<Value> {
+    use tinyagents_harness::tinyinference_llm::message::ContentBlock;
+    let message = messages.first()?;
+    let Message::Tool(tool) = message else {
+        let text = message.text();
+        return Some(Value::String(if text.trim().is_empty() {
+            EMPTY_OUTPUT.to_string()
+        } else {
+            text
+        }));
+    };
+    let blocks: Vec<&ContentBlock> = tool
+        .content
+        .iter()
+        .filter(|block| matches!(block, ContentBlock::Text(_) | ContentBlock::Json(_)))
+        .collect();
+    if let [ContentBlock::Json(value)] = blocks.as_slice() {
+        return Some(value.clone());
+    }
+    let text = blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text(text) => text.clone(),
+            ContentBlock::Json(value) => value.to_string(),
+            _ => String::new(),
+        })
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text.is_empty() {
+        return Some(Value::String(text));
+    }
+    Some(match message.artifact() {
+        Some(artifact) => artifact.clone(),
+        None => Value::String(EMPTY_OUTPUT.to_string()),
+    })
 }
 
 impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> Worker<State, Ctx> {
@@ -169,7 +209,7 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> Worker<State, Ctx
             Ok(Err(error)) => ToolResult::error(call, error.to_string()),
             Ok(Ok(outcome)) => {
                 let failed = self.recorder.take(&call.call_id);
-                match message_text(&outcome.results) {
+                match tool_output(&outcome.results) {
                     // No tool message: the call was deferred (it needs an
                     // approval or an external answer the live session cannot
                     // wait on).
@@ -177,8 +217,8 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> Worker<State, Ctx
                         call,
                         "the call was not run: it needs an approval that was not given",
                     ),
-                    Some(text) => {
-                        let mut result = ToolResult::ok(call, Value::String(text));
+                    Some(output) => {
+                        let mut result = ToolResult::ok(call, output);
                         result.is_error = failed.unwrap_or(false);
                         result
                     }
