@@ -32,13 +32,13 @@ use std::path::Path;
 
 use serde_json::json;
 
+use crate::port::SessionStoreProvider;
 use crate::run_ledger::{
     AgentRunKind, AgentRunListRequest, AgentRunStatus, AgentRunUpsert, RunEventAppend,
     RunEventListRequest, WorkflowLeaseClaim, WorkflowRunStatus, WorkflowRunUpsert,
     append_run_event, get_agent_run, list_agent_runs, list_recent_run_events,
     try_claim_workflow_run, upsert_agent_run, upsert_workflow_run,
 };
-use crate::port::SessionStoreProvider;
 use crate::transcript::{
     SessionRef, TranscriptHistory, TranscriptMessage, TranscriptMeta, TranscriptPartial,
     TranscriptTurn,
@@ -619,7 +619,11 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
         .await
         .expect("kv put succeeds");
     assert_eq!(
-        stores.kv.get("contract", "key").await.expect("kv get succeeds"),
+        stores
+            .kv
+            .get("contract", "key")
+            .await
+            .expect("kv get succeeds"),
         Some(json!({"n": 1}))
     );
     assert_eq!(
@@ -632,7 +636,11 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
         .await
         .expect("kv delete succeeds");
     assert_eq!(
-        stores.kv.get("contract", "key").await.expect("kv get succeeds"),
+        stores
+            .kv
+            .get("contract", "key")
+            .await
+            .expect("kv get succeeds"),
         None
     );
     stores
@@ -736,7 +744,10 @@ pub async fn session_store_isolation_conformance(provider: &dyn SessionStoreProv
         "another agent cannot read key-value records"
     );
     assert_eq!(
-        bob.journal.len("shared-run").await.expect("journal len succeeds"),
+        bob.journal
+            .len("shared-run")
+            .await
+            .expect("journal len succeeds"),
         0,
         "another agent cannot read journal streams"
     );

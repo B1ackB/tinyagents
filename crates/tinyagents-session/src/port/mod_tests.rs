@@ -40,7 +40,10 @@ fn the_file_turn_state_store_is_a_turn_states() {
     assert!(turns.put_unless_completed(&state).unwrap());
     assert_eq!(turns.get("t").unwrap().unwrap().request_id, "r");
     assert_eq!(turns.list().unwrap().len(), 1);
-    assert_eq!(turns.mark_all_interrupted("2026-01-01T00:01:00Z").unwrap(), 1);
+    assert_eq!(
+        turns.mark_all_interrupted("2026-01-01T00:01:00Z").unwrap(),
+        1
+    );
     assert!(turns.delete("t").unwrap());
     assert_eq!(turns.clear_all().unwrap(), 0);
 }

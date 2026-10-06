@@ -1,7 +1,5 @@
 use super::*;
-use crate::testkit::conformance::{
-    session_store_conformance, session_store_isolation_conformance,
-};
+use crate::testkit::conformance::{session_store_conformance, session_store_isolation_conformance};
 use crate::transcript::{SessionRef, TranscriptTurn};
 
 #[tokio::test]
@@ -52,7 +50,14 @@ fn recovery_interrupts_every_agents_turns_in_flight() {
     let shared: Arc<dyn SessionStoreProvider> = Arc::new(provider);
     assert!(shared.recover().is_ok());
     assert!(shared.destination_key().is_some());
-    assert!(Arc::new(shared.clone()).for_agent("a").turn_states.get("t").unwrap().is_some());
+    assert!(
+        Arc::new(shared.clone())
+            .for_agent("a")
+            .turn_states
+            .get("t")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -144,7 +149,10 @@ fn the_newest_root_wins_and_sub_agents_are_never_roots() {
     assert!(locator.latest_for_agent("nobody").is_none());
     // An unwritten probe is never a root.
     let _probe = locator
-        .open_stem(&crate::transcript::session_stem(&SessionRef::root("p")), meta("planner"))
+        .open_stem(
+            &crate::transcript::session_stem(&SessionRef::root("p")),
+            meta("planner"),
+        )
         .unwrap();
     assert_eq!(content(locator.root_for_thread("t")), "new");
     // A partial goes to the newest root and stays out of the replay.
