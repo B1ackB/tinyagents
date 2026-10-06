@@ -1547,6 +1547,77 @@ async fn length_finish_with_text_is_not_treated_as_truncated_empty() {
     assert_eq!(run.text(), Some("partial answer".to_string()));
 }
 
+/// A tool-calling response cut off by the output cap (`finish_reason ==
+/// "length"`): the calls may carry truncated, schema-valid-looking arguments.
+fn length_truncated_tool_calls_response(calls: &[(&str, &str)]) -> ModelResponse {
+    let mut response = tool_call_response(calls[0].0, calls[0].1, json!({"q": "cut"}));
+    for (id, name) in &calls[1..] {
+        response
+            .message
+            .tool_calls
+            .push(ToolCall::new(*id, *name, json!({"q": "cut"})));
+    }
+    response.finish_reason = Some("length".to_string());
+    response
+}
+
+#[tokio::test]
+async fn length_truncated_tool_calls_are_answered_with_errors_not_executed() {
+    // Every call of a length-truncated turn gets a synthetic error result (its
+    // arguments may be incomplete), the tool never runs, and the loop carries
+    // on so the model can re-issue the calls.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup"), ("c2", "lookup")]),
+        tool_call_response("c3", "lookup", json!({"q": "whole"})),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    let recorder = crate::testkit::EventRecorder::new();
+    let ctx = RunContext::new(RunConfig::new("length-tool-calls"), ()).with_events(recorder.sink());
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("look it up")])
+        .await
+        .expect("the run recovers on the next model call");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(run.model_calls, 3);
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        1,
+        "only the re-issued, complete call may execute"
+    );
+    // user, assistant(c1+c2), tool(c1), tool(c2), assistant(c3), tool(c3), final.
+    assert_eq!(run.messages.len(), 7, "{:?}", run.messages);
+    for (index, id) in [(2, "c1"), (3, "c2")] {
+        let Message::Tool(result) = &run.messages[index] else {
+            panic!("expected a tool result at {index}: {:?}", run.messages[index]);
+        };
+        assert_eq!(result.tool_call_id, id);
+        let text = run.messages[index].text();
+        assert!(text.contains("output token limit"), "{text}");
+        assert!(text.contains("lookup"), "{text}");
+        assert_ne!(text, "tool-output");
+    }
+    // Started/terminal pairing holds for the synthetic results.
+    let events = recorder.events();
+    for id in ["c1", "c2"] {
+        let started = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolStarted { call_id, .. } if call_id.as_str() == id))
+            .count();
+        let completed = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCompleted { call_id, .. } if call_id.as_str() == id))
+            .count();
+        assert_eq!((started, completed), (1, 1), "call {id}: {:?}", recorder.kinds());
+    }
+}
+
 #[tokio::test]
 async fn model_requests_tool_then_finishes() {
     let mut harness: AgentHarness<()> = AgentHarness::new();
