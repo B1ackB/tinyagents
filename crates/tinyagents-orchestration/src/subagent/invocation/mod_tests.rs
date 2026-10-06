@@ -64,7 +64,11 @@ pub(super) fn spawned_job_id(result: &tinytools::ToolResult) -> String {
         .to_owned()
 }
 
-pub(super) async fn wait_for_terminal(jobs: &SubAgentJobRegistry, job_id: &str, owner: u64) -> SubAgentJob {
+pub(super) async fn wait_for_terminal(
+    jobs: &SubAgentJobRegistry,
+    job_id: &str,
+    owner: u64,
+) -> SubAgentJob {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             let job = jobs
@@ -513,12 +517,10 @@ async fn session_reuses_harness_and_retains_transcript() {
         .unwrap();
     assert_eq!(session.turns(), 2);
     assert!(session.transcript().len() >= 4);
-    assert!(
-        recorder
-            .events()
-            .iter()
-            .any(|record| matches!(record.event, AgentEvent::SubAgentReused { turn: 1, .. }))
-    );
+    assert!(recorder
+        .events()
+        .iter()
+        .any(|record| matches!(record.event, AgentEvent::SubAgentReused { turn: 1, .. })));
     session.reset();
     assert!(session.transcript().is_empty());
 }

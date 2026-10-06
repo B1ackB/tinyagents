@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::error::TinyAgentsError;
@@ -301,7 +301,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
                 let job_id = object
                     .get("job_id")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("job_id must be a string for action `cancel`"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("job_id must be a string for action `cancel`")
+                    })?;
                 let job = self.jobs.cancel_owned(job_id, parent.instance_id())?;
                 return Ok(ToolResult::json(serde_json::to_value(job)?));
             }
