@@ -1633,6 +1633,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             );
         }
         append_follow_ups(messages, follow_ups);
+        // Synthetic errors never terminate; drop the votes they recorded.
+        ctx.terminate_votes.clear();
         Ok(())
     }
 
