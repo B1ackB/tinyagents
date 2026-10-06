@@ -11,7 +11,10 @@ use async_trait::async_trait;
 use crate::context::RunContext;
 use crate::error::Result as TaResult;
 use crate::middleware::{Middleware, ToolInvocationIdentity};
-use crate::no_progress::{SuccessfulRepeat, SuccessfulRepeatTracker, fingerprint_arguments};
+use crate::no_progress::{
+    OutcomeFingerprinter, SuccessfulRepeat, SuccessfulRepeatTracker, VolatileSpanNormalizer,
+    fingerprint_arguments,
+};
 use crate::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
@@ -143,6 +146,8 @@ pub struct RepeatProgressMiddleware {
     halt_summary: HaltSummarySlot,
     exempt: RepeatExemption,
     state: Arc<RepeatState>,
+    /// Handed to every per-run tracker for comparing tool results.
+    fingerprinter: Arc<dyn OutcomeFingerprinter>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
     pending: Mutex<HashMap<u64, PendingCallBatch>>,
 }
@@ -161,12 +166,19 @@ impl RepeatProgressMiddleware {
             halt_summary,
             exempt,
             state: Arc::new(RepeatState::new(DEFAULT_CLEARED_PLACEHOLDER)),
+            fingerprinter: Arc::new(VolatileSpanNormalizer),
             pending: Mutex::default(),
         }
     }
 
-    /// stub
-    pub fn with_fingerprinter(self, _f: Arc<dyn crate::no_progress::OutcomeFingerprinter>) -> Self { self }
+    /// Replaces the fingerprinter the recurrence ledger uses to compare tool
+    /// results. The default ignores volatile spans (timestamps, durations,
+    /// request ids), so a result that differs only by those still counts as
+    /// the same result.
+    pub fn with_fingerprinter(mut self, fingerprinter: Arc<dyn OutcomeFingerprinter>) -> Self {
+        self.fingerprinter = fingerprinter;
+        self
+    }
 
     /// Override the placeholder body treated as an evicted tool result. Must be
     /// called before [`eviction_observer`](Self::eviction_observer).

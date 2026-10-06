@@ -75,7 +75,7 @@ pub use types::{
     NoProgress, NoProgressTracker, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
 };
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Consecutive **identical** (tool + args + error) failures tolerated before the
 /// ladder halts the run — a call re-issued unchanged that keeps failing can
@@ -174,8 +174,18 @@ impl NoProgressTracker {
     pub fn new(identical_halt_threshold: usize) -> Self {
         Self {
             identical_halt_threshold: identical_halt_threshold.max(IDENTICAL_NUDGE_THRESHOLD + 1),
+            fingerprinter: Arc::new(VolatileSpanNormalizer),
             state: Mutex::new(LadderState::default()),
         }
+    }
+
+    /// Replaces the fingerprinter that reduces a failure message to the
+    /// identity the identical-repeat rung compares. The default is
+    /// [`VolatileSpanNormalizer`], so the same failure carrying a fresh
+    /// timestamp, duration or attempt counter still counts as identical.
+    pub fn with_fingerprinter(mut self, fingerprinter: Arc<dyn OutcomeFingerprinter>) -> Self {
+        self.fingerprinter = fingerprinter;
+        self
     }
 
     /// Clear every counter. Called after a halt so a resumed run does not
@@ -197,12 +207,14 @@ impl NoProgressTracker {
             return NoProgress::Continue;
         };
 
-        // Signature: tool name + argument fingerprint + first error line (the
-        // deterministic parts; a huge payload tail must not dominate the
-        // identical-repeat comparison).
+        // Signature: tool name + argument fingerprint + the fingerprinted first
+        // error line (the deterministic parts; a huge payload tail must not
+        // dominate the identical-repeat comparison, and a volatile span such as
+        // a timestamp must not make a repeated failure look novel).
         let err_line = err.lines().next().unwrap_or(err);
+        let err_identity = self.fingerprinter.fingerprint(err_line);
         let sig = format!(
-            "{}\u{1f}{}\u{1f}{err_line}",
+            "{}\u{1f}{}\u{1f}{err_identity}",
             attempt.tool, attempt.arg_fingerprint
         );
 
