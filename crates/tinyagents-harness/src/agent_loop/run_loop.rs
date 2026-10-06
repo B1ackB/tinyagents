@@ -413,6 +413,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let mut withheld_call_nudges_used: u32 = 0;
         let mut boosted_max_tokens: Option<u32> = None;
         let mut truncation_base: Option<u32> = None;
+        // Consecutive length-truncated tool turns answered with errors (see
+        // `RunPolicy::truncated_tool_call_retries`); reset by any tool turn
+        // that was not cut off, never by the truncated turn itself.
+        let mut truncated_tool_call_retries_used: u32 = 0;
 
         // Output-validation retry state (see `RunPolicy::output_retry`, A3).
         // Scoped to the whole run rather than reset per turn: `max_attempts`
@@ -1350,56 +1354,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
             let tool_calls = response.tool_calls().to_vec();
 
-            // A length-truncated turn cannot be trusted to have finished
-            // writing its calls: answer every one with an error instead of
-            // running possibly-truncated arguments, and let the model retry.
-            if self.policy.reject_truncated_tool_calls
-                && !tool_calls.is_empty()
-                && response.finish_reason.as_deref() == Some("length")
-            {
-                tracing::info!(
-                    target: "tinyagents::agent_loop",
-                    run_id = %ctx.run_id(),
-                    call_id = %call_id,
-                    calls = tool_calls.len(),
-                    "[agent_loop] length-truncated response; failing its tool calls instead of running them"
-                );
-                let record = ctx.emit(AgentEvent::ControlApplied {
-                    control: "truncated_tool_calls".to_string(),
-                    detail: format!(
-                        "model call `{call_id}` hit its output limit mid-turn; {} tool call(s) \
-                         answered with an error, not run",
-                        tool_calls.len()
-                    ),
-                });
-                status.set_last_event(record.id);
-                // A tool-calling turn is a resolved turn: same recovery-state
-                // reset as the ordinary tool path below.
-                dropped_tool_call_nudges_used = 0;
-                withheld_call_nudges_used = 0;
-                empty_response_retries_used = 0;
-                reset_truncated_empty_recovery(
-                    &mut truncated_empty_retries_used,
-                    &mut truncated_empty_nudges_used,
-                    &mut boosted_max_tokens,
-                    &mut truncation_base,
-                );
-                status.mark_running(HarnessPhase::Tools);
-                self.fail_truncated_tool_calls(state, ctx, run, status, messages, &tool_calls)
-                    .await?;
-                self.apply_queued_lane(ctx, status, messages, crate::run_queue::QueueLane::Steer)
-                    .await;
-                if self.middleware.any_should_stop_after_turn(ctx, run) {
-                    ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
-                }
-                match self.apply_pending_control(ctx, run, status, messages)? {
-                    ControlEffect::None => {}
-                    ControlEffect::ContinueLoop => continue,
-                    ControlEffect::Exit(exit) => return Ok(exit),
-                }
-                continue;
-            }
-
             // A tool-call structured-output strategy produces an artificial tool
             // call that is not a registered tool, so split the turn's calls into
             // the schema call(s) and the genuine ones. Treating "any call
@@ -1429,6 +1383,94 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         .partition(|call| structured_call_names.contains(&call.name))
                 };
             let structured_tool_hit = !structured_hits.is_empty();
+
+            // A length stop means the output cap cut the reply off somewhere:
+            // the last native call may carry truncated (yet parseable) arguments,
+            // as may any call the provider flagged invalid (a repair could make
+            // it look whole). Answer those with an error instead of running
+            // them and let the model retry; earlier native calls and calls
+            // recovered from text (an unterminated block never becomes a call)
+            // are complete and run normally. Bounded per logical turn.
+            let mut turn_had_truncated_calls = false;
+            ctx.truncated_call_ids.clear();
+            if self.policy.reject_truncated_tool_calls
+                && !tool_calls.is_empty()
+                && is_length_stop(response.finish_reason.as_deref())
+            {
+                let truncated_ids = truncated_call_ids(&tool_calls, &call_id);
+                if !truncated_ids.is_empty() {
+                    if truncated_tool_call_retries_used >= self.policy.truncated_tool_call_retries {
+                        tracing::warn!(
+                            target: "tinyagents::agent_loop",
+                            run_id = %ctx.run_id(),
+                            call_id = %call_id,
+                            retries = truncated_tool_call_retries_used,
+                            "[agent_loop] length-truncated tool calls keep recurring; truncated-tool-call retry budget exhausted"
+                        );
+                        messages.pop();
+                        return Err(TinyAgentsError::LimitExceeded(format!(
+                            "run `{}` stopped: {truncated_tool_call_retries_used} consecutive \
+                             retries of a tool call truncated by the output token limit did not \
+                             produce a complete call (RunPolicy::truncated_tool_call_retries)",
+                            ctx.run_id()
+                        )));
+                    }
+                    truncated_tool_call_retries_used += 1;
+                    turn_had_truncated_calls = true;
+                    // Give the retry room to finish the call.
+                    boost_max_tokens(attempt_max_tokens, &mut truncation_base, &mut boosted_max_tokens);
+                    tracing::info!(
+                        target: "tinyagents::agent_loop",
+                        run_id = %ctx.run_id(),
+                        call_id = %call_id,
+                        calls = tool_calls.len(),
+                        rejected = truncated_ids.len(),
+                        attempt = truncated_tool_call_retries_used,
+                        max_tokens = ?boosted_max_tokens,
+                        finish_reason = ?response.finish_reason,
+                        "[agent_loop] length-truncated response; failing its possibly-incomplete tool calls instead of running them"
+                    );
+                    let record = ctx.emit(AgentEvent::ControlApplied {
+                        control: "truncated_tool_calls".to_string(),
+                        detail: format!(
+                            "model call `{call_id}` hit its output limit mid-turn; {} of {} tool \
+                             call(s) answered with an error, not run",
+                            truncated_ids.len(),
+                            tool_calls.len()
+                        ),
+                    });
+                    status.set_last_event(record.id);
+                    if structured_hits
+                        .iter()
+                        .any(|call| truncated_ids.contains(&call.id))
+                    {
+                        // The structured-output call itself was cut off: it
+                        // cannot be extracted as the answer, and the turn has
+                        // no other path that answers it. Fail the whole turn.
+                        status.mark_running(HarnessPhase::Tools);
+                        self.fail_truncated_tool_calls(
+                            state, ctx, run, status, messages, &tool_calls,
+                        )
+                        .await?;
+                        self.apply_queued_lane(
+                            ctx,
+                            status,
+                            messages,
+                            crate::run_queue::QueueLane::Steer,
+                        )
+                        .await;
+                        match self.apply_pending_control(ctx, run, status, messages)? {
+                            ControlEffect::None => {}
+                            ControlEffect::ContinueLoop => continue,
+                            ControlEffect::Exit(exit) => return Ok(exit),
+                        }
+                        continue;
+                    }
+                    // Admission answers these calls with the error, in call
+                    // order, as the batch runs (see `admit_tool_call`).
+                    ctx.truncated_call_ids = truncated_ids;
+                }
+            }
 
             if structured_tool_hit && !real_tool_calls.is_empty() {
                 // A6: one turn asked to both answer (the structured-output
@@ -1683,14 +1725,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // clamped at 4x the original cap. An unset budget stays unset
                     // (a plain retry is still worthwhile — the failure is
                     // stochastic).
-                    if let Some(sent) = attempt_max_tokens {
-                        let base = *truncation_base.get_or_insert(sent);
-                        let next = boosted_max_tokens
-                            .unwrap_or(sent)
-                            .saturating_mul(2)
-                            .min(base.saturating_mul(4));
-                        boosted_max_tokens = Some(next);
-                    }
+                    boost_max_tokens(
+                        attempt_max_tokens,
+                        &mut truncation_base,
+                        &mut boosted_max_tokens,
+                    );
                     let record = ctx.emit(AgentEvent::RetryScheduled {
                         call_id: call_id.clone(),
                         attempt: truncated_empty_retries_used as usize,
