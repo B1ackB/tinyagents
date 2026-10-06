@@ -290,6 +290,12 @@ async fn cancelled_calls_are_skipped_or_not_answered() {
     // `s1` starts running; `s2` waits behind it and is cancelled first.
     events.send(call("s1", "slow")).await.unwrap();
     events.send(call("s2", "get_time")).await.unwrap();
+    loop {
+        if let Some(LiveAgentEvent::ToolStarted { call_id, .. }) = session.recv().await {
+            assert_eq!(call_id, "s1");
+            break;
+        }
+    }
     events
         .send(LiveEvent::ToolCallCancelled {
             call_ids: vec!["s1".into(), "s2".into()],
