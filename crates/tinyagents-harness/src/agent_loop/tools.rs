@@ -1628,7 +1628,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Each call is folded through [`Self::recover_tool_call`], so the
     /// started/terminal pairing, `after_tool` hooks, and accounting match the
     /// other recovery paths; no tool runs and no tool-call budget slot is
-    /// spent (a retry loop is bounded by the model-call limit).
+    /// spent (the retry loop is bounded by `RunPolicy::truncated_tool_call_retries`).
     pub(super) async fn fail_truncated_tool_calls(
         &self,
         state: &State,
