@@ -196,7 +196,7 @@ fn limit_kind_labels_match_the_event_layer() {
 // ── Stream idle-timeout settings and breaker counter ─────────────────────────
 
 #[test]
-fn stream_idle_defaults_are_on_with_a_breaker_and_no_separate_first_event_window() {
+fn stream_idle_defaults_are_on_with_a_breaker_and_no_first_event_bound() {
     let limits = RunLimits::default();
     assert_eq!(limits.stream_idle_timeout_ms, Some(120_000));
     assert_eq!(limits.stream_first_event_timeout_ms, None);
