@@ -121,6 +121,10 @@ fn only_the_last_and_invalid_calls_are_possibly_truncated() {
         .into_iter()
         .collect();
     positions.sort();
-    assert_eq!(positions, vec![1, 3], "positional: a duplicate id does not widen it");
+    assert_eq!(
+        positions,
+        vec![1, 3],
+        "positional: a duplicate id does not widen it"
+    );
     assert!(super::truncated_call_positions(&[]).is_empty());
 }

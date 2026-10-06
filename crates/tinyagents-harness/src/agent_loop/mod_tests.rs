@@ -1772,9 +1772,51 @@ async fn truncated_tool_call_budget_resets_after_a_clean_tool_turn() {
 }
 
 #[tokio::test]
-async fn text_dialect_calls_are_never_rejected_under_a_length_stop() {
-    // An unterminated text block never becomes a call, so a call recovered
-    // from text is complete even when the reply was cut off after it.
+async fn a_text_recovered_last_call_is_rejected_under_a_length_stop() {
+    // A text grammar can close an open `{`/`[` or run a payload to the end of
+    // the text, so a recovered call can be cut off and still parse. The native
+    // call before it was finished and runs; the recovered last one does not.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let mut cut = tool_call_response("n1", "lookup", json!({"q": "whole"}));
+    cut.message.content = vec![ContentBlock::Text(
+        r#"<tool_call>{"name":"lookup","arguments":{"q":"cut"}}</tool_call>"#.to_string(),
+    )];
+    cut.finish_reason = Some("length".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+    harness.with_policy(RunPolicy {
+        text_dialect_recovery: crate::runtime::TextDialectRecovery::On,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        1,
+        "the native call runs, the recovered last call does not"
+    );
+    assert!(
+        run.messages
+            .iter()
+            .any(|m| m.text().contains("output token limit")),
+        "{:?}",
+        run.messages
+    );
+}
+
+#[tokio::test]
+async fn a_forced_text_dialect_call_cut_by_a_length_stop_is_rejected() {
     let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
     let mut cut = text_response(
         r#"<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>"#,
@@ -1795,13 +1837,68 @@ async fn text_dialect_calls_are_never_rejected_under_a_length_stop() {
         ..RunPolicy::default()
     });
 
+    harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        0,
+        "the cut-off call must not run"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_provider_ids_reject_the_positional_last_call() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("dup", "lookup"), ("dup", "lookup")]),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
     let run = harness
         .invoke_default(&(), vec![Message::user("look it up")])
         .await
         .expect("run succeeds");
 
-    assert_eq!(run.text(), Some("done".to_string()));
-    assert_eq!(*tool.calls.lock().unwrap(), 1, "the recovered call runs");
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        1,
+        "only the first duplicate runs"
+    );
+    assert_eq!(run.messages[2].text(), "tool-output");
+    assert!(run.messages[3].text().contains("output token limit"));
+}
+
+#[tokio::test]
+async fn an_empty_max_tokens_reply_takes_the_truncated_empty_retry_path() {
+    // Anthropic spells the length stop `max_tokens`; an empty reply with it is
+    // a truncated-empty completion (retried with a bigger cap), not a blank final.
+    let mut cut = truncated_empty_response(2048);
+    cut.finish_reason = Some("max_tokens".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("recovered", 4, 3),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+
+    let ctx = RunContext::new(
+        RunConfig::new("max-tokens-empty").with_max_turn_output_tokens(2048),
+        (),
+    );
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("retried, not surfaced");
+
+    assert_eq!(run.text(), Some("recovered".to_string()));
+    assert_eq!(model.requests()[1].max_tokens, Some(4096));
 }
 
 #[tokio::test]

@@ -1861,11 +1861,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // Native models with text recovery on parse the same grammars
                 // out of their prose, so the same drop applies to them.
                 let malformed_blocks = recovery.dropped.malformed();
-                let unterminated_blocks = if crate::finish_reason::is_length_stop(response.finish_reason.as_deref()) {
-                    0
-                } else {
-                    recovery.dropped.unterminated()
-                };
+                let unterminated_blocks =
+                    if crate::finish_reason::is_length_stop(response.finish_reason.as_deref()) {
+                        0
+                    } else {
+                        recovery.dropped.unterminated()
+                    };
                 let undecodable_text_call = (forced_text_dialect || text_dialect_recovery_enabled)
                     && malformed_blocks + unterminated_blocks > 0;
                 if tool_calls.is_empty()
