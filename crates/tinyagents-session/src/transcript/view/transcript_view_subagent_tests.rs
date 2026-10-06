@@ -150,7 +150,33 @@ fn envelope(call_id: &str, output: &str) -> String {
     serde_json::json!({"tool_call_id": call_id, "content": output}).to_string()
 }
 
+fn row_content(wrap: bool, call_id: &str, output: &str) -> String {
+    if wrap {
+        envelope(call_id, output)
+    } else {
+        output.to_owned()
+    }
+}
+
 fn project_two_spawns(
+    result_for_decoy: &str,
+    result_for_real: &str,
+    child_task_id: &str,
+    child_thread_id: &str,
+) -> Option<String> {
+    project_spawns(
+        true,
+        result_for_decoy,
+        result_for_real,
+        child_task_id,
+        child_thread_id,
+    )
+}
+
+/// `wrap` persists each tool row as a replay envelope; `false` stores the raw
+/// tool output unwrapped.
+fn project_spawns(
+    wrap: bool,
     result_for_decoy: &str,
     result_for_real: &str,
     child_task_id: &str,
@@ -172,11 +198,11 @@ fn project_two_spawns(
         ),
         format!(
             r#"{{"role":"tool","content":{},"id":"call-decoy","request_id":"req-1"}}"#,
-            serde_json::to_string(&envelope("call-decoy", result_for_decoy)).unwrap()
+            serde_json::to_string(&row_content(wrap, "call-decoy", result_for_decoy)).unwrap()
         ),
         format!(
             r#"{{"role":"tool","content":{},"id":"call-real","request_id":"req-1"}}"#,
-            serde_json::to_string(&envelope("call-real", result_for_real)).unwrap()
+            serde_json::to_string(&row_content(wrap, "call-real", result_for_real)).unwrap()
         ),
     ];
     let root_refs: Vec<&str> = root_body.iter().map(String::as_str).collect();
@@ -282,4 +308,19 @@ fn a_spawn_payload_naming_another_call_is_not_trusted() {
         Some("call-decoy"),
         "falls back to the heuristic"
     );
+}
+
+/// An unwrapped raw queued payload carries `parent_tool_call_id`, not
+/// `tool_call_id`, so the reader must not mistake it for a replay envelope and
+/// blank it: the explicit link still resolves.
+#[test]
+fn an_unwrapped_raw_spawn_payload_is_not_blanked_by_the_reader() {
+    let call_id = project_spawns(
+        false,
+        r#"{"job_id":"subagent-job-1","status":"queued","subagent_run_id":"worker-d1-parent-0","parent_tool_call_id":"call-decoy"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","parent_tool_call_id":"call-real"}"#,
+        "worker-d1-parent-1",
+        "thr_link",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-real"));
 }
