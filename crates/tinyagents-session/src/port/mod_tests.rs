@@ -29,7 +29,10 @@ async fn the_file_building_blocks_meet_the_session_store_contract() {
     session_store_conformance(&provider).await;
     assert!(provider.recover().is_ok(), "recovery defaults to a no-op");
     assert!(provider.destination_key().is_none());
-    assert!(provider.workspace_dir().is_none(), "only a provider that says so is file-backed");
+    assert!(
+        provider.workspace_dir().is_none(),
+        "only a provider that says so is file-backed"
+    );
 }
 
 #[test]
