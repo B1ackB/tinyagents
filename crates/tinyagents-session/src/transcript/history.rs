@@ -1157,6 +1157,25 @@ impl FileTranscriptHistory {
     }
 }
 
+impl FileTranscriptHistory {
+    /// Runs `write` holding exactly the locks every other mutation of this
+    /// file takes (handle serial, cross-process advisory lock, process-wide
+    /// path lock), so an out-of-band writer can never interleave its bytes
+    /// with a turn append or a generation being sealed.
+    pub(super) fn with_write_locks<R>(
+        &self,
+        write: impl FnOnce() -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
+        let os_lock = self.acquire_write_lock()?;
+        let lock = path_lock(&self.path);
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = write();
+        drop(os_lock);
+        result
+    }
+}
+
 impl TranscriptHistory for FileTranscriptHistory {
     /// Pure forwarder: every argument reaches the transcript writer's turn append
     /// untouched, so the bytes this writes are identical to what the free
