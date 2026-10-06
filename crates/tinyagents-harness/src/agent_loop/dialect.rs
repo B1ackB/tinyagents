@@ -571,17 +571,6 @@ fn fingerprinted_id_prefix(model_call_id: &CallId) -> String {
     format!("mc{fingerprint}-tool-")
 }
 
-/// Whether `id` was minted by [`recovered_tool_call_id`] for `model_call_id`,
-/// i.e. the call came from text-dialect markup rather than the provider's
-/// native tool channel.
-pub(super) fn is_recovered_tool_call_id(model_call_id: &CallId, id: &str) -> bool {
-    let is_slot = |prefix: String| {
-        id.strip_prefix(prefix.as_str())
-            .is_some_and(|slot| !slot.is_empty() && slot.bytes().all(|byte| byte.is_ascii_digit()))
-    };
-    is_slot(format!("{model_call_id}-tool-")) || is_slot(fingerprinted_id_prefix(model_call_id))
-}
-
 /// Reads text-dialect calls out of a response that carries no structured
 /// ones, through every grammar `tinytools-agent` knows, with the offered
 /// tools enabling name repair. Non-text content blocks (reasoning) survive.

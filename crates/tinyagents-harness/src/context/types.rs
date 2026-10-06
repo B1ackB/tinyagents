@@ -433,12 +433,15 @@ pub struct RunContext<Ctx = ()> {
     /// otherwise. The batch driver settles it once every call has answered —
     /// the run ends only if **every** call voted `Some`.
     pub(crate) terminate_votes: Vec<Option<String>>,
-    /// Ids of this turn's tool calls a length stop may have cut off; admission
-    /// answers each with a synthetic error instead of running it (see
-    /// `RunPolicy::reject_truncated_tool_calls`). Consumed per call, and
-    /// cleared at every turn boundary so a reused provider id cannot match
-    /// a later turn.
-    pub(crate) truncated_call_ids: std::collections::HashSet<String>,
+    /// Positions (within the batch about to run) of the tool calls a length
+    /// stop may have cut off; admission answers each with a synthetic error
+    /// instead of running it (see `RunPolicy::reject_truncated_tool_calls`).
+    /// Positional, not by provider id, so duplicate or empty ids fail closed.
+    /// Set per turn and cleared when the batch ends.
+    pub(crate) truncated_call_positions: std::collections::HashSet<usize>,
+    /// How many calls the current batch has admitted so far; the position
+    /// `truncated_call_positions` is matched against. Reset per batch.
+    pub(crate) batch_admissions: usize,
     /// An optional host-supplied workspace/sandbox descriptor threaded into every
     /// [`ToolExecutionContext`][crate::tool::ToolExecutionContext] this
     /// run creates, so tools discover their allowed root from context rather

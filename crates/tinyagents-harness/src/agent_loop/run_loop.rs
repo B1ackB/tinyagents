@@ -1385,20 +1385,24 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let structured_tool_hit = !structured_hits.is_empty();
 
             // A length stop means the output cap cut the reply off somewhere:
-            // the last native call may carry truncated (yet parseable) arguments,
-            // as may any call the provider flagged invalid (a repair could make
-            // it look whole). Answer those with an error instead of running
-            // them and let the model retry; earlier native calls and calls
-            // recovered from text (an unterminated block never becomes a call)
-            // are complete and run normally. Bounded per logical turn.
+            // the LAST call of the response may carry truncated (yet parseable)
+            // arguments — native or recovered from text alike, since a text
+            // grammar can close an open `{`/`[` or run a payload to end-of-text
+            // — as may any call the provider flagged invalid (a repair could
+            // make it look whole). Answer those with an error instead of
+            // running them and let the model retry; every earlier call was
+            // finished before the cut and runs normally. The call is chosen by
+            // position, not id, so duplicate or empty provider ids fail closed.
+            // Bounded per logical turn. A run resumed in a fresh context
+            // restarts this budget.
             let mut turn_had_truncated_calls = false;
-            ctx.truncated_call_ids.clear();
+            ctx.truncated_call_positions.clear();
             if self.policy.reject_truncated_tool_calls
                 && !tool_calls.is_empty()
-                && is_length_stop(response.finish_reason.as_deref())
+                && crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
             {
-                let truncated_ids = truncated_call_ids(&tool_calls, &call_id);
-                if !truncated_ids.is_empty() {
+                let truncated_positions = truncated_call_positions(&tool_calls);
+                if !truncated_positions.is_empty() {
                     if truncated_tool_call_retries_used >= self.policy.truncated_tool_call_retries {
                         tracing::warn!(
                             target: "tinyagents::agent_loop",
@@ -1428,7 +1432,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         run_id = %ctx.run_id(),
                         call_id = %call_id,
                         calls = tool_calls.len(),
-                        rejected = truncated_ids.len(),
+                        rejected = truncated_positions.len(),
                         attempt = truncated_tool_call_retries_used,
                         max_tokens = ?boosted_max_tokens,
                         finish_reason = ?response.finish_reason,
@@ -1439,14 +1443,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         detail: format!(
                             "model call `{call_id}` hit its output limit mid-turn; {} of {} tool \
                              call(s) answered with an error, not run",
-                            truncated_ids.len(),
+                            truncated_positions.len(),
                             tool_calls.len()
                         ),
                     });
                     status.set_last_event(record.id);
-                    if structured_hits
+                    if truncated_positions
                         .iter()
-                        .any(|call| truncated_ids.contains(&call.id))
+                        .any(|&index| structured_call_names.contains(&tool_calls[index].name))
                     {
                         // The structured-output call itself was cut off: it
                         // cannot be extracted as the answer, and the turn has
@@ -1476,8 +1480,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         continue;
                     }
                     // Admission answers these calls with the error, in call
-                    // order, as the batch runs (see `admit_tool_call`).
-                    ctx.truncated_call_ids = truncated_ids;
+                    // order, as the batch runs (see `admit_tool_call`). The
+                    // batch holds the non-structured calls only, so translate
+                    // each position into the batch's own index space.
+                    let mut batch_index = 0;
+                    for (index, call) in tool_calls.iter().enumerate() {
+                        if structured_call_names.contains(&call.name) {
+                            continue;
+                        }
+                        if truncated_positions.contains(&index) {
+                            ctx.truncated_call_positions.insert(batch_index);
+                        }
+                        batch_index += 1;
+                    }
                 }
             }
 
@@ -1725,7 +1740,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // A structured tool hit carries a real payload, so it is never
                 // treated as truncated-empty.
                 let truncated_empty = tool_calls.is_empty()
-                    && is_length_stop(response.finish_reason.as_deref())
+                    && crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
                     && response.text().trim().is_empty();
                 if truncated_empty
                     && truncated_empty_retries_used < self.policy.truncated_empty_retries
@@ -1806,7 +1821,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && response.continue_turn.is_none()
                     && structured_plan.is_none()
                     && run.structured.is_none()
-                    && !is_length_stop(response.finish_reason.as_deref())
+                    && !crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
                     && response.finish_reason.as_deref() != Some("tool_calls")
                     && !response.served_from_cache;
                 if nontruncated_empty
@@ -1846,7 +1861,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // Native models with text recovery on parse the same grammars
                 // out of their prose, so the same drop applies to them.
                 let malformed_blocks = recovery.dropped.malformed();
-                let unterminated_blocks = if is_length_stop(response.finish_reason.as_deref()) {
+                let unterminated_blocks = if crate::finish_reason::is_length_stop(response.finish_reason.as_deref()) {
                     0
                 } else {
                     recovery.dropped.unterminated()
@@ -2833,17 +2848,6 @@ fn resolve_call_cap(config_cap: Option<usize>, policy_cap: usize) -> usize {
     }
 }
 
-/// Whether a provider's finish reason says the output cap cut the reply off.
-///
-/// Providers disagree on the spelling — OpenAI-compatible endpoints report
-/// `length`, Anthropic `max_tokens`, some gateways pass `MAX_TOKENS` through —
-/// and `tinyinference` does not normalise it, so the loop matches the known
-/// spellings itself. (Normalisation belongs upstream in `tinyinference`; this
-/// helper then collapses to the single canonical value.)
-pub(super) fn is_length_stop(finish_reason: Option<&str>) -> bool {
-    matches!(finish_reason, Some("length" | "max_tokens" | "MAX_TOKENS"))
-}
-
 /// Grows the next request's output cap after a length-truncated reply: double
 /// the cap last sent, clamped at 4x the original. An unset cap stays unset (a
 /// plain retry is still worthwhile — the failure is stochastic).
@@ -2863,23 +2867,20 @@ fn boost_max_tokens(
     }
 }
 
-/// The ids of the calls of a length-stopped response that may be incomplete:
-/// the last *native* call (the provider finished streaming every earlier one),
-/// and any call the provider flagged `invalid` (a repair could make it look
-/// whole). Calls recovered from text are never listed — an unterminated block
-/// never becomes a call.
-fn truncated_call_ids(
-    calls: &[ToolCall],
-    model_call_id: &CallId,
-) -> std::collections::HashSet<String> {
-    let last_native = calls
-        .iter()
-        .rposition(|call| !super::dialect::is_recovered_tool_call_id(model_call_id, &call.id));
+/// The positions of the calls of a length-stopped response that may be
+/// incomplete: the last call (the cut landed inside it, whether it came from
+/// the native tool channel or was recovered from text) and any call the
+/// provider flagged `invalid` (a repair could make it look whole). Every
+/// earlier call was finished before the cut.
+fn truncated_call_positions(calls: &[ToolCall]) -> std::collections::HashSet<usize> {
+    let Some(last) = calls.len().checked_sub(1) else {
+        return std::collections::HashSet::new();
+    };
     calls
         .iter()
         .enumerate()
-        .filter(|(index, call)| Some(*index) == last_native || call.invalid.is_some())
-        .map(|(_, call)| call.id.clone())
+        .filter(|(index, call)| *index == last || call.invalid.is_some())
+        .map(|(index, _)| index)
         .collect()
 }
 

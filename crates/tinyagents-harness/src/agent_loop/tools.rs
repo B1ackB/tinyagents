@@ -446,8 +446,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.policy.invalid_args,
                 InvalidArgsPolicy::NormalizeThenReturnToolError
             ) && batch_is_canonical_parallel_safe(&self.tools, &tool_calls);
-        // A fresh batch: votes left by an aborted earlier batch must not count.
+        // A fresh batch: votes left by an aborted earlier batch must not count,
+        // and admission positions restart at the batch's first call.
         ctx.terminate_votes.clear();
+        ctx.batch_admissions = 0;
         let deferred = if should_execute_tools_concurrently(
             tool_calls.len(),
             canonical_parallel_safe,
@@ -476,6 +478,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .await?
         };
         self.settle_batch_termination(ctx, run, deferred.is_empty());
+        // The positions belong to this batch only; a later admission (a
+        // deferred call resumed inline) must not match them.
+        ctx.truncated_call_positions.clear();
         Ok(deferred)
     }
 
@@ -556,7 +561,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
         // A call a length stop may have cut off is answered, not run, and spends
         // no budget slot (see `RunPolicy::reject_truncated_tool_calls`).
-        if ctx.truncated_call_ids.remove(&call.id) {
+        let position = ctx.batch_admissions;
+        ctx.batch_admissions += 1;
+        if ctx.truncated_call_positions.contains(&position) {
             tracing::debug!(
                 target: "tinyagents::agent_loop",
                 run_id = %ctx.run_id(),
