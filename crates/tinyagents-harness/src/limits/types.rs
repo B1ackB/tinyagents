@@ -125,7 +125,11 @@ pub struct RunLimits {
     /// [`RunLimits::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS`].
     ///
     /// Without it a stalled provider is hit once per retry attempt, each
-    /// paying the full idle window.
+    /// paying the full window. Because any output event resets the count, it
+    /// trips on streams that stall *before* producing output, so in practice
+    /// it pairs with [`stream_first_event_timeout_ms`](Self::stream_first_event_timeout_ms);
+    /// a stream that emits a token and then stalls on every attempt keeps
+    /// making progress and is bounded by the retry cap instead.
     pub max_consecutive_stream_idle_timeouts: Option<usize>,
 }
 

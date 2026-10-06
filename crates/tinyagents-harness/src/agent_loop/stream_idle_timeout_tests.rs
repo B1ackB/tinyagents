@@ -477,16 +477,21 @@ async fn idle_timeout_falls_back_to_the_next_model_with_the_breaker_enabled() {
 }
 
 // ── breaker ──────────────────────────────────────────────────────────────────
+//
+// The breaker counts idle timeouts with no output event in between, so a
+// stalled stream is scripted to open and then stay silent *before* any output,
+// with the opt-in first-event window as the bound that fires.
 
 #[tokio::test(start_paused = true)]
 async fn breaker_stops_retrying_a_stalled_model_but_lets_the_fallback_answer() {
-    let primary = ScriptedStreams::new(vec![vec![started(), delta("par"), Step::Hang]]);
+    let primary = ScriptedStreams::new(vec![vec![started(), Step::Hang]]);
     let fallback = Arc::new(ScriptedModel::replies(vec!["fallback answer"]));
     let harness = harness_with_chain(
         primary.clone(),
         vec![("fallback", fallback.clone())],
         RunLimits::default()
             .with_stream_idle_timeout_ms(Some(1_000))
+            .with_stream_first_event_timeout_ms(Some(1_000))
             .with_max_consecutive_stream_idle_timeouts(Some(3))
             .with_max_retries_per_call(10),
         10,
@@ -511,13 +516,14 @@ async fn breaker_stops_retrying_a_stalled_model_but_lets_the_fallback_answer() {
 async fn breaker_fails_the_run_only_when_the_chain_is_exhausted() {
     // Both models stall. The count is per model: each gets its own three
     // strikes before the chain runs out.
-    let primary = ScriptedStreams::new(vec![vec![started(), delta("a"), Step::Hang]]);
-    let second = ScriptedStreams::new(vec![vec![started(), delta("b"), Step::Hang]]);
+    let primary = ScriptedStreams::new(vec![vec![started(), Step::Hang]]);
+    let second = ScriptedStreams::new(vec![vec![started(), Step::Hang]]);
     let harness = harness_with_chain(
         primary.clone(),
         vec![("second", second.clone())],
         RunLimits::default()
             .with_stream_idle_timeout_ms(Some(1_000))
+            .with_stream_first_event_timeout_ms(Some(1_000))
             .with_max_consecutive_stream_idle_timeouts(Some(3))
             .with_max_retries_per_call(10),
         10,
@@ -540,11 +546,12 @@ async fn breaker_fails_the_run_only_when_the_chain_is_exhausted() {
 
 #[tokio::test(start_paused = true)]
 async fn breaker_without_a_fallback_fails_the_run_at_the_threshold() {
-    let model = ScriptedStreams::new(vec![vec![started(), delta("a"), Step::Hang]]);
+    let model = ScriptedStreams::new(vec![vec![started(), Step::Hang]]);
     let harness = harness_with(
         model.clone(),
         RunLimits::default()
             .with_stream_idle_timeout_ms(Some(1_000))
+            .with_stream_first_event_timeout_ms(Some(1_000))
             .with_max_consecutive_stream_idle_timeouts(Some(3))
             .with_max_retries_per_call(10),
         10,
@@ -613,11 +620,12 @@ async fn breaker_stops_retry_middleware_retries() {
     // loop and the middleware retries the whole call. The breaker's
     // non-retryable `LimitExceeded` must stop it at the threshold, not at the
     // middleware's much larger attempt cap.
-    let model = ScriptedStreams::new(vec![vec![started(), delta("a"), Step::Hang]]);
+    let model = ScriptedStreams::new(vec![vec![started(), Step::Hang]]);
     let mut harness = harness_with(
         model.clone(),
         RunLimits::default()
             .with_stream_idle_timeout_ms(Some(1_000))
+            .with_stream_first_event_timeout_ms(Some(1_000))
             .with_max_consecutive_stream_idle_timeouts(Some(3)),
         10,
     );
