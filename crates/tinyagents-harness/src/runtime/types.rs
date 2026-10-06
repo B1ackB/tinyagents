@@ -353,22 +353,49 @@ pub struct RunPolicy {
     /// and because another provider call may be billable. Hosts that require a
     /// visible reply can opt in to one bounded retry.
     pub empty_response_retries: u32,
-    /// Whether tool calls from a length-truncated response are refused.
+    /// Whether the tool call a length-truncated response was cut off inside is
+    /// refused.
     ///
-    /// When a model response ends with `finish_reason == "length"` the output
-    /// cap cut it off mid-message, so every tool call in it may carry
-    /// truncated arguments that still parse (a best-effort JSON salvage) and
-    /// still validate against the schema. Running a half-written `write_file`
+    /// When a model response ends with a length stop (`finish_reason` of
+    /// `length`, or Anthropic's `max_tokens`) the output cap cut it off
+    /// mid-message. Only the **last native** call of such a response can be
+    /// incomplete — a provider has finished streaming every earlier one — but
+    /// its arguments may still parse (a best-effort JSON salvage) and still
+    /// validate against the schema, and running a half-written `write_file`
     /// call is worse than not running it. With this enabled the loop answers
-    /// **each** call of that turn with a synthetic error result — "output limit
-    /// hit mid-call, re-issue with complete (possibly smaller) arguments" —
-    /// without running any tool, then continues so the model can retry. Every
-    /// call still gets its paired `ToolStarted`/`ToolCompleted` events and
-    /// result row. No tool-call budget slot is spent; `limits.max_model_calls`
-    /// bounds the retry loop.
+    /// that call, and any call the provider flagged `invalid` (a repair could
+    /// turn it into a plausible-looking but incomplete call), with a synthetic
+    /// error result — "output limit hit mid-call, re-issue with complete
+    /// (possibly smaller) arguments" — without running the tool, runs the
+    /// earlier native calls normally, and continues so the model can retry.
+    ///
+    /// Calls recovered from text dialect markup are never refused: an
+    /// unterminated block never becomes a call, so a recovered call is
+    /// complete. A refused call still gets its paired `ToolStarted` /
+    /// `ToolCompleted` events and result row, spends no tool-call budget slot,
+    /// and its turn cannot terminate the run. The retry is given a larger
+    /// output cap (doubled, clamped at 4x the original, like the
+    /// truncated-empty retry) and is bounded by
+    /// [`Self::truncated_tool_call_retries`].
+    ///
+    /// Provider spellings of the length stop are matched by the loop itself
+    /// (`length`, `max_tokens`, `MAX_TOKENS`); normalising them belongs
+    /// upstream in `tinyinference`.
     ///
     /// Defaults to `true`. Set to `false` to execute the calls as parsed.
     pub reject_truncated_tool_calls: bool,
+    /// How many consecutive length-truncated tool turns may be answered with
+    /// [`Self::reject_truncated_tool_calls`] errors and retried.
+    ///
+    /// A model whose calls never fit its output cap would otherwise loop on
+    /// synthetic errors until `limits.max_model_calls`. When the budget is
+    /// spent and the next turn is cut off again, the run stops with
+    /// [`crate::error::TinyAgentsError::LimitExceeded`] naming the cause. The
+    /// budget is per logical turn: a tool turn that is not cut off resets it
+    /// (and the boosted output cap).
+    ///
+    /// Defaults to `2` (three truncated turns in a row stop the run).
+    pub truncated_tool_call_retries: u32,
     /// How [`tinytools::ToolExposure::Deferred`] tools are surfaced: never in
     /// the request's `tools` array, but findable through the intrinsic
     /// `tool_search` bridge, then called by their own name. See
@@ -627,6 +654,7 @@ impl Default for RunPolicy {
             truncated_empty_nudges: 1,
             empty_response_retries: 0,
             reject_truncated_tool_calls: true,
+            truncated_tool_call_retries: 2,
             text_dialect_recovery: TextDialectRecovery::default(),
             discovery: crate::tool::discover::ToolDiscoveryPolicy::default(),
             tool_schemas: None,
