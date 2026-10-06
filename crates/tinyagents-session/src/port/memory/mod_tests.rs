@@ -50,6 +50,7 @@ fn recovery_interrupts_every_agents_turns_in_flight() {
     let shared: Arc<dyn SessionStoreProvider> = Arc::new(provider);
     assert!(shared.recover().is_ok());
     assert!(shared.destination_key().is_some());
+    assert!(shared.workspace_dir().is_none(), "memory keeps no files");
     assert!(
         Arc::new(shared.clone())
             .for_agent("a")

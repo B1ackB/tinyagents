@@ -76,6 +76,17 @@ pub trait SessionStoreProvider: Send + Sync {
     fn destination_key(&self) -> Option<String> {
         None
     }
+
+    /// The workspace directory a file-backed provider keeps the classic
+    /// on-disk layout in (`session_raw/`, `tinyagents_store/`, …), or `None`
+    /// for any other store.
+    ///
+    /// A host uses it to keep file-era companions of that layout running —
+    /// mirrors that read transcript files back, say — only where there are
+    /// files to read.
+    fn workspace_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// Restart-survivable snapshots of an agent's in-flight turns.
@@ -234,6 +245,10 @@ impl<P: SessionStoreProvider + ?Sized> SessionStoreProvider for Arc<P> {
 
     fn destination_key(&self) -> Option<String> {
         (**self).destination_key()
+    }
+
+    fn workspace_dir(&self) -> Option<std::path::PathBuf> {
+        (**self).workspace_dir()
     }
 }
 
