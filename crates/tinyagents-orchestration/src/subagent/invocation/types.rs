@@ -145,7 +145,9 @@ pub struct SubAgentSession<State: Send + Sync, Ctx: Send + Sync = ()> {
 ///
 /// When the parent model calls this tool, [`SubAgentTool`] spawns the wrapped
 /// sub-agent as a background child run and immediately returns a
-/// [`SubAgentJobId`]. It never waits for the child's final answer. Hosts share
+/// [`SubAgentJobId`]. By default it never waits for the child's final answer;
+/// the optional `mode: "inline"` argument ([`SubAgentMode::Inline`]) instead
+/// awaits the child and returns its final result in the same call. Hosts share
 /// the tool's [`SubAgentJobRegistry`] with [`super::SubAgentJobsTool`] and
 /// [`super::SubAgentMessageTool`] so callers can query completion or inject a message
 /// at the child's next steering checkpoint.
