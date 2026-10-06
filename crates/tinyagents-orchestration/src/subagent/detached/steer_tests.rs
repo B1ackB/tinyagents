@@ -283,3 +283,25 @@ async fn rejected_steer_does_not_consume_its_request_id() {
     assert!(!receipt.duplicate);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn oversized_request_ids_are_rejected_before_delivery() {
+    let reg = registry(SteeringRegistry::default());
+    let _tx = add(&reg, "t1", "p1", None);
+    let (calls, fb) = counting();
+    let too_long = "x".repeat(129);
+    assert_eq!(
+        steer_detached_with_request_id(
+            &reg,
+            "t1",
+            SteerAccess::Owner("p1"),
+            "go".into(),
+            QueueLane::Steer,
+            Some(&too_long),
+            fb,
+        )
+        .await,
+        Err(SteerError::RequestIdTooLong)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

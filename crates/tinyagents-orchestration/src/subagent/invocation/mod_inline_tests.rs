@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use super::jobs_test::PanickingModel;
 use super::test::BlockedModel;
 use super::{ChildDataPolicy, SubAgent, SubAgentJobStatus, SubAgentTool};
 use tinyagents_harness::cancel::CancellationToken;
@@ -160,4 +161,59 @@ fn schema_advertises_the_mode_argument() {
         json!(["background", "inline"])
     );
     assert_eq!(schema["required"], json!(["input"]));
+}
+
+#[tokio::test]
+async fn dropping_an_inline_call_settles_its_job() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let mut harness = AgentHarness::new();
+    harness.register_model(
+        "blocked",
+        Arc::new(BlockedModel {
+            started: started.clone(),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }),
+    );
+    let tool = SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    );
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+
+    // The harness drops the tool future on a tool timeout or stream drop;
+    // model that by abandoning the call once the child is running.
+    tokio::select! {
+        _ = call(&tool, &parent, json!({"input": "work", "mode": "inline"})) => {
+            panic!("the blocked child cannot finish")
+        }
+        _ = started.notified() => {}
+    }
+
+    let jobs = tool.job_registry().list();
+    assert_eq!(jobs.len(), 1);
+    assert!(
+        jobs[0].status.is_terminal(),
+        "dropped inline job must not stay running: {:?}",
+        jobs[0].status
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_inline_child_marks_its_job_failed() {
+    let mut harness = AgentHarness::new();
+    harness.register_model("boom", Arc::new(PanickingModel));
+    let tool = Arc::new(SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    ));
+    let task_tool = tool.clone();
+    let joined = tokio::spawn(async move {
+        let parent = RunContext::new(RunConfig::new("parent"), ());
+        call(&task_tool, &parent, json!({"input": "work", "mode": "inline"})).await
+    })
+    .await;
+    assert!(joined.expect_err("the panic propagates").is_panic());
+
+    let jobs = tool.job_registry().list();
+    assert_eq!(jobs[0].status, SubAgentJobStatus::Failed);
 }

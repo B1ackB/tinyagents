@@ -231,3 +231,47 @@ fn subagent_without_explicit_ids_falls_back_to_the_heuristic() {
     );
     assert_eq!(call_id.as_deref(), Some("call-decoy"));
 }
+
+/// A grandchild's thread id nests the markers
+/// (`{thr}-subagent-{child}-subagent-{grandchild}`); the run id is the part
+/// after the last one.
+#[test]
+fn subagent_correlates_a_grandchild_thread_id_by_its_last_marker() {
+    let call_id = project_two_spawns(
+        r#"{"job_id":"subagent-job-1","status":"queued","subagent_run_id":"worker-d2-x-0"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d2-x-1"}"#,
+        "",
+        "thr_link-subagent-worker-d1-parent-0-subagent-worker-d2-x-1",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-real"));
+}
+
+/// A `subagent_jobs` query result names the same run id, but it is not the
+/// spawn: it has no `job_id` spawn payload shape and must not steal the match.
+#[test]
+fn a_job_query_result_does_not_steal_the_spawning_call() {
+    let call_id = project_two_spawns(
+        r#"{"id":"subagent-job-2","agent":"worker","status":"completed","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-real"}"#,
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-real"}"#,
+        "worker-d1-parent-1",
+        "thr_link",
+    );
+    assert_eq!(call_id.as_deref(), Some("call-real"));
+}
+
+/// A spawn payload that records a different `tool_call_id` than the call
+/// carrying it is not trusted.
+#[test]
+fn a_spawn_payload_naming_another_call_is_not_trusted() {
+    let call_id = project_two_spawns(
+        "Accepted async sub-agent",
+        r#"{"job_id":"subagent-job-2","status":"queued","subagent_run_id":"worker-d1-parent-1","tool_call_id":"call-elsewhere"}"#,
+        "worker-d1-parent-1",
+        "thr_link",
+    );
+    assert_eq!(
+        call_id.as_deref(),
+        Some("call-decoy"),
+        "falls back to the heuristic"
+    );
+}

@@ -16,7 +16,7 @@ use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
 use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse};
 
-struct PanickingModel;
+pub(super) struct PanickingModel;
 
 #[async_trait::async_trait]
 impl ChatModel<()> for PanickingModel {
@@ -246,4 +246,76 @@ async fn message_request_ids_are_bounded_per_job() {
             .unwrap()
     );
     assert_eq!(steering.pending(), 66);
+}
+
+#[tokio::test]
+async fn terminal_jobs_never_return_to_running() {
+    let jobs = SubAgentJobRegistry::new();
+    let (job_id, _steering) = jobs.create("worker", 1);
+    jobs.cancel_owned(job_id.as_str(), 1).expect("cancel");
+    jobs.mark_running(&job_id);
+    assert_eq!(
+        jobs.get(job_id.as_str()).unwrap().status,
+        SubAgentJobStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn settled_jobs_release_their_cancellation_token() {
+    let jobs = SubAgentJobRegistry::new();
+    let (job_id, _steering) = jobs.create("worker", 1);
+    assert!(jobs.inner.read().unwrap()[&job_id].cancellation.is_some());
+    jobs.cancel_owned(job_id.as_str(), 1).expect("cancel");
+    assert!(jobs.inner.read().unwrap()[&job_id].cancellation.is_none());
+
+    let (aborted, _steering) = jobs.create("worker", 1);
+    jobs.mark_aborted(&aborted, true);
+    assert!(jobs.inner.read().unwrap()[&aborted].cancellation.is_none());
+}
+
+#[tokio::test]
+async fn jobs_tool_treats_a_null_action_as_query() {
+    let jobs = SubAgentJobRegistry::new();
+    let tool = SubAgentJobsTool::new(jobs.clone());
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+    jobs.create("worker", parent.instance_id());
+    let result = ToolDispatch::<(), ()>::execute(
+        &tool,
+        &(),
+        new_call_id(),
+        json!({"action": null}),
+        tinytools::ToolCallOptions::default(),
+        &parent,
+    )
+    .await
+    .expect("null action queries");
+    let listed: serde_json::Value = serde_json::from_str(&result.output()).unwrap();
+    assert_eq!(listed.as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn oversized_message_request_ids_are_rejected() {
+    let jobs = SubAgentJobRegistry::new();
+    let tool = SubAgentMessageTool::new(jobs.clone());
+    let parent = RunContext::new(RunConfig::new("parent"), ());
+    let (job_id, steering) = jobs.create("worker", parent.instance_id());
+    let too_long = "x".repeat(129);
+    let rejected = ToolDispatch::<(), ()>::execute(
+        &tool,
+        &(),
+        new_call_id(),
+        json!({"job_id": job_id.as_str(), "message": "m", "request_id": too_long}),
+        tinytools::ToolCallOptions::default(),
+        &parent,
+    )
+    .await;
+    assert!(rejected.is_err());
+    assert_eq!(steering.pending(), 0);
+    let at_limit = message_via_tool(
+        &tool,
+        &parent,
+        json!({"job_id": job_id.as_str(), "message": "m", "request_id": "x".repeat(128)}),
+    )
+    .await;
+    assert_eq!(at_limit["status"], "message_queued");
 }

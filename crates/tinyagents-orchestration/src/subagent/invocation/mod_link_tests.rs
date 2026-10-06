@@ -144,3 +144,32 @@ async fn tool_call_id_is_omitted_when_the_caller_has_none() {
     assert!(queued.get("tool_call_id").is_none());
     assert!(queued.get("subagent_run_id").is_some());
 }
+
+/// The session view recovers the run id from the child's thread id, so the
+/// harness-derived thread id must keep embedding it.
+#[tokio::test]
+async fn child_thread_id_embeds_the_advertised_run_id() {
+    let tool = tool();
+    let events = EventSink::new();
+    let recorder = Arc::new(RecordingListener::new());
+    events.subscribe(recorder.clone());
+    let jobs = tool.job_registry().clone();
+    let parent = RunContext::new(RunConfig::new("parent").with_thread("thr-1"), ()).with_events(events);
+    let result = tool
+        .invoke_in_parent_context(
+            &(),
+            json!({"input": "work"}),
+            tinytools::ToolCallOptions::default(),
+            &parent,
+        )
+        .await
+        .unwrap();
+    let queued = json_of(&result);
+    wait_for_terminal(&jobs, queued["job_id"].as_str().unwrap(), parent.instance_id()).await;
+    let run_id = queued["subagent_run_id"].as_str().unwrap();
+    let expected = format!("thr-1-subagent-{run_id}");
+    assert!(recorder.events().iter().any(|record| matches!(
+        &record.event,
+        AgentEvent::RunStarted { thread_id: Some(thread), .. } if thread.as_str() == expected
+    )));
+}
