@@ -142,6 +142,14 @@ fn subagent_correlates_by_ledger_parent_call_id_over_the_heuristic() {
 /// which carries `result_for_real` as its tool result. Returns the child's
 /// resolved `call_id` after projecting a child whose `_meta` says `task_id` /
 /// `thread_id`.
+/// The native replay envelope a host persists a tool row as; the reader
+/// unwraps it to the tool's own output. (A raw JSON output that itself carries
+/// a `tool_call_id` key is indistinguishable from an envelope, so a realistic
+/// transcript always has the envelope.)
+fn envelope(call_id: &str, output: &str) -> String {
+    serde_json::json!({"tool_call_id": call_id, "content": output}).to_string()
+}
+
 fn project_two_spawns(
     result_for_decoy: &str,
     result_for_real: &str,
@@ -164,11 +172,11 @@ fn project_two_spawns(
         ),
         format!(
             r#"{{"role":"tool","content":{},"id":"call-decoy","request_id":"req-1"}}"#,
-            serde_json::to_string(result_for_decoy).unwrap()
+            serde_json::to_string(&envelope("call-decoy", result_for_decoy)).unwrap()
         ),
         format!(
             r#"{{"role":"tool","content":{},"id":"call-real","request_id":"req-1"}}"#,
-            serde_json::to_string(result_for_real).unwrap()
+            serde_json::to_string(&envelope("call-real", result_for_real)).unwrap()
         ),
     ];
     let root_refs: Vec<&str> = root_body.iter().map(String::as_str).collect();

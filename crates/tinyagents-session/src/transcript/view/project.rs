@@ -459,7 +459,6 @@ impl Projector {
         } else {
             (ToolCallStatus::Success, None)
         };
-        eprintln!("DBG2 raw={:?} id={:?} tcid={:?} result={result:?}", msg.message.content, msg.message.id, msg.message.tool_call_id);
         let call_id = msg.message.id.clone().or(wrapped_id);
         self.pair_result(call_id, result, status, failure, msg.ts.clone());
     }
