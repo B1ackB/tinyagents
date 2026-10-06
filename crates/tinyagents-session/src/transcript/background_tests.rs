@@ -1,5 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
-
 use super::*;
 use crate::transcript::{
     DisplayRecord, TranscriptLocator, TranscriptTurn, read_transcript, read_transcript_display,
