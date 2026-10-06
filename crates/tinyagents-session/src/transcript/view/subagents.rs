@@ -252,6 +252,7 @@ fn find_explicit_spawning_call(
         else {
             return false;
         };
+        eprintln!("DBG call_id={call_id} result={result}");
         // Cheap precheck: skip JSON parsing for results that cannot be spawn payloads.
         if !result.contains("subagent_run_id") {
             return false;
