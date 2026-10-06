@@ -1682,18 +1682,6 @@ impl Tool for TerminatingTool {
     }
 }
 
-/// One assistant turn requesting every `(id, tool)` pair.
-fn multi_tool_call_response(calls: &[(&str, &str)]) -> ModelResponse {
-    let mut response = tool_call_response(calls[0].0, calls[0].1, json!({}));
-    for (id, name) in &calls[1..] {
-        response
-            .message
-            .tool_calls
-            .push(ToolCall::new(*id, *name, json!({})));
-    }
-    response
-}
-
 fn harness_with_terminating_tools(
     responses: Vec<ModelResponse>,
     tools: Vec<TerminatingTool>,
@@ -1717,7 +1705,7 @@ async fn terminate_in_a_mixed_batch_does_not_end_the_run() {
     // `shouldTerminateToolBatch` requires every call to agree).
     let (harness, model) = harness_with_terminating_tools(
         vec![
-            multi_tool_call_response(&[("c1", "finish"), ("c2", "lookup")]),
+            multi_tool_call_response(vec![("c1", "finish"), ("c2", "lookup")]),
             text_response("model saw both results", 4, 2),
         ],
         vec![
@@ -1749,7 +1737,7 @@ async fn terminate_ends_the_run_when_every_call_of_the_batch_asks() {
     // output in source order, deterministically (concurrent execution still
     // folds in call order).
     let (harness, model) = harness_with_terminating_tools(
-        vec![multi_tool_call_response(&[("c1", "first"), ("c2", "second")])],
+        vec![multi_tool_call_response(vec![("c1", "first"), ("c2", "second")])],
         vec![
             TerminatingTool {
                 name: "first",
@@ -1776,7 +1764,7 @@ async fn terminate_ends_the_run_when_every_call_of_the_batch_asks() {
 #[tokio::test]
 async fn terminate_from_a_single_call_batch_ends_the_run() {
     let (harness, model) = harness_with_terminating_tools(
-        vec![multi_tool_call_response(&[("c1", "finish")])],
+        vec![multi_tool_call_response(vec![("c1", "finish")])],
         vec![TerminatingTool {
             name: "finish",
             reply: "finished",
