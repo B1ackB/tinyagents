@@ -841,10 +841,12 @@ async fn agent_middleware_owns_context_and_observes_failed_partial_runs() {
         }),
     );
     failing.push_agent_middleware(middleware);
-    assert!(failing
-        .invoke_default(&(), vec![Message::user("fail")])
-        .await
-        .is_err());
+    assert!(
+        failing
+            .invoke_default(&(), vec![Message::user("fail")])
+            .await
+            .is_err()
+    );
 
     assert_eq!(&*finalized.lock().unwrap(), &[(true, 3), (false, 2)]);
 }
@@ -2102,7 +2104,7 @@ async fn before_model_middleware_mutates_request() {
 
 #[tokio::test]
 async fn prefix_mutating_middleware_refreshes_provider_cache_key() {
-    use crate::cache::{prompt_cache_key, PROMPT_CACHE_KEY_OPTION};
+    use crate::cache::{PROMPT_CACHE_KEY_OPTION, prompt_cache_key};
     use tinyinference_llm::cache::CachePolicy;
 
     struct InsertSystemPrefix;
@@ -2162,7 +2164,7 @@ async fn prefix_mutating_middleware_refreshes_provider_cache_key() {
 
 #[tokio::test]
 async fn prefix_mutating_wrap_middleware_refreshes_provider_cache_key() {
-    use crate::cache::{prompt_cache_key, PROMPT_CACHE_KEY_OPTION};
+    use crate::cache::{PROMPT_CACHE_KEY_OPTION, prompt_cache_key};
     use tinyinference_llm::cache::CachePolicy;
 
     struct InsertSystemPrefix;
@@ -5637,15 +5639,21 @@ async fn invoke_stream_yields_events_then_completed() {
         other => panic!("expected Completed terminal, got {other:?}"),
     }
     // Live events flowed before the terminal: run lifecycle + a model delta.
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunStarted { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ModelDelta { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::RunCompleted { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunStarted { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ModelDelta { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunCompleted { .. }))
+    );
 }
 
 #[tokio::test]
@@ -6978,9 +6986,11 @@ mod tool_effects_test {
             "no tool answer appended for a Safe-replay call — the loop must \
              re-execute it"
         );
-        assert!(recorder
-            .kinds()
-            .contains(&"tool.effect_reconciled".to_string()));
+        assert!(
+            recorder
+                .kinds()
+                .contains(&"tool.effect_reconciled".to_string())
+        );
         // The ledger row is untouched (still `started`): re-execution will
         // settle it normally through the ordinary started/settled path.
         assert_eq!(
@@ -7038,9 +7048,11 @@ mod tool_effects_test {
             ledger.get("run-1", "call-1").unwrap().status,
             ToolEffectStatus::Interrupted
         );
-        assert!(recorder
-            .kinds()
-            .contains(&"tool.effect_reconciled".to_string()));
+        assert!(
+            recorder
+                .kinds()
+                .contains(&"tool.effect_reconciled".to_string())
+        );
     }
 
     #[tokio::test]
@@ -7527,8 +7539,10 @@ fn changing_or_prepending_a_declared_system_message_invalidates_the_prefix() {
         crate::cache::prompt_cache_key(&original),
         crate::cache::prompt_cache_key(&changed)
     );
-    assert!(!crate::cache::PromptCacheLayout::from_request(&original)
-        .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&changed)));
+    assert!(
+        !crate::cache::PromptCacheLayout::from_request(&original)
+            .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&changed))
+    );
 
     let mut prepended = original.clone();
     crate::cache::prepend_system_message(&mut prepended, "new instruction".into());
@@ -7538,8 +7552,10 @@ fn changing_or_prepending_a_declared_system_message_invalidates_the_prefix() {
         crate::cache::prompt_cache_key(&original),
         crate::cache::prompt_cache_key(&prepended)
     );
-    assert!(!crate::cache::PromptCacheLayout::from_request(&original)
-        .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&prepended)));
+    assert!(
+        !crate::cache::PromptCacheLayout::from_request(&original)
+            .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&prepended))
+    );
 }
 
 #[test]
