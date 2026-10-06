@@ -729,6 +729,10 @@ pub struct DisplayMessage {
     /// Optional short reason for a failed tool call (present only with
     /// `failure: true`).
     pub failure_detail: Option<String>,
+    /// Who delivered this line out of band, when it was written by
+    /// [`append_background_message`](super::append_background_message)
+    /// rather than by a live turn. `None` for every turn-written line.
+    pub background: Option<BackgroundOrigin>,
 }
 
 /// A compaction marker in a display projection.
