@@ -74,6 +74,8 @@
 mod jobs;
 mod types;
 
+const LOG_PREFIX: &str = "[subagent-tool]";
+
 pub use jobs::{register_subagent_job_tools, SubAgentJobsTool, SubAgentMessageTool};
 pub use types::*;
 
@@ -389,6 +391,26 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgent<State, C
     }
 }
 
+/// Stamps the explicit parent-call -> child-run link onto a child run's
+/// metadata, preserving whatever metadata the child already carries.
+fn stamp_link_metadata(
+    metadata: &mut Value,
+    subagent_run_id: &str,
+    job_id: &str,
+    tool_call_id: Option<&str>,
+) {
+    if !metadata.is_object() {
+        *metadata = json!({});
+    }
+    if let Value::Object(map) = metadata {
+        map.insert("subagent_run_id".into(), json!(subagent_run_id));
+        map.insert("subagent_job_id".into(), json!(job_id));
+        if let Some(tool_call_id) = tool_call_id {
+            map.insert("parent_tool_call_id".into(), json!(tool_call_id));
+        }
+    }
+}
+
 /// Derives an isolated child thread id from the parent thread and the child's
 /// run id. The run id already carries a process-unique sequence, so the thread
 /// id inherits its uniqueness.
@@ -633,8 +655,26 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         &self,
         state: &State,
         args: Value,
+        options: tinytools::ToolCallOptions,
+        parent: &RunContext<Ctx>,
+    ) -> Result<tinytools::ToolResult> {
+        self.invoke_in_parent_context_for_call(state, args, options, parent, None)
+            .await
+    }
+
+    /// Like [`Self::invoke_in_parent_context`], additionally recording the
+    /// parent's `call_id` as the explicit parent-call -> child-run link.
+    ///
+    /// The link is carried by the queued result (`subagent_run_id`,
+    /// `tool_call_id`, `job_id`), the job snapshot, and the child run's
+    /// metadata (`subagent_run_id`, `subagent_job_id`, `parent_tool_call_id`).
+    pub async fn invoke_in_parent_context_for_call(
+        &self,
+        state: &State,
+        args: Value,
         _options: tinytools::ToolCallOptions,
         parent: &RunContext<Ctx>,
+        call_id: Option<&tinyagents_harness::ids::CallId>,
     ) -> Result<tinytools::ToolResult> {
         let input = Self::extract_input(&args);
         let config = match self.subagent.child_config(
@@ -662,12 +702,27 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             }
             Err(error) => return Err(error),
         };
+        let subagent_run_id = child.run_id().as_str().to_owned();
+        let tool_call_id = call_id.map(|id| id.as_str().to_owned());
         let (job_id, steering) = self.jobs.create_with_cancellation(
             &self.tool_name,
             parent.instance_id(),
             child.cancellation.clone(),
+            JobLink {
+                subagent_run_id: Some(subagent_run_id.clone()),
+                tool_call_id: tool_call_id.clone(),
+            },
         );
-        let child = child.with_steering(steering);
+        tracing::debug!(
+            "{LOG_PREFIX} spawn job_id={job_id} subagent_run_id={subagent_run_id} tool_call_id={tool_call_id:?}"
+        );
+        let mut child = child.with_steering(steering);
+        stamp_link_metadata(
+            &mut child.config.metadata,
+            &subagent_run_id,
+            job_id.as_str(),
+            tool_call_id.as_deref(),
+        );
         let jobs = self.jobs.clone();
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
@@ -691,10 +746,15 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             }
         });
 
-        Ok(tinytools::ToolResult::json(json!({
+        let mut queued = json!({
             "job_id": job_id,
-            "status": "queued"
-        })))
+            "status": "queued",
+            "subagent_run_id": subagent_run_id,
+        });
+        if let Some(tool_call_id) = tool_call_id {
+            queued["tool_call_id"] = Value::String(tool_call_id);
+        }
+        Ok(tinytools::ToolResult::json(queued))
     }
 }
 
@@ -726,12 +786,12 @@ where
     async fn execute(
         &self,
         state: &State,
-        _call_id: tinyagents_harness::ids::CallId,
+        call_id: tinyagents_harness::ids::CallId,
         arguments: Value,
         options: tinytools::ToolCallOptions,
         parent: &RunContext<Ctx>,
     ) -> anyhow::Result<tinytools::ToolResult> {
-        self.invoke_in_parent_context(state, arguments, options, parent)
+        self.invoke_in_parent_context_for_call(state, arguments, options, parent, Some(&call_id))
             .await
             .map_err(anyhow::Error::from)
     }

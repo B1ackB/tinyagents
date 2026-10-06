@@ -218,6 +218,22 @@ pub struct SubAgentJob {
     /// Host-safe failure text, once failed or cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Run id of the child run executing this job; the same id the child's
+    /// own events and transcript use. Absent on jobs created before the link
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_run_id: Option<String>,
+    /// Id of the parent tool call that spawned this job, when the dispatcher
+    /// supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// Explicit link from a spawned job back to the parent call and child run.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct JobLink {
+    pub(crate) subagent_run_id: Option<String>,
+    pub(crate) tool_call_id: Option<String>,
 }
 
 /// Shared registry behind asynchronous subagent spawning and host controls.

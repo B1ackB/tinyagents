@@ -16,8 +16,8 @@ use tinyinference_llm::message::Message;
 use tinytools::{Tool, ToolResult};
 
 use super::{
-    SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId, SubAgentJobRegistry,
-    SubAgentJobStatus,
+    JobLink, SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId,
+    SubAgentJobRegistry, SubAgentJobStatus,
 };
 
 const LOG_PREFIX: &str = "[subagent-jobs]";
@@ -29,7 +29,7 @@ impl SubAgentJobRegistry {
     }
 
     pub(crate) fn create(&self, agent: &str, owner: u64) -> (SubAgentJobId, SteeringHandle) {
-        self.create_with_cancellation(agent, owner, CancellationToken::new())
+        self.create_with_cancellation(agent, owner, CancellationToken::new(), JobLink::default())
     }
 
     /// Registers a job whose child run observes `cancellation`, so
@@ -39,6 +39,7 @@ impl SubAgentJobRegistry {
         agent: &str,
         owner: u64,
         cancellation: CancellationToken,
+        link: JobLink,
     ) -> (SubAgentJobId, SteeringHandle) {
         let id = SubAgentJobId(format!("subagent-job-{}", next_seq()));
         let steering =
@@ -50,6 +51,8 @@ impl SubAgentJobRegistry {
                 status: SubAgentJobStatus::Queued,
                 output: None,
                 error: None,
+                subagent_run_id: link.subagent_run_id,
+                tool_call_id: link.tool_call_id,
             },
             owner,
             steering: steering.clone(),
