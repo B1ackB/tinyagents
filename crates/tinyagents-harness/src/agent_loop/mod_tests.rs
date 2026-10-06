@@ -1685,10 +1685,7 @@ impl Tool for TerminatingTool {
 fn harness_with_terminating_tools(
     responses: Vec<ModelResponse>,
     tools: Vec<TerminatingTool>,
-) -> (
-    AgentHarness<()>,
-    Arc<crate::testkit::ScriptedModel>,
-) {
+) -> (AgentHarness<()>, Arc<crate::testkit::ScriptedModel>) {
     let model = Arc::new(crate::testkit::ScriptedModel::new(responses));
     let mut harness: AgentHarness<()> = AgentHarness::new();
     harness.register_model("mock", Arc::clone(&model) as _);
@@ -1737,7 +1734,10 @@ async fn terminate_ends_the_run_when_every_call_of_the_batch_asks() {
     // output in source order, deterministically (concurrent execution still
     // folds in call order).
     let (harness, model) = harness_with_terminating_tools(
-        vec![multi_tool_call_response(vec![("c1", "first"), ("c2", "second")])],
+        vec![multi_tool_call_response(vec![
+            ("c1", "first"),
+            ("c2", "second"),
+        ])],
         vec![
             TerminatingTool {
                 name: "first",

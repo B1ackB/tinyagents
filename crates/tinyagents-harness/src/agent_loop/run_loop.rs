@@ -2133,6 +2133,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 missing.join(", ")
             )));
         }
+        ctx.terminate_votes.clear();
         let mut deferred = crate::tool::DeferredToolRequests::default();
         // Follow-up user messages (B2) trail the whole resumed batch, for
         // the same provider-ordering reason as in `execute_tools`.
@@ -2204,6 +2205,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
         }
         super::tools::append_follow_ups(messages, follow_ups);
+        // The resumed calls are the batch here: siblings answered before the
+        // pause already settled (and dropped) their own votes.
+        self.settle_batch_termination(ctx, run, deferred.is_empty());
         Ok(deferred)
     }
 

@@ -446,7 +446,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.policy.invalid_args,
                 InvalidArgsPolicy::NormalizeThenReturnToolError
             ) && batch_is_canonical_parallel_safe(&self.tools, &tool_calls);
-        if should_execute_tools_concurrently(
+        // A fresh batch: votes left by an aborted earlier batch must not count.
+        ctx.terminate_votes.clear();
+        let deferred = if should_execute_tools_concurrently(
             tool_calls.len(),
             canonical_parallel_safe,
             self.middleware.tool_middleware_len(),
@@ -460,7 +462,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 tool_calls,
                 promoted_names,
             )
-            .await
+            .await?
         } else {
             self.execute_tools_serially(
                 state,
@@ -471,8 +473,59 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 tool_calls,
                 promoted_names,
             )
-            .await
+            .await?
+        };
+        self.settle_batch_termination(ctx, run, deferred.is_empty());
+        Ok(deferred)
+    }
+
+    /// Ends the run when **every** call of the just-finished batch asked to
+    /// terminate (`ToolControl::terminate`; pi's `shouldTerminateToolBatch`).
+    ///
+    /// A batch where only some calls asked is not terminal: the others
+    /// returned results the model has yet to read, so the hint is dropped
+    /// (logged) and the loop goes on. A batch that deferred a call
+    /// (`all_answered == false`) is never terminal either — that call has no
+    /// answer yet. When the batch does end the run, the final response is the
+    /// **last** call's output in source order (results fold in call order in
+    /// both serial and concurrent mode, so this is deterministic).
+    ///
+    /// Always drains the batch's votes.
+    pub(super) fn settle_batch_termination(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        run: &mut AgentRun,
+        all_answered: bool,
+    ) {
+        let votes = std::mem::take(&mut ctx.terminate_votes);
+        let asked = votes.iter().filter(|vote| vote.is_some()).count();
+        if asked == 0 {
+            return;
         }
+        if !all_answered || asked != votes.len() {
+            tracing::debug!(
+                target: "tinyagents::agent_loop",
+                run_id = %ctx.run_id(),
+                terminating_calls = asked,
+                batch_calls = votes.len(),
+                all_answered,
+                "[agent_loop] tool terminate hint ignored: not every call in the batch asked to terminate"
+            );
+            return;
+        }
+        let output = votes
+            .into_iter()
+            .next_back()
+            .flatten()
+            .expect("every vote is Some, and asked > 0");
+        tracing::debug!(
+            target: "tinyagents::agent_loop",
+            run_id = %ctx.run_id(),
+            batch_calls = asked,
+            "[agent_loop] every call in the batch asked to terminate; ending the run"
+        );
+        run.final_response = Some(ModelResponse::assistant(output));
+        ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
     }
 
     /// Serial admission for one call: cancellation/deadline/limit checks
