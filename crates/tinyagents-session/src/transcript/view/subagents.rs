@@ -204,13 +204,14 @@ fn build_child(
 }
 
 /// Marker the harness puts in a child's derived thread id:
-/// `{parent_thread}-subagent-{run_id}`.
+/// `{parent_thread}-subagent-{run_id}`. A grandchild's parent thread already
+/// holds the marker, so the run id is the part after the *last* one.
 const CHILD_THREAD_MARKER: &str = "-subagent-";
 
 /// The ids a parent spawn result could use to name this child.
 fn link_ids(task_id: Option<&str>, thread_id: Option<&str>) -> Vec<String> {
     let mut ids: Vec<String> = task_id.map(str::to_owned).into_iter().collect();
-    if let Some((_, run_id)) = thread_id.and_then(|thread| thread.split_once(CHILD_THREAD_MARKER))
+    if let Some((_, run_id)) = thread_id.and_then(|thread| thread.rsplit_once(CHILD_THREAD_MARKER))
         && !run_id.is_empty()
     {
         ids.push(run_id.to_owned());
@@ -221,6 +222,12 @@ fn link_ids(task_id: Option<&str>, thread_id: Option<&str>) -> Vec<String> {
 /// Explicit correlation: the unclaimed [`DisplayItem::ToolCall`] whose result
 /// is a spawn payload naming one of the child's `ids` as its
 /// `subagent_run_id` or `job_id`.
+///
+/// Only spawn payloads count: queued/inline results that carry both `job_id`
+/// and `subagent_run_id`. `subagent_jobs` query/cancel snapshots (keyed `id`)
+/// and `subagent_message` acknowledgements do not, so a later status check
+/// cannot steal the match. When the payload records the spawning
+/// `tool_call_id` it must equal the item's own `call_id`.
 ///
 /// Ids are unique per run, so the whole item list is searched rather than a
 /// turn range. `None` when no result carries an id (a transcript written
@@ -238,15 +245,30 @@ fn find_explicit_spawning_call(
             return false;
         }
         let DisplayItem::ToolCall {
+            call_id,
             result: Some(result),
             ..
         } = &items[index]
         else {
             return false;
         };
+        // Cheap precheck: skip JSON parsing for results that cannot be spawn payloads.
+        if !result.contains("subagent_run_id") {
+            return false;
+        }
         let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(result) else {
             return false;
         };
+        if !(payload.contains_key("job_id") && payload.contains_key("subagent_run_id")) {
+            return false;
+        }
+        if let Some(recorded) = payload
+            .get("tool_call_id")
+            .and_then(serde_json::Value::as_str)
+            && recorded != call_id
+        {
+            return false;
+        }
         ["subagent_run_id", "job_id"].iter().any(|key| {
             payload
                 .get(*key)

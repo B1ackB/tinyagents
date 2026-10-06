@@ -22,6 +22,37 @@ use super::{
 
 const LOG_PREFIX: &str = "[subagent-jobs]";
 
+/// Settles an inline job if its tool future is dropped (tool timeout, parent
+/// stream drop) or unwinds from a panic before the result is recorded.
+/// Call [`Self::disarm`] once the result has been written.
+pub(crate) struct InlineJobGuard {
+    jobs: SubAgentJobRegistry,
+    id: SubAgentJobId,
+    armed: bool,
+}
+
+impl InlineJobGuard {
+    pub(crate) fn new(jobs: SubAgentJobRegistry, id: SubAgentJobId) -> Self {
+        Self {
+            jobs,
+            id,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InlineJobGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.jobs.mark_aborted(&self.id, std::thread::panicking());
+        }
+    }
+}
+
 impl SubAgentJobRegistry {
     /// Creates an empty asynchronous job registry.
     pub fn new() -> Self {
@@ -57,7 +88,7 @@ impl SubAgentJobRegistry {
             },
             owner,
             steering: steering.clone(),
-            cancellation,
+            cancellation: Some(cancellation),
             message_requests: RecentRequestIds::default(),
         };
         self.write().insert(id.clone(), entry);
@@ -65,7 +96,9 @@ impl SubAgentJobRegistry {
     }
 
     pub(crate) fn mark_running(&self, id: &SubAgentJobId) {
-        if let Some(entry) = self.write().get_mut(id) {
+        if let Some(entry) = self.write().get_mut(id)
+            && entry.job.status == SubAgentJobStatus::Queued
+        {
             entry.job.status = SubAgentJobStatus::Running;
         }
     }
@@ -88,6 +121,7 @@ impl SubAgentJobRegistry {
             );
             return;
         }
+        entry.cancellation = None;
         match result {
             Ok(run) => {
                 entry.job.status = SubAgentJobStatus::Completed;
@@ -115,6 +149,7 @@ impl SubAgentJobRegistry {
             return;
         }
         tracing::warn!("{LOG_PREFIX} child_task.aborted job_id={id} panicked={panicked}");
+        entry.cancellation = None;
         if panicked {
             entry.job.status = SubAgentJobStatus::Failed;
             entry.job.error = Some("subagent job panicked before completing".to_owned());
@@ -145,7 +180,9 @@ impl SubAgentJobRegistry {
             });
         }
         tracing::debug!("{LOG_PREFIX} cancel_owned job_id={job_id}");
-        entry.cancellation.cancel();
+        if let Some(token) = entry.cancellation.take() {
+            token.cancel();
+        }
         entry.job.status = SubAgentJobStatus::Cancelled;
         entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
         Ok(entry.job.clone())
@@ -323,7 +360,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
         let object = args
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("arguments must be an object"))?;
-        match object.get("action").map(Value::as_str) {
+        match object.get("action").filter(|value| !value.is_null()).map(Value::as_str) {
             None | Some(Some("query")) => {}
             Some(Some("cancel")) => {
                 let job_id = object
@@ -422,11 +459,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
             .ok_or_else(|| anyhow::anyhow!("message must be a string"))?;
         let request_id = match args.get("request_id") {
             None | Some(Value::Null) => None,
-            Some(value) => Some(
-                value
+            Some(value) => {
+                let id = value
                     .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("request_id must be a string when provided"))?,
-            ),
+                    .ok_or_else(|| anyhow::anyhow!("request_id must be a string when provided"))?;
+                if id.len() > RecentRequestIds::MAX_REQUEST_ID_BYTES {
+                    anyhow::bail!(
+                        "request_id must be at most {} bytes",
+                        RecentRequestIds::MAX_REQUEST_ID_BYTES
+                    );
+                }
+                Some(id)
+            }
         };
         let duplicate = self.jobs.send_message_with_request_id(
             job_id,

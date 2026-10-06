@@ -14,7 +14,7 @@ use tinyagents_graph::orchestration::{
 };
 use tinyagents_harness::ids::TaskId;
 use tinyagents_harness::run_queue::QueueLane;
-use tinyagents_harness::steering::{SteeringCommand, SteeringHandle};
+use tinyagents_harness::steering::{RecentRequestIds, SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::Message;
 
 use super::types::{DetachedSubagentStatus, SubagentIdentity, WaitError};
@@ -31,6 +31,8 @@ pub enum SteerError {
     /// Detached subagents only accept an injected instruction or collected
     /// context; follow-up work cannot be dispatched through a steer.
     UnsupportedLane,
+    /// The `request_id` exceeds [`RecentRequestIds::MAX_REQUEST_ID_BYTES`].
+    RequestIdTooLong,
 }
 
 impl From<DetachedTaskRegistryError> for SteerError {
@@ -136,7 +138,17 @@ where
 /// `task_id`, returns a [`SteerReceipt`] with `duplicate: true` and delivers
 /// nothing. The last [`tinyagents_harness::steering::RecentRequestIds::DEFAULT_CAPACITY`] ids per task are
 /// remembered. Validation (lane, unknown / unowned / terminal) runs first, so
-/// a rejected steer never consumes its id and can be retried.
+/// a rejected steer never consumes its id and can be retried. A `request_id`
+/// longer than [`RecentRequestIds::MAX_REQUEST_ID_BYTES`] is rejected with
+/// [`SteerError::RequestIdTooLong`].
+///
+/// # Delivery semantics
+///
+/// The id is claimed *before* delivery, so a steer is delivered **at most
+/// once** per `request_id`: if delivery is interrupted after the claim (the
+/// future is dropped, or the host fallback fails to enqueue), a retry with the
+/// same id is acknowledged as a duplicate and is not re-delivered. A caller
+/// that needs retry-until-delivered must use a fresh `request_id`.
 pub async fn steer_detached_with_request_id<M, F, Fut>(
     registry: &DetachedTaskRegistry<M, DetachedSubagentStatus>,
     task_id: &str,
@@ -153,6 +165,9 @@ where
 {
     if !matches!(lane, QueueLane::Steer | QueueLane::Collect) {
         return Err(SteerError::UnsupportedLane);
+    }
+    if request_id.is_some_and(|id| id.len() > RecentRequestIds::MAX_REQUEST_ID_BYTES) {
+        return Err(SteerError::RequestIdTooLong);
     }
     let key = TaskId::new(task_id);
     let snapshot = match access {

@@ -751,15 +751,18 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         if mode == SubAgentMode::Inline {
             tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
             self.jobs.mark_running(&job_id);
+            let mut guard = jobs::InlineJobGuard::new(self.jobs.clone(), job_id.clone());
             let result = self
                 .subagent
                 .run_hosted_child(state, child, input, streaming)
                 .await;
             self.jobs.mark_result(&job_id, result);
-            let job = self
-                .jobs
-                .get(job_id.as_str())
-                .expect("inline job was just registered");
+            guard.disarm();
+            let Some(job) = self.jobs.get(job_id.as_str()) else {
+                return Ok(tinytools::ToolResult::error(format!(
+                    "Sub-agent job `{job_id}` was removed before its result could be read."
+                )));
+            };
             tracing::debug!(
                 "{LOG_PREFIX} inline.done job_id={job_id} status={:?}",
                 job.status

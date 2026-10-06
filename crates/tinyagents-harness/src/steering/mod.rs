@@ -438,6 +438,10 @@ impl RecentRequestIds {
     /// Number of ids remembered per task by [`Self::default`].
     pub const DEFAULT_CAPACITY: usize = 64;
 
+    /// Longest `request_id` (in bytes) callers should accept; bounds the
+    /// memory a task's id window can hold.
+    pub const MAX_REQUEST_ID_BYTES: usize = 128;
+
     /// Creates a memory holding at most `capacity` ids (minimum one).
     pub fn with_capacity(capacity: usize) -> Self {
         Self {

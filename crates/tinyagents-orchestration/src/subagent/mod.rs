@@ -32,9 +32,9 @@ pub use detached::{
 pub use driver::{SubagentCapabilities, SubagentDriver};
 pub use executor::SubagentExecutor;
 pub use invocation::{
-    ChildDataPolicy, SubAgent, SubAgentJob, SubAgentJobError, SubAgentJobId, SubAgentJobRegistry,
-    SubAgentJobStatus, SubAgentJobsTool, SubAgentMessageTool, SubAgentSession, SubAgentTool,
-    register_subagent_job_tools,
+    ChildDataPolicy, SUBAGENT_MODE_FIELD, SubAgent, SubAgentJob, SubAgentJobError, SubAgentJobId,
+    SubAgentJobRegistry, SubAgentJobStatus, SubAgentJobsTool, SubAgentMessageTool, SubAgentMode,
+    SubAgentSession, SubAgentTool, register_subagent_job_tools,
 };
 pub use persistence::SubagentPersistence;
 pub use planner::SubagentPlanner;

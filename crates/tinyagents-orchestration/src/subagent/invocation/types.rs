@@ -219,7 +219,11 @@ impl SubAgentJobStatus {
 }
 
 /// Host-queryable snapshot of one asynchronous subagent job.
+///
+/// Non-exhaustive: new link/diagnostic fields may be added without a breaking
+/// change, so construct it only through the registry.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SubAgentJob {
     /// Stable job identifier returned by the spawning tool.
     pub id: SubAgentJobId,
@@ -264,7 +268,9 @@ pub(crate) struct SubAgentJobEntry {
     pub(crate) steering: SteeringHandle,
     /// The child run's own cancellation token (a linked child of the parent's),
     /// so one job can be cancelled without touching the parent or siblings.
-    pub(crate) cancellation: CancellationToken,
+    ///
+    /// `None` once the job is terminal: a settled job holds no live token.
+    pub(crate) cancellation: Option<CancellationToken>,
     /// Message `request_id`s already applied, so a retried message is queued once.
     pub(crate) message_requests: RecentRequestIds,
 }
