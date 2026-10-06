@@ -96,3 +96,21 @@ async fn an_appended_message_is_resumed_as_an_assistant_turn() {
     assert_eq!(last.role, "assistant");
     assert_eq!(last.content, "Time to stretch!");
 }
+
+#[tokio::test]
+async fn a_session_without_a_transcript_is_reported_and_not_created() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+
+    let outcome = append_background_message(
+        &locator,
+        &session(),
+        TranscriptMessage::assistant("Time to stretch!"),
+        options("run-1"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, BackgroundAppendOutcome::NoSession);
+    assert!(!head_path(dir.path(), &session()).exists());
+}

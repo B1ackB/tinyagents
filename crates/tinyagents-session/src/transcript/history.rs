@@ -525,6 +525,11 @@ impl FileTranscriptLocator {
             workspace_dir: workspace_dir.into(),
         }
     }
+
+    /// The workspace root this locator resolves `session_raw/` under.
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
 }
 
 impl TranscriptLocator for FileTranscriptLocator {
