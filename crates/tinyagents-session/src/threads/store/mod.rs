@@ -432,6 +432,20 @@ pub fn update_thread_labels(
     ConversationStore::new(workspace_dir).update_thread_labels(thread_id, labels, updated_at)
 }
 
+/// Free-function shim around [`ConversationStore::update_thread_working_dir`].
+pub fn update_thread_working_dir(
+    workspace_dir: PathBuf,
+    thread_id: &str,
+    working_dir: Option<String>,
+    updated_at: &str,
+) -> Result<ConversationThread, String> {
+    ConversationStore::new(workspace_dir).update_thread_working_dir(
+        thread_id,
+        working_dir,
+        updated_at,
+    )
+}
+
 /// Free-function shim around [`ConversationStore::update_message`].
 pub fn update_message(
     workspace_dir: PathBuf,

@@ -404,7 +404,12 @@ impl ConversationStore {
                             existing.message_bytes,
                             existing.last_message_at.clone(),
                             personality_id.or_else(|| existing.personality_id.clone()),
-                            working_dir.or_else(|| existing.working_dir.clone()),
+                            match working_dir {
+                                // An explicit clear (`update_thread_working_dir(None)`).
+                                Some(dir) if dir.is_empty() => None,
+                                Some(dir) => Some(dir),
+                                None => existing.working_dir.clone(),
+                            },
                         ),
                         None => {
                             let inferred = labels
@@ -418,7 +423,7 @@ impl ConversationStore {
                                 None,
                                 None,
                                 personality_id,
-                                working_dir,
+                                working_dir.filter(|dir| !dir.is_empty()),
                             )
                         }
                     };

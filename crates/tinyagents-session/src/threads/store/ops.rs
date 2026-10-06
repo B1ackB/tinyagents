@@ -238,6 +238,47 @@ impl ConversationStore {
             .ok_or_else(|| format!("thread {} missing after title update", thread_id))
     }
 
+    /// Bind (`Some`) or clear (`None`) a thread's working directory via a new
+    /// `Upsert` log entry.
+    ///
+    /// The log records a clear as an empty string, because an absent field on
+    /// an `Upsert` means "keep the bound value" (the same fold `personality_id`
+    /// follows); the fold turns the empty string back into `None`.
+    pub fn update_thread_working_dir(
+        &self,
+        thread_id: &str,
+        working_dir: Option<String>,
+        updated_at: &str,
+    ) -> Result<ConversationThread, String> {
+        let _lifecycle = self.locks.lifecycle.read();
+        let thread_lock = self.locks.thread(thread_id);
+        let _thread = thread_lock.lock();
+        let _metadata = self.locks.metadata.lock();
+        let index = self.thread_index_unlocked()?;
+        let entry = index
+            .get(thread_id)
+            .ok_or_else(|| format!("thread {} not found", thread_id))?;
+        let threads_path = self.ensure_root()?.join(THREADS_FILENAME);
+        let working_dir = working_dir
+            .map(|dir| dir.trim().to_string())
+            .unwrap_or_default();
+        append_jsonl(
+            &threads_path,
+            &ThreadLogEntry::Upsert {
+                thread_id: thread_id.to_string(),
+                title: entry.title.clone(),
+                created_at: entry.created_at.clone(),
+                updated_at: updated_at.to_string(),
+                parent_thread_id: entry.parent_thread_id.clone(),
+                labels: Some(entry.labels.clone()),
+                personality_id: entry.personality_id.clone(),
+                working_dir: Some(working_dir),
+            },
+        )?;
+        self.thread_summary_unlocked(thread_id)?
+            .ok_or_else(|| format!("thread {} missing after working dir update", thread_id))
+    }
+
     /// Replace the label set on a thread via a new `Upsert` log entry.
     pub fn update_thread_labels(
         &self,
