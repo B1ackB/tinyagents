@@ -132,6 +132,7 @@
 //! | `adoption`      | Folding pre-identity transcripts into a session.              |
 
 mod adoption;
+mod background;
 mod history;
 pub mod import;
 mod jsonl;
