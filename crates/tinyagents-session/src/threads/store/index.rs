@@ -294,6 +294,7 @@ impl ConversationStore {
                     parent_thread_id: entry.parent_thread_id.clone(),
                     labels: normalize_labels(entry.labels.clone()),
                     personality_id: entry.personality_id.clone(),
+                    working_dir: entry.working_dir.clone(),
                 }
             })
             .collect();
@@ -355,6 +356,7 @@ impl ConversationStore {
             parent_thread_id: entry.parent_thread_id.clone(),
             labels: normalize_labels(entry.labels.clone()),
             personality_id: entry.personality_id.clone(),
+            working_dir: entry.working_dir.clone(),
         }))
     }
 
@@ -379,6 +381,7 @@ impl ConversationStore {
                     parent_thread_id,
                     labels,
                     personality_id,
+                    working_dir,
                     ..
                 } => {
                     let (
@@ -389,6 +392,7 @@ impl ConversationStore {
                         message_bytes_value,
                         last_message_at_value,
                         personality_id_value,
+                        working_dir_value,
                     ) = match index.get(&thread_id) {
                         Some(existing) => (
                             existing.created_at.clone(),
@@ -400,6 +404,7 @@ impl ConversationStore {
                             existing.message_bytes,
                             existing.last_message_at.clone(),
                             personality_id.or_else(|| existing.personality_id.clone()),
+                            working_dir.or_else(|| existing.working_dir.clone()),
                         ),
                         None => {
                             let inferred = labels
@@ -413,6 +418,7 @@ impl ConversationStore {
                                 None,
                                 None,
                                 personality_id,
+                                working_dir,
                             )
                         }
                     };
@@ -427,6 +433,7 @@ impl ConversationStore {
                             message_bytes: message_bytes_value,
                             last_message_at: last_message_at_value,
                             personality_id: personality_id_value,
+                            working_dir: working_dir_value,
                         },
                     );
                 }

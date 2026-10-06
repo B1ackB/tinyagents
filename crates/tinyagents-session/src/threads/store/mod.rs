@@ -142,6 +142,8 @@ pub(super) enum ThreadLogEntry {
         labels: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
     },
     /// Tombstone removing `thread_id` from the folded state; `op` wire string
     /// is `delete`.
@@ -190,6 +192,8 @@ pub(super) struct ThreadIndexEntry {
     pub(super) last_message_at: Option<String>,
     /// Personality/persona id bound to this thread, if any.
     pub(super) personality_id: Option<String>,
+    /// Working directory bound to this thread, if any.
+    pub(super) working_dir: Option<String>,
 }
 
 /// Default labels for a thread whose `Upsert` carried none, inferred from its

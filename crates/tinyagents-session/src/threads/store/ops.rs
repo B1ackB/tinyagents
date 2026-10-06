@@ -53,6 +53,7 @@ impl ConversationStore {
                 parent_thread_id: request.parent_thread_id.clone(),
                 labels,
                 personality_id: request.personality_id.clone(),
+                working_dir: request.working_dir.clone(),
             },
         )?;
         self.thread_summary_unlocked(&request.id)?
@@ -230,6 +231,7 @@ impl ConversationStore {
                 parent_thread_id: entry.parent_thread_id.clone(),
                 labels: Some(entry.labels.clone()),
                 personality_id: entry.personality_id.clone(),
+                working_dir: entry.working_dir.clone(),
             },
         )?;
         self.thread_summary_unlocked(thread_id)?
@@ -263,6 +265,7 @@ impl ConversationStore {
                 parent_thread_id: entry.parent_thread_id.clone(),
                 labels: Some(labels),
                 personality_id: entry.personality_id.clone(),
+                working_dir: entry.working_dir.clone(),
             },
         )?;
         self.thread_summary_unlocked(thread_id)?

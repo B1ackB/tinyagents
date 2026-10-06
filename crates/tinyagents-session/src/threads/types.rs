@@ -40,6 +40,11 @@ pub struct ConversationThread {
     /// when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personality_id: Option<String>,
+    /// Optional working directory the thread's agent acts in, chosen when the
+    /// thread was started; omitted from the wire record when `None`, which
+    /// means the host's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 /// A single message appended to a thread's JSONL log.
@@ -83,6 +88,10 @@ pub struct CreateConversationThread {
     /// Optional personality id to bind to the thread.
     #[serde(default)]
     pub personality_id: Option<String>,
+    /// Optional working directory to bind to the thread. Like
+    /// `personality_id`, `None` on a later upsert keeps the bound value.
+    #[serde(default)]
+    pub working_dir: Option<String>,
 }
 
 /// Partial update to apply to a stored message (e.g. rewriting `extraMetadata`).
