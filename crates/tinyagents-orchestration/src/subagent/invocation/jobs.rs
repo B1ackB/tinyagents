@@ -28,6 +28,7 @@ impl SubAgentJobRegistry {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn create(&self, agent: &str, owner: u64) -> (SubAgentJobId, SteeringHandle) {
         self.create_with_cancellation(agent, owner, CancellationToken::new(), JobLink::default())
     }
@@ -194,6 +195,7 @@ impl SubAgentJobRegistry {
 
     /// Queues a user message for delivery at the running child's next safe
     /// steering checkpoint.
+    #[cfg(test)]
     pub(crate) fn send_message_owned(
         &self,
         job_id: &str,

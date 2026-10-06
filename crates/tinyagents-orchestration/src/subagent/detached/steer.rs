@@ -14,7 +14,7 @@ use tinyagents_graph::orchestration::{
 };
 use tinyagents_harness::ids::TaskId;
 use tinyagents_harness::run_queue::QueueLane;
-use tinyagents_harness::steering::{RecentRequestIds, SteeringCommand, SteeringHandle};
+use tinyagents_harness::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::Message;
 
 use super::types::{DetachedSubagentStatus, SubagentIdentity, WaitError};
@@ -134,7 +134,7 @@ where
 
 /// Idempotent [`steer_detached`]: when `request_id` was already applied to
 /// `task_id`, returns a [`SteerReceipt`] with `duplicate: true` and delivers
-/// nothing. The last [`RecentRequestIds::DEFAULT_CAPACITY`] ids per task are
+/// nothing. The last [`tinyagents_harness::steering::RecentRequestIds::DEFAULT_CAPACITY`] ids per task are
 /// remembered. Validation (lane, unknown / unowned / terminal) runs first, so
 /// a rejected steer never consumes its id and can be retried.
 pub async fn steer_detached_with_request_id<M, F, Fut>(
