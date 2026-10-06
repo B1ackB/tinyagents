@@ -220,7 +220,12 @@ async fn message_with_a_repeated_request_id_is_queued_once() {
         json!({"job_id": job_id.as_str(), "message": "m", "request_id": "r2"}),
     )
     .await;
-    message_via_tool(&tool, &parent, json!({"job_id": job_id.as_str(), "message": "m"})).await;
+    message_via_tool(
+        &tool,
+        &parent,
+        json!({"job_id": job_id.as_str(), "message": "m"}),
+    )
+    .await;
     assert_eq!(steering.pending(), 3);
 }
 

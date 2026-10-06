@@ -760,7 +760,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 .jobs
                 .get(job_id.as_str())
                 .expect("inline job was just registered");
-            tracing::debug!("{LOG_PREFIX} inline.done job_id={job_id} status={:?}", job.status);
+            tracing::debug!(
+                "{LOG_PREFIX} inline.done job_id={job_id} status={:?}",
+                job.status
+            );
             // The job snapshot, plus the `job_id` key the queued result uses
             // so both modes name the job the same way.
             let mut payload = serde_json::to_value(&job)?;

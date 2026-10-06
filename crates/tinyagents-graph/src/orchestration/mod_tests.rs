@@ -145,7 +145,14 @@ async fn detached_registry_remembers_steer_request_ids_per_task() {
         (&second_id, rx_second, cancel_second, &join_second),
     ] {
         registry
-            .register(id.clone(), "p", "m".to_string(), rx, cancel, join.abort_handle())
+            .register(
+                id.clone(),
+                "p",
+                "m".to_string(),
+                rx,
+                cancel,
+                join.abort_handle(),
+            )
             .unwrap();
     }
 
