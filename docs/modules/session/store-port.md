@@ -56,7 +56,7 @@ implement them, so code generic over a store accepts injected handles, and
   implements `TranscriptLocator`; together with `open_session_stores` they
   are the building blocks of a file-backed provider. This crate does not
   assemble one: the host that owns a layout does (OpenHuman's
-  `openhuman-store-sqlite`).
+  `openhuman_rpc::session_store`).
 - `TranscriptLocator::append_interrupted_partial` carries the display-only
   partial of an interrupted turn without a file path.
 
