@@ -2,7 +2,8 @@ use std::{future::Future, sync::Arc};
 
 use tinyagents_harness::CancellationToken;
 use tinyagents_session::transcript::{
-    SessionRef, TranscriptHistory, TranscriptMessage, TranscriptPartial, TranscriptTurn, TurnUsage,
+    SessionRef, SessionTurnGuard, TranscriptHistory, TranscriptMessage, TranscriptPartial,
+    TranscriptTurn, TurnUsage, lock_session_turn,
 };
 use tinyinference_llm::message::Message;
 
@@ -526,6 +527,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         )
         .await?;
         self.apply_resume_preparation(resume_preparation)?;
+        // Held from the resume read through the persist below (and any
+        // partial persist on failure), so an out-of-band transcript append
+        // (`append_background_message`) lands between turns rather than
+        // staling this turn's baseline. See `lock_session_turn`.
+        let _turn_lock = cancelable(&cancellation, async { Ok(self.lock_turn().await) }).await?;
         let resumed = if options.resume == ResumeMode::Never {
             false
         } else {
@@ -669,6 +675,15 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         // the owned finalization task.
         let _ = finalization.await;
         Ok(committed)
+    }
+
+    /// Takes the session's turn lock when the target is session-bound and its
+    /// locator names a destination; otherwise there is nothing to share it
+    /// with and the turn runs unlocked.
+    async fn lock_turn(&self) -> Option<SessionTurnGuard> {
+        let target = self.target.as_ref()?;
+        let session = target.session.as_ref()?;
+        lock_session_turn(target.locator.as_ref(), session).await
     }
 
     fn apply_preparation(
