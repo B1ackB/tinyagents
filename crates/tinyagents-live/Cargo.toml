@@ -21,7 +21,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 anyhow = { workspace = true }
-tinytools = { path = "../../vendor/tinytools/crates/tinytools", version = "0.5.0" }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
 
 [lints]

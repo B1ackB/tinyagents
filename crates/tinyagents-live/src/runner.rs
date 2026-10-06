@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use tinyagents_harness::context::RunContext;
-use tinyagents_harness::AgentHarness;
+use tinyagents_harness::runtime::AgentHarness;
 use tinyliveagents::{LiveConfig, LiveEvent, LiveEvents, LiveProvider, LiveSender};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -26,12 +26,12 @@ const EVENT_CAPACITY: usize = 512;
 /// let mic = session.sender();
 /// while let Some(event) = session.recv().await { /* play audio, show captions */ }
 /// ```
-pub struct LiveAgent<State, Ctx> {
+pub struct LiveAgent<State: Send + Sync, Ctx: Send + Sync> {
     harness: Arc<AgentHarness<State, Ctx>>,
     state: Arc<State>,
 }
 
-impl<State, Ctx> std::fmt::Debug for LiveAgent<State, Ctx> {
+impl<State: Send + Sync, Ctx: Send + Sync> std::fmt::Debug for LiveAgent<State, Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveAgent").finish_non_exhaustive()
     }

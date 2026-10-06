@@ -1,6 +1,6 @@
 //! Tool declarations for a live session, taken from a harness's registry.
 
-use tinyagents_harness::AgentHarness;
+use tinyagents_harness::runtime::AgentHarness;
 use tinyliveagents::ToolDeclaration;
 
 /// The declarations a live model should see for `harness`'s tools: every

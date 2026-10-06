@@ -17,11 +17,11 @@ use serde_json::Value;
 use tinyagents_harness::agent_loop::phases::execute_tool_batch;
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::events::{AgentEvent, EventListener, EventRecord, HarnessRunStatus};
-use tinyagents_harness::ids::ComponentId;
+use tinyagents_harness::ComponentId;
 use tinyagents_harness::middleware::AgentRun;
 use tinyagents_harness::tinyinference_llm::message::Message;
 use tinyagents_harness::tinyinference_llm::tool::ToolCall as HarnessToolCall;
-use tinyagents_harness::AgentHarness;
+use tinyagents_harness::runtime::AgentHarness;
 use tinyliveagents::{LiveSender, ToolCall, ToolResult};
 use tokio::sync::mpsc;
 
@@ -65,7 +65,7 @@ impl EventListener for OutcomeRecorder {
 pub(crate) type Cancelled = Arc<Mutex<HashSet<String>>>;
 
 /// Everything the worker needs.
-pub(crate) struct Worker<State, Ctx> {
+pub(crate) struct Worker<State: Send + Sync, Ctx: Send + Sync> {
     pub(crate) harness: Arc<AgentHarness<State, Ctx>>,
     pub(crate) state: Arc<State>,
     pub(crate) ctx: RunContext<Ctx>,

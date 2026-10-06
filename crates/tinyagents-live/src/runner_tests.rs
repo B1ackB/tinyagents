@@ -72,7 +72,7 @@ struct SlowTool {
 }
 
 #[async_trait]
-impl tinytools::Tool for SlowTool {
+impl tinyagents_harness::tinytools::Tool for SlowTool {
     fn name(&self) -> &str {
         "slow"
     }
@@ -82,9 +82,9 @@ impl tinytools::Tool for SlowTool {
     fn parameters_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn execute(&self, _args: Value) -> anyhow::Result<tinytools::ToolResult> {
+    async fn execute(&self, _args: Value) -> anyhow::Result<tinyagents_harness::tinytools::ToolResult> {
         tokio::time::sleep(self.delay).await;
-        Ok(tinytools::ToolResult::success("slept"))
+        Ok(tinyagents_harness::tinytools::ToolResult::success("slept"))
     }
 }
 

@@ -1799,7 +1799,6 @@ dependencies = [
  "serde_json",
  "tinyagents-harness",
  "tinyliveagents",
- "tinytools",
  "tokio",
  "tracing",
 ]
