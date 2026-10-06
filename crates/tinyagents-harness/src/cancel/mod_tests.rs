@@ -73,3 +73,42 @@ async fn cancelled_is_select_safe() {
     }
     assert!(!token.is_cancelled());
 }
+
+#[test]
+fn child_token_cancel_does_not_cancel_parent_or_siblings() {
+    let parent = CancellationToken::new();
+    let first = parent.child_token();
+    let second = parent.child_token();
+    first.cancel();
+    assert!(first.is_cancelled());
+    assert!(!parent.is_cancelled(), "child cancel must not propagate up");
+    assert!(!second.is_cancelled(), "siblings are independent");
+}
+
+#[test]
+fn parent_cancel_cascades_to_every_descendant() {
+    let root = CancellationToken::new();
+    let child = root.child_token();
+    let grandchild = child.child_token();
+    root.cancel();
+    assert!(child.is_cancelled());
+    assert!(grandchild.is_cancelled());
+}
+
+#[test]
+fn child_of_cancelled_parent_starts_cancelled() {
+    let parent = CancellationToken::new();
+    parent.cancel();
+    assert!(parent.child_token().is_cancelled());
+}
+
+#[tokio::test]
+async fn child_cancelled_future_wakes_on_parent_cancel() {
+    let parent = CancellationToken::new();
+    let child = parent.child_token();
+    let waiter = child.clone();
+    let handle = tokio::spawn(async move { waiter.cancelled().await });
+    tokio::task::yield_now().await;
+    parent.cancel();
+    handle.await.expect("waiter resolves");
+}
