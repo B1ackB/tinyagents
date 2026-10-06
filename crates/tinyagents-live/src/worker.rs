@@ -14,14 +14,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use tinyagents_harness::ComponentId;
 use tinyagents_harness::agent_loop::phases::execute_tool_batch;
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::events::{AgentEvent, EventListener, EventRecord, HarnessRunStatus};
-use tinyagents_harness::ComponentId;
 use tinyagents_harness::middleware::AgentRun;
+use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tinyinference_llm::message::Message;
 use tinyagents_harness::tinyinference_llm::tool::ToolCall as HarnessToolCall;
-use tinyagents_harness::runtime::AgentHarness;
 use tinyliveagents::{LiveSender, ToolCall, ToolResult};
 use tokio::sync::mpsc;
 
@@ -85,8 +85,10 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> Worker<State, Ctx
     /// Runs calls from `calls` until the channel closes.
     pub(crate) async fn run(mut self, mut calls: mpsc::Receiver<ToolCall>) {
         let mut run = AgentRun::new();
-        let mut status =
-            HarnessRunStatus::new(self.ctx.run_id().clone(), ComponentId::new("live-session".to_string()));
+        let mut status = HarnessRunStatus::new(
+            self.ctx.run_id().clone(),
+            ComponentId::new("live-session".to_string()),
+        );
         while let Some(call) = calls.recv().await {
             if self.is_cancelled(&call.call_id) {
                 tracing::debug!(call_id = %call.call_id, "tinyagents-live: skipping cancelled call");
@@ -159,7 +161,10 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> Worker<State, Ctx
         match tokio::time::timeout(self.tool_timeout, batch).await {
             Err(_) => ToolResult::error(
                 call,
-                format!("the tool did not finish within {}s", self.tool_timeout.as_secs()),
+                format!(
+                    "the tool did not finish within {}s",
+                    self.tool_timeout.as_secs()
+                ),
             ),
             Ok(Err(error)) => ToolResult::error(call, error.to_string()),
             Ok(Ok(outcome)) => {

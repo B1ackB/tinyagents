@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tinyagents_harness::TinyAgentsError;
 use tinyagents_harness::context::RunConfig;
 use tinyagents_harness::middleware::Middleware;
 use tinyagents_harness::testkit::FakeTool;
 use tinyagents_harness::tinyinference_llm::tool::ToolCall as HarnessToolCall;
-use tinyagents_harness::TinyAgentsError;
 use tinyliveagents::{
     AudioFormat, Capabilities, ClientCommand, CloseReason, LiveSession, SessionInfo, ToolCall,
     ToolResult,
@@ -82,7 +82,10 @@ impl tinyagents_harness::tinytools::Tool for SlowTool {
     fn parameters_schema(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
-    async fn execute(&self, _args: Value) -> anyhow::Result<tinyagents_harness::tinytools::ToolResult> {
+    async fn execute(
+        &self,
+        _args: Value,
+    ) -> anyhow::Result<tinyagents_harness::tinytools::ToolResult> {
         tokio::time::sleep(self.delay).await;
         Ok(tinyagents_harness::tinytools::ToolResult::success("slept"))
     }
@@ -156,10 +159,7 @@ fn ready() -> LiveEvent {
     })
 }
 
-async fn start(
-    provider: &ScriptedProvider,
-    options: LiveAgentOptions,
-) -> LiveAgentSession {
+async fn start(provider: &ScriptedProvider, options: LiveAgentOptions) -> LiveAgentSession {
     let agent = LiveAgent::new(Arc::new(harness()), Arc::new(()));
     assert!(format!("{agent:?}").contains("LiveAgent"));
     assert!(agent.harness().tools().schemas().len() >= 5);
@@ -236,7 +236,10 @@ async fn declares_tools_and_answers_calls_through_the_harness() {
     assert_eq!(result.call_id, "c1");
     assert_eq!(result.output, json!("noon"));
     assert!(!result.is_error);
-    assert_eq!(next_finished(&mut session).await, ("c1".into(), false, false));
+    assert_eq!(
+        next_finished(&mut session).await,
+        ("c1".into(), false, false)
+    );
 
     // Commands the host sends pass straight through.
     session.sender().send_text("hi").await.unwrap();
@@ -269,7 +272,10 @@ async fn failures_denials_approvals_and_unknown_tools_become_error_results() {
         events.send(call(id, name)).await.unwrap();
         let result = next_result(&mut commands).await;
         assert_eq!(result.call_id, id);
-        assert!(result.is_error || name == "no_such_tool", "{name}: {result:?}");
+        assert!(
+            result.is_error || name == "no_such_tool",
+            "{name}: {result:?}"
+        );
         let (finished, _, cancelled) = next_finished(&mut session).await;
         assert_eq!(finished, id);
         assert!(!cancelled);
@@ -277,7 +283,10 @@ async fn failures_denials_approvals_and_unknown_tools_become_error_results() {
             assert!(result.output_text().contains("approval"), "{result:?}");
         }
         if name == "blocked" {
-            assert!(result.output_text().contains("blocked by policy"), "{result:?}");
+            assert!(
+                result.output_text().contains("blocked by policy"),
+                "{result:?}"
+            );
         }
     }
 }
@@ -336,7 +345,12 @@ async fn connection_errors_are_returned() {
     let agent = LiveAgent::new(Arc::new(harness()), Arc::new(()));
     let ctx = RunContext::new(RunConfig::new("live-test"), ());
     let result = agent
-        .start(&provider, LiveConfig::new(), ctx, LiveAgentOptions::default())
+        .start(
+            &provider,
+            LiveConfig::new(),
+            ctx,
+            LiveAgentOptions::default(),
+        )
         .await;
     assert!(matches!(result, Err(tinyliveagents::Error::Closed)));
 }

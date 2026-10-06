@@ -43,11 +43,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(Some(event)) = tokio::time::timeout_at(deadline, session.recv()).await {
         match event {
             LiveAgentEvent::Live(LiveEvent::Ready(info)) => {
-                println!("ready: {} -> {} Hz", info.provider, info.output_format.sample_rate);
-                sender.send_text("What time is it in UTC right now?").await?;
+                println!(
+                    "ready: {} -> {} Hz",
+                    info.provider, info.output_format.sample_rate
+                );
+                sender
+                    .send_text("What time is it in UTC right now?")
+                    .await?;
             }
             LiveAgentEvent::Live(LiveEvent::Audio(pcm)) => audio_bytes += pcm.len(),
-            LiveAgentEvent::Live(LiveEvent::OutputTranscript { text, is_final: true }) => {
+            LiveAgentEvent::Live(LiveEvent::OutputTranscript {
+                text,
+                is_final: true,
+            }) => {
                 println!("agent said: {text}");
             }
             LiveAgentEvent::Live(LiveEvent::TurnComplete { .. }) => {
