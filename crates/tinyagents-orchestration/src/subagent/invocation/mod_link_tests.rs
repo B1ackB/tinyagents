@@ -1,6 +1,6 @@
 //! Explicit parent-call -> child-run link carried by sub-agent results.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -8,7 +8,9 @@ use super::test::wait_for_terminal;
 use super::{ChildDataPolicy, SubAgent, SubAgentTool};
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::events::{AgentEvent, EventSink, RecordingListener};
+use tinyagents_harness::error::Result;
 use tinyagents_harness::ids::CallId;
+use tinyagents_harness::middleware::Middleware;
 use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
 use tinyinference_llm::providers::MockModel;
@@ -66,17 +68,53 @@ async fn queued_result_and_completed_job_carry_the_explicit_link() {
     assert!(started, "child run id matches the advertised subagent_run_id");
 }
 
+struct MetadataProbe(Arc<Mutex<Option<Value>>>);
+
+#[async_trait::async_trait]
+impl Middleware<(), ()> for MetadataProbe {
+    fn name(&self) -> &str {
+        "metadata-probe"
+    }
+
+    async fn before_agent(&self, ctx: &mut RunContext<()>, _state: &()) -> Result<()> {
+        *self.0.lock().unwrap() = Some(ctx.config.metadata.clone());
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn child_run_metadata_names_the_parent_call_and_job() {
-    let tool = tool();
-    let parent = RunContext::new(RunConfig::new("parent").with_metadata(json!({"keep": 1})), ());
-    let (config_probe, ids) = tool
-        .child_metadata_for_test(&parent, Some(&CallId::new("call-7")))
-        .await;
-    assert_eq!(config_probe["keep"], 1, "parent metadata is preserved");
-    assert_eq!(config_probe["parent_tool_call_id"], "call-7");
-    assert_eq!(config_probe["subagent_job_id"], ids.0);
-    assert_eq!(config_probe["subagent_run_id"], ids.1);
+    let seen = Arc::new(Mutex::new(None));
+    let mut harness = AgentHarness::new();
+    harness.register_model("child", Arc::new(MockModel::constant("done")));
+    harness.push_middleware(Arc::new(MetadataProbe(seen.clone())));
+    let tool = SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    );
+    let jobs = tool.job_registry().clone();
+    let parent = RunContext::new(
+        RunConfig::new("parent").with_metadata(json!({"keep": 1})),
+        (),
+    );
+    let result = ToolDispatch::<(), ()>::execute(
+        &tool,
+        &(),
+        CallId::new("call-7"),
+        json!({"input": "work"}),
+        tinytools::ToolCallOptions::default(),
+        &parent,
+    )
+    .await
+    .unwrap();
+    let queued = json_of(&result);
+    wait_for_terminal(&jobs, queued["job_id"].as_str().unwrap(), parent.instance_id()).await;
+
+    let metadata = seen.lock().unwrap().clone().expect("child ran");
+    assert_eq!(metadata["keep"], 1, "parent metadata is preserved");
+    assert_eq!(metadata["parent_tool_call_id"], "call-7");
+    assert_eq!(metadata["subagent_job_id"], queued["job_id"]);
+    assert_eq!(metadata["subagent_run_id"], queued["subagent_run_id"]);
 }
 
 #[tokio::test]
