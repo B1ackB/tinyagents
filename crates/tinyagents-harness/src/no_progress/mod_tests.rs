@@ -513,19 +513,19 @@ fn timestamped_identical_outputs_trip_the_recurrence_halt() {
     assert_eq!(
         tracker.record_call_outcome(
             call,
-            "ok at 2026-10-06T12:00:01Z in 12ms (req 0123456789abcdef)"
+            "ok at 2026-10-06T12:00:01Z in 12ms (req 123e4567-e89b-12d3-a456-426614174000)"
         ),
         SuccessfulRepeat::Continue
     );
     assert_eq!(
         tracker.record_call_outcome(
             call,
-            "ok at 2026-10-06T12:00:09Z in 340ms (req fedcba9876543210)"
+            "ok at 2026-10-06T12:00:09Z in 340ms (req 00000000-1111-2222-3333-444444444444)"
         ),
         SuccessfulRepeat::Continue
     );
     assert!(matches!(
-        tracker.record_call_outcome(call, "ok at 2026-10-06T12:01:30Z in 7ms (req 00ff00ff00ff00ff1)"),
+        tracker.record_call_outcome(call, "ok at 2026-10-06T12:01:30Z in 7ms (req aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee)"),
         SuccessfulRepeat::Halt(message) if message.contains("identical result")
     ));
 }
