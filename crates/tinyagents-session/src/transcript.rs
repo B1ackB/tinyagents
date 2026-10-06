@@ -144,6 +144,7 @@ mod reader;
 mod session;
 pub mod spend;
 mod thread_lookup;
+mod turn_lock;
 mod types;
 pub mod view;
 mod writer;
