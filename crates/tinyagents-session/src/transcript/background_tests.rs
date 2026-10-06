@@ -114,3 +114,39 @@ async fn a_session_without_a_transcript_is_reported_and_not_created() {
     assert_eq!(outcome, BackgroundAppendOutcome::NoSession);
     assert!(!head_path(dir.path(), &session()).exists());
 }
+
+#[tokio::test]
+async fn the_display_reader_shows_the_message_with_its_provenance() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+
+    append_background_message(
+        &locator,
+        &session(),
+        TranscriptMessage::assistant("Time to stretch!"),
+        options("run-1"),
+    )
+    .await
+    .unwrap();
+
+    let display = read_transcript_display(&head_path(dir.path(), &session())).unwrap();
+    let Some(DisplayRecord::Message(last)) = display.records.last() else {
+        panic!("expected a message record last");
+    };
+    assert_eq!(last.message.role, "assistant");
+    assert_eq!(last.message.content, "Time to stretch!");
+    assert!(!last.interrupted);
+    assert_eq!(
+        last.background,
+        Some(BackgroundOrigin {
+            idempotency_key: "run-1".into(),
+            provenance: serde_json::json!({"kind": "cron", "job_id": "job-1", "run_id": "run-1"}),
+        })
+    );
+    // Rows the live turn wrote carry no background origin.
+    let Some(DisplayRecord::Message(first)) = display.records.first() else {
+        panic!("expected a message record first");
+    };
+    assert_eq!(first.background, None);
+}
