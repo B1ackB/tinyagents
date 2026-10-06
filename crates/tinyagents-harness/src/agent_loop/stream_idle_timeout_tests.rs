@@ -27,7 +27,7 @@ use tinyinference_llm::model::{
 #[derive(Clone)]
 enum Step {
     /// Yield this item.
-    Item(ModelStreamItem),
+    Item(Box<ModelStreamItem>),
     /// Wait this long (on the tokio clock) before the next step.
     Sleep(Duration),
     /// Never produce anything again.
@@ -35,19 +35,21 @@ enum Step {
 }
 
 fn delta(text: &str) -> Step {
-    Step::Item(ModelStreamItem::MessageDelta(MessageDelta {
+    Step::Item(Box::new(ModelStreamItem::MessageDelta(MessageDelta {
         text: text.to_string(),
         reasoning: String::new(),
         tool_call: None,
-    }))
+    })))
 }
 
 fn started() -> Step {
-    Step::Item(ModelStreamItem::Started)
+    Step::Item(Box::new(ModelStreamItem::Started))
 }
 
 fn completed(text: &str) -> Step {
-    Step::Item(ModelStreamItem::Completed(ModelResponse::assistant(text)))
+    Step::Item(Box::new(ModelStreamItem::Completed(
+        ModelResponse::assistant(text),
+    )))
 }
 
 /// A streaming model that plays one script per call; the last script repeats.
@@ -96,7 +98,7 @@ impl<State: Send + Sync> ChatModel<State> for ScriptedStreams {
         let stream = futures::stream::unfold(VecDeque::from(script), |mut steps| async move {
             loop {
                 match steps.pop_front()? {
-                    Step::Item(item) => return Some((item, steps)),
+                    Step::Item(item) => return Some((*item, steps)),
                     Step::Sleep(delay) => tokio::time::sleep(delay).await,
                     Step::Hang => futures::future::pending::<()>().await,
                 }
