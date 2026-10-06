@@ -327,6 +327,30 @@ pub trait TranscriptLocator: Send + Sync {
         Ok(None)
     }
 
+    /// Appends the display-only `partial` of an interrupted turn to the
+    /// newest root transcript of `thread_id` (scoped to `agent_id` when
+    /// given); returns whether there was one to append to.
+    ///
+    /// An interrupted **first** turn has no transcript yet, so there is
+    /// nothing to append to and this returns `Ok(false)`. The model-context
+    /// replay never includes a partial.
+    ///
+    /// Defaults to `Ok(false)`, for locators that keep no display partials.
+    ///
+    /// # Errors
+    ///
+    /// When a transcript exists but cannot be appended to.
+    fn append_interrupted_partial(
+        &self,
+        thread_id: &str,
+        agent_id: Option<&str>,
+        partial: &TranscriptPartial,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let _ = (thread_id, agent_id, partial, request_id);
+        Ok(false)
+    }
+
     /// Seals `session` and binds its successor generation.
     ///
     /// Called when a turn's logical message set is no longer an extension of
@@ -544,6 +568,33 @@ impl TranscriptLocator for FileTranscriptLocator {
             path,
             seed_meta_for_discovered(agent_name),
         )))
+    }
+
+    fn append_interrupted_partial(
+        &self,
+        thread_id: &str,
+        agent_id: Option<&str>,
+        partial: &TranscriptPartial,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let Some(path) =
+            find_root_transcript_for_thread_scoped(&self.workspace_dir, thread_id, agent_id)
+        else {
+            return Ok(false);
+        };
+        crate::transcript::append_interrupted_partial(
+            &path,
+            &partial.content,
+            request_id,
+            partial.iteration,
+            partial.reasoning_content.as_deref(),
+        )?;
+        tracing::debug!(
+            "[transcript-history] locator appended interrupted partial thread={thread_id} chars={} path={}",
+            partial.content.len(),
+            path.display()
+        );
+        Ok(true)
     }
 
     fn root_for_thread(&self, thread_id: &str) -> Option<Arc<dyn TranscriptRead>> {
