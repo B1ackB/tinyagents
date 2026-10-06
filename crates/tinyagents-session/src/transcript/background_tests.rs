@@ -259,3 +259,77 @@ async fn the_append_lands_in_the_head_generation() {
     .unwrap();
     assert_eq!(sealed.messages.len(), 2);
 }
+
+/// The cron job finishes while the user is mid-turn in the same thread. The
+/// live turn holds the turn lock from its resume read to its persist, so the
+/// background append waits for it, and the next turn resumes over both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_append_waits_for_the_live_turn_and_keeps_both_in_order() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    let path = head_path(dir.path(), &session());
+    live_turn(&locator, &session(), &[], &first_turn());
+
+    // Turn two starts: lock, then read its baseline.
+    let turn = lock_session_turn(&locator, &session()).await.unwrap();
+    let baseline = read_transcript(&path).unwrap().messages;
+
+    let workspace = dir.path().to_path_buf();
+    let delivery = tokio::spawn(async move {
+        append_background_message(
+            &FileTranscriptLocator::new(workspace),
+            &session(),
+            TranscriptMessage::assistant("Time to stretch!"),
+            options("run-1"),
+        )
+        .await
+    });
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !delivery.is_finished(),
+        "delivery must wait for the live turn"
+    );
+    assert_eq!(read_transcript(&path).unwrap().messages, baseline);
+
+    // Turn two persists against the baseline it read, then releases the lock.
+    let mut second = baseline.clone();
+    second.push(TranscriptMessage::user("what's the weather?"));
+    second.push(TranscriptMessage::assistant("Sunny."));
+    live_turn(&locator, &session(), &baseline, &second);
+    drop(turn);
+
+    assert_eq!(
+        delivery.await.unwrap().unwrap(),
+        BackgroundAppendOutcome::Appended { generation: 0 }
+    );
+
+    // Turn three resumes over everything and appends on top of it.
+    let _turn = lock_session_turn(&locator, &session()).await.unwrap();
+    let resumed = read_transcript(&path).unwrap().messages;
+    let mut third = resumed.clone();
+    third.push(TranscriptMessage::user("did you remind me?"));
+    third.push(TranscriptMessage::assistant("Yes, at 5."));
+    live_turn(&locator, &session(), &resumed, &third);
+
+    let contents: Vec<(String, String)> = read_transcript(&path)
+        .unwrap()
+        .messages
+        .into_iter()
+        .map(|message| (message.role, message.content))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("user", "remind me to stretch at 5"),
+        ("assistant", "Scheduled."),
+        ("user", "what's the weather?"),
+        ("assistant", "Sunny."),
+        ("assistant", "Time to stretch!"),
+        ("user", "did you remind me?"),
+        ("assistant", "Yes, at 5."),
+    ]
+    .into_iter()
+    .map(|(role, content)| (role.to_string(), content.to_string()))
+    .collect();
+    assert_eq!(contents, expected);
+}
