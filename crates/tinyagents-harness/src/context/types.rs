@@ -413,6 +413,11 @@ pub struct RunContext<Ctx = ()> {
     /// streaming pipeline races [`CancellationToken::cancelled`] against the
     /// provider stream. On observing cancellation the run ends with
     /// [`crate::error::TinyAgentsError::Cancelled`].
+    ///
+    /// Child contexts ([`RunContext::child`]) receive a
+    /// [`CancellationToken::child_token`]: cancelling the parent cancels every
+    /// descendant, but cancelling one child does not affect the parent or its
+    /// siblings.
     pub cancellation: CancellationToken,
     /// A one-shot control request a middleware or step can set to steer the
     /// loop (stop with a final response, or interrupt). Drained by the agent
