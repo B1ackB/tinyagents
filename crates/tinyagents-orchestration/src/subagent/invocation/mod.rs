@@ -761,7 +761,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 .get(job_id.as_str())
                 .expect("inline job was just registered");
             tracing::debug!("{LOG_PREFIX} inline.done job_id={job_id} status={:?}", job.status);
-            let payload = serde_json::to_value(&job)?;
+            // The job snapshot, plus the `job_id` key the queued result uses
+            // so both modes name the job the same way.
+            let mut payload = serde_json::to_value(&job)?;
+            payload["job_id"] = json!(job_id);
             return Ok(match job.status {
                 SubAgentJobStatus::Completed => tinytools::ToolResult::json(payload),
                 _ => tinytools::ToolResult::error(payload.to_string()),
