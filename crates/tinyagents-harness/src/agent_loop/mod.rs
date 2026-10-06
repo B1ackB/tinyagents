@@ -146,11 +146,11 @@ mod rich_tool_test;
 #[path = "run_queue_tests.rs"]
 mod run_queue_test;
 #[cfg(test)]
-#[path = "mod_tests.rs"]
-mod test;
-#[cfg(test)]
 #[path = "stream_idle_timeout_tests.rs"]
 mod stream_idle_timeout_test;
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod test;
 #[cfg(test)]
 #[path = "unknown_tool_tests.rs"]
 mod unknown_tool_test;
