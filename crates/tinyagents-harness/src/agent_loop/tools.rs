@@ -1174,12 +1174,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // `state_update`) is the tool-vocabulary half of A1: it is *data* the
         // tool returned, not a middleware decision, so it is translated into
         // the same `MiddlewareControl` request a `Middleware` would make
-        // rather than a separate mechanism. `return_direct` and `terminate`
-        // both mean "the model never gets another turn": this call's own
-        // output becomes the run's final response, which — unlike
+        // rather than a separate mechanism.
+        //
+        // `return_direct` means "the model never gets another turn": this
+        // call's own output becomes the run's final response, which — unlike
         // `MiddlewareControl::StopWithFinal` — `JumpTo(End)` alone cannot
         // express (it falls back to the *last assistant message*, which is
         // one turn too early here), so the final response is set directly.
+        //
+        // `terminate` is a *batch* decision (pi's `shouldTerminateToolBatch`):
+        // a call's own hint only records a vote here, and the batch driver
+        // ends the run in `settle_batch_termination` once every call of the
+        // batch has answered and **all** of them voted to terminate. A call
+        // that did not terminate may have returned something the model still
+        // has to read.
+        let mut terminate_vote: Option<String> = None;
         if let Some(control) = result.control.clone() {
             // `return_direct` is now a per-call override (`Option<bool>`):
             // `None` means "no opinion", so it falls back to the tool's own
@@ -1191,11 +1200,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     .map(|dispatch| dispatch.tool().return_direct())
                     .unwrap_or(false)
             });
-            if return_direct || control.terminate {
-                run.final_response = Some(ModelResponse::assistant(
-                    result.output_for_llm(prepared.options.prefer_markdown),
-                ));
+            if return_direct {
+                let output = result.output_for_llm(prepared.options.prefer_markdown);
+                run.final_response = Some(ModelResponse::assistant(output.clone()));
                 ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
+                terminate_vote = Some(output);
+            } else if control.terminate {
+                terminate_vote = Some(result.output_for_llm(prepared.options.prefer_markdown));
             } else if let Some(goto) = &control.goto {
                 match goto.as_str() {
                     "model" => ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::Model)),
@@ -1213,6 +1224,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 ctx.push_tool_state_update(update);
             }
         }
+
+        ctx.terminate_votes.push(terminate_vote);
 
         run.tool_calls += 1;
         if prepared.executed {

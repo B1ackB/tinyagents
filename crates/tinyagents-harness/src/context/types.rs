@@ -427,6 +427,12 @@ pub struct RunContext<Ctx = ()> {
     /// [`tinytools::ToolControl::state_update`]. See
     /// [`RunContext::push_tool_state_update`].
     pub(crate) tool_state_updates: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    /// One entry per tool call finished in the current batch, in call order:
+    /// `Some(output)` when the call asked the loop to end the run
+    /// ([`tinytools::ToolControl::terminate`] / `return_direct`), `None`
+    /// otherwise. The batch driver settles it once every call has answered —
+    /// the run ends only if **every** call voted `Some`.
+    pub(crate) terminate_votes: Vec<Option<String>>,
     /// An optional host-supplied workspace/sandbox descriptor threaded into every
     /// [`ToolExecutionContext`][crate::tool::ToolExecutionContext] this
     /// run creates, so tools discover their allowed root from context rather
