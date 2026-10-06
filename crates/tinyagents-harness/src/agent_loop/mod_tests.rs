@@ -1653,6 +1653,146 @@ async fn length_truncated_tool_calls_run_when_the_guard_is_disabled() {
     assert_eq!(run.messages[2].text(), "tool-output");
 }
 
+/// A tool whose result optionally asks the loop to terminate
+/// (`ToolResult::terminate`, pi's `terminate` hint).
+struct TerminatingTool {
+    name: &'static str,
+    reply: &'static str,
+    terminate: bool,
+}
+
+#[async_trait]
+impl Tool for TerminatingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "tool that may request termination"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let result = ToolResult::success(self.reply);
+        Ok(if self.terminate {
+            result.terminate()
+        } else {
+            result
+        })
+    }
+}
+
+/// One assistant turn requesting every `(id, tool)` pair.
+fn multi_tool_call_response(calls: &[(&str, &str)]) -> ModelResponse {
+    let mut response = tool_call_response(calls[0].0, calls[0].1, json!({}));
+    for (id, name) in &calls[1..] {
+        response
+            .message
+            .tool_calls
+            .push(ToolCall::new(*id, *name, json!({})));
+    }
+    response
+}
+
+fn harness_with_terminating_tools(
+    responses: Vec<ModelResponse>,
+    tools: Vec<TerminatingTool>,
+) -> (
+    AgentHarness<()>,
+    Arc<crate::testkit::ScriptedModel>,
+) {
+    let model = Arc::new(crate::testkit::ScriptedModel::new(responses));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+    for tool in tools {
+        harness.register_tool(Arc::new(tool));
+    }
+    (harness, model)
+}
+
+#[tokio::test]
+async fn terminate_in_a_mixed_batch_does_not_end_the_run() {
+    // Only some calls of the batch ask to terminate: the others still need the
+    // model to look at their results, so the run goes on (pi's
+    // `shouldTerminateToolBatch` requires every call to agree).
+    let (harness, model) = harness_with_terminating_tools(
+        vec![
+            multi_tool_call_response(&[("c1", "finish"), ("c2", "lookup")]),
+            text_response("model saw both results", 4, 2),
+        ],
+        vec![
+            TerminatingTool {
+                name: "finish",
+                reply: "finished",
+                terminate: true,
+            },
+            TerminatingTool {
+                name: "lookup",
+                reply: "found",
+                terminate: false,
+            },
+        ],
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(model.requests().len(), 2, "the model gets another turn");
+    assert_eq!(run.text(), Some("model saw both results".to_string()));
+}
+
+#[tokio::test]
+async fn terminate_ends_the_run_when_every_call_of_the_batch_asks() {
+    // The unanimous batch ends the run; the final response is the *last* call's
+    // output in source order, deterministically (concurrent execution still
+    // folds in call order).
+    let (harness, model) = harness_with_terminating_tools(
+        vec![multi_tool_call_response(&[("c1", "first"), ("c2", "second")])],
+        vec![
+            TerminatingTool {
+                name: "first",
+                reply: "first output",
+                terminate: true,
+            },
+            TerminatingTool {
+                name: "second",
+                reply: "second output",
+                terminate: true,
+            },
+        ],
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(model.requests().len(), 1, "no further model turn");
+    assert_eq!(run.text(), Some("second output".to_string()));
+}
+
+#[tokio::test]
+async fn terminate_from_a_single_call_batch_ends_the_run() {
+    let (harness, model) = harness_with_terminating_tools(
+        vec![multi_tool_call_response(&[("c1", "finish")])],
+        vec![TerminatingTool {
+            name: "finish",
+            reply: "finished",
+            terminate: true,
+        }],
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(model.requests().len(), 1);
+    assert_eq!(run.text(), Some("finished".to_string()));
+}
+
 #[tokio::test]
 async fn model_requests_tool_then_finishes() {
     let mut harness: AgentHarness<()> = AgentHarness::new();
