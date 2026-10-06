@@ -15,6 +15,10 @@ This corresponds to feature gap **E1** in
 `docs/runtime-comparison/feature-gaps.md`, modeled on pi's in-place entry
 tree (`docs/runtime-comparison/pi.md` §4.3).
 
+
+Hosts plug their own storage in through the session store port; see
+[`store-port.md`](store-port.md).
+
 ## Why a second shape
 
 The linear log answers "what happened, in order." It cannot answer "what did
