@@ -30,6 +30,19 @@ use tinyinference_llm::message::Message;
 /// whole string is used instead.
 pub const SUBAGENT_INPUT_FIELD: &str = "input";
 
+/// The argument key a [`SubAgentTool`] reads the delegation mode from.
+pub const SUBAGENT_MODE_FIELD: &str = "mode";
+
+/// How a [`SubAgentTool`] call runs its child.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubAgentMode {
+    /// Spawn the child as a background job and return its job id immediately.
+    #[default]
+    Background,
+    /// Await the child inside the tool call and return its final result.
+    Inline,
+}
+
 /// Typed policy that constructs a child's user data from its parent data.
 ///
 /// Recursive capabilities are inherited by [`RunContext::child`](tinyagents_harness::context::RunContext::child); this policy

@@ -581,6 +581,11 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 SUBAGENT_INPUT_FIELD: {
                     "type": "string",
                     "description": "The task or question to delegate to the sub-agent."
+                },
+                SUBAGENT_MODE_FIELD: {
+                    "type": "string",
+                    "enum": ["background", "inline"],
+                    "description": "`background` (default) returns a job id immediately while the sub-agent keeps running; `inline` waits for the sub-agent and returns its final result in this call."
                 }
             },
             "required": [SUBAGENT_INPUT_FIELD]
@@ -642,6 +647,18 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         }
     }
 
+    /// Reads the optional `mode` argument; absent means [`SubAgentMode::Background`].
+    fn extract_mode(arguments: &Value) -> std::result::Result<SubAgentMode, String> {
+        match arguments.get(SUBAGENT_MODE_FIELD) {
+            None | Some(Value::Null) => Ok(SubAgentMode::Background),
+            Some(Value::String(mode)) if mode == "background" => Ok(SubAgentMode::Background),
+            Some(Value::String(mode)) if mode == "inline" => Ok(SubAgentMode::Inline),
+            Some(_) => Err(format!(
+                "`{SUBAGENT_MODE_FIELD}` must be \"background\" or \"inline\""
+            )),
+        }
+    }
+
     /// Spawns this sub-agent from the actual parent [`RunContext`].
     ///
     /// This is the agent-native recursive-tool boundary.  It is intentionally
@@ -677,6 +694,13 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         call_id: Option<&tinyagents_harness::ids::CallId>,
     ) -> Result<tinytools::ToolResult> {
         let input = Self::extract_input(&args);
+        let mode = match Self::extract_mode(&args) {
+            Ok(mode) => mode,
+            Err(message) => {
+                tracing::debug!("{LOG_PREFIX} invalid_mode tool={}", self.tool_name);
+                return Ok(tinytools::ToolResult::error(message));
+            }
+        };
         let config = match self.subagent.child_config(
             parent.depth(),
             parent.thread_id(),
@@ -723,11 +747,30 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             job_id.as_str(),
             tool_call_id.as_deref(),
         );
+        let streaming = parent.streaming;
+        if mode == SubAgentMode::Inline {
+            tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
+            self.jobs.mark_running(&job_id);
+            let result = self
+                .subagent
+                .run_hosted_child(state, child, input, streaming)
+                .await;
+            self.jobs.mark_result(&job_id, result);
+            let job = self
+                .jobs
+                .get(job_id.as_str())
+                .expect("inline job was just registered");
+            tracing::debug!("{LOG_PREFIX} inline.done job_id={job_id} status={:?}", job.status);
+            let payload = serde_json::to_value(&job)?;
+            return Ok(match job.status {
+                SubAgentJobStatus::Completed => tinytools::ToolResult::json(payload),
+                _ => tinytools::ToolResult::error(payload.to_string()),
+            });
+        }
         let jobs = self.jobs.clone();
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
         let owned_state = state.clone();
-        let streaming = parent.streaming;
         // The child runs in its own task and a supervisor awaits its
         // `JoinHandle`: a panic inside the child surfaces as a `JoinError`
         // there, so the job can never stay `Running` forever.
