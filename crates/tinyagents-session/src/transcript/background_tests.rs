@@ -178,3 +178,84 @@ async fn a_repeated_idempotency_key_is_a_duplicate_and_writes_nothing() {
         .unwrap();
     assert_eq!(other, BackgroundAppendOutcome::Appended { generation: 0 });
 }
+
+/// Seals generation 0 and opens generation 1 with `retained`, the way a
+/// compaction in the live turn path does.
+fn compact(locator: &FileTranscriptLocator, retained: &[TranscriptMessage]) {
+    let (_, handle) = locator.begin_generation(&session(), meta()).unwrap();
+    handle
+        .append_turn(TranscriptTurn {
+            prev: &[],
+            next: retained,
+            meta: &meta(),
+            turn_usage: None,
+            request_id: None,
+            tools: None,
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stale_expected_generation_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    compact(&locator, &[TranscriptMessage::system("summary")]);
+    let sealed = resolve_keyed_transcript_path(dir.path(), &session_stem(&session())).unwrap();
+    let head = head_path(dir.path(), &session());
+    let (sealed_before, head_before) = (
+        std::fs::read(&sealed).unwrap(),
+        std::fs::read(&head).unwrap(),
+    );
+
+    let outcome = append_background_message(
+        &locator,
+        &session(),
+        TranscriptMessage::assistant("Time to stretch!"),
+        options("run-1").expecting_generation(0),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        BackgroundAppendOutcome::StaleGeneration {
+            expected: 0,
+            head: 1
+        }
+    );
+    assert_eq!(std::fs::read(&sealed).unwrap(), sealed_before);
+    assert_eq!(std::fs::read(&head).unwrap(), head_before);
+}
+
+#[tokio::test]
+async fn the_append_lands_in_the_head_generation() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    compact(&locator, &[TranscriptMessage::system("summary")]);
+
+    let outcome = append_background_message(
+        &locator,
+        &session(),
+        TranscriptMessage::assistant("Time to stretch!"),
+        options("run-1").expecting_generation(1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, BackgroundAppendOutcome::Appended { generation: 1 });
+    let head = read_transcript(&head_path(dir.path(), &session())).unwrap();
+    assert_eq!(
+        head.messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        ["summary", "Time to stretch!"]
+    );
+    let sealed = read_transcript(
+        &resolve_keyed_transcript_path(dir.path(), &session_stem(&session())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sealed.messages.len(), 2);
+}

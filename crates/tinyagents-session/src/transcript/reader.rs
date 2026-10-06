@@ -18,7 +18,7 @@ use std::path::Path;
 
 /// Decode records independently so a cut multibyte character in one record
 /// cannot make every earlier and later turn unreadable.
-fn read_jsonl_lines(path: &Path) -> Result<Vec<Option<String>>> {
+pub(super) fn read_jsonl_lines(path: &Path) -> Result<Vec<Option<String>>> {
     let raw =
         fs::read(path).with_context(|| format!("read transcript jsonl {}", path.display()))?;
     Ok(raw
