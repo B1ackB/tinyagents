@@ -434,6 +434,39 @@ pub fn apply_pending_steering<Ctx>(
     }
 }
 
+impl RecentRequestIds {
+    /// Number of ids remembered per task by [`Self::default`].
+    pub const DEFAULT_CAPACITY: usize = 64;
+
+    /// Creates a memory holding at most `capacity` ids (minimum one).
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Records `request_id`, returning `true` when it is new and `false` when
+    /// it was already remembered (a duplicate). The oldest id is forgotten once
+    /// the memory is full.
+    pub fn claim(&mut self, request_id: &str) -> bool {
+        if self.order.iter().any(|seen| seen == request_id) {
+            return false;
+        }
+        if self.order.len() >= self.capacity {
+            self.order.pop_front();
+        }
+        self.order.push_back(request_id.to_owned());
+        true
+    }
+}
+
+impl Default for RecentRequestIds {
+    fn default() -> Self {
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
