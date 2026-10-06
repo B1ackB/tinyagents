@@ -231,7 +231,11 @@ async fn a_status_store_over_any_store_reads_back_what_it_wrote() {
         .with_thread(ThreadId::new("thread-1"));
     status.mark_running(HarnessPhase::Model);
     store.put_status(status).await.unwrap();
-    let read = store.get_status(&run_id).await.unwrap().expect("written");
+    let read = store
+        .get_status(run_id.as_str())
+        .await
+        .unwrap()
+        .expect("written");
     assert_eq!(read.run_id.as_str(), "run.host-store");
     // The record lives in the injected store, keyed as on disk.
     assert_eq!(kv.list(STATUS_NS).await.unwrap().len(), 1);
