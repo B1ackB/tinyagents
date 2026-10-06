@@ -841,12 +841,10 @@ async fn agent_middleware_owns_context_and_observes_failed_partial_runs() {
         }),
     );
     failing.push_agent_middleware(middleware);
-    assert!(
-        failing
-            .invoke_default(&(), vec![Message::user("fail")])
-            .await
-            .is_err()
-    );
+    assert!(failing
+        .invoke_default(&(), vec![Message::user("fail")])
+        .await
+        .is_err());
 
     assert_eq!(&*finalized.lock().unwrap(), &[(true, 3), (false, 2)]);
 }
@@ -1595,7 +1593,10 @@ async fn length_truncated_tool_calls_are_answered_with_errors_not_executed() {
     assert_eq!(run.messages.len(), 7, "{:?}", run.messages);
     for (index, id) in [(2, "c1"), (3, "c2")] {
         let Message::Tool(result) = &run.messages[index] else {
-            panic!("expected a tool result at {index}: {:?}", run.messages[index]);
+            panic!(
+                "expected a tool result at {index}: {:?}",
+                run.messages[index]
+            );
         };
         assert_eq!(result.tool_call_id, id);
         let text = run.messages[index].text();
@@ -1608,14 +1609,46 @@ async fn length_truncated_tool_calls_are_answered_with_errors_not_executed() {
     for id in ["c1", "c2"] {
         let started = events
             .iter()
-            .filter(|e| matches!(e, AgentEvent::ToolStarted { call_id, .. } if call_id.as_str() == id))
+            .filter(
+                |e| matches!(e, AgentEvent::ToolStarted { call_id, .. } if call_id.as_str() == id),
+            )
             .count();
         let completed = events
             .iter()
             .filter(|e| matches!(e, AgentEvent::ToolCompleted { call_id, .. } if call_id.as_str() == id))
             .count();
-        assert_eq!((started, completed), (1, 1), "call {id}: {:?}", recorder.kinds());
+        assert_eq!(
+            (started, completed),
+            (1, 1),
+            "call {id}: {:?}",
+            recorder.kinds()
+        );
     }
+}
+
+#[tokio::test]
+async fn length_truncated_tool_calls_run_when_the_guard_is_disabled() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup")]),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+    harness.with_policy(RunPolicy {
+        reject_truncated_tool_calls: false,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(*tool.calls.lock().unwrap(), 1, "the call runs as parsed");
+    assert_eq!(run.messages[2].text(), "tool-output");
 }
 
 #[tokio::test]
@@ -2069,7 +2102,7 @@ async fn before_model_middleware_mutates_request() {
 
 #[tokio::test]
 async fn prefix_mutating_middleware_refreshes_provider_cache_key() {
-    use crate::cache::{PROMPT_CACHE_KEY_OPTION, prompt_cache_key};
+    use crate::cache::{prompt_cache_key, PROMPT_CACHE_KEY_OPTION};
     use tinyinference_llm::cache::CachePolicy;
 
     struct InsertSystemPrefix;
@@ -2129,7 +2162,7 @@ async fn prefix_mutating_middleware_refreshes_provider_cache_key() {
 
 #[tokio::test]
 async fn prefix_mutating_wrap_middleware_refreshes_provider_cache_key() {
-    use crate::cache::{PROMPT_CACHE_KEY_OPTION, prompt_cache_key};
+    use crate::cache::{prompt_cache_key, PROMPT_CACHE_KEY_OPTION};
     use tinyinference_llm::cache::CachePolicy;
 
     struct InsertSystemPrefix;
@@ -5604,21 +5637,15 @@ async fn invoke_stream_yields_events_then_completed() {
         other => panic!("expected Completed terminal, got {other:?}"),
     }
     // Live events flowed before the terminal: run lifecycle + a model delta.
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::RunStarted { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ModelDelta { .. }))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::RunCompleted { .. }))
-    );
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::RunStarted { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ModelDelta { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::RunCompleted { .. })));
 }
 
 #[tokio::test]
@@ -6951,11 +6978,9 @@ mod tool_effects_test {
             "no tool answer appended for a Safe-replay call — the loop must \
              re-execute it"
         );
-        assert!(
-            recorder
-                .kinds()
-                .contains(&"tool.effect_reconciled".to_string())
-        );
+        assert!(recorder
+            .kinds()
+            .contains(&"tool.effect_reconciled".to_string()));
         // The ledger row is untouched (still `started`): re-execution will
         // settle it normally through the ordinary started/settled path.
         assert_eq!(
@@ -7013,11 +7038,9 @@ mod tool_effects_test {
             ledger.get("run-1", "call-1").unwrap().status,
             ToolEffectStatus::Interrupted
         );
-        assert!(
-            recorder
-                .kinds()
-                .contains(&"tool.effect_reconciled".to_string())
-        );
+        assert!(recorder
+            .kinds()
+            .contains(&"tool.effect_reconciled".to_string()));
     }
 
     #[tokio::test]
@@ -7504,10 +7527,8 @@ fn changing_or_prepending_a_declared_system_message_invalidates_the_prefix() {
         crate::cache::prompt_cache_key(&original),
         crate::cache::prompt_cache_key(&changed)
     );
-    assert!(
-        !crate::cache::PromptCacheLayout::from_request(&original)
-            .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&changed))
-    );
+    assert!(!crate::cache::PromptCacheLayout::from_request(&original)
+        .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&changed)));
 
     let mut prepended = original.clone();
     crate::cache::prepend_system_message(&mut prepended, "new instruction".into());
@@ -7517,10 +7538,8 @@ fn changing_or_prepending_a_declared_system_message_invalidates_the_prefix() {
         crate::cache::prompt_cache_key(&original),
         crate::cache::prompt_cache_key(&prepended)
     );
-    assert!(
-        !crate::cache::PromptCacheLayout::from_request(&original)
-            .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&prepended))
-    );
+    assert!(!crate::cache::PromptCacheLayout::from_request(&original)
+        .is_prefix_stable_against(&crate::cache::PromptCacheLayout::from_request(&prepended)));
 }
 
 #[test]

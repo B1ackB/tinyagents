@@ -1541,6 +1541,35 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .await
     }
 
+    /// Answers every call of a length-truncated turn with a synthetic error
+    /// result instead of running it (see
+    /// [`RunPolicy::reject_truncated_tool_calls`][crate::runtime::RunPolicy::reject_truncated_tool_calls]).
+    ///
+    /// Each call is folded through [`Self::recover_tool_call`], so the
+    /// started/terminal pairing, `after_tool` hooks, and accounting match the
+    /// other recovery paths; no tool runs and no tool-call budget slot is
+    /// spent (a retry loop is bounded by the model-call limit).
+    pub(super) async fn fail_truncated_tool_calls(
+        &self,
+        state: &State,
+        ctx: &mut RunContext<Ctx>,
+        run: &mut AgentRun,
+        status: &mut HarnessRunStatus,
+        messages: &mut Vec<Message>,
+        calls: &[ToolCall],
+    ) -> Result<()> {
+        let mut follow_ups = Vec::new();
+        for call in calls {
+            let result = tinytools::ToolResult::error(truncated_tool_call_message(&call.name));
+            follow_ups.extend(
+                self.recover_tool_call(state, ctx, run, status, messages, call, result)
+                    .await?,
+            );
+        }
+        append_follow_ups(messages, follow_ups);
+        Ok(())
+    }
+
     /// Executes a multi-call turn concurrently (`join_all`), so turn latency
     /// is the slowest tool instead of the sum. Only reachable when no
     /// tool-wrap middleware is registered (see the module docs); execution
@@ -1778,6 +1807,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         append_follow_ups(messages, follow_ups);
         Ok(deferred)
     }
+}
+
+/// The error a call from a length-truncated response is answered with.
+fn truncated_tool_call_message(tool_name: &str) -> String {
+    format!(
+        "Tool call `{tool_name}` was not executed: your response hit the output token limit \
+         mid-turn, so its arguments may be truncated. Re-issue the tool call with complete \
+         arguments (split large content into smaller calls if needed)."
+    )
 }
 
 /// Appends a batch's follow-up user messages (B2) after its last tool row,

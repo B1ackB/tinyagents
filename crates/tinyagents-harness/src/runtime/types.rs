@@ -353,6 +353,22 @@ pub struct RunPolicy {
     /// and because another provider call may be billable. Hosts that require a
     /// visible reply can opt in to one bounded retry.
     pub empty_response_retries: u32,
+    /// Whether tool calls from a length-truncated response are refused.
+    ///
+    /// When a model response ends with `finish_reason == "length"` the output
+    /// cap cut it off mid-message, so every tool call in it may carry
+    /// truncated arguments that still parse (a best-effort JSON salvage) and
+    /// still validate against the schema. Running a half-written `write_file`
+    /// call is worse than not running it. With this enabled the loop answers
+    /// **each** call of that turn with a synthetic error result — "output limit
+    /// hit mid-call, re-issue with complete (possibly smaller) arguments" —
+    /// without running any tool, then continues so the model can retry. Every
+    /// call still gets its paired `ToolStarted`/`ToolCompleted` events and
+    /// result row. No tool-call budget slot is spent; `limits.max_model_calls`
+    /// bounds the retry loop.
+    ///
+    /// Defaults to `true`. Set to `false` to execute the calls as parsed.
+    pub reject_truncated_tool_calls: bool,
     /// How [`tinytools::ToolExposure::Deferred`] tools are surfaced: never in
     /// the request's `tools` array, but findable through the intrinsic
     /// `tool_search` bridge, then called by their own name. See
@@ -610,6 +626,7 @@ impl Default for RunPolicy {
             // the step instead of ending the run on a blank reply.
             truncated_empty_nudges: 1,
             empty_response_retries: 0,
+            reject_truncated_tool_calls: true,
             text_dialect_recovery: TextDialectRecovery::default(),
             discovery: crate::tool::discover::ToolDiscoveryPolicy::default(),
             tool_schemas: None,

@@ -1350,6 +1350,56 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
             let tool_calls = response.tool_calls().to_vec();
 
+            // A length-truncated turn cannot be trusted to have finished
+            // writing its calls: answer every one with an error instead of
+            // running possibly-truncated arguments, and let the model retry.
+            if self.policy.reject_truncated_tool_calls
+                && !tool_calls.is_empty()
+                && response.finish_reason.as_deref() == Some("length")
+            {
+                tracing::info!(
+                    target: "tinyagents::agent_loop",
+                    run_id = %ctx.run_id(),
+                    call_id = %call_id,
+                    calls = tool_calls.len(),
+                    "[agent_loop] length-truncated response; failing its tool calls instead of running them"
+                );
+                let record = ctx.emit(AgentEvent::ControlApplied {
+                    control: "truncated_tool_calls".to_string(),
+                    detail: format!(
+                        "model call `{call_id}` hit its output limit mid-turn; {} tool call(s) \
+                         answered with an error, not run",
+                        tool_calls.len()
+                    ),
+                });
+                status.set_last_event(record.id);
+                // A tool-calling turn is a resolved turn: same recovery-state
+                // reset as the ordinary tool path below.
+                dropped_tool_call_nudges_used = 0;
+                withheld_call_nudges_used = 0;
+                empty_response_retries_used = 0;
+                reset_truncated_empty_recovery(
+                    &mut truncated_empty_retries_used,
+                    &mut truncated_empty_nudges_used,
+                    &mut boosted_max_tokens,
+                    &mut truncation_base,
+                );
+                status.mark_running(HarnessPhase::Tools);
+                self.fail_truncated_tool_calls(state, ctx, run, status, messages, &tool_calls)
+                    .await?;
+                self.apply_queued_lane(ctx, status, messages, crate::run_queue::QueueLane::Steer)
+                    .await;
+                if self.middleware.any_should_stop_after_turn(ctx, run) {
+                    ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
+                }
+                match self.apply_pending_control(ctx, run, status, messages)? {
+                    ControlEffect::None => {}
+                    ControlEffect::ContinueLoop => continue,
+                    ControlEffect::Exit(exit) => return Ok(exit),
+                }
+                continue;
+            }
+
             // A tool-call structured-output strategy produces an artificial tool
             // call that is not a registered tool, so split the turn's calls into
             // the schema call(s) and the genuine ones. Treating "any call
