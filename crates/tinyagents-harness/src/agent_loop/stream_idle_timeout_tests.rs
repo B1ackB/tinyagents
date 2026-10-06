@@ -346,6 +346,8 @@ async fn breaker_stops_retrying_after_consecutive_idle_timeouts() {
         ..RunPolicy::default()
     });
 
+    let res = run(&harness, RunConfig::new("breaker-run")).await;
+    eprintln!("PRIMARY CALLS {}", primary.calls());
     let err = run(&harness, RunConfig::new("breaker-run"))
         .await
         .expect_err("the breaker must fail the run");
