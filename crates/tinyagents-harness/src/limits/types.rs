@@ -99,6 +99,10 @@ pub struct RunLimits {
     /// model call. `None` (the default) reuses
     /// [`stream_idle_timeout_ms`](Self::stream_idle_timeout_ms).
     ///
+    /// "First event" means the first output-bearing event: the stream-opened
+    /// marker and usage updates do not end this window, since a provider can
+    /// accept the connection and still take minutes to emit a token.
+    ///
     /// Set it higher than the idle timeout for slow-to-start providers such as
     /// local models that load weights or prefill a long prompt before emitting
     /// anything.
@@ -106,7 +110,8 @@ pub struct RunLimits {
     /// Circuit breaker: after this many *consecutive* stream idle timeouts in
     /// one run, retrying and falling back stop and the run fails with
     /// [`TinyAgentsError::LimitExceeded`][crate::error::TinyAgentsError::LimitExceeded].
-    /// Any received stream event resets the count. `None` disables the breaker.
+    /// Any received output-bearing stream event (not the stream-opened marker
+    /// or a usage update) resets the count. `None` disables the breaker.
     /// Defaults to [`RunLimits::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS`].
     ///
     /// Without it a stalled provider is hit once per retry attempt *and* once

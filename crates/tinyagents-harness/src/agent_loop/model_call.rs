@@ -1102,10 +1102,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     )));
                 }
             };
-            // Any event proves the provider is alive: clear the breaker's
-            // consecutive-idle-timeout count.
-            saw_stream_event = true;
-            ctx.limits.reset_stream_idle_timeouts();
+            // `Started` (the stream opened) and usage updates say nothing
+            // about the model producing output, and a provider that accepts
+            // the connection and then goes quiet is exactly the wedge being
+            // detected. Only output-bearing events end the first-event window
+            // and clear the breaker's consecutive-idle-timeout count.
+            if !matches!(
+                item,
+                ModelStreamItem::Started | ModelStreamItem::UsageDelta(_)
+            ) {
+                saw_stream_event = true;
+                ctx.limits.reset_stream_idle_timeouts();
+            }
 
             // Scrub tool-call markup from visible text before anything else
             // sees it; a delta the scrubber empties carries nothing to emit.
