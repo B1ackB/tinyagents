@@ -32,6 +32,14 @@ hook" section in `mod.rs` for that contract.
   state for one turn. `new(identical_halt_threshold)` builds it,
   `record(step, &ToolAttempt) -> NoProgress` feeds one outcome and returns the
   verdict, `reset()` clears all counters (called internally after a halt).
+- [`OutcomeFingerprinter`] — pluggable reduction of a tool outcome to the
+  identity the trackers compare. The default, [`VolatileSpanNormalizer`],
+  blanks timestamps, clock times, 10/13-digit epochs, attached durations
+  (`123ms`, `1.2s`), `attempt N` / `retry N of M`, `pid N`, UUIDs and hex ids
+  of 16+ chars, and leaves every other number alone. `NoProgressTracker` uses
+  it on the first error line (identical-failure rung) and
+  `SuccessfulRepeatTracker::record_call_outcome` on the result; both take a
+  replacement through `with_fingerprinter`.
 - [`ClassifiedFailureTracker`] — an additive ledger for equivalent failures
   keyed by class, operation, and resource or permission scope. `record` accepts
   a class-specific recovery budget; `clear` removes one group only after an

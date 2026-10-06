@@ -511,11 +511,17 @@ fn timestamped_identical_outputs_trip_the_recurrence_halt() {
     let tracker = SuccessfulRepeatTracker::new(4, 3);
     let call = "get_status\u{1}abc";
     assert_eq!(
-        tracker.record_call_outcome(call, "ok at 2026-10-06T12:00:01Z in 12ms (req 0123456789abcdef)"),
+        tracker.record_call_outcome(
+            call,
+            "ok at 2026-10-06T12:00:01Z in 12ms (req 0123456789abcdef)"
+        ),
         SuccessfulRepeat::Continue
     );
     assert_eq!(
-        tracker.record_call_outcome(call, "ok at 2026-10-06T12:00:09Z in 340ms (req fedcba9876543210)"),
+        tracker.record_call_outcome(
+            call,
+            "ok at 2026-10-06T12:00:09Z in 340ms (req fedcba9876543210)"
+        ),
         SuccessfulRepeat::Continue
     );
     assert!(matches!(
@@ -565,15 +571,36 @@ fn custom_fingerprinter_is_honored_by_the_successful_repeat_tracker() {
 fn failure_with_changing_timestamps_counts_as_identical() {
     let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD);
     assert_eq!(
-        t.record(1, &fail("fetch", "a", "timeout at 2026-10-06T12:00:01Z after 5012ms (attempt 1 of 3)")),
+        t.record(
+            1,
+            &fail(
+                "fetch",
+                "a",
+                "timeout at 2026-10-06T12:00:01Z after 5012ms (attempt 1 of 3)"
+            )
+        ),
         NoProgress::Continue
     );
     assert!(matches!(
-        t.record(2, &fail("fetch", "a", "timeout at 2026-10-06T12:00:09Z after 5003ms (attempt 2 of 3)")),
+        t.record(
+            2,
+            &fail(
+                "fetch",
+                "a",
+                "timeout at 2026-10-06T12:00:09Z after 5003ms (attempt 2 of 3)"
+            )
+        ),
         NoProgress::Nudge(_)
     ));
     assert!(matches!(
-        t.record(3, &fail("fetch", "a", "timeout at 2026-10-06T12:00:17Z after 4999ms (attempt 3 of 3)")),
+        t.record(
+            3,
+            &fail(
+                "fetch",
+                "a",
+                "timeout at 2026-10-06T12:00:17Z after 4999ms (attempt 3 of 3)"
+            )
+        ),
         NoProgress::Halt(_)
     ));
 }
@@ -586,7 +613,10 @@ fn genuinely_different_failures_are_not_identical() {
         NoProgress::Continue
     );
     assert_eq!(
-        t.record(2, &fail("fetch", "a", "connection refused at 2026-10-06T12:00:09Z")),
+        t.record(
+            2,
+            &fail("fetch", "a", "connection refused at 2026-10-06T12:00:09Z")
+        ),
         NoProgress::Continue,
         "a different failure message restarts the identical-repeat count"
     );

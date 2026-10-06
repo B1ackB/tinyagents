@@ -196,6 +196,12 @@ impl RepeatProgressMiddleware {
         }
     }
 
+    /// A fresh per-run tracker that compares tool results through this
+    /// guard's fingerprinter.
+    fn new_tracker(&self) -> SuccessfulRepeatTracker {
+        SuccessfulRepeatTracker::default().with_fingerprinter(Arc::clone(&self.fingerprinter))
+    }
+
     /// Latch a root-cause halt: record the summary the turn surfaces instead of an
     /// empty/last-model reply, and pause at the top of the next iteration (before
     /// the next model call), matching the repeated-failure breaker's halt path.
@@ -324,7 +330,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if let Ok(mut trackers) = self.state.tracker.lock() {
             let _ = trackers
                 .entry(ctx.instance_id())
-                .or_default()
+                .or_insert_with(|| self.new_tracker())
                 .record_output(&output_sig, all_exempt);
         }
 
@@ -376,7 +382,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                 if let Ok(mut trackers) = self.state.tracker.lock() {
                     recurrence = trackers
                         .entry(ctx.instance_id())
-                        .or_default()
+                        .or_insert_with(|| self.new_tracker())
                         .record_call_outcome(&sig, &result.output());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
@@ -405,7 +411,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             {
                 let _ = trackers
                     .entry(ctx.instance_id())
-                    .or_default()
+                    .or_insert_with(|| self.new_tracker())
                     .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
             }
             return Ok(());
@@ -415,7 +421,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             self.state.tracker.lock().ok().map(|mut trackers| {
                 trackers
                     .entry(ctx.instance_id())
-                    .or_default()
+                    .or_insert_with(|| self.new_tracker())
                     .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
             })
         });
