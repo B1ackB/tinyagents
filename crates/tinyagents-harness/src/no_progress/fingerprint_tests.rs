@@ -122,20 +122,43 @@ fn pids_are_normalized() {
 }
 
 #[test]
-fn uuids_and_long_hex_ids_are_normalized() {
+fn uuids_are_normalized_but_long_hex_ids_are_content() {
     same(
         "request 123e4567-e89b-12d3-a456-426614174000 failed",
         "request 00000000-1111-2222-3333-444444444444 failed",
     );
-    same(
-        "commit 0123456789abcdef0123456789abcdef01234567",
-        "commit fedcba9876543210fedcba9876543210fedcba98",
+    // A commit id or checksum is usually the answer, not noise around it.
+    differ(
+        "Created commit 0123456789abcdef0123456789abcdef01234567",
+        "Created commit fedcba9876543210fedcba9876543210fedcba98",
     );
-    same(
+    differ(
         "request id 0x0123456789abcdef",
         "request id 0xfedcba9876543210",
     );
-    differ("req 0123456789abcdef failed", "req 0123456789abcdef passed");
+}
+
+#[test]
+fn timestamps_need_a_boundary_after_them() {
+    differ(
+        "token 2026-10-06T12:34:56Zebra seen",
+        "token 2026-10-07T01:02:03Zebra seen",
+    );
+    same(
+        "built at 2026-10-06T12:34:56Z.",
+        "built at 2026-10-07T01:02:03Z.",
+    );
+}
+
+#[test]
+fn literal_placeholder_text_counts_as_residue() {
+    // The output already contains placeholder-looking words; they are
+    // content and must count toward the residue, so the fingerprint is the
+    // normalized text rather than the verbatim fallback.
+    same(
+        "<timestamp> <duration> 2026-10-06T12:34:56Z",
+        "<timestamp> <duration> 2026-10-07T01:02:03Z",
+    );
 }
 
 #[test]

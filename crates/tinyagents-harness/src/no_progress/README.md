@@ -37,8 +37,9 @@ hook" section in `mod.rs` for that contract.
   blanks timestamps, clock times, 10/13-digit epochs that are the value of a
   time-like key (`ts=`, `"timestamp":`, `updated_at:`; a bare 10-digit number
   is a byte count or an id as often as a clock), attached durations (`123ms`,
-  `1.2s`), `attempt N` / `retry N of M`, `pid N`, UUIDs and hex ids of 16+
-  chars, and leaves every other number alone. An outcome that is *only*
+  `1.2s`), `attempt N` / `retry N of M`, `pid N` and UUIDs, and leaves every other
+  number alone, including long hex ids such as commit SHAs and checksums, which
+  are usually the result itself. An outcome that is *only*
   volatile (a bare commit id or checksum: fewer than four alphanumeric
   characters left outside the spans) is compared verbatim. The normalizer is
   text-based and does not parse JSON, so a volatile field is only blanked when

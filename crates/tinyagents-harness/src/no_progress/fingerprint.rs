@@ -10,7 +10,7 @@
 //!
 //! The normalizer is deliberately conservative: it only rewrites spans that are
 //! unmistakably volatile (timestamps, clock times, epoch-like numbers,
-//! durations, attempt and pid counters, UUIDs and long hex ids). Arbitrary
+//! durations, attempt and pid counters, UUIDs). Arbitrary
 //! numbers (versions, line numbers, counts, ports) are left alone, because two
 //! outcomes that differ in them genuinely differ.
 
@@ -63,12 +63,14 @@ fn not_after_dot(text: &str, found: &Match<'_>) -> bool {
     !text[..found.start()].ends_with('.')
 }
 
-/// A hex id must mix digits and hex letters. That keeps long pure-decimal
-/// numbers and letter-only words out; real hashes and ids contain both.
-fn mixed_hex(_: &str, found: &Match<'_>) -> bool {
-    let body = found.as_str();
-    let body = body.strip_prefix("0x").unwrap_or(body);
-    body.bytes().any(|b| b.is_ascii_digit()) && body.bytes().any(|b| b.is_ascii_alphabetic())
+/// The span must not run straight into a word character: `2026-10-06T12:34:56Zebra`
+/// is not a timestamp followed by text, and the regex crate has no
+/// look-ahead to say so in the pattern.
+fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
+    !text[found.end()..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
 fn rule(pattern: &str, placeholder: &'static str, accept: fn(&str, &Match<'_>) -> bool) -> Rule {
@@ -83,7 +85,11 @@ fn rule(pattern: &str, placeholder: &'static str, accept: fn(&str, &Match<'_>) -
 // pushes the regex engine onto its slow path for non-ASCII input.
 
 /// Ordered so a wider span is consumed before a narrower one it contains (an
-/// ISO timestamp before its clock time, a UUID before its hex groups).
+/// ISO timestamp before its clock time).
+///
+/// Long hex ids (commit SHAs, checksums, content hashes) are deliberately not
+/// normalized: they are usually the *answer* a tool returns, so three different
+/// commit ids are three different results, not a repeat.
 static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![
         // ISO-8601 / RFC 3339 timestamp, `T` or space separated, with optional
@@ -91,17 +97,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r"(?-u:\b)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?",
             "<timestamp>",
-            accept_all,
+            not_followed_by_word,
         ),
         rule(
             r"(?-u:\b)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?-u:\b)",
             "<uuid>",
             accept_all,
-        ),
-        rule(
-            r"(?-u:\b)(?:0x)?[0-9a-fA-F]{16,}(?-u:\b)",
-            "<hex-id>",
-            mixed_hex,
         ),
         rule(
             r"(?-u:\b)\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?-u:\b)",
@@ -151,8 +152,8 @@ const MIN_RESIDUE_CHARS: usize = 4;
 /// Rewritten: ISO-8601 / RFC 3339 timestamps, `HH:MM:SS(.fff)` clock times,
 /// 10- and 13-digit unix epochs that are the value of a time-like key (`ts=`,
 /// `"timestamp":`, `updated_at:`), durations attached to their unit (`123ms`,
-/// `1.2s`), `attempt N` / `retry N of M` counters, `pid N`, UUIDs and hex ids
-/// of at least 16 characters. Everything else, including every other number, is
+/// `1.2s`), `attempt N` / `retry N of M` counters, `pid N` and UUIDs. Long hex
+/// ids are kept, because they are usually content. Everything else, including every other number, is
 /// kept verbatim.
 ///
 /// An outcome whose value is nothing but a volatile span (the stdout of
@@ -162,21 +163,30 @@ const MIN_RESIDUE_CHARS: usize = 4;
 /// that differ are different outcomes.
 pub fn normalize_volatile(text: &str) -> String {
     let mut current: Cow<'_, str> = Cow::Borrowed(text);
+    let mut removed = 0;
     for rule in RULES.iter() {
-        if let Some(rewritten) = rewrite(rule, &current) {
+        if let Some((rewritten, alnum)) = rewrite(rule, &current) {
             current = Cow::Owned(rewritten);
+            removed += alnum;
         }
     }
-    if matches!(current, Cow::Borrowed(_)) || residue_chars(&current) < MIN_RESIDUE_CHARS {
+    let residue = alnum_count(text).saturating_sub(removed);
+    if matches!(current, Cow::Borrowed(_)) || residue < MIN_RESIDUE_CHARS {
         return text.to_string();
     }
     current.into_owned()
 }
 
-/// `text` with every accepted match of `rule` replaced, or `None` when nothing
+/// `text` with every accepted match of `rule` replaced, plus the number of
+/// alphanumeric characters the replaced spans held, or `None` when nothing
 /// matched (so the common no-match case allocates nothing).
-fn rewrite(rule: &Rule, text: &str) -> Option<String> {
+///
+/// Spans never overlap an earlier placeholder (every rule needs digits, which
+/// no placeholder contains), so the removed counts sum to what the original
+/// text lost.
+fn rewrite(rule: &Rule, text: &str) -> Option<(String, usize)> {
     let mut out: Option<String> = None;
+    let mut removed = 0;
     let mut last = 0;
     for captures in rule.pattern.captures_iter(text) {
         let whole = captures.get(0).expect("group 0 always participates");
@@ -187,21 +197,17 @@ fn rewrite(rule: &Rule, text: &str) -> Option<String> {
         let out = out.get_or_insert_with(|| String::with_capacity(text.len()));
         out.push_str(&text[last..span.start()]);
         out.push_str(rule.placeholder);
+        removed += alnum_count(span.as_str());
         last = span.end();
     }
     out.map(|mut out| {
         out.push_str(&text[last..]);
-        out
+        (out, removed)
     })
 }
 
-/// Alphanumeric characters of `normalized` that are not placeholders.
-fn residue_chars(normalized: &str) -> usize {
-    let mut residue = normalized.to_string();
-    for rule in RULES.iter() {
-        residue = residue.replace(rule.placeholder, "");
-    }
-    residue.chars().filter(|c| c.is_alphanumeric()).count()
+fn alnum_count(text: &str) -> usize {
+    text.chars().filter(|c| c.is_alphanumeric()).count()
 }
 
 #[cfg(test)]
