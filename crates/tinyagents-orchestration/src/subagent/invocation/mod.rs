@@ -76,18 +76,18 @@ mod types;
 
 const LOG_PREFIX: &str = "[subagent-tool]";
 
-pub use jobs::{register_subagent_job_tools, SubAgentJobsTool, SubAgentMessageTool};
+pub use jobs::{SubAgentJobsTool, SubAgentMessageTool, register_subagent_job_tools};
 pub use types::*;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::error::{Result, TinyAgentsError};
 use tinyagents_harness::events::{AgentEvent, EventSink};
-use tinyagents_harness::ids::{next_seq, ThreadId};
+use tinyagents_harness::ids::{ThreadId, next_seq};
 use tinyagents_harness::middleware::AgentRun;
 use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;

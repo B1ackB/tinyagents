@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use super::test::{spawned_job_id, wait_for_terminal, BlockedModel};
+use super::test::{BlockedModel, spawned_job_id, wait_for_terminal};
 use super::{ChildDataPolicy, SubAgent, SubAgentJobStatus, SubAgentJobsTool, SubAgentTool};
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::ids::new_call_id;

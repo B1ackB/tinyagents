@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::context::RunContext;
 use tinyagents_harness::error::TinyAgentsError;

@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::test::wait_for_terminal;
 use super::{ChildDataPolicy, SubAgent, SubAgentTool};

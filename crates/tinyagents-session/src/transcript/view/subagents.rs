@@ -351,7 +351,7 @@ fn place(
                     workspace_dir,
                 )
             })
-        .or_else(|| find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref()));
+            .or_else(|| find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref()));
         let (position, call) = match pick {
             Some(index) => {
                 claimed[index] = true;

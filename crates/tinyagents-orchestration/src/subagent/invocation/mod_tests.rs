@@ -517,10 +517,12 @@ async fn session_reuses_harness_and_retains_transcript() {
         .unwrap();
     assert_eq!(session.turns(), 2);
     assert!(session.transcript().len() >= 4);
-    assert!(recorder
-        .events()
-        .iter()
-        .any(|record| matches!(record.event, AgentEvent::SubAgentReused { turn: 1, .. })));
+    assert!(
+        recorder
+            .events()
+            .iter()
+            .any(|record| matches!(record.event, AgentEvent::SubAgentReused { turn: 1, .. }))
+    );
     session.reset();
     assert!(session.transcript().is_empty());
 }
