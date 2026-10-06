@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::test::wait_for_terminal;
 use super::{ChildDataPolicy, SubAgent, SubAgentTool};
 use tinyagents_harness::context::{RunConfig, RunContext};
-use tinyagents_harness::events::{AgentEvent, EventSink, RecordingListener};
 use tinyagents_harness::error::Result;
+use tinyagents_harness::events::{AgentEvent, EventSink, RecordingListener};
 use tinyagents_harness::ids::CallId;
 use tinyagents_harness::middleware::Middleware;
 use tinyagents_harness::runtime::AgentHarness;
@@ -49,7 +49,9 @@ async fn queued_result_and_completed_job_carry_the_explicit_link() {
     .unwrap();
     let queued = json_of(&result);
     let job_id = queued["job_id"].as_str().unwrap().to_owned();
-    let run_id = queued["subagent_run_id"].as_str().expect("run id in queued result");
+    let run_id = queued["subagent_run_id"]
+        .as_str()
+        .expect("run id in queued result");
     assert!(run_id.starts_with("worker-d1-parent-"), "run id: {run_id}");
     assert_eq!(queued["tool_call_id"], "call-42");
 
@@ -65,7 +67,10 @@ async fn queued_result_and_completed_job_carry_the_explicit_link() {
         .events()
         .iter()
         .any(|record| matches!(&record.event, AgentEvent::RunStarted { run_id: id, .. } if id.as_str() == run_id));
-    assert!(started, "child run id matches the advertised subagent_run_id");
+    assert!(
+        started,
+        "child run id matches the advertised subagent_run_id"
+    );
 }
 
 struct MetadataProbe(Arc<Mutex<Option<Value>>>);
@@ -108,7 +113,12 @@ async fn child_run_metadata_names_the_parent_call_and_job() {
     .await
     .unwrap();
     let queued = json_of(&result);
-    wait_for_terminal(&jobs, queued["job_id"].as_str().unwrap(), parent.instance_id()).await;
+    wait_for_terminal(
+        &jobs,
+        queued["job_id"].as_str().unwrap(),
+        parent.instance_id(),
+    )
+    .await;
 
     let metadata = seen.lock().unwrap().clone().expect("child ran");
     assert_eq!(metadata["keep"], 1, "parent metadata is preserved");

@@ -16,8 +16,8 @@ use tinyinference_llm::message::Message;
 use tinytools::{Tool, ToolResult};
 
 use super::{
-    JobLink, SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId,
-    SubAgentJobRegistry, SubAgentJobStatus,
+    JobLink, SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId, SubAgentJobRegistry,
+    SubAgentJobStatus,
 };
 
 const LOG_PREFIX: &str = "[subagent-jobs]";
