@@ -129,7 +129,7 @@ pub use no_progress::{
     ClassifiedFailure, ClassifiedFailureTracker, DEFAULT_IDENTICAL_HALT_THRESHOLD,
     DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD, NoProgress, NoProgressTracker,
     OutcomeFingerprinter, StreamTextStallDetector, SuccessfulRepeat, SuccessfulRepeatTracker,
-    ToolAttempt, VolatileSpanNormalizer, normalize_volatile,
+    ToolAttempt, VolatileSpanNormalizer,
 };
 pub use observability::replay::{
     RunEventsPage, list_active_runs, read_run_events_page, read_run_status,

@@ -356,8 +356,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
         // Fingerprint outside the mutexes below: it scans the whole result.
-        let identity =
-            (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
+        let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
@@ -380,7 +379,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     recurrence = trackers
                         .entry(ctx.instance_id())
                         .or_default()
-                        .record_call_identity(&sig, &identity);
+                        .record_call_identity(&sig, identity.as_deref().unwrap_or_default());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded

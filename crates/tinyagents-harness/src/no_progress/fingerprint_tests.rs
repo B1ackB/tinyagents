@@ -54,8 +54,14 @@ fn epoch_numbers_are_normalized_only_under_a_time_key() {
     same("ts=1759752896 ok", "ts=1759752999 ok");
     same("ts=1759752896123 ok", "ts=1759752999456 ok");
     same("ts=1759752896.25 ok", "ts=1759752999.5 ok");
-    same(r#"{"timestamp": 1759752896, "ok": true}"#, r#"{"timestamp": 1759752999, "ok": true}"#);
-    same("updated_at: 1759752896 saved", "updated_at: 1759752999 saved");
+    same(
+        r#"{"timestamp": 1759752896, "ok": true}"#,
+        r#"{"timestamp": 1759752999, "ok": true}"#,
+    );
+    same(
+        "updated_at: 1759752896 saved",
+        "updated_at: 1759752999 saved",
+    );
     same("createdAt=1759752896 saved", "createdAt=1759752999 saved");
     same("mtime=1759752896 file", "mtime=1759752999 file");
     differ("ts=1759752896 ok", "ts=1759752896 bad");
@@ -125,7 +131,10 @@ fn uuids_and_long_hex_ids_are_normalized() {
         "commit 0123456789abcdef0123456789abcdef01234567",
         "commit fedcba9876543210fedcba9876543210fedcba98",
     );
-    same("request id 0x0123456789abcdef", "request id 0xfedcba9876543210");
+    same(
+        "request id 0x0123456789abcdef",
+        "request id 0xfedcba9876543210",
+    );
     differ("req 0123456789abcdef failed", "req 0123456789abcdef passed");
 }
 

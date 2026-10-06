@@ -200,9 +200,10 @@ impl NoProgressTracker {
     /// reset for the caller.
     pub fn record(&self, step: usize, attempt: &ToolAttempt) -> NoProgress {
         // Fingerprint before taking the lock: it scans the whole line.
-        let err_identity = attempt
-            .error
-            .map(|err| self.fingerprinter.fingerprint(err.lines().next().unwrap_or(err)));
+        let err_identity = attempt.error.map(|err| {
+            self.fingerprinter
+                .fingerprint(err.lines().next().unwrap_or(err))
+        });
         let mut state = self.state.lock().unwrap();
 
         let Some(err) = attempt.error else {
