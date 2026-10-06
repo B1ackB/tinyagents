@@ -3413,6 +3413,62 @@ async fn auto_format_uses_tool_call_for_non_native_model() {
     assert_eq!(run.model_calls, 1);
 }
 
+/// Like [`ToolStructuredModel`], but its first structured call is cut off by
+/// the output cap (`finish_reason == "length"`).
+struct CutThenWholeStructuredModel {
+    profile: ModelProfile,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ChatModel<()> for CutThenWholeStructuredModel {
+    fn profile(&self) -> Option<&ModelProfile> {
+        Some(&self.profile)
+    }
+    async fn invoke(
+        &self,
+        _state: &(),
+        request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        let name = request
+            .tools
+            .last()
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            let mut cut = tool_call_response("s1", &name, json!({"value":"cut off"}));
+            cut.finish_reason = Some("length".to_string());
+            return Ok(cut);
+        }
+        Ok(tool_call_response("s2", &name, json!({"value":"whole"})))
+    }
+}
+
+#[tokio::test]
+async fn a_length_cut_structured_output_call_is_retried_not_extracted() {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model(
+        "tool",
+        Arc::new(CutThenWholeStructuredModel {
+            profile: ToolStructuredModel::new().profile,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+    );
+    harness.with_policy(RunPolicy {
+        default_response_format: Some(ResponseFormat::auto("answer", json!({"type": "object"}))),
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("answer")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 2, "the cut-off answer is asked for again");
+    let structured = run.structured.expect("structured output present");
+    assert_eq!(structured["value"], "whole");
+}
+
 #[tokio::test]
 async fn pformat_dialect_recovers_the_structured_output_fallback_tool() {
     // The run-level P-Format registry is built once from the schemas offered
