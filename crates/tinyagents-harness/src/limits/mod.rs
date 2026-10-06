@@ -83,6 +83,29 @@ impl RunLimits {
         self.max_tool_concurrency = n;
         self
     }
+
+    /// Sets the maximum silence between streaming-model events. `None`
+    /// disables the inactivity timeout. See
+    /// [`RunLimits::stream_idle_timeout_ms`].
+    pub fn with_stream_idle_timeout_ms(mut self, ms: Option<u64>) -> Self {
+        self.stream_idle_timeout_ms = ms;
+        self
+    }
+
+    /// Sets the maximum wait for a streaming model call's first event. `None`
+    /// reuses the idle timeout. See [`RunLimits::stream_first_event_timeout_ms`].
+    pub fn with_stream_first_event_timeout_ms(mut self, ms: Option<u64>) -> Self {
+        self.stream_first_event_timeout_ms = ms;
+        self
+    }
+
+    /// Sets how many consecutive stream idle timeouts trip the run-level
+    /// breaker. `None` disables it. See
+    /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
+    pub fn with_max_consecutive_stream_idle_timeouts(mut self, n: Option<usize>) -> Self {
+        self.max_consecutive_stream_idle_timeouts = n;
+        self
+    }
 }
 
 /// Tracks live counters for a single harness run and enforces [`RunLimits`].

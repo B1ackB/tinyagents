@@ -80,6 +80,38 @@ pub struct RunLimits {
     /// same as `Some(1)`: at least one call must be in flight to make
     /// progress.
     pub max_tool_concurrency: Option<usize>,
+    /// Maximum silence, in milliseconds, between two consecutive events of a
+    /// **streaming** model call. `None` disables the inactivity timeout.
+    /// Defaults to [`RunLimits::DEFAULT_STREAM_IDLE_TIMEOUT_MS`].
+    ///
+    /// [`max_model_call_ms`](Self::max_model_call_ms) bounds a call's *total*
+    /// duration, so a provider that opens a stream and then goes quiet holds
+    /// the call for that whole ceiling (or, with none configured, the run's
+    /// deadline). This timer is re-armed on every event, so a long answer that
+    /// keeps producing tokens is never cut off while a wedged stream dies fast.
+    /// When it fires the call fails with the retryable
+    /// [`TinyAgentsError::CallTimeout`][crate::error::TinyAgentsError::CallTimeout],
+    /// so the normal retry/fallback path takes over. Not applied to
+    /// non-streaming calls, which produce no intermediate events to measure
+    /// (those are bounded by `max_model_call_ms`).
+    pub stream_idle_timeout_ms: Option<u64>,
+    /// Maximum wait, in milliseconds, for the **first** event of a streaming
+    /// model call. `None` (the default) reuses
+    /// [`stream_idle_timeout_ms`](Self::stream_idle_timeout_ms).
+    ///
+    /// Set it higher than the idle timeout for slow-to-start providers such as
+    /// local models that load weights or prefill a long prompt before emitting
+    /// anything.
+    pub stream_first_event_timeout_ms: Option<u64>,
+    /// Circuit breaker: after this many *consecutive* stream idle timeouts in
+    /// one run, retrying and falling back stop and the run fails with
+    /// [`TinyAgentsError::LimitExceeded`][crate::error::TinyAgentsError::LimitExceeded].
+    /// Any received stream event resets the count. `None` disables the breaker.
+    /// Defaults to [`RunLimits::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS`].
+    ///
+    /// Without it a stalled provider is hit once per retry attempt *and* once
+    /// per fallback model, each paying the full idle window.
+    pub max_consecutive_stream_idle_timeouts: Option<usize>,
 }
 
 /// What a run does when it reaches a configured call cap.
@@ -179,6 +211,14 @@ impl LimitKind {
 impl RunLimits {
     /// Default sub-agent / recursion depth cap when none is configured.
     pub const DEFAULT_MAX_DEPTH: usize = 8;
+    /// Default [`RunLimits::stream_idle_timeout_ms`]: two minutes of silence.
+    ///
+    /// Generous on purpose: providers that hide reasoning can be quiet for a
+    /// long time between events, and this is a wedge detector, not a latency
+    /// target.
+    pub const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 120_000;
+    /// Default [`RunLimits::max_consecutive_stream_idle_timeouts`].
+    pub const DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS: usize = 5;
 }
 
 impl Default for RunLimits {
@@ -192,6 +232,11 @@ impl Default for RunLimits {
             max_depth: Self::DEFAULT_MAX_DEPTH,
             behavior: LimitBehavior::Error,
             max_tool_concurrency: None,
+            stream_idle_timeout_ms: Some(Self::DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+            stream_first_event_timeout_ms: None,
+            max_consecutive_stream_idle_timeouts: Some(
+                Self::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS,
+            ),
         }
     }
 }
