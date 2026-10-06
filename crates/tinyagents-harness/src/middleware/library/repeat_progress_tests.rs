@@ -275,7 +275,7 @@ async fn identical_results_with_fresh_timestamps_halt_on_recurrence() {
         run_alternating_round(
             &mw,
             &format!("doc fetched at 2026-10-06T12:00:{:02}Z in {}ms", i, 10 + i),
-            "hits",
+            &format!("hits-{i}"),
         )
         .await;
     }
@@ -298,8 +298,12 @@ async fn custom_fingerprinter_is_honored_by_the_middleware() {
     let mw = new_mw(handle.clone(), Arc::new(std::sync::Mutex::new(None)))
         .with_fingerprinter(Arc::new(Verbatim));
     for i in 0..DEFAULT_REPEAT_CALL_THRESHOLD * 2 {
-        run_alternating_round(&mw, &format!("doc fetched at 2026-10-06T12:00:{i:02}Z"), "hits")
-            .await;
+        run_alternating_round(
+            &mw,
+            &format!("doc fetched at 2026-10-06T12:00:{i:02}Z"),
+            &format!("hits-{i}"),
+        )
+        .await;
     }
     assert_eq!(
         drain_pause_count(&handle),
