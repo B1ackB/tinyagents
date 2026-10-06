@@ -141,16 +141,21 @@ against the fallback chain (the model wedged, not the run), while `Timeout`
 is terminal (the run itself is out of wall-clock budget).
 
 Streaming model calls also have an inactivity timeout
-(`RunLimits::stream_idle_timeout_ms`, default 120 s, `None` disables) that is
-re-armed by every event, with an optional longer window for the first
-output-bearing event (`stream_first_event_timeout_ms`; the stream-opened marker
-and usage updates do not count). A stream that goes silent fails with a
-retryable `CallTimeout`, so the normal retry/fallback path applies. After
-`RunLimits::max_consecutive_stream_idle_timeouts` (default 5, `None` disables)
-idle timeouts in a row within one run the circuit breaker fails the run with
-`TinyAgentsError::LimitExceeded`, skipping further retries and the fallback
-chain; any output-bearing stream event resets the count. Non-streaming calls
-are bounded by `max_model_call_ms` only.
+(`RunLimits::stream_idle_timeout_ms`, default 120 s, `None`/`Some(0)`
+disables). It applies only **after the first output event** and is a deadline
+that each further output event pushes to `now + idle`; the stream-opened marker
+and usage updates never extend it. Before the first output event there is no
+separate bound by default (`stream_first_event_timeout_ms: None`), because
+hidden-reasoning models and local CPU prefill are legitimately silent for many
+minutes: that wait is limited only by `max_model_call_ms` and the run deadline.
+Set `Some(ms)` to opt in to a first-output bound. A stream that goes silent
+fails with a retryable `CallTimeout`, so the normal retry/fallback path
+applies. After `RunLimits::max_consecutive_stream_idle_timeouts` (default 5,
+`None`/`Some(0)` disables) idle timeouts in a row on one model (since its last
+output event) the circuit breaker stops retrying that model with
+`TinyAgentsError::LimitExceeded`; the fallback chain is still consulted with a
+fresh count per model, and the run fails with that error only when the chain is
+exhausted. Non-streaming calls are bounded by `max_model_call_ms` only.
 
 Step 12's text-dialect recovery (parsing `<tool_call>`-style markup out of
 an assistant's visible text through the `tinytools-agent` grammars, both on

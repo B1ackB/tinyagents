@@ -18,8 +18,10 @@ limits are fail-closed.
 - [`RunLimits`] (`types.rs` + `mod.rs`) — the policy: `max_model_calls`,
   `max_tool_calls`, `max_wall_clock_ms` (whole-run deadline),
   `max_model_call_ms` (per-call ceiling, bounds an individual hung call
-  independent of the run deadline), `stream_idle_timeout_ms` (default 120 s) /
-  `stream_first_event_timeout_ms` (streaming inactivity windows) with the
+  independent of the run deadline), `stream_idle_timeout_ms` (default 120 s,
+  streaming silence bound that applies after the first output event) /
+  `stream_first_event_timeout_ms` (opt-in, default `None`: no separate bound on
+  the first output event) with the per-model
   `max_consecutive_stream_idle_timeouts` breaker (default 5),
   `max_retries_per_call`, `max_depth`
   (default `RunLimits::DEFAULT_MAX_DEPTH` = 8), and `behavior`
