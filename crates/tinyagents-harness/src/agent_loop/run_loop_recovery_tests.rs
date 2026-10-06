@@ -106,3 +106,50 @@ fn text_dialect_markup_outside_a_fenced_code_block_is_recovered() {
     assert_eq!(response.message.tool_calls.len(), 1);
     assert_eq!(response.message.tool_calls[0].name, "shell");
 }
+
+#[test]
+fn every_provider_spelling_of_a_length_stop_is_recognised() {
+    for reason in ["length", "max_tokens", "MAX_TOKENS"] {
+        assert!(super::is_length_stop(Some(reason)), "{reason}");
+    }
+    for reason in [None, Some("stop"), Some("tool_calls"), Some("end_turn")] {
+        assert!(!super::is_length_stop(reason), "{reason:?}");
+    }
+}
+
+#[test]
+fn recovered_call_ids_are_told_apart_from_native_ones() {
+    use crate::agent_loop::dialect::{is_recovered_tool_call_id, recovered_tool_call_id};
+
+    let short = CallId::new("model-3");
+    let long = CallId::new(format!("openhuman-session-{}-model-3", "x".repeat(60)));
+    for model_call in [&short, &long] {
+        let minted = recovered_tool_call_id(model_call, 2);
+        assert!(is_recovered_tool_call_id(model_call, &minted), "{minted}");
+        // Another model call's id does not match, nor does a native id.
+        assert!(!is_recovered_tool_call_id(&CallId::new("model-4"), &minted));
+        assert!(!is_recovered_tool_call_id(model_call, "toolu_01abc"));
+        assert!(!is_recovered_tool_call_id(model_call, "call_1"));
+    }
+    assert!(!is_recovered_tool_call_id(&short, "model-3-tool-"));
+    assert!(!is_recovered_tool_call_id(&short, "model-3-tool-x"));
+}
+
+#[test]
+fn only_the_last_native_and_invalid_calls_are_possibly_truncated() {
+    use tinyinference_llm::tool::ToolCall;
+
+    let model_call = CallId::new("model-1");
+    let recovered = crate::agent_loop::dialect::recovered_tool_call_id(&model_call, 1);
+    let calls = vec![
+        ToolCall::new("n1", "a", serde_json::json!({})),
+        ToolCall::invalid("n2", "a", "{", "eof"),
+        ToolCall::new("n3", "a", serde_json::json!({})),
+        ToolCall::new(recovered, "a", serde_json::json!({})),
+    ];
+    let mut ids: Vec<String> = super::truncated_call_ids(&calls, &model_call)
+        .into_iter()
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec!["n2", "n3"]);
+}
