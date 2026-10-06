@@ -25,4 +25,4 @@ mod worker;
 pub use declarations::tool_declarations;
 pub use runner::{LiveAgent, LiveAgentSession};
 pub use tinyliveagents;
-pub use types::{LiveAgentEvent, LiveAgentOptions};
+pub use types::{BoxedTask, LiveAgentEvent, LiveAgentOptions, TaskScope};

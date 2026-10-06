@@ -1,8 +1,25 @@
 //! Types for live agent sessions.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tinyliveagents::LiveEvent;
+
+/// A boxed, sendable unit future.
+pub type BoxedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Wraps the tool worker's future before it is spawned.
+///
+/// Hosts that keep request-scoped state in task-locals — an approval channel,
+/// a turn origin, a tracing span — install it here, because a spawned task
+/// does not inherit the caller's task-locals:
+///
+/// ```ignore
+/// let scope: TaskScope = Arc::new(move |task| Box::pin(MY_LOCAL.scope(value.clone(), task)));
+/// ```
+pub type TaskScope = Arc<dyn Fn(BoxedTask) -> BoxedTask + Send + Sync>;
 
 /// How a live agent session runs its tools.
 #[derive(Debug, Clone)]

@@ -338,6 +338,56 @@ async fn slow_tools_time_out() {
     assert!(result.output_text().contains("did not finish"));
 }
 
+tokio::task_local! {
+    static SCOPE_TAG: &'static str;
+}
+
+/// Answers with the task-local tag it runs under.
+struct TagTool;
+
+#[async_trait]
+impl tinyagents_harness::tinytools::Tool for TagTool {
+    fn name(&self) -> &str {
+        "tag"
+    }
+    fn description(&self) -> &str {
+        "reads the task-local tag"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+    async fn execute(
+        &self,
+        _args: Value,
+    ) -> anyhow::Result<tinyagents_harness::tinytools::ToolResult> {
+        let tag = SCOPE_TAG.try_with(|tag| *tag).unwrap_or("none");
+        Ok(tinyagents_harness::tinytools::ToolResult::success(tag))
+    }
+}
+
+#[tokio::test]
+async fn tool_calls_run_inside_the_host_task_scope() {
+    let provider = ScriptedProvider::new();
+    let (mut commands, events) = provider.take_ends();
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_tool(Arc::new(TagTool));
+    let scope: crate::TaskScope = Arc::new(|task| Box::pin(SCOPE_TAG.scope("voice", task)));
+    let agent = LiveAgent::new(Arc::new(harness), Arc::new(())).with_task_scope(scope);
+    let ctx = RunContext::new(RunConfig::new("scoped"), ());
+    let _session = agent
+        .start(
+            &provider,
+            LiveConfig::new(),
+            ctx,
+            LiveAgentOptions::default(),
+        )
+        .await
+        .unwrap();
+    events.send(call("t1", "tag")).await.unwrap();
+    let result = next_result(&mut commands).await;
+    assert_eq!(result.output, json!("voice"));
+}
+
 #[tokio::test]
 async fn connection_errors_are_returned() {
     let provider = ScriptedProvider::new();

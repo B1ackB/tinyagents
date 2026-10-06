@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::declarations::tool_declarations;
-use crate::types::{LiveAgentEvent, LiveAgentOptions};
+use crate::types::{BoxedTask, LiveAgentEvent, LiveAgentOptions, TaskScope};
 use crate::worker::{Cancelled, OutcomeRecorder, Worker};
 
 /// Buffered events per session.
@@ -29,6 +29,7 @@ const EVENT_CAPACITY: usize = 512;
 pub struct LiveAgent<State: Send + Sync, Ctx: Send + Sync> {
     harness: Arc<AgentHarness<State, Ctx>>,
     state: Arc<State>,
+    task_scope: Option<TaskScope>,
 }
 
 impl<State: Send + Sync, Ctx: Send + Sync> std::fmt::Debug for LiveAgent<State, Ctx> {
@@ -40,7 +41,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> std::fmt::Debug for LiveAgent<State, 
 impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> LiveAgent<State, Ctx> {
     /// An agent over `harness`, whose tools run against `state`.
     pub fn new(harness: Arc<AgentHarness<State, Ctx>>, state: Arc<State>) -> Self {
-        Self { harness, state }
+        Self {
+            harness,
+            state,
+            task_scope: None,
+        }
+    }
+
+    /// Runs every tool call inside `scope` (see [`TaskScope`]).
+    #[must_use]
+    pub fn with_task_scope(mut self, scope: TaskScope) -> Self {
+        self.task_scope = Some(scope);
+        self
     }
 
     /// The harness behind this agent.
@@ -95,7 +107,12 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> LiveAgent<State, 
             events: event_tx.clone(),
             tool_timeout: options.tool_timeout,
         };
-        let worker_task = tokio::spawn(worker.run(call_rx));
+        let work: BoxedTask = Box::pin(worker.run(call_rx));
+        let work = match &self.task_scope {
+            Some(scope) => scope(work),
+            None => work,
+        };
+        let worker_task = tokio::spawn(work);
         let driver_task = tokio::spawn(drive(events, call_tx, cancelled, event_tx));
         Ok(LiveAgentSession {
             sender,
