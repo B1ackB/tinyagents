@@ -53,8 +53,8 @@ mod types;
 
 pub use types::*;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
@@ -67,8 +67,37 @@ impl CancellationToken {
             state: Arc::new(CancelState {
                 cancelled: AtomicBool::new(false),
                 notify: Notify::new(),
+                children: Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Creates a child token linked to this one.
+    ///
+    /// Cancelling `self` (or any ancestor) cancels the child, but cancelling
+    /// the child leaves `self` and the child's siblings untouched. A child of
+    /// an already-cancelled token starts cancelled. This is what lets a run
+    /// tree cancel one sub-run independently while a parent cancel still
+    /// unwinds every descendant.
+    pub fn child_token(&self) -> Self {
+        let child = Self::new();
+        {
+            let mut children = self
+                .state
+                .children
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Drop links to children that no longer exist so long-lived
+            // parents do not accumulate dead entries.
+            children.retain(|link| link.strong_count() > 0);
+            children.push(Arc::downgrade(&child.state));
+        }
+        // Re-check after linking: a `cancel` racing the registration either
+        // saw the link (and cancels the child) or is observed here.
+        if self.is_cancelled() {
+            child.cancel();
+        }
+        child
     }
 
     /// Requests cancellation.
@@ -82,8 +111,7 @@ impl CancellationToken {
         // `Release` so the flag write is visible to any `Acquire` poll in
         // `is_cancelled`; pair the wake-up after the store so a waiter that
         // re-checks the flag on wake always sees `true`.
-        self.state.cancelled.store(true, Ordering::Release);
-        self.state.notify.notify_waiters();
+        cancel_state(&self.state);
     }
 
     /// Returns `true` once [`CancellationToken::cancel`] has been called on this
@@ -125,6 +153,23 @@ impl CancellationToken {
             }
             // Spurious wake (no transition observed): loop and re-arm.
         }
+    }
+}
+
+/// Latches `state` and cascades to every live descendant created through
+/// [`CancellationToken::child_token`].
+fn cancel_state(state: &CancelState) {
+    state.cancelled.store(true, Ordering::Release);
+    state.notify.notify_waiters();
+    let children: Vec<_> = state
+        .children
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+        .filter_map(|link| link.upgrade())
+        .collect();
+    for child in children {
+        cancel_state(&child);
     }
 }
 

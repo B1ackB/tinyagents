@@ -16,8 +16,8 @@
 //! Implementations and tests live in the sibling `mod.rs` and `test.rs`; this
 //! file owns the data layout.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::Notify;
 
@@ -32,6 +32,9 @@ pub(super) struct CancelState {
     pub(super) cancelled: AtomicBool,
     /// Wakes tasks awaiting [`CancellationToken::cancelled`] on transition.
     pub(super) notify: Notify,
+    /// Weak links to tokens minted by [`CancellationToken::child_token`], so a
+    /// parent `cancel()` cascades down without keeping dropped children alive.
+    pub(super) children: Mutex<Vec<Weak<CancelState>>>,
 }
 
 /// A cheap, clonable handle used to request cooperative cancellation of a run.
