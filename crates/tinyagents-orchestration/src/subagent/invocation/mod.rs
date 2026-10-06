@@ -662,19 +662,33 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             }
             Err(error) => return Err(error),
         };
-        let (job_id, steering) = self.jobs.create(&self.tool_name, parent.instance_id());
+        let (job_id, steering) = self.jobs.create_with_cancellation(
+            &self.tool_name,
+            parent.instance_id(),
+            child.cancellation.clone(),
+        );
         let child = child.with_steering(steering);
         let jobs = self.jobs.clone();
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
         let owned_state = state.clone();
         let streaming = parent.streaming;
-        tokio::spawn(async move {
-            jobs.mark_running(&task_job_id);
+        // The child runs in its own task and a supervisor awaits its
+        // `JoinHandle`: a panic inside the child surfaces as a `JoinError`
+        // there, so the job can never stay `Running` forever.
+        let child_job_id = task_job_id.clone();
+        let child_jobs = jobs.clone();
+        let child_task = tokio::spawn(async move {
+            child_jobs.mark_running(&child_job_id);
             let result = subagent
                 .run_hosted_child(&owned_state, child, input, streaming)
                 .await;
-            jobs.mark_result(&task_job_id, result);
+            child_jobs.mark_result(&child_job_id, result);
+        });
+        tokio::spawn(async move {
+            if let Err(join_error) = child_task.await {
+                jobs.mark_aborted(&task_job_id, join_error.is_panic());
+            }
         });
 
         Ok(tinytools::ToolResult::json(json!({

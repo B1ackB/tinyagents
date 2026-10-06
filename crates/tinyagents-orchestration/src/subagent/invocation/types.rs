@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
+use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::events::EventSink;
 use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::steering::SteeringHandle;
@@ -230,6 +231,9 @@ pub(crate) struct SubAgentJobEntry {
     /// Identity of the parent run that created this capability.
     pub(crate) owner: u64,
     pub(crate) steering: SteeringHandle,
+    /// The child run's own cancellation token (a linked child of the parent's),
+    /// so one job can be cancelled without touching the parent or siblings.
+    pub(crate) cancellation: CancellationToken,
 }
 
 /// Error returned by job lookup or live-message delivery.
@@ -238,7 +242,7 @@ pub enum SubAgentJobError {
     /// No job exists for the supplied id.
     #[error("unknown subagent job `{0}`")]
     NotFound(String),
-    /// Messages can only be sent while a job is queued or running.
+    /// Messages and cancellation only apply while a job is queued or running.
     #[error("subagent job `{job_id}` is already {status:?}")]
     Terminal {
         /// Target job id.
