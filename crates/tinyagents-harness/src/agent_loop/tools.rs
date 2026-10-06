@@ -1619,8 +1619,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .await
     }
 
-    /// Answers every call of a length-truncated turn with a synthetic error
-    /// result instead of running it (see
+    /// Answers **every** call of a length-truncated turn with a synthetic error
+    /// result instead of running it. Used when the structured-output call itself
+    /// was cut off, which no other path can answer; ordinary truncated calls are
+    /// answered per call at admission instead (see
     /// [`RunPolicy::reject_truncated_tool_calls`][crate::runtime::RunPolicy::reject_truncated_tool_calls]).
     ///
     /// Each call is folded through [`Self::recover_tool_call`], so the
