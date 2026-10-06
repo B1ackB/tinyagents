@@ -100,11 +100,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         ),
         // Unix epoch seconds (10 digits) or milliseconds (13 digits) in the
         // 2001-2033 range, optionally with a fraction.
-        rule(
-            r"\b1\d{9}(?:\d{3})?(?:\.\d+)?\b",
-            "<epoch>",
-            not_after_dot,
-        ),
+        rule(r"\b1\d{9}(?:\d{3})?(?:\.\d+)?\b", "<epoch>", not_after_dot),
         // `123ms`, `1.2s`, `250us`, and Go-style `1h2m3.5s`. The unit must be
         // attached to the number, so prose like "2 minutes ago" is untouched.
         rule(

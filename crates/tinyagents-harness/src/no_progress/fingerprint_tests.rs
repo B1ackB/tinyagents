@@ -5,11 +5,19 @@ fn norm(text: &str) -> String {
 }
 
 fn same(a: &str, b: &str) {
-    assert_eq!(norm(a), norm(b), "expected equal fingerprints:\n  {a}\n  {b}");
+    assert_eq!(
+        norm(a),
+        norm(b),
+        "expected equal fingerprints:\n  {a}\n  {b}"
+    );
 }
 
 fn differ(a: &str, b: &str) {
-    assert_ne!(norm(a), norm(b), "expected distinct fingerprints:\n  {a}\n  {b}");
+    assert_ne!(
+        norm(a),
+        norm(b),
+        "expected distinct fingerprints:\n  {a}\n  {b}"
+    );
 }
 
 fn untouched(text: &str) {
@@ -18,14 +26,20 @@ fn untouched(text: &str) {
 
 #[test]
 fn iso_and_rfc3339_timestamps_are_normalized() {
-    same("done at 2026-10-06T12:34:56Z", "done at 2027-01-01T00:00:01Z");
+    same(
+        "done at 2026-10-06T12:34:56Z",
+        "done at 2027-01-01T00:00:01Z",
+    );
     same(
         "at 2026-10-06T12:34:56.123+02:00 ok",
         "at 2026-10-07T01:02:03.999-05:00 ok",
     );
     same("2026-10-06 12:34:56 started", "2026-10-06 12:34:57 started");
     same("2026-10-06T12:34Z x", "2026-10-06T12:35Z x");
-    differ("2026-10-06T12:34:56Z started", "2026-10-06T12:34:56Z stopped");
+    differ(
+        "2026-10-06T12:34:56Z started",
+        "2026-10-06T12:34:56Z stopped",
+    );
 }
 
 #[test]
