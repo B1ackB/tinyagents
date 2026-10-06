@@ -209,7 +209,12 @@ async fn a_panicking_inline_child_marks_its_job_failed() {
     let task_tool = tool.clone();
     let joined = tokio::spawn(async move {
         let parent = RunContext::new(RunConfig::new("parent"), ());
-        call(&task_tool, &parent, json!({"input": "work", "mode": "inline"})).await
+        call(
+            &task_tool,
+            &parent,
+            json!({"input": "work", "mode": "inline"}),
+        )
+        .await
     })
     .await;
     assert!(joined.expect_err("the panic propagates").is_panic());

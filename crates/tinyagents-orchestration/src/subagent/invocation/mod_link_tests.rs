@@ -154,7 +154,8 @@ async fn child_thread_id_embeds_the_advertised_run_id() {
     let recorder = Arc::new(RecordingListener::new());
     events.subscribe(recorder.clone());
     let jobs = tool.job_registry().clone();
-    let parent = RunContext::new(RunConfig::new("parent").with_thread("thr-1"), ()).with_events(events);
+    let parent =
+        RunContext::new(RunConfig::new("parent").with_thread("thr-1"), ()).with_events(events);
     let result = tool
         .invoke_in_parent_context(
             &(),
@@ -165,7 +166,12 @@ async fn child_thread_id_embeds_the_advertised_run_id() {
         .await
         .unwrap();
     let queued = json_of(&result);
-    wait_for_terminal(&jobs, queued["job_id"].as_str().unwrap(), parent.instance_id()).await;
+    wait_for_terminal(
+        &jobs,
+        queued["job_id"].as_str().unwrap(),
+        parent.instance_id(),
+    )
+    .await;
     let run_id = queued["subagent_run_id"].as_str().unwrap();
     let expected = format!("thr-1-subagent-{run_id}");
     assert!(recorder.events().iter().any(|record| matches!(

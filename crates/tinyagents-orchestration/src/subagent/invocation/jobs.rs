@@ -360,7 +360,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
         let object = args
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("arguments must be an object"))?;
-        match object.get("action").filter(|value| !value.is_null()).map(Value::as_str) {
+        match object
+            .get("action")
+            .filter(|value| !value.is_null())
+            .map(Value::as_str)
+        {
             None | Some(Some("query")) => {}
             Some(Some("cancel")) => {
                 let job_id = object
