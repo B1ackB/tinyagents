@@ -24,6 +24,14 @@ pub async fn append_background_message(
     if !locator.session_exists(&head) {
         return Ok(BackgroundAppendOutcome::NoSession);
     }
+    if let Some(expected) = options.expected_generation
+        && expected != head.generation
+    {
+        return Ok(BackgroundAppendOutcome::StaleGeneration {
+            expected,
+            head: head.generation,
+        });
+    }
     let path = resolve_keyed_transcript_path(locator.workspace_dir(), &session_stem(&head))?;
     if holds_idempotency_key(&path, &options.idempotency_key)? {
         return Ok(BackgroundAppendOutcome::Duplicate {
