@@ -309,8 +309,11 @@ pub struct RunPolicy {
     /// `3`; `0` disables it.
     pub dropped_tool_call_nudges: u32,
     /// Number of automatic retries when a model call returns a *truncated
-    /// empty* completion — `finish_reason == "length"` with no visible text, no
-    /// tool calls, and no structured output.
+    /// empty* completion — a length stop (`finish_reason` of `length`, or
+    /// `max_tokens` / `MAX_TOKENS` as Anthropic and some gateways spell it)
+    /// with no visible text, no tool calls, and no structured output. An empty
+    /// `max_tokens` reply therefore takes this retry path rather than ending
+    /// the run as a blank final.
     ///
     /// This is the failure mode of local reasoning models (for example
     /// `qwen3` via Ollama) that intermittently spend the entire token budget on
@@ -358,27 +361,26 @@ pub struct RunPolicy {
     ///
     /// When a model response ends with a length stop (`finish_reason` of
     /// `length`, or Anthropic's `max_tokens`) the output cap cut it off
-    /// mid-message. Only the **last native** call of such a response can be
-    /// incomplete — a provider has finished streaming every earlier one — but
-    /// its arguments may still parse (a best-effort JSON salvage) and still
-    /// validate against the schema, and running a half-written `write_file`
-    /// call is worse than not running it. With this enabled the loop answers
-    /// that call, and any call the provider flagged `invalid` (a repair could
-    /// turn it into a plausible-looking but incomplete call), with a synthetic
-    /// error result — "output limit hit mid-call, re-issue with complete
-    /// (possibly smaller) arguments" — without running the tool, runs the
-    /// earlier native calls normally, and continues so the model can retry.
+    /// mid-message. Only the **last** call of such a response can be
+    /// incomplete — every earlier one was finished before the cut — but it may
+    /// still parse (a best-effort JSON salvage, a text grammar closing an open
+    /// `{`/`[` or running a payload to end-of-text) and still validate against
+    /// the schema, and running a half-written `write_file` call is worse than
+    /// not running it. With this enabled the loop answers that call — native or
+    /// recovered from text alike — and any call the provider flagged `invalid`
+    /// (a repair could turn it into a plausible-looking but incomplete call),
+    /// with a synthetic error result: "output limit hit mid-call, re-issue with
+    /// complete (possibly smaller) arguments". It runs the earlier calls
+    /// normally and continues so the model can retry. The call is chosen by
+    /// position, not by id, so duplicate or empty provider ids fail closed.
     ///
-    /// Calls recovered from text dialect markup are never refused: an
-    /// unterminated block never becomes a call, so a recovered call is
-    /// complete. A refused call still gets its paired `ToolStarted` /
-    /// `ToolCompleted` events and result row, spends no tool-call budget slot,
-    /// and its turn cannot terminate the run. The retry is given a larger
-    /// output cap (doubled, clamped at 4x the original, like the
-    /// truncated-empty retry) and is bounded by
-    /// [`Self::truncated_tool_call_retries`].
+    /// A refused call still gets its paired `ToolStarted` / `ToolCompleted`
+    /// events and result row, spends no tool-call budget slot, and its turn
+    /// cannot terminate the run. The retry is given a larger output cap
+    /// (doubled, clamped at 4x the original, like the truncated-empty retry)
+    /// and is bounded by [`Self::truncated_tool_call_retries`].
     ///
-    /// Provider spellings of the length stop are matched by the loop itself
+    /// Provider spellings of the length stop are matched by the harness itself
     /// (`length`, `max_tokens`, `MAX_TOKENS`); normalising them belongs
     /// upstream in `tinyinference`.
     ///
@@ -393,6 +395,9 @@ pub struct RunPolicy {
     /// [`crate::error::TinyAgentsError::LimitExceeded`] naming the cause. The
     /// budget is per logical turn: a tool turn that is not cut off resets it
     /// (and the boosted output cap).
+    ///
+    /// The counter lives in the running loop: a run resumed in a fresh context
+    /// (for example after a deferral) starts the budget over.
     ///
     /// Defaults to `2` (three truncated turns in a row stop the run).
     pub truncated_tool_call_retries: u32,
