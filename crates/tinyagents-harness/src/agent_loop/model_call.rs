@@ -918,7 +918,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// [`TinyAgentsError::LimitExceeded`] is not retryable, so the caller
     /// stops retrying this model; the fallback chain is still consulted.
     fn stream_idle_breaker_error(&self, ctx: &RunContext<Ctx>) -> Option<TinyAgentsError> {
-        let max = self.policy.limits.max_consecutive_stream_idle_timeouts?;
+        // A zero threshold would trip on the first timeout; treat it as off.
+        let max = self
+            .policy
+            .limits
+            .max_consecutive_stream_idle_timeouts
+            .filter(|max| *max > 0)?;
         let consecutive = ctx.limits.consecutive_stream_idle_timeouts();
         if consecutive < max {
             return None;
@@ -927,7 +932,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             run_id = %ctx.run_id(),
             consecutive_idle_timeouts = consecutive,
             max,
-            "[stream] idle-timeout breaker tripped; failing the run"
+            "[stream] idle-timeout breaker tripped; no further retries on this model"
         );
         Some(TinyAgentsError::LimitExceeded(format!(
             "model stream idle-timeout breaker tripped for run `{}`: {consecutive} consecutive \

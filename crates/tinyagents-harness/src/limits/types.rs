@@ -80,42 +80,52 @@ pub struct RunLimits {
     /// same as `Some(1)`: at least one call must be in flight to make
     /// progress.
     pub max_tool_concurrency: Option<usize>,
-    /// Maximum silence, in milliseconds, between two consecutive events of a
-    /// **streaming** model call. `None` disables the inactivity timeout.
-    /// Defaults to [`RunLimits::DEFAULT_STREAM_IDLE_TIMEOUT_MS`].
+    /// Maximum silence, in milliseconds, between output events of a
+    /// **streaming** model call, measured from the previous output event.
+    /// `None` (or `Some(0)`) disables the inactivity timeout. Defaults to
+    /// [`RunLimits::DEFAULT_STREAM_IDLE_TIMEOUT_MS`].
+    ///
+    /// Applies only **after** the first output event; before it, see
+    /// [`stream_first_event_timeout_ms`](Self::stream_first_event_timeout_ms).
+    /// The deadline is advanced only by output events (text, reasoning, tool
+    /// fragments, block events). The stream-opened marker and usage updates
+    /// never extend it, so a provider that keeps sending those cannot keep a
+    /// stalled call alive.
     ///
     /// [`max_model_call_ms`](Self::max_model_call_ms) bounds a call's *total*
-    /// duration, so a provider that opens a stream and then goes quiet holds
-    /// the call for that whole ceiling (or, with none configured, the run's
-    /// deadline). This timer is re-armed on every event, so a long answer that
-    /// keeps producing tokens is never cut off while a wedged stream dies fast.
-    /// When it fires the call fails with the retryable
+    /// duration, so a provider that starts answering and then goes quiet holds
+    /// the call for that whole ceiling. This timer is re-armed on every output
+    /// event, so a long answer that keeps producing tokens is never cut off
+    /// while a wedged stream dies fast. When it fires the call fails with the
+    /// retryable
     /// [`TinyAgentsError::CallTimeout`][crate::error::TinyAgentsError::CallTimeout],
     /// so the normal retry/fallback path takes over. Not applied to
     /// non-streaming calls, which produce no intermediate events to measure
     /// (those are bounded by `max_model_call_ms`).
     pub stream_idle_timeout_ms: Option<u64>,
-    /// Maximum wait, in milliseconds, for the **first** event of a streaming
-    /// model call. `None` (the default) reuses
-    /// [`stream_idle_timeout_ms`](Self::stream_idle_timeout_ms).
+    /// Opt-in maximum wait, in milliseconds, for the **first output event** of
+    /// a streaming model call. `None` (the default, and `Some(0)`) means no
+    /// separate bound: the wait is limited only by
+    /// [`max_model_call_ms`](Self::max_model_call_ms) and the run's deadline.
     ///
-    /// "First event" means the first output-bearing event: the stream-opened
-    /// marker and usage updates do not end this window, since a provider can
-    /// accept the connection and still take minutes to emit a token.
-    ///
-    /// Set it higher than the idle timeout for slow-to-start providers such as
-    /// local models that load weights or prefill a long prompt before emitting
-    /// anything.
+    /// Off by default and independent of
+    /// [`stream_idle_timeout_ms`](Self::stream_idle_timeout_ms), because
+    /// providers that hide their reasoning and local models doing a long CPU
+    /// prefill are legitimately silent for many minutes before the first
+    /// token. Set it only when the provider is known to answer promptly. The
+    /// stream-opened marker and usage updates do not end this phase.
     pub stream_first_event_timeout_ms: Option<u64>,
-    /// Circuit breaker: after this many *consecutive* stream idle timeouts in
-    /// one run, retrying and falling back stop and the run fails with
+    /// Circuit breaker: after this many *consecutive* stream idle timeouts on
+    /// one model (idle timeouts since the last output event), retrying that
+    /// model stops. The fallback chain is still consulted, with a fresh count
+    /// for each model; when the chain is exhausted the run fails with
     /// [`TinyAgentsError::LimitExceeded`][crate::error::TinyAgentsError::LimitExceeded].
-    /// Any received output-bearing stream event (not the stream-opened marker
-    /// or a usage update) resets the count. `None` disables the breaker.
-    /// Defaults to [`RunLimits::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS`].
+    /// Any output event resets the count. `None` (or `Some(0)`) disables the
+    /// breaker. Defaults to
+    /// [`RunLimits::DEFAULT_MAX_CONSECUTIVE_STREAM_IDLE_TIMEOUTS`].
     ///
-    /// Without it a stalled provider is hit once per retry attempt *and* once
-    /// per fallback model, each paying the full idle window.
+    /// Without it a stalled provider is hit once per retry attempt, each
+    /// paying the full idle window.
     pub max_consecutive_stream_idle_timeouts: Option<usize>,
 }
 

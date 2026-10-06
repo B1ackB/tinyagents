@@ -84,22 +84,23 @@ impl RunLimits {
         self
     }
 
-    /// Sets the maximum silence between streaming-model events. `None`
-    /// disables the inactivity timeout. See
+    /// Sets the maximum silence between streaming-model output events, after
+    /// the first one. `None` disables the inactivity timeout. See
     /// [`RunLimits::stream_idle_timeout_ms`].
     pub fn with_stream_idle_timeout_ms(mut self, ms: Option<u64>) -> Self {
         self.stream_idle_timeout_ms = ms;
         self
     }
 
-    /// Sets the maximum wait for a streaming model call's first event. `None`
-    /// reuses the idle timeout. See [`RunLimits::stream_first_event_timeout_ms`].
+    /// Sets the opt-in maximum wait for a streaming model call's first output
+    /// event. `None` (the default) means no separate bound. See
+    /// [`RunLimits::stream_first_event_timeout_ms`].
     pub fn with_stream_first_event_timeout_ms(mut self, ms: Option<u64>) -> Self {
         self.stream_first_event_timeout_ms = ms;
         self
     }
 
-    /// Sets how many consecutive stream idle timeouts trip the run-level
+    /// Sets how many consecutive stream idle timeouts on one model trip the
     /// breaker. `None` disables it. See
     /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
     pub fn with_max_consecutive_stream_idle_timeouts(mut self, n: Option<usize>) -> Self {
@@ -119,7 +120,8 @@ pub struct LimitTracker {
     model_calls: usize,
     tool_calls: usize,
     /// Streaming model calls that ended in an idle timeout since the last
-    /// stream event arrived. See [`LimitTracker::record_stream_idle_timeout`].
+    /// output event arrived (the agent loop also clears it when it switches to
+    /// a fallback model, making it a per-model count). See [`LimitTracker::record_stream_idle_timeout`].
     consecutive_stream_idle_timeouts: usize,
     started_at: Instant,
 }
@@ -140,8 +142,9 @@ impl LimitTracker {
     /// Records that a streaming model call went idle past its timeout and
     /// returns the number of *consecutive* idle timeouts so far.
     ///
-    /// The count is run-scoped, so it survives the retry loop and the
-    /// fallback chain; the caller compares it with
+    /// The count survives the retry loop; the agent loop clears it on any
+    /// output event and when it moves to a fallback model. The caller compares
+    /// it with
     /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
     pub fn record_stream_idle_timeout(&mut self) -> usize {
         self.consecutive_stream_idle_timeouts += 1;
@@ -149,7 +152,7 @@ impl LimitTracker {
     }
 
     /// Clears the consecutive stream-idle-timeout count: a stream delivered
-    /// an event, so the provider is not wedged.
+    /// output, or the loop moved to a different model.
     pub fn reset_stream_idle_timeouts(&mut self) {
         self.consecutive_stream_idle_timeouts = 0;
     }
