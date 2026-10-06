@@ -1,9 +1,18 @@
 //! Sub-agent trails: project each delegated run's sibling transcript and
 //! place it next to the tool call that spawned it.
 //!
-//! The transcript records no explicit delegation-call → file link: a child's
-//! `_meta` carries its own `task_id`, the parent's rows carry only tool-call
-//! ids, and neither names the other. So correlation is by evidence, in order:
+//! Correlation is by evidence, strongest first:
+//!
+//! 0. **Explicit link** — a sub-agent spawn result records the child's
+//!    identity (`subagent_run_id` and `job_id` in the queued JSON), and the
+//!    child's `_meta` repeats it as its `task_id` or in its thread id
+//!    (`…-subagent-{run_id}`). A parent tool call whose result names the
+//!    child is its spawner, with no guessing ([`find_explicit_spawning_call`]).
+//!    The run ledger's `parentCallId` is the same kind of exact evidence for
+//!    hosts that keep one ([`find_exact_spawning_call`]).
+//!
+//! Transcripts written before that link existed carry neither, so they fall
+//! back to timing and targets:
 //!
 //! 1. **Turn** — the child's spawn time (the leading unix seconds of its stem
 //!    suffix) against the parent turns' commit timestamps
@@ -48,6 +57,9 @@ struct ChildRun {
     /// ledger's `AgentRunUpsert.id` uses, so it's also the key for the exact
     /// `parentCallId` correlation in [`find_exact_spawning_call`].
     task_id: Option<String>,
+    /// Identifiers a parent spawn result may name this child by (task id and
+    /// the run id embedded in the child thread id) for the explicit-link pass.
+    link_ids: Vec<String>,
     item: DisplayItem,
     /// The child's own terminal evidence, before the spawning call is known.
     own_state: OwnState,
@@ -162,6 +174,7 @@ fn build_child(
         .clone()
         .or_else(|| Some(display.meta.agent_name.clone()))
         .filter(|id| !id.is_empty());
+    let link_ids = link_ids(task_id.as_deref(), display.meta.thread_id.as_deref());
     let id = task_id.clone().unwrap_or_else(|| suffix.to_string());
     let spawn_unix = child_spawn_unix(suffix);
     // The spawn timestamp encoded in the sub-agent's own file stem (used
@@ -175,6 +188,7 @@ fn build_child(
         spawn_unix,
         agent_id: agent_id.clone(),
         task_id: task_id.clone(),
+        link_ids,
         item: DisplayItem::Subagent {
             id,
             agent_id,
@@ -186,6 +200,59 @@ fn build_child(
             items,
         },
         own_state,
+    })
+}
+
+/// Marker the harness puts in a child's derived thread id:
+/// `{parent_thread}-subagent-{run_id}`.
+const CHILD_THREAD_MARKER: &str = "-subagent-";
+
+/// The ids a parent spawn result could use to name this child.
+fn link_ids(task_id: Option<&str>, thread_id: Option<&str>) -> Vec<String> {
+    let mut ids: Vec<String> = task_id.map(str::to_owned).into_iter().collect();
+    if let Some((_, run_id)) = thread_id.and_then(|thread| thread.split_once(CHILD_THREAD_MARKER))
+        && !run_id.is_empty()
+    {
+        ids.push(run_id.to_owned());
+    }
+    ids
+}
+
+/// Explicit correlation: the unclaimed [`DisplayItem::ToolCall`] whose result
+/// is a spawn payload naming one of the child's `ids` as its
+/// `subagent_run_id` or `job_id`.
+///
+/// Ids are unique per run, so the whole item list is searched rather than a
+/// turn range. `None` when no result carries an id (a transcript written
+/// before the link existed), so callers fall through to the older evidence.
+fn find_explicit_spawning_call(
+    items: &[DisplayItem],
+    claimed: &[bool],
+    ids: &[String],
+) -> Option<usize> {
+    if ids.is_empty() {
+        return None;
+    }
+    (0..items.len()).find(|&index| {
+        if claimed[index] {
+            return false;
+        }
+        let DisplayItem::ToolCall {
+            result: Some(result),
+            ..
+        } = &items[index]
+        else {
+            return false;
+        };
+        let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(result) else {
+            return false;
+        };
+        ["subagent_run_id", "job_id"].iter().any(|key| {
+            payload
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| ids.iter().any(|id| id == value))
+        })
     })
 }
 
@@ -267,14 +334,23 @@ fn place(
     for (order, mut child) in children.into_iter().enumerate() {
         let request_id = anchor_request_id(child.spawn_unix, segments);
         let (start, end) = turn_range(items, request_id.as_deref());
-        let pick = find_exact_spawning_call(
-            items,
-            &claimed,
-            start,
-            end,
-            child.task_id.as_deref(),
-            workspace_dir,
-        )
+        let pick = find_explicit_spawning_call(items, &claimed, &child.link_ids)
+            .inspect(|index| {
+                tracing::debug!(
+                    "{LOG_PREFIX} explicit link child_ids={:?} call_index={index}",
+                    child.link_ids
+                );
+            })
+            .or_else(|| {
+                find_exact_spawning_call(
+                    items,
+                    &claimed,
+                    start,
+                    end,
+                    child.task_id.as_deref(),
+                    workspace_dir,
+                )
+            })
         .or_else(|| find_spawning_call(items, &claimed, start, end, child.agent_id.as_deref()));
         let (position, call) = match pick {
             Some(index) => {
