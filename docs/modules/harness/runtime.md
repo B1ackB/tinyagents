@@ -155,7 +155,10 @@ applies. After `RunLimits::max_consecutive_stream_idle_timeouts` (default 5,
 output event) the circuit breaker stops retrying that model with
 `TinyAgentsError::LimitExceeded`; the fallback chain is still consulted with a
 fresh count per model, and the run fails with that error only when the chain is
-exhausted. Non-streaming calls are bounded by `max_model_call_ms` only.
+exhausted. Because any output event resets the count, the breaker is aimed at
+streams that stall before producing output (pair it with
+`stream_first_event_timeout_ms`). Non-streaming calls are bounded by
+`max_model_call_ms` only.
 
 Step 12's text-dialect recovery (parsing `<tool_call>`-style markup out of
 an assistant's visible text through the `tinytools-agent` grammars, both on
