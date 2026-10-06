@@ -21,6 +21,13 @@ use crate::cache::{CacheSkipReason, apply_prompt_cache_breakpoints, scoped_cache
 use crate::no_progress::StreamTextStallDetector;
 use tinyinference_llm::cache::CachePolicy;
 
+/// Converts a configured stream window to a [`Duration`]. `None` and a zero
+/// window both mean "no bound": a zero-length window would fail every stream
+/// before it could deliver anything.
+fn positive_window(ms: Option<u64>) -> Option<Duration> {
+    ms.filter(|ms| *ms > 0).map(Duration::from_millis)
+}
+
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Previews which model `request` would reach through the local
     /// [`crate::model_registry::ModelRegistry`] and returns its capability
@@ -677,13 +684,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 match attempt_result {
                     Ok(response) => break Ok(response),
                     Err(error) => {
-                        // The breaker outranks retry and fallback: a provider
-                        // that keeps going silent must not be paid for once
-                        // per attempt and once per fallback model.
+                        // The breaker outranks retry, not fallback: a model
+                        // that keeps going silent is not retried again, but
+                        // the chain below may still reach a healthy model.
+                        // Only when the chain is exhausted does the run fail
+                        // with the breaker's error.
                         if matches!(error, TinyAgentsError::CallTimeout(_))
                             && let Some(tripped) = self.stream_idle_breaker_error(ctx)
                         {
-                            return Err(tripped);
+                            break Err(tripped);
                         }
                         // `RunLimits::max_retries_per_call` is a hard ceiling
                         // that a looser `RetryPolicy::max_attempts` cannot
@@ -824,6 +833,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             };
                             current_name = name;
                             model = next_model;
+                            // The idle-timeout count is per model: the
+                            // fallback gets a clean slate.
+                            ctx.limits.reset_stream_idle_timeouts();
                             continue;
                         }
                         None => return Err(error),
@@ -899,12 +911,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
     }
 
-    /// Returns the terminal error when the run's consecutive stream idle
-    /// timeouts have reached
+    /// Returns the breaker error when the idle timeouts since the last output
+    /// event on the current model have reached
     /// [`RunLimits::max_consecutive_stream_idle_timeouts`][crate::limits::RunLimits::max_consecutive_stream_idle_timeouts].
     ///
-    /// [`TinyAgentsError::LimitExceeded`] is not retryable, and the caller
-    /// returns it directly so the fallback chain is skipped too.
+    /// [`TinyAgentsError::LimitExceeded`] is not retryable, so the caller
+    /// stops retrying this model; the fallback chain is still consulted.
     fn stream_idle_breaker_error(&self, ctx: &RunContext<Ctx>) -> Option<TinyAgentsError> {
         let max = self.policy.limits.max_consecutive_stream_idle_timeouts?;
         let consecutive = ctx.limits.consecutive_stream_idle_timeouts();
@@ -919,7 +931,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         );
         Some(TinyAgentsError::LimitExceeded(format!(
             "model stream idle-timeout breaker tripped for run `{}`: {consecutive} consecutive \
-             idle timeouts (limit {max}); the provider appears stalled",
+             idle timeouts on one model (limit {max}); the provider appears stalled",
             ctx.run_id()
         )))
     }
@@ -1040,34 +1052,43 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // `&mut ctx` for events and middleware).
         let cancellation = ctx.cancellation.clone();
 
+        // Deadline-based stream watchdog. Before the first output event the
+        // only bound is the opt-in first-event window (none by default: hidden
+        // reasoning and local prefill are legitimately silent for minutes, and
+        // `max_model_call_ms` / the run deadline already bound the call). Once
+        // output arrives, every further output event pushes the deadline to
+        // `now + idle`. Stream-opened markers and usage updates never move it,
+        // so a provider that keeps trickling those cannot hold the call open.
         let limits = &self.policy.limits;
-        let idle_timeout = limits.stream_idle_timeout_ms.map(Duration::from_millis);
-        let first_event_timeout = limits
-            .stream_first_event_timeout_ms
-            .map(Duration::from_millis)
-            .or(idle_timeout);
-        let mut saw_stream_event = false;
+        let idle_timeout = positive_window(limits.stream_idle_timeout_ms);
+        let first_event_timeout = positive_window(limits.stream_first_event_timeout_ms);
+        let mut armed_window = first_event_timeout;
+        let mut deadline = armed_window.map(|window| tokio::time::Instant::now() + window);
+        let mut saw_output = false;
+        // Set when an output event arrives; the deadline is advanced at the top
+        // of the next iteration so time spent in delta middleware does not eat
+        // the provider's idle budget.
+        let mut rearm = false;
 
         loop {
+            if rearm {
+                rearm = false;
+                armed_window = idle_timeout;
+                deadline = armed_window.map(|window| tokio::time::Instant::now() + window);
+            }
             // Race the next provider chunk against cooperative cancellation. If
             // cancellation wins we drop the partially consumed stream and unwind
             // with `Cancelled`; the `cancelled()` future is cancel-safe.
             //
-            // The wait for the next event is also bounded by the stream idle
-            // timeout (the first-event window until anything has arrived), so
-            // a provider that opens a stream and goes silent fails fast with a
+            // The wait for the next event is also bounded by the watchdog
+            // deadline, so a provider that goes silent fails fast with a
             // retryable `CallTimeout` instead of holding the call until the
             // per-call or run deadline.
-            let idle_window = if saw_stream_event {
-                idle_timeout
-            } else {
-                first_event_timeout
-            };
             let next_event = async {
-                match idle_window {
-                    Some(window) => tokio::time::timeout(window, stream.next())
+                match deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
                         .await
-                        .map_err(|_| window),
+                        .map_err(|_| ()),
                     None => Ok(stream.next().await),
                 }
             };
@@ -1081,37 +1102,38 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let mut item = match next {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
-                Err(window) => {
+                Err(()) => {
                     let consecutive = ctx.limits.record_stream_idle_timeout();
-                    let phase = if saw_stream_event {
-                        "between events"
+                    let phase = if saw_output {
+                        "between output events"
                     } else {
-                        "waiting for the first event"
+                        "waiting for the first output event"
                     };
+                    let window_ms = armed_window.map_or(0, |window| window.as_millis() as u64);
                     tracing::warn!(
                         call_id = %call_id.as_str(),
-                        window_ms = window.as_millis() as u64,
+                        window_ms,
                         consecutive_idle_timeouts = consecutive,
                         phase,
                         "[stream] model stream idle timeout"
                     );
                     return Err(TinyAgentsError::CallTimeout(format!(
-                        "model stream for run `{}` went idle {phase}: no event within {} ms",
+                        "model stream for run `{}` went idle {phase}: no event within {window_ms} ms",
                         ctx.run_id(),
-                        window.as_millis()
                     )));
                 }
             };
             // `Started` (the stream opened) and usage updates say nothing
             // about the model producing output, and a provider that accepts
             // the connection and then goes quiet is exactly the wedge being
-            // detected. Only output-bearing events end the first-event window
-            // and clear the breaker's consecutive-idle-timeout count.
+            // detected. Only output-bearing events end the first-event phase,
+            // re-arm the idle deadline and clear the breaker's count.
             if !matches!(
                 item,
                 ModelStreamItem::Started | ModelStreamItem::UsageDelta(_)
             ) {
-                saw_stream_event = true;
+                saw_output = true;
+                rearm = true;
                 ctx.limits.reset_stream_idle_timeouts();
             }
 
