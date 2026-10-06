@@ -118,6 +118,9 @@ pub struct LimitTracker {
     limits: RunLimits,
     model_calls: usize,
     tool_calls: usize,
+    /// Streaming model calls that ended in an idle timeout since the last
+    /// stream event arrived. See [`LimitTracker::record_stream_idle_timeout`].
+    consecutive_stream_idle_timeouts: usize,
     started_at: Instant,
 }
 
@@ -129,8 +132,31 @@ impl LimitTracker {
             limits,
             model_calls: 0,
             tool_calls: 0,
+            consecutive_stream_idle_timeouts: 0,
             started_at: Instant::now(),
         }
+    }
+
+    /// Records that a streaming model call went idle past its timeout and
+    /// returns the number of *consecutive* idle timeouts so far.
+    ///
+    /// The count is run-scoped, so it survives the retry loop and the
+    /// fallback chain; the caller compares it with
+    /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
+    pub fn record_stream_idle_timeout(&mut self) -> usize {
+        self.consecutive_stream_idle_timeouts += 1;
+        self.consecutive_stream_idle_timeouts
+    }
+
+    /// Clears the consecutive stream-idle-timeout count: a stream delivered
+    /// an event, so the provider is not wedged.
+    pub fn reset_stream_idle_timeouts(&mut self) {
+        self.consecutive_stream_idle_timeouts = 0;
+    }
+
+    /// Returns the current consecutive stream-idle-timeout count.
+    pub fn consecutive_stream_idle_timeouts(&self) -> usize {
+        self.consecutive_stream_idle_timeouts
     }
 
     /// Resets the wall-clock start to now, leaving the call counters and
