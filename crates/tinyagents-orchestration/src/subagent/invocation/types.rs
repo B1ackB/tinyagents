@@ -19,7 +19,7 @@ use serde_json::Value;
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::events::EventSink;
 use tinyagents_harness::runtime::AgentHarness;
-use tinyagents_harness::steering::SteeringHandle;
+use tinyagents_harness::steering::{RecentRequestIds, SteeringHandle};
 use tinyinference_llm::message::Message;
 
 /// The argument key a [`SubAgentTool`] reads the child input from.
@@ -265,6 +265,8 @@ pub(crate) struct SubAgentJobEntry {
     /// The child run's own cancellation token (a linked child of the parent's),
     /// so one job can be cancelled without touching the parent or siblings.
     pub(crate) cancellation: CancellationToken,
+    /// Message `request_id`s already applied, so a retried message is queued once.
+    pub(crate) message_requests: RecentRequestIds,
 }
 
 /// Error returned by job lookup or live-message delivery.

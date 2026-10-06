@@ -9,7 +9,7 @@ use tinyagents_harness::context::RunContext;
 use tinyagents_harness::error::TinyAgentsError;
 use tinyagents_harness::ids::next_seq;
 use tinyagents_harness::steering::{
-    SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringPolicy,
+    RecentRequestIds, SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringPolicy,
 };
 use tinyagents_harness::tool::{ToolDispatch, ToolRegistry};
 use tinyinference_llm::message::Message;
@@ -57,6 +57,7 @@ impl SubAgentJobRegistry {
             owner,
             steering: steering.clone(),
             cancellation,
+            message_requests: RecentRequestIds::default(),
         };
         self.write().insert(id.clone(), entry);
         (id, steering)
@@ -199,10 +200,26 @@ impl SubAgentJobRegistry {
         owner: u64,
         message: impl Into<String>,
     ) -> Result<(), SubAgentJobError> {
+        self.send_message_with_request_id(job_id, owner, message, None)
+            .map(|_| ())
+    }
+
+    /// Idempotent [`Self::send_message_owned`]: a `request_id` already applied
+    /// to this job is acknowledged (`Ok(true)`, "duplicate") without queueing
+    /// the message again. Only the last
+    /// [`RecentRequestIds::DEFAULT_CAPACITY`] ids per job are remembered, and a
+    /// rejected send (unknown, foreign or terminal job) never consumes its id.
+    pub(crate) fn send_message_with_request_id(
+        &self,
+        job_id: &str,
+        owner: u64,
+        message: impl Into<String>,
+        request_id: Option<&str>,
+    ) -> Result<bool, SubAgentJobError> {
         let id = SubAgentJobId(job_id.to_owned());
-        let entries = self.read();
+        let mut entries = self.write();
         let entry = entries
-            .get(&id)
+            .get_mut(&id)
             .filter(|entry| entry.owner == owner)
             .ok_or_else(|| SubAgentJobError::NotFound(job_id.to_owned()))?;
         if entry.job.status.is_terminal() {
@@ -211,12 +228,18 @@ impl SubAgentJobRegistry {
                 status: entry.job.status,
             });
         }
+        if let Some(request_id) = request_id
+            && !entry.message_requests.claim(request_id)
+        {
+            tracing::debug!("{LOG_PREFIX} send_message.duplicate job_id={job_id}");
+            return Ok(true);
+        }
         entry
             .steering
             .send(SteeringCommand::InjectMessage(Message::user(
                 message.into(),
             )));
-        Ok(())
+        Ok(false)
     }
 
     fn read(
@@ -357,7 +380,11 @@ impl Tool for SubAgentMessageTool {
             "type": "object",
             "properties": {
                 "job_id": { "type": "string" },
-                "message": { "type": "string" }
+                "message": { "type": "string" },
+                "request_id": {
+                    "type": "string",
+                    "description": "Optional idempotency key: resending the same request_id to the same job does not queue the message again."
+                }
             },
             "required": ["job_id", "message"]
         })
@@ -391,12 +418,28 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
             .get("message")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("message must be a string"))?;
-        self.jobs
-            .send_message_owned(job_id, parent.instance_id(), message)?;
-        Ok(ToolResult::json(json!({
+        let request_id = match args.get("request_id") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("request_id must be a string when provided"))?,
+            ),
+        };
+        let duplicate = self.jobs.send_message_with_request_id(
+            job_id,
+            parent.instance_id(),
+            message,
+            request_id,
+        )?;
+        let mut payload = json!({
             "job_id": job_id,
             "status": "message_queued"
-        })))
+        });
+        if duplicate {
+            payload["duplicate"] = Value::Bool(true);
+        }
+        Ok(ToolResult::json(payload))
     }
 }
 
