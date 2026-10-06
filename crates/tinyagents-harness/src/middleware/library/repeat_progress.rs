@@ -165,6 +165,9 @@ impl RepeatProgressMiddleware {
         }
     }
 
+    /// stub
+    pub fn with_fingerprinter(self, _f: Arc<dyn crate::no_progress::OutcomeFingerprinter>) -> Self { self }
+
     /// Override the placeholder body treated as an evicted tool result. Must be
     /// called before [`eviction_observer`](Self::eviction_observer).
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {

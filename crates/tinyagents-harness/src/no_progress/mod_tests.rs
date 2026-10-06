@@ -1,6 +1,7 @@
 //! Unit tests for the no-progress escalation ladder.
 
 use super::*;
+use std::sync::Arc;
 
 fn fail<'a>(tool: &'a str, fp: &'a str, err: &'a str) -> ToolAttempt<'a> {
     ToolAttempt {
@@ -483,4 +484,130 @@ mod drivable {
             NoProgress::Continue
         );
     }
+}
+
+// ── Volatility-aware outcome fingerprinting ─────────────────────────────
+
+/// A fingerprinter that treats every outcome as the same one.
+struct ConstantFingerprinter;
+
+impl OutcomeFingerprinter for ConstantFingerprinter {
+    fn fingerprint(&self, _outcome: &str) -> String {
+        "same".to_string()
+    }
+}
+
+/// A fingerprinter that never normalizes, i.e. the pre-existing behavior.
+struct VerbatimFingerprinter;
+
+impl OutcomeFingerprinter for VerbatimFingerprinter {
+    fn fingerprint(&self, outcome: &str) -> String {
+        outcome.to_string()
+    }
+}
+
+#[test]
+fn timestamped_identical_outputs_trip_the_recurrence_halt() {
+    let tracker = SuccessfulRepeatTracker::new(4, 3);
+    let call = "get_status\u{1}abc";
+    assert_eq!(
+        tracker.record_call_outcome(call, "ok at 2026-10-06T12:00:01Z in 12ms (req 0123456789abcdef)"),
+        SuccessfulRepeat::Continue
+    );
+    assert_eq!(
+        tracker.record_call_outcome(call, "ok at 2026-10-06T12:00:09Z in 340ms (req fedcba9876543210)"),
+        SuccessfulRepeat::Continue
+    );
+    assert!(matches!(
+        tracker.record_call_outcome(call, "ok at 2026-10-06T12:01:30Z in 7ms (req 00ff00ff00ff00ff1)"),
+        SuccessfulRepeat::Halt(message) if message.contains("identical result")
+    ));
+}
+
+#[test]
+fn genuinely_different_outputs_do_not_trip_the_recurrence_halt() {
+    let tracker = SuccessfulRepeatTracker::new(4, 3);
+    for i in 0..10 {
+        assert_eq!(
+            tracker.record_call_outcome(
+                "get_status\u{1}abc",
+                &format!("ok at 2026-10-06T12:00:0{}Z rows={i}", i % 10)
+            ),
+            SuccessfulRepeat::Continue,
+            "outputs that differ outside volatile spans are progress"
+        );
+    }
+}
+
+#[test]
+fn custom_fingerprinter_is_honored_by_the_successful_repeat_tracker() {
+    let constant =
+        SuccessfulRepeatTracker::new(4, 3).with_fingerprinter(Arc::new(ConstantFingerprinter));
+    constant.record_call_outcome("c", "alpha");
+    constant.record_call_outcome("c", "beta");
+    assert!(matches!(
+        constant.record_call_outcome("c", "gamma"),
+        SuccessfulRepeat::Halt(_)
+    ));
+
+    let verbatim =
+        SuccessfulRepeatTracker::new(4, 3).with_fingerprinter(Arc::new(VerbatimFingerprinter));
+    for second in 10..20 {
+        assert_eq!(
+            verbatim.record_call_outcome("c", &format!("at 12:00:{second}")),
+            SuccessfulRepeat::Continue,
+            "a verbatim fingerprinter must not normalize the timestamp"
+        );
+    }
+}
+
+#[test]
+fn failure_with_changing_timestamps_counts_as_identical() {
+    let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD);
+    assert_eq!(
+        t.record(1, &fail("fetch", "a", "timeout at 2026-10-06T12:00:01Z after 5012ms (attempt 1 of 3)")),
+        NoProgress::Continue
+    );
+    assert!(matches!(
+        t.record(2, &fail("fetch", "a", "timeout at 2026-10-06T12:00:09Z after 5003ms (attempt 2 of 3)")),
+        NoProgress::Nudge(_)
+    ));
+    assert!(matches!(
+        t.record(3, &fail("fetch", "a", "timeout at 2026-10-06T12:00:17Z after 4999ms (attempt 3 of 3)")),
+        NoProgress::Halt(_)
+    ));
+}
+
+#[test]
+fn genuinely_different_failures_are_not_identical() {
+    let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD);
+    assert_eq!(
+        t.record(1, &fail("fetch", "a", "timeout at 2026-10-06T12:00:01Z")),
+        NoProgress::Continue
+    );
+    assert_eq!(
+        t.record(2, &fail("fetch", "a", "connection refused at 2026-10-06T12:00:09Z")),
+        NoProgress::Continue,
+        "a different failure message restarts the identical-repeat count"
+    );
+}
+
+#[test]
+fn custom_fingerprinter_is_honored_by_the_failure_ladder() {
+    let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD)
+        .with_fingerprinter(Arc::new(ConstantFingerprinter));
+    assert_eq!(t.record(1, &fail("t", "a", "one")), NoProgress::Continue);
+    assert!(matches!(
+        t.record(2, &fail("t", "a", "two")),
+        NoProgress::Nudge(_)
+    ));
+
+    let verbatim = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD)
+        .with_fingerprinter(Arc::new(VerbatimFingerprinter));
+    verbatim.record(1, &fail("t", "a", "boom at 12:00:01"));
+    assert_eq!(
+        verbatim.record(2, &fail("t", "a", "boom at 12:00:02")),
+        NoProgress::Continue,
+        "a verbatim fingerprinter must not normalize the clock time"
+    );
 }

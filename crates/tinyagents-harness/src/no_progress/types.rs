@@ -190,3 +190,12 @@ pub struct SuccessfulRepeatTracker {
     /// Hash of `(call signature, outcome signature)` → times recorded this run.
     pub(super) recurrences: Mutex<HashMap<u64, u32>>,
 }
+
+impl NoProgressTracker {
+    /// stub
+    pub fn with_fingerprinter(self, _f: std::sync::Arc<dyn super::OutcomeFingerprinter>) -> Self { self }
+}
+impl SuccessfulRepeatTracker {
+    /// stub
+    pub fn with_fingerprinter(self, _f: std::sync::Arc<dyn super::OutcomeFingerprinter>) -> Self { self }
+}

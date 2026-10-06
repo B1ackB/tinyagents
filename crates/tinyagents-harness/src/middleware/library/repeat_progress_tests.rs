@@ -263,3 +263,47 @@ async fn successful_repeat_tracker_resets_failed_and_exempt_batches() {
         "polling tools remain exempt from successful-repeat halts"
     );
 }
+
+// ── Volatility-aware outcome fingerprinting ─────────────────────────────
+
+#[tokio::test]
+async fn identical_results_with_fresh_timestamps_halt_on_recurrence() {
+    let handle = SteeringHandle::allow_all();
+    let summary = Arc::new(std::sync::Mutex::new(None));
+    let mw = new_mw(handle.clone(), summary.clone());
+    for i in 0..DEFAULT_REPEAT_CALL_THRESHOLD {
+        run_alternating_round(
+            &mw,
+            &format!("doc fetched at 2026-10-06T12:00:{:02}Z in {}ms", i, 10 + i),
+            "hits",
+        )
+        .await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        1,
+        "a result that differs only by timestamp and duration is the same result"
+    );
+}
+
+#[tokio::test]
+async fn custom_fingerprinter_is_honored_by_the_middleware() {
+    struct Verbatim;
+    impl crate::no_progress::OutcomeFingerprinter for Verbatim {
+        fn fingerprint(&self, outcome: &str) -> String {
+            outcome.to_string()
+        }
+    }
+    let handle = SteeringHandle::allow_all();
+    let mw = new_mw(handle.clone(), Arc::new(std::sync::Mutex::new(None)))
+        .with_fingerprinter(Arc::new(Verbatim));
+    for i in 0..DEFAULT_REPEAT_CALL_THRESHOLD * 2 {
+        run_alternating_round(&mw, &format!("doc fetched at 2026-10-06T12:00:{i:02}Z"), "hits")
+            .await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        0,
+        "with a verbatim fingerprinter, fresh timestamps keep each result distinct"
+    );
+}
