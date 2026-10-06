@@ -498,7 +498,11 @@ async fn breaker_stops_retrying_a_stalled_model_but_lets_the_fallback_answer() {
         .expect("a tripped breaker must not pre-empt the fallback chain");
 
     assert_eq!(run.text().as_deref(), Some("fallback answer"));
-    assert_eq!(primary.calls(), 3, "the stalled model stops at the threshold");
+    assert_eq!(
+        primary.calls(),
+        3,
+        "the stalled model stops at the threshold"
+    );
     assert_eq!(fallback.requests().len(), 1);
     assert_eq!(began.elapsed(), 3 * SECOND);
 }
@@ -685,7 +689,10 @@ async fn cancellation_during_the_idle_wait_is_cancelled_not_a_timeout() {
         }
     );
 
-    assert!(matches!(result, Err(TinyAgentsError::Cancelled)), "{result:?}");
+    assert!(
+        matches!(result, Err(TinyAgentsError::Cancelled)),
+        "{result:?}"
+    );
     assert_eq!(model.calls(), 1);
     assert_eq!(began.elapsed(), Duration::from_millis(300));
 }
@@ -700,9 +707,12 @@ async fn run_deadline_still_wins_as_a_terminal_timeout() {
     );
 
     let began = Instant::now();
-    let err = run(&harness, RunConfig::new("deadline-run").with_timeout_ms(500))
-        .await
-        .expect_err("the run deadline must fire first");
+    let err = run(
+        &harness,
+        RunConfig::new("deadline-run").with_timeout_ms(500),
+    )
+    .await
+    .expect_err("the run deadline must fire first");
 
     assert!(matches!(err, TinyAgentsError::Timeout(_)), "got {err:?}");
     assert_eq!(model.calls(), 1, "a run-deadline timeout is not retried");
