@@ -150,3 +150,31 @@ async fn the_display_reader_shows_the_message_with_its_provenance() {
     };
     assert_eq!(first.background, None);
 }
+
+#[tokio::test]
+async fn a_repeated_idempotency_key_is_a_duplicate_and_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let locator = FileTranscriptLocator::new(dir.path());
+    live_turn(&locator, &session(), &[], &first_turn());
+    let message = TranscriptMessage::assistant("Time to stretch!");
+    let first = append_background_message(&locator, &session(), message.clone(), options("run-1"))
+        .await
+        .unwrap();
+    let before = std::fs::read(head_path(dir.path(), &session())).unwrap();
+
+    let again = append_background_message(&locator, &session(), message.clone(), options("run-1"))
+        .await
+        .unwrap();
+
+    assert_eq!(first, BackgroundAppendOutcome::Appended { generation: 0 });
+    assert_eq!(again, BackgroundAppendOutcome::Duplicate { generation: 0 });
+    assert_eq!(
+        std::fs::read(head_path(dir.path(), &session())).unwrap(),
+        before
+    );
+    // A different key is a different delivery.
+    let other = append_background_message(&locator, &session(), message, options("run-2"))
+        .await
+        .unwrap();
+    assert_eq!(other, BackgroundAppendOutcome::Appended { generation: 0 });
+}
