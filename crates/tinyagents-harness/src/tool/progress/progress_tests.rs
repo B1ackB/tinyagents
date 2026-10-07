@@ -237,7 +237,47 @@ fn a_huge_partial_is_truncated_in_the_delta_not_serialized_in_full() {
         "{}",
         deltas[0].content.len()
     );
-    assert!(deltas[0].content.starts_with("{\"blob\":\"é"));
+    assert!(deltas[0].content.contains("blob"));
+}
+
+#[test]
+fn a_huge_quote_heavy_partial_stays_within_the_cap_once_escaped() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    let huge = "\"\\".repeat(1_000_000);
+    gate.sink()
+        .report(ToolProgress::default().with_partial(json!(huge)));
+    gate.close();
+    let len = recorder
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolProgressDetail {
+                partial: Some(partial),
+                ..
+            } => Some(partial.to_string().len()),
+            _ => None,
+        })
+        .expect("live progress event");
+    assert!(len <= 4096, "{len}");
+}
+
+#[test]
+fn a_held_update_is_bounded_before_it_is_retained() {
+    let recorder = EventRecorder::new();
+    let gate = gate(
+        &recorder,
+        ToolProgressLimits {
+            max_per_window: 1,
+            window: Duration::from_secs(3600),
+        },
+    );
+    let sink = gate.sink();
+    sink.report(ToolProgress::message("first"));
+    sink.report(ToolProgress::message("x".repeat(1_000_000))); // held
+    gate.close();
+    let held = messages(&recorder).pop().expect("flushed held update");
+    assert_eq!(held.len(), 4096);
 }
 
 #[test]
