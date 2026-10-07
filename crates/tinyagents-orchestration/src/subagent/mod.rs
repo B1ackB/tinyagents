@@ -9,6 +9,7 @@
 //! Dependency direction remains `orchestration -> {harness, runtime}`. Lower
 //! TinyAgents layers must not depend on this module.
 
+mod admission;
 mod detached;
 mod driver;
 mod executor;
@@ -17,6 +18,7 @@ mod persistence;
 mod planner;
 mod types;
 
+pub use admission::{SpawnAdmission, SpawnPolicy, SpawnRejection, SpawnReservation};
 pub use detached::{
     DETACHED_LEDGER_TIMEOUT_MS, DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent,
     SteerAccess, SteerError, SteerReceipt, SteerRoute, SubagentIdentity, SubagentResumeRef,
