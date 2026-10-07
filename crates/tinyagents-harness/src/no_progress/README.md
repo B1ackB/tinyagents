@@ -52,16 +52,16 @@ hook" section in `mod.rs` for that contract.
   fingerprinter. For example:
 
   ```rust
-  struct Verbatim;
+  struct VerbatimFingerprinter;
 
-  impl OutcomeFingerprinter for Verbatim {
+  impl OutcomeFingerprinter for VerbatimFingerprinter {
       fn fingerprint(&self, outcome: &str) -> String {
           outcome.to_string()
       }
   }
 
   let tracker = NoProgressTracker::new(3).with_fingerprinter(
-      std::sync::Arc::new(Verbatim),
+      std::sync::Arc::new(VerbatimFingerprinter),
   );
   ```
 - [`ClassifiedFailureTracker`] — an additive ledger for equivalent failures
