@@ -957,9 +957,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             if real_tool_calls.is_empty() {
-                // Withheld-call, truncated-empty, empty-response and dropped-call
-                // recovery: when one schedules a retry or re-prompt, run another
-                // turn (see `response_recovery.rs` for the order of the checks).
+                // Resolve unusable responses before finishing the turn. Recovery
+                // may continue to the loop's existing limit check without
+                // scheduling a retry when no model-call budget remains.
                 if self.recover_unusable_response(
                     ctx,
                     run,

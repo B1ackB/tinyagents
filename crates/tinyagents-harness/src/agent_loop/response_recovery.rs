@@ -144,9 +144,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     }
 
     /// Recovery for a response with no real tool call that is not yet a usable
-    /// answer. Returns `true` when a retry or re-prompt was scheduled and the
-    /// loop must run another turn; `false` when the response stands and the
-    /// caller goes on to resolve the turn.
+    /// answer. Returns `true` when the loop must continue for recovery or its
+    /// existing limit handling; `false` when the response stands and the caller
+    /// goes on to resolve the turn.
     ///
     /// The checks run in a fixed order: a withheld call, a truncated-empty
     /// retry, a truncated-empty nudge, a non-truncated empty retry, and a
@@ -354,6 +354,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             && tools_available_this_turn
             && turn_recovery.dropped_tool_call_nudges_used < self.policy.dropped_tool_call_nudges
         {
+            if ctx.limits.remaining_model_calls() == 0 {
+                // Let the loop apply its limit policy without recording a retry
+                // that cannot run. Returning false would accept this response
+                // as final instead of preserving the limit stop.
+                return true;
+            }
             turn_recovery.dropped_tool_call_nudges_used += 1;
             let nudge = if undecodable_text_call {
                 tracing::info!(

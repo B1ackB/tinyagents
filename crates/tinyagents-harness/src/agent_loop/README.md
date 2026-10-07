@@ -85,6 +85,10 @@ surfaces as `TinyAgentsError::Timeout`. The run context's own
 `limits::LimitTracker` is also advanced so its counters stay consistent with
 the enforced caps.
 
+When a dropped or undecodable tool call needs recovery but no model call
+remains, the normal limit policy still ends the run. No unused recovery
+prompt is appended to the transcript and no `RetryScheduled` event is emitted.
+
 ## Cancellation and wall-clock bounding
 
 Every host/provider I/O boundary on the loop path (model resolution, budget
