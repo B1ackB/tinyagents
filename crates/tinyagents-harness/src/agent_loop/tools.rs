@@ -1786,7 +1786,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let run_id = ctx.run_id().as_str().to_string();
             futures.push(async move {
                 let body = async move {
-                    let wrapped = self.middleware.run_wrapped_tool(parent_ctx, state, call, &base);
+                    let wrapped = self
+                        .middleware
+                        .run_wrapped_tool(parent_ctx, state, call, &base);
                     // As in serial mode, canonical execution errors remain
                     // fatal; reported tool errors travel in
                     // `ToolResult::is_error`.

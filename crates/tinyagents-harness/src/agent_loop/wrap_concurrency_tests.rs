@@ -321,7 +321,10 @@ async fn a_short_circuiting_wrap_on_one_call_leaves_siblings_untouched() {
         tool_text(&run.messages, "call-a").as_deref(),
         Some("[w] alpha-out")
     );
-    assert_eq!(tool_text(&run.messages, "call-b").as_deref(), Some("canned"));
+    assert_eq!(
+        tool_text(&run.messages, "call-b").as_deref(),
+        Some("canned")
+    );
     assert_eq!(
         tool_text(&run.messages, "call-c").as_deref(),
         Some("[w] gamma-out")
