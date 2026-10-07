@@ -37,6 +37,10 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
     same("2026-10-06 12:34:56 started", "2026-10-06 12:34:57 started");
     same("2026-10-06T12:34Z started", "2026-10-06T12:35Z started");
     differ(
+        r#"{"status":"ok","event_at":"2026-10-06T12:34:56Z"}"#,
+        r#"{"status":"ok","event_at":"2026-10-06T12:34:57Z"}"#,
+    );
+    differ(
         "2026-10-06T12:34:56Z started",
         "2026-10-06T12:34:56Z stopped",
     );

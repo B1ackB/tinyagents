@@ -97,6 +97,21 @@ fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// Keeps timestamps that are explicit state fields, such as `event_at`, in
+/// the outcome identity. Log prose still falls through to normalization.
+fn iso_timestamp_context(text: &str, found: &Match<'_>) -> bool {
+    let before = text[..found.start()].to_ascii_lowercase();
+    ![
+        "event_at\": ",
+        "eventat\": ",
+        "created_at\": ",
+        "updated_at\": ",
+        "timestamp\": ",
+    ]
+    .iter()
+    .any(|field| before.ends_with(field))
+}
+
 /// Accepts clock-shaped values only when their surrounding syntax indicates a
 /// timestamp or log time, rather than a semantic position or counter.
 fn clock_context(text: &str, found: &Match<'_>) -> bool {
@@ -137,7 +152,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r"(?-u:\b)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?",
             "<timestamp>",
-            not_followed_by_word,
+            |text, found| not_followed_by_word(text, found) && iso_timestamp_context(text, found),
         ),
         rule(
             r#"(?i)(?-u:\b)(?:request|trace|correlation|session|run|call|invocation|operation|message|event)(?:[_ -]?(?:id|uuid))?\s*["']?\s*(?:[:=]\s*|\s+)["']?\s*(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
