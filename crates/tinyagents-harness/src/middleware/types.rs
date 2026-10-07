@@ -917,7 +917,22 @@ pub struct ContextCompressionMiddleware {
     /// the policy's `keep_last` messages (see
     /// [`crate::summarization::SummarizationPolicy::plan_recent_tokens`]).
     pub(crate) keep_recent_tokens: Option<u64>,
+    /// Compaction attempts one model call may make when the provider reports
+    /// an overflow. See [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`].
+    pub(crate) max_overflow_attempts: u32,
+    /// Which successful-response signals count as an overflow. See
+    /// [`crate::summarization::ResponseOverflowDetection`].
+    pub(crate) response_overflow: crate::summarization::ResponseOverflowDetection,
+    /// Byte cap for the truncate-oversized-tool-results route; `None` (the
+    /// default) never truncates. See
+    /// [`ContextCompressionMiddleware::with_tool_result_truncation`].
+    pub(crate) tool_result_truncation: Option<usize>,
 }
+
+/// Default number of compaction attempts one model call may make after the
+/// provider reports a context overflow. Each attempt must shrink the request,
+/// so the budget bounds cost, not correctness.
+pub const DEFAULT_MAX_OVERFLOW_ATTEMPTS: u32 = 3;
 
 /// Default number of ineffective compactions in a row (the next real prompt
 /// still at or above the trigger) that engage the anti-thrash guard.
@@ -953,6 +968,10 @@ pub(crate) struct RunCompaction {
     /// Once the host has persisted a compressed transcript, subsequent
     /// boundaries are in that shortened transcript's coordinates.
     pub(crate) boundary_unaligned: bool,
+    /// Set once a truncate route has run for this run: every later request has
+    /// its oversized tool results cut again (a pure, idempotent rewrite), so
+    /// the prompt prefix stays byte-stable and the measured size stays valid.
+    pub(crate) truncating: bool,
     /// Monotonic touch stamp for least-recently-used eviction.
     pub(crate) touched: u64,
     /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
