@@ -729,6 +729,10 @@ pub struct DisplayMessage {
     /// Optional short reason for a failed tool call (present only with
     /// `failure: true`).
     pub failure_detail: Option<String>,
+    /// Who delivered this line out of band, when it was written by
+    /// [`append_background_message`](super::append_background_message)
+    /// rather than by a live turn. `None` for every turn-written line.
+    pub background: Option<BackgroundOrigin>,
 }
 
 /// A compaction marker in a display projection.
@@ -794,4 +798,70 @@ pub struct SubagentArchetypeUsage {
     /// How many sub-agent runs of this archetype contributed.
     pub runs: usize,
     pub model: Option<String>,
+}
+
+// ── Background appends ───────────────────────────────────────────────
+
+/// Where an out-of-band transcript line came from, recorded on the line as an
+/// additive top-level `background` field.
+///
+/// Written by [`append_background_message`](super::append_background_message).
+/// A reader that predates the field keeps the line as an ordinary message (the
+/// field lands in the line's unknown-field catch-all), so old binaries resume
+/// the delivered message exactly like a new one does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackgroundOrigin {
+    /// Caller-chosen key that makes the append idempotent within one
+    /// generation (for a scheduled job, its run id).
+    pub idempotency_key: String,
+    /// Opaque caller provenance, e.g.
+    /// `{"kind":"cron","job_id":"…","run_id":"…"}`. Never interpreted here.
+    #[serde(default)]
+    pub provenance: serde_json::Value,
+}
+
+/// Options for [`append_background_message`](super::append_background_message).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundAppend {
+    /// Idempotency key; must be non-empty. See [`BackgroundOrigin::idempotency_key`].
+    pub idempotency_key: String,
+    /// Opaque provenance stored on the line. See [`BackgroundOrigin::provenance`].
+    pub provenance: serde_json::Value,
+    /// The head generation the caller expects to append to. `None` appends to
+    /// whatever the head is when the append runs.
+    pub expected_generation: Option<u32>,
+}
+
+impl BackgroundAppend {
+    /// Options with no expected generation.
+    pub fn new(idempotency_key: impl Into<String>, provenance: serde_json::Value) -> Self {
+        Self {
+            idempotency_key: idempotency_key.into(),
+            provenance,
+            expected_generation: None,
+        }
+    }
+
+    /// Requires the session head to still be `generation` when the append runs.
+    #[must_use]
+    pub fn expecting_generation(mut self, generation: u32) -> Self {
+        self.expected_generation = Some(generation);
+        self
+    }
+}
+
+/// What [`append_background_message`](super::append_background_message) did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundAppendOutcome {
+    /// The message was appended to head generation `generation`.
+    Appended { generation: u32 },
+    /// Head generation `generation` already holds a line with this
+    /// idempotency key; nothing was written.
+    Duplicate { generation: u32 },
+    /// The head is `head`, not the caller's `expected` generation; nothing was
+    /// written.
+    StaleGeneration { expected: u32, head: u32 },
+    /// The session has no transcript yet; nothing was written (and no
+    /// transcript was created).
+    NoSession,
 }

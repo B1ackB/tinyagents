@@ -529,7 +529,7 @@ fn publish_transcript_if_absent(path: &Path, contents: &[u8]) -> Result<bool> {
 }
 
 /// Append raw bytes to a file, opening in append mode (O(1), no read-back).
-fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn append_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let mut file = fs::OpenOptions::new()
         .read(true)

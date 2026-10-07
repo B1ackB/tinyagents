@@ -17,9 +17,9 @@
 //! rewrite. [`TranscriptHistory::clear`] is therefore an empty compaction.
 //!
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::transcript::types::TranscriptMessage;
@@ -549,13 +549,24 @@ impl FileTranscriptLocator {
             workspace_dir: workspace_dir.into(),
         }
     }
+
+    /// The workspace root this locator resolves `session_raw/` under.
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
 }
 
 impl TranscriptLocator for FileTranscriptLocator {
     /// The workspace root every lookup and bind resolves under, which is
     /// this locator's only field and therefore its whole identity.
     fn destination_key(&self) -> Option<String> {
-        Some(self.workspace_dir.to_string_lossy().into_owned())
+        Some(
+            self.workspace_dir
+                .canonicalize()
+                .unwrap_or_else(|_| symlink_normalized_path(&self.workspace_dir))
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     fn latest_for_agent(&self, agent_name: &str) -> Option<Arc<dyn TranscriptRead>> {
@@ -759,6 +770,122 @@ impl TranscriptLocator for FileTranscriptLocator {
     }
 }
 
+/// Return a stable absolute key even before the workspace has been created.
+/// `canonicalize` cannot resolve a path with a missing component, but the
+/// in-process turn lock still needs equivalent relative and absolute paths to
+/// identify the same destination.
+fn absolute_normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.components().count() > 1
+                    && !matches!(
+                        normalized.components().next_back(),
+                        Some(Component::RootDir)
+                    )
+                {
+                    normalized.pop();
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+/// Returns an absolute key with symlinks resolved in every existing prefix.
+/// The final workspace directory may not exist yet, so canonicalizing the
+/// whole path is not sufficient for locator identity.
+fn symlink_normalized_path(path: &Path) -> PathBuf {
+    enum OwnedComponent {
+        CurDir,
+        ParentDir,
+        Prefix(std::ffi::OsString),
+        RootDir,
+        Normal(std::ffi::OsString),
+    }
+
+    fn owned_components(path: &Path) -> VecDeque<OwnedComponent> {
+        path.components()
+            .map(|component| match component {
+                Component::CurDir => OwnedComponent::CurDir,
+                Component::ParentDir => OwnedComponent::ParentDir,
+                Component::Prefix(prefix) => {
+                    OwnedComponent::Prefix(prefix.as_os_str().to_os_string())
+                }
+                Component::RootDir => OwnedComponent::RootDir,
+                Component::Normal(name) => OwnedComponent::Normal(name.to_os_string()),
+            })
+            .collect()
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let fallback = absolute_normalized_path(&absolute);
+    let mut resolved = PathBuf::new();
+    let mut pending = owned_components(&absolute);
+    let mut symlink_hops = 0;
+
+    while let Some(component) = pending.pop_front() {
+        match component {
+            OwnedComponent::CurDir => {}
+            OwnedComponent::ParentDir => {
+                if resolved.components().count() > 1
+                    && !matches!(resolved.components().next_back(), Some(Component::RootDir))
+                {
+                    resolved.pop();
+                }
+            }
+            OwnedComponent::Prefix(prefix) => resolved.push(prefix),
+            OwnedComponent::RootDir => resolved.push(std::path::MAIN_SEPARATOR.to_string()),
+            OwnedComponent::Normal(name) => {
+                let candidate = resolved.join(&name);
+                match fs::symlink_metadata(&candidate) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        symlink_hops += 1;
+                        if symlink_hops > 40 {
+                            return fallback;
+                        }
+                        let target = match fs::read_link(&candidate) {
+                            Ok(target) => target,
+                            Err(_) => return fallback,
+                        };
+                        let mut replacement = if target.is_absolute() {
+                            owned_components(&target)
+                        } else {
+                            owned_components(&resolved)
+                        };
+                        if !target.is_absolute() {
+                            replacement.extend(owned_components(&target));
+                        }
+                        replacement.extend(pending);
+                        pending = replacement;
+                        resolved.clear();
+                    }
+                    _ => resolved.push(name),
+                }
+            }
+        }
+    }
+    resolved
+}
+
 fn begin_file_generation_with_baseline(
     workspace_dir: &Path,
     session: &SessionRef,
@@ -852,7 +979,7 @@ pub(crate) fn same_transcript_messages(
 /// [`FileTranscriptHistory`] is one type serving both roles; giving read-only
 /// handles a `None` meta would mean an `Option` field every write path then has
 /// to unwrap for no benefit.
-fn seed_meta_for_discovered(agent_name: &str) -> TranscriptMeta {
+pub(super) fn seed_meta_for_discovered(agent_name: &str) -> TranscriptMeta {
     TranscriptMeta {
         session_id: None,
         parent_session_id: None,
@@ -1263,6 +1390,25 @@ impl FileTranscriptHistory {
             request_id: None,
             tools: None,
         })
+    }
+}
+
+impl FileTranscriptHistory {
+    /// Runs `write` holding exactly the locks every other mutation of this
+    /// file takes (handle serial, cross-process advisory lock, process-wide
+    /// path lock), so an out-of-band writer can never interleave its bytes
+    /// with a turn append or a generation being sealed.
+    pub(super) fn with_write_locks<R>(
+        &self,
+        write: impl FnOnce() -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let _serial = self.write_serial.lock().unwrap_or_else(|p| p.into_inner());
+        let os_lock = self.acquire_write_lock()?;
+        let lock = path_lock(&self.path);
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = write();
+        drop(os_lock);
+        result
     }
 }
 
