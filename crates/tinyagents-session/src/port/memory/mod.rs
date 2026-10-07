@@ -295,21 +295,18 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         if thread_id.is_empty() {
             return Ok(false);
         }
-        let roots = self.written_roots();
-        if roots.iter().any(|(meta, _)| {
-            meta.session_id.as_deref().is_some_and(|id| {
-                id.rsplit_once(".g")
-                    .is_some_and(|(_, generation)| generation.parse::<u32>().is_ok())
-            })
-        }) {
-            return Ok(false);
-        }
-        let Some((_, history)) = roots.into_iter().find(|(meta, _)| {
+        let Some((meta, history)) = self.written_roots().into_iter().find(|(meta, _)| {
             meta.thread_id.as_deref() == Some(thread_id)
                 && agent_id.is_none_or(|agent| meta.agent_id.as_deref() == Some(agent))
         }) else {
             return Ok(false);
         };
+        if meta.session_id.as_deref().is_some_and(|id| {
+            id.rsplit_once(".g")
+                .is_some_and(|(_, generation)| generation.parse::<u32>().is_ok())
+        }) {
+            return Ok(false);
+        }
         Ok(history.record_partial_under_gate(partial.clone(), request_id.map(str::to_string)))
     }
 }
