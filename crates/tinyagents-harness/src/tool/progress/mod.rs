@@ -43,7 +43,8 @@
 //! are **coalesced**: the newest value of each field replaces the held one.
 //! There is no timer: the held update is emitted on the first accepted update
 //! of the next window, or when the gate closes (the call settles or its
-//! future is dropped), so the final state is never lost but a tool that goes
+//! future is dropped; that final flush is exempt from the window limit), so the
+//! final state is never lost but a tool that goes
 //! quiet right after a burst shows its last state only at settle. Coalesced-away
 //! updates produce no event and no middleware delta. The limits are fixed at
 //! the defaults; they are crate-private rather than a policy knob.
