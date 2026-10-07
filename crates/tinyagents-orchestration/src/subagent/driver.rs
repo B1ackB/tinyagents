@@ -6,14 +6,14 @@ use std::{
 
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
-use super::SpawnAdmission;
+use super::{SpawnAdmission, SpawnRejection};
 use super::{
     PersistedSubagentPause, SubagentError, SubagentExecution, SubagentExecutor, SubagentOutcome,
     SubagentPausePersistenceDisposition, SubagentPersistence, SubagentPersistenceDisposition,
     SubagentPlanner, SubagentRequest, SubagentRunResult, SubagentStatus, SubagentTaskKey,
     SubagentTerminalPersistenceDisposition,
 };
-use tinyagents_harness::CancellationToken;
+use tinyagents_harness::{CancellationToken, context::RunConfig};
 
 /// Optional host seams accepted by [`SubagentDriver::new`].
 ///

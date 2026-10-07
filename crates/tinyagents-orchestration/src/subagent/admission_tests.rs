@@ -3,14 +3,24 @@ use std::sync::{Arc, Barrier};
 
 fn admission(
     parent: Option<usize>,
-    root: Option<usize>,
+    total: Option<usize>,
     targets: Option<&[&str]>,
 ) -> SpawnAdmission {
     SpawnAdmission::new(SpawnPolicy {
         max_children_per_parent: parent,
-        max_total_per_root: root,
+        max_total_per_root: total,
         allowed_targets: targets.map(|t| t.iter().map(|s| (*s).to_owned()).collect()),
     })
+}
+
+/// A parent config with no thread: its scope is its run id.
+fn cfg(run_id: &str) -> RunConfig {
+    RunConfig::new(run_id)
+}
+
+/// A parent config on a conversation thread: its scope is the thread.
+fn turn(run_id: &str, thread: &str) -> RunConfig {
+    RunConfig::new(run_id).with_thread(thread)
 }
 
 #[test]
@@ -22,119 +32,173 @@ fn default_policy_is_unlimited() {
 
     let admission = SpawnAdmission::default();
     let held: Vec<_> = (0..200)
-        .map(|_| admission.try_reserve("root", "parent", "worker").unwrap())
+        .map(|_| admission.try_reserve(&cfg("p"), "worker").unwrap())
         .collect();
     assert_eq!(held.len(), 200);
 }
 
 #[test]
-fn per_parent_cap_rejects_then_admits_after_release() {
+fn per_scope_cap_rejects_then_admits_after_release() {
     let admission = admission(Some(2), None, None);
-    let first = admission.try_reserve("r", "p", "w").unwrap();
-    let _second = admission.try_reserve("r", "p", "w").unwrap();
-    let rejected = admission.try_reserve("r", "p", "w").unwrap_err();
+    let first = admission.try_reserve(&cfg("p"), "w").unwrap();
+    let _second = admission.try_reserve(&cfg("p"), "w").unwrap();
     assert_eq!(
-        rejected,
+        admission.try_reserve(&cfg("p"), "w").unwrap_err(),
         SpawnRejection::MaxChildrenPerParent { active: 2, max: 2 }
     );
     assert_eq!(admission.active_children("p"), 2);
 
     drop(first);
     assert_eq!(admission.active_children("p"), 1);
-    drop(admission.try_reserve("r", "p", "w").unwrap());
+    drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
 #[test]
-fn per_parent_cap_is_scoped_to_each_parent() {
+fn cap_is_scoped_to_each_parent_without_a_thread() {
     let admission = admission(Some(1), None, None);
-    let _a = admission.try_reserve("r", "parent-a", "w").unwrap();
-    let _b = admission.try_reserve("r", "parent-b", "w").unwrap();
-    assert!(admission.try_reserve("r", "parent-a", "w").is_err());
+    let _a = admission.try_reserve(&cfg("parent-a"), "w").unwrap();
+    let _b = admission.try_reserve(&cfg("parent-b"), "w").unwrap();
+    assert!(admission.try_reserve(&cfg("parent-a"), "w").is_err());
 }
 
 #[test]
-fn total_per_root_counts_spawned_children_even_after_they_finish() {
+fn turns_with_different_run_ids_on_one_thread_share_the_cap() {
+    let admission = admission(Some(1), Some(2), None);
+    assert_eq!(
+        admission.scope_of(&turn("run-1", "thread-A")),
+        "thread-A",
+        "the thread, not the run id, is the scope"
+    );
+    let mut first = admission.try_reserve(&turn("run-1", "thread-A"), "w").unwrap();
+    first.commit();
+
+    // A later turn mints a new run id, but the first child is still alive.
+    assert!(
+        admission
+            .try_reserve(&turn("run-2", "thread-A"), "w")
+            .is_err()
+    );
+    // Another conversation is independent.
+    drop(admission.try_reserve(&turn("run-3", "thread-B"), "w").unwrap());
+
+    // Reused run ids on different threads do not collide either.
+    drop(admission.try_reserve(&turn("run-1", "thread-C"), "w").unwrap());
+    drop(first);
+}
+
+#[test]
+fn total_budget_survives_run_id_churn_on_a_thread() {
+    let admission = admission(None, Some(2), None);
+    for n in 0..2 {
+        let mut r = admission
+            .try_reserve(&turn(&format!("run-{n}"), "thread-A"), "w")
+            .unwrap();
+        r.commit();
+    }
+    assert_eq!(admission.spawned_in_scope("thread-A"), 2);
+    assert_eq!(
+        admission
+            .try_reserve(&turn("run-9", "thread-A"), "w")
+            .unwrap_err(),
+        SpawnRejection::MaxTotalPerRoot { spawned: 2, max: 2 }
+    );
+}
+
+#[test]
+fn a_host_scope_resolver_overrides_the_default_rule() {
+    let admission = admission(Some(1), None, None).with_scope_key(|_| "tenant".to_owned());
+    assert_eq!(admission.scope_of(&cfg("anything")), "tenant");
+    let _held = admission.try_reserve(&turn("r1", "thread-A"), "w").unwrap();
+    assert!(admission.try_reserve(&turn("r2", "thread-B"), "w").is_err());
+    assert_eq!(admission.active_children("tenant"), 1);
+}
+
+#[test]
+fn total_per_scope_counts_spawned_children_even_after_they_finish() {
     let admission = admission(None, Some(2), None);
     for _ in 0..2 {
-        let mut reservation = admission.try_reserve("root", "p", "w").unwrap();
+        let mut reservation = admission.try_reserve(&cfg("root"), "w").unwrap();
         reservation.commit();
         drop(reservation); // child reached a terminal state
     }
-    assert_eq!(admission.spawned_in_root("root"), 2);
+    assert_eq!(admission.spawned_in_scope("root"), 2);
     assert_eq!(
-        admission.try_reserve("root", "p", "w").unwrap_err(),
+        admission.try_reserve(&cfg("root"), "w").unwrap_err(),
         SpawnRejection::MaxTotalPerRoot { spawned: 2, max: 2 }
     );
-    // A different root has its own budget.
-    drop(admission.try_reserve("other-root", "p", "w").unwrap());
+    // A different scope has its own budget.
+    drop(admission.try_reserve(&cfg("other-root"), "w").unwrap());
 }
 
 #[test]
 fn uncommitted_reservation_refunds_both_counters() {
     let admission = admission(Some(1), Some(1), None);
-    let reservation = admission.try_reserve("root", "p", "w").unwrap();
+    let reservation = admission.try_reserve(&cfg("p"), "w").unwrap();
     drop(reservation); // spawn failed before the child started
     assert_eq!(admission.active_children("p"), 0);
-    assert_eq!(admission.spawned_in_root("root"), 0);
-    drop(admission.try_reserve("root", "p", "w").unwrap());
+    assert_eq!(admission.spawned_in_scope("p"), 0);
+    drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
 #[test]
-fn continuation_reservation_takes_an_active_slot_but_no_total_budget() {
+fn continuation_takes_an_active_slot_but_no_total_budget() {
     let admission = admission(Some(1), Some(1), None);
-    let mut first = admission.try_reserve("root", "p", "w").unwrap();
+    let mut first = admission.try_reserve(&cfg("p"), "w").unwrap();
     first.commit();
     drop(first);
-    assert!(admission.try_reserve("root", "p", "w").is_err());
+    assert!(admission.try_reserve(&cfg("p"), "w").is_err());
 
     let mut resumed = admission
-        .try_reserve_continuation("root", "p", "w")
+        .try_reserve_continuation(&cfg("p"), "w")
         .unwrap();
     resumed.commit();
     assert_eq!(admission.active_children("p"), 1);
+    assert!(admission.try_reserve_continuation(&cfg("p"), "w").is_err());
+    drop(resumed);
+    assert_eq!(admission.spawned_in_scope("p"), 1);
+}
+
+#[test]
+fn continuation_resolves_the_same_scope_as_a_fresh_spawn() {
+    let admission = admission(Some(1), None, None);
+    let _fresh = admission.try_reserve(&turn("run-1", "thread-A"), "w").unwrap();
     assert!(
         admission
-            .try_reserve_continuation("root", "p", "w")
+            .try_reserve_continuation(&turn("run-2", "thread-A"), "w")
             .is_err()
     );
-    drop(resumed);
-    assert_eq!(admission.spawned_in_root("root"), 1);
 }
 
 #[test]
 fn allowed_targets_gate_the_target_name() {
     let admission = admission(None, None, Some(&["researcher"]));
-    drop(admission.try_reserve("r", "p", "researcher").unwrap());
+    drop(admission.try_reserve(&cfg("p"), "researcher").unwrap());
     assert_eq!(
-        admission.try_reserve("r", "p", "coder").unwrap_err(),
+        admission.try_reserve(&cfg("p"), "coder").unwrap_err(),
         SpawnRejection::TargetNotAllowed {
             target: "coder".into()
         }
     );
     // An explicitly empty allowlist admits nothing.
-    let closed = admission_with_empty_targets();
-    assert!(closed.try_reserve("r", "p", "researcher").is_err());
-}
-
-fn admission_with_empty_targets() -> SpawnAdmission {
-    admission(None, None, Some(&[]))
+    let closed = self::admission(None, None, Some(&[]));
+    assert!(closed.try_reserve(&cfg("p"), "researcher").is_err());
 }
 
 #[test]
 fn rejected_target_does_not_consume_a_slot() {
     let admission = admission(Some(1), Some(1), Some(&["w"]));
-    assert!(admission.try_reserve("r", "p", "nope").is_err());
+    assert!(admission.try_reserve(&cfg("p"), "nope").is_err());
     assert_eq!(admission.active_children("p"), 0);
-    assert_eq!(admission.spawned_in_root("r"), 0);
-    drop(admission.try_reserve("r", "p", "w").unwrap());
+    assert_eq!(admission.spawned_in_scope("p"), 0);
+    drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
 #[test]
 fn clones_share_one_ledger() {
     let admission = admission(Some(1), None, None);
     let clone = admission.clone();
-    let _held = admission.try_reserve("r", "p", "w").unwrap();
-    assert!(clone.try_reserve("r", "p", "w").is_err());
+    let _held = admission.try_reserve(&cfg("p"), "w").unwrap();
+    assert!(clone.try_reserve(&cfg("p"), "w").is_err());
 }
 
 #[test]
@@ -149,7 +213,7 @@ fn concurrent_reservations_cannot_race_past_the_cap() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                admission.try_reserve("root", "p", "w").ok()
+                admission.try_reserve(&cfg("p"), "w").ok()
             })
         })
         .collect();
@@ -169,4 +233,9 @@ fn rejection_messages_name_the_limit() {
     assert!(root.contains("9/9"), "{root}");
     let target = SpawnRejection::TargetNotAllowed { target: "x".into() }.to_string();
     assert!(target.contains("`x`"), "{target}");
+    let unnamed = SpawnRejection::TargetNotAllowed {
+        target: String::new(),
+    }
+    .to_string();
+    assert!(unnamed.contains("named none"), "{unnamed}");
 }
