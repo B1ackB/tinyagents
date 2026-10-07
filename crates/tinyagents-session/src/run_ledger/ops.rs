@@ -744,32 +744,52 @@ pub fn list_recent_run_events(
     })
 }
 
+/// Fetches one row by id inside its own connection, logging the lookup's
+/// entry and whether it found anything — the shared body of every public
+/// `get_*` in this module.
+fn get_logged<T>(
+    workspace_dir: &Path,
+    op: &str,
+    id: &str,
+    inner: impl FnOnce(&Connection, &str) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    tracing::debug!("{LOG_PREFIX} {op}.entry id={id}");
+    crate::store::with_connection(workspace_dir, |conn| {
+        init_run_ledger_schema(conn)?;
+        let found = inner(conn, id)?;
+        tracing::debug!("{LOG_PREFIX} {op}.exit id={id} found={}", found.is_some());
+        Ok(found)
+    })
+}
+
+/// Runs a `SELECT … WHERE id = ?1` and maps the row, or `None` when no row
+/// has that id — the shared body of every connection-scoped `*_inner` lookup.
+fn get_row_by_id<T>(
+    conn: &Connection,
+    sql: &str,
+    id: &str,
+    map: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Option<T>> {
+    Ok(conn.prepare(sql)?.query_row(params![id], map).optional()?)
+}
+
 /// Connection-scoped workflow-run lookup, so an upsert can read its own write
 /// back inside the same transaction.
 fn get_workflow_run_inner(conn: &Connection, id: &str) -> Result<Option<WorkflowRun>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, definition_id, parent_thread_id, input_json, phase_states_json,
                 child_run_ids_json, status, summary, started_at, updated_at, completed_at,
                 revision, lease_owner, lease_expires_at
          FROM workflow_runs WHERE id = ?1",
-    )?;
-    Ok(stmt
-        .query_row(params![id], map_workflow_run_row)
-        .optional()?)
+        id,
+        map_workflow_run_row,
+    )
 }
 
 /// Fetches a single [`WorkflowRun`] by id, or `None` if no row matches.
 pub fn get_workflow_run(workspace_dir: &Path, id: &str) -> Result<Option<WorkflowRun>> {
-    tracing::debug!("{LOG_PREFIX} get_workflow_run.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let run = get_workflow_run_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_workflow_run.exit id={id} found={}",
-            run.is_some()
-        );
-        Ok(run)
-    })
+    get_logged(workspace_dir, "get_workflow_run", id, get_workflow_run_inner)
 }
 
 /// List durable workflow runs, most-recently-updated first, with optional
@@ -911,16 +931,7 @@ pub fn upsert_agent_team(workspace_dir: &Path, upsert: AgentTeamUpsert) -> Resul
 
 /// Fetch a single team by id.
 pub fn get_agent_team(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeam>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let team = get_agent_team_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team.exit id={id} found={}",
-            team.is_some()
-        );
-        Ok(team)
-    })
+    get_logged(workspace_dir, "get_agent_team", id, get_agent_team_inner)
 }
 
 /// List teams, most-recently-updated first, with optional thread/status filters.
@@ -1057,16 +1068,7 @@ pub fn upsert_agent_team_member(
 
 /// Fetch a single member by id.
 pub fn get_agent_team_member(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamMember>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team_member.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let member = get_agent_team_member_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team_member.exit id={id} found={}",
-            member.is_some()
-        );
-        Ok(member)
-    })
+    get_logged(workspace_dir, "get_agent_team_member", id, get_agent_team_member_inner)
 }
 
 /// List all members of a team, by creation order.
@@ -1182,16 +1184,7 @@ pub fn upsert_agent_team_task(
 
 /// Fetch a single task by id.
 pub fn get_agent_team_task(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamTask>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team_task.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let task = get_agent_team_task_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team_task.exit id={id} found={}",
-            task.is_some()
-        );
-        Ok(task)
-    })
+    get_logged(workspace_dir, "get_agent_team_task", id, get_agent_team_task_inner)
 }
 
 /// List all tasks of a team, by `order_index` then creation order.
@@ -1673,42 +1666,42 @@ pub fn release_agent_team_task(workspace_dir: &Path, team_id: &str, task_id: &st
 /// Connection-scoped team lookup, so an upsert can read its own write back
 /// inside the same transaction.
 fn get_agent_team_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeam>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, parent_thread_id, lead_agent_id, status, summary,
                 created_at, updated_at, closed_at
          FROM agent_teams WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_row,
+    )
 }
 
 /// Connection-scoped member lookup, so an upsert can read its own write back
 /// inside the same transaction.
 fn get_agent_team_member_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeamMember>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, team_id, name, agent_id, member_status,
                 current_task_id, worker_thread_id, run_id, created_at, updated_at
          FROM agent_team_members WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_member_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_member_row,
+    )
 }
 
 /// Connection-scoped task lookup, so a claim/completion transaction can read
 /// its own write back inside the same transaction.
 fn get_agent_team_task_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeamTask>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, team_id, title, objective, status, owner_member_id,
                 claimed_by_member_id, claim_token, depends_on_json, gate_status,
                 gate_reason, evidence_json, source_run_id, order_index,
                 created_at, updated_at
          FROM agent_team_tasks WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_task_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_task_row,
+    )
 }
 
 fn map_agent_team_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTeam> {
