@@ -1850,3 +1850,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
 #[cfg(test)]
 #[path = "model_call_failover_tests.rs"]
 mod failover_test;
+
+#[cfg(test)]
+#[path = "model_call_switch_tests.rs"]
+mod switch_test;
