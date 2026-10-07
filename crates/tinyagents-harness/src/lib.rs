@@ -69,6 +69,7 @@ pub mod context;
 pub mod cost;
 pub mod error;
 pub mod events;
+mod finish_reason;
 pub mod handoff;
 pub mod host;
 pub mod ids;

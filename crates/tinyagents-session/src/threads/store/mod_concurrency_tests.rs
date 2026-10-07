@@ -17,6 +17,7 @@ fn one_hundred_agent_threads_append_without_loss_or_corruption() {
                 created_at: created_at.clone(),
                 labels: None,
                 personality_id: None,
+                working_dir: None,
             })
             .unwrap();
     }
@@ -73,6 +74,7 @@ fn one_unreadable_transcript_does_not_stop_other_repairs() {
                 created_at: created_at.clone(),
                 labels: None,
                 personality_id: None,
+                working_dir: None,
             })
             .unwrap();
     }
