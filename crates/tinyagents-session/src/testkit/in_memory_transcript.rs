@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::transcript::{
-    SessionTranscript, TranscriptHistory, TranscriptMessage, TranscriptMeta, TranscriptRead,
-    TranscriptTurn,
+    SessionTranscript, TranscriptHistory, TranscriptMessage, TranscriptMeta, TranscriptPartial,
+    TranscriptRead, TranscriptTurn,
 };
 
 /// A [`TranscriptHistory`] backed by a `Vec<TranscriptMessage>` behind a
@@ -42,6 +42,9 @@ struct InMemoryTranscriptState {
     tools: Option<serde_json::Value>,
     /// `false` until the first write, mirroring a file that does not exist yet.
     written: bool,
+    /// Display-only partials of interrupted turns, with their request ids.
+    /// Never part of [`TranscriptHistory::messages`].
+    partials: Vec<(TranscriptPartial, Option<String>)>,
 }
 
 /// Rows as the file backend returns them: a legacy string row is lifted into
@@ -66,12 +69,39 @@ impl InMemoryTranscriptHistory {
                 messages: Vec::new(),
                 tools: None,
                 written: false,
+                partials: Vec::new(),
             }),
         }
     }
 
+    /// Records the display-only `partial` of an interrupted turn.
+    pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.partials.push((partial, request_id));
+        state.written = true;
+    }
+
+    /// The display-only partials recorded so far, oldest first, with their
+    /// request ids.
+    pub fn partials(&self) -> Vec<(TranscriptPartial, Option<String>)> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .partials
+            .clone()
+    }
+
     fn mark_written(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).written = true;
+    }
+
+    /// Replaces discovery metadata until the first write, when an existence
+    /// probe created the in-memory stand-in before the real session was bound.
+    pub(crate) fn set_seed_if_unwritten(&self, seed_meta: TranscriptMeta) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.written {
+            state.meta = seed_meta;
+        }
     }
 }
 
@@ -102,6 +132,27 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         // snapshot, matching the file writer which emits no tools record.
         if let Some(tools) = turn.tools {
             state.tools = Some(tools.clone());
+        }
+        state.written = true;
+        Ok(())
+    }
+
+    fn append_turn_with_partial(
+        &self,
+        turn: TranscriptTurn<'_>,
+        partial: Option<&TranscriptPartial>,
+    ) -> anyhow::Result<()> {
+        let request_id = turn.request_id.map(str::to_string);
+        // One lock for both halves, so the turn and its partial land as one
+        // transition, as the trait asks.
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.messages = normalized_rows(turn.next);
+        state.meta = turn.meta.clone();
+        if let Some(tools) = turn.tools {
+            state.tools = Some(tools.clone());
+        }
+        if let Some(partial) = partial {
+            state.partials.push((partial.clone(), request_id));
         }
         state.written = true;
         Ok(())

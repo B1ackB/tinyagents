@@ -103,6 +103,55 @@ pub trait AppendStore: Send + Sync {
     async fn len(&self, stream: &str) -> Result<u64>;
 }
 
+// ── Shared handles ──────────────────────────────────────────────────────────
+
+/// A store shared behind an [`Arc`] (including `Arc<dyn Store>`) is a store,
+/// so code generic over [`Store`] accepts a host-injected trait object.
+#[async_trait]
+impl<S: Store + ?Sized> Store for Arc<S> {
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Value>> {
+        (**self).get(namespace, key).await
+    }
+
+    async fn put(&self, namespace: &str, key: &str, value: Value) -> Result<()> {
+        (**self).put(namespace, key, value).await
+    }
+
+    async fn delete(&self, namespace: &str, key: &str) -> Result<()> {
+        (**self).delete(namespace, key).await
+    }
+
+    async fn list(&self, namespace: &str) -> Result<Vec<String>> {
+        (**self).list(namespace).await
+    }
+}
+
+/// An append store shared behind an [`Arc`] (including
+/// `Arc<dyn AppendStore>`) is an append store.
+#[async_trait]
+impl<S: AppendStore + ?Sized> AppendStore for Arc<S> {
+    async fn append(&self, stream: &str, value: Value) -> Result<u64> {
+        (**self).append(stream, value).await
+    }
+
+    async fn read_from(&self, stream: &str, offset: u64) -> Result<Vec<(u64, Value)>> {
+        (**self).read_from(stream, offset).await
+    }
+
+    async fn read_window(
+        &self,
+        stream: &str,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, Value)>> {
+        (**self).read_window(stream, offset, limit).await
+    }
+
+    async fn len(&self, stream: &str) -> Result<u64> {
+        (**self).len(stream).await
+    }
+}
+
 // ── StoreRecord ───────────────────────────────────────────────────────────────
 
 /// A single decoded entry read back from an [`AppendStore`].

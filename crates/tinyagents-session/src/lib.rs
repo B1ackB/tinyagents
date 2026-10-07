@@ -86,6 +86,7 @@ pub mod entry_tree;
 mod migrations;
 pub mod ops;
 mod paging;
+pub mod port;
 pub mod retention;
 pub mod run_ledger;
 mod store;
@@ -106,6 +107,10 @@ pub use ops::{
     list_sessions, list_tool_calls, mark_interrupted, record_message,
     record_message_with_reasoning, record_session_end, record_session_start, record_tool_call,
     search_sessions, set_fts_snippet_bytes,
+};
+pub use port::{
+    AgentStores, InMemorySessionStores, InMemoryTranscriptLocator, InMemoryTurnStates,
+    SessionStoreProvider, TurnStates,
 };
 pub use retention::{
     RetentionReport, apply_retention, prune_run_events_before, prune_run_telemetry_before,

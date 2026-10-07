@@ -486,6 +486,7 @@ registry in small applications.
 - binary values
 
 ### S5: MongoDB Backend
+Session state now reaches a host's database through `tinyagents_session::port` ([`../session/store-port.md`](../session/store-port.md)).
 
 - feature-gated `mongodb`
 - run/message/event collections
