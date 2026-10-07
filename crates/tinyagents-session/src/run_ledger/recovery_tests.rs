@@ -37,7 +37,10 @@ fn a_call_the_ledger_never_saw_start_is_safe_to_resume() {
 
 #[test]
 fn a_deferred_call_resumes_to_receive_its_answer() {
-    assert_eq!(class_of(Some(ToolEffectStatus::Deferred)), RecoveryClass::Resume);
+    assert_eq!(
+        class_of(Some(ToolEffectStatus::Deferred)),
+        RecoveryClass::Resume
+    );
 }
 
 #[test]
@@ -71,7 +74,11 @@ fn effects_match_on_run_and_call_id_together() {
         effect("run-1", "c2", ToolEffectStatus::Started),
     ];
     let classified = classify_recovery(&[call("c1")], &effects);
-    assert_eq!(classified[0].class, RecoveryClass::Resume, "no row for (run-1, c1)");
+    assert_eq!(
+        classified[0].class,
+        RecoveryClass::Resume,
+        "no row for (run-1, c1)"
+    );
     assert_eq!(classified[0].effect_status, None);
 }
 
@@ -110,7 +117,11 @@ fn overall_recovery_is_the_most_cautious_class() {
     assert_eq!(overall_recovery(&all), RecoveryClass::NeedsVerification);
     assert_eq!(overall_recovery(&all[..1]), RecoveryClass::ResumeReportOnly);
     assert_eq!(overall_recovery(&all[2..]), RecoveryClass::Resume);
-    assert_eq!(overall_recovery(&[]), RecoveryClass::Resume, "nothing dangling");
+    assert_eq!(
+        overall_recovery(&[]),
+        RecoveryClass::Resume,
+        "nothing dangling"
+    );
 }
 
 #[test]
