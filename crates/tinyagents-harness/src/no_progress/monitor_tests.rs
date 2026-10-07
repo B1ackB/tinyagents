@@ -25,9 +25,9 @@ fn the_default_config_stages_escalation_and_enables_every_detector() {
 #[test]
 fn immediate_halt_config_is_the_historical_behaviour() {
     let monitor = RepeatMonitor::new(&RepeatProgressConfig::immediate_halt());
-    monitor.record_call("lookup", "a", "r");
-    monitor.record_call("lookup", "a", "r");
-    let observed = monitor.record_call("lookup", "a", "r");
+    monitor.record_call("lookup", "a", "r", true);
+    monitor.record_call("lookup", "a", "r", true);
+    let observed = monitor.record_call("lookup", "a", "r", true);
     assert!(matches!(observed.verdict, SuccessfulRepeat::Halt(_)));
     assert_eq!(monitor.pre_call("lookup", "a"), CallGate::Allow);
 }
@@ -37,61 +37,98 @@ fn ping_pong_notes_come_back_with_the_observation() {
     let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
     let mut notes = Vec::new();
     for _ in 0..3 {
-        notes.extend(monitor.record_call("read", "a", "doc").notes);
-        notes.extend(monitor.record_call("search", "b", "hits").notes);
+        notes.extend(monitor.record_call("read", "a", "doc", true).notes);
+        notes.extend(monitor.record_call("search", "b", "hits", true).notes);
     }
     assert!(notes.iter().any(|note| note.contains("alternating")));
 }
 
 #[test]
 fn argument_churn_notes_come_back_with_the_observation() {
-    let monitor = RepeatMonitor::new(&RepeatProgressConfig {
-        // Out of the way so only the churn detector can speak.
-        call_threshold: 99,
-        ..RepeatProgressConfig::default()
-    });
+    // The call threshold is out of the way so only the churn detector speaks.
+    let monitor = RepeatMonitor::new(&RepeatProgressConfig::default().with_call_threshold(99));
     let mut notes = Vec::new();
     for variant in 0..3 {
         for _ in 0..3 {
-            notes.extend(monitor.record_call("search", &args(variant), "none").notes);
+            notes.extend(
+                monitor
+                    .record_call("search", &args(variant), "none", true)
+                    .notes,
+            );
         }
     }
     assert!(notes.iter().any(|note| note.contains("search")));
 }
 
 #[test]
-fn a_repeat_of_the_pre_compaction_tail_escalates_straight_to_a_block() {
+fn a_repeat_of_an_already_repeating_pre_compaction_tail_only_warns() {
     let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
-    monitor.record_call("read", "a", "doc");
+    monitor.record_call("read", "a", "doc", true);
+    monitor.record_call("read", "a", "doc", true);
     monitor.on_context_evicted();
 
-    let observed = monitor.record_call("read", "a", "doc");
+    let observed = monitor.record_call("read", "a", "doc", true);
     assert!(
         observed.notes.iter().any(|note| note.contains("compact")),
         "the model is told why: {:?}",
         observed.notes
     );
-    assert!(
-        matches!(monitor.pre_call("read", "a"), CallGate::Block(_)),
-        "one repeat after compaction is enough to block the next, not three"
+    assert_eq!(
+        monitor.pre_call("read", "a"),
+        CallGate::Allow,
+        "the guard never blocks"
     );
 }
 
 #[test]
-fn a_fresh_call_after_compaction_is_not_blocked() {
+fn one_re_read_after_compaction_is_neither_warned_nor_blocked() {
     let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
-    monitor.record_call("read", "a", "doc");
+    monitor.record_call("read", "a", "doc", true);
     monitor.on_context_evicted();
-    monitor.record_call("read", "other", "doc-2");
-    assert_eq!(monitor.pre_call("read", "other"), CallGate::Allow);
+
+    let observed = monitor.record_call("read", "a", "doc", true);
+    assert!(observed.notes.is_empty(), "{:?}", observed.notes);
     assert_eq!(monitor.pre_call("read", "a"), CallGate::Allow);
+}
+
+#[test]
+fn a_state_changing_call_discards_the_prediction_for_other_calls() {
+    let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
+    for _ in 0..4 {
+        monitor.record_call("read", "a", "doc", true);
+    }
+    monitor.record_call("edit", "b", "ok", false);
+    assert_eq!(
+        monitor.pre_call("read", "a"),
+        CallGate::Allow,
+        "the read may return something new after an edit"
+    );
+}
+
+#[test]
+fn a_read_only_call_keeps_the_prediction() {
+    let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
+    for _ in 0..4 {
+        monitor.record_call("read", "a", "doc", true);
+    }
+    monitor.record_call("grep", "b", "hits", true);
+    assert!(matches!(monitor.pre_call("read", "a"), CallGate::Block(_)));
+}
+
+#[test]
+fn a_repeating_state_changing_call_is_still_predicted_for_itself() {
+    let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
+    for _ in 0..4 {
+        monitor.record_call("write", "a", "ok", false);
+    }
+    assert!(matches!(monitor.pre_call("write", "a"), CallGate::Block(_)));
 }
 
 #[test]
 fn eviction_keeps_the_block_count_but_clears_the_ledger() {
     let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
     for _ in 0..4 {
-        monitor.record_call("read", "a", "doc");
+        monitor.record_call("read", "a", "doc", true);
     }
     assert!(matches!(monitor.pre_call("read", "a"), CallGate::Block(_)));
     monitor.on_context_evicted();
@@ -101,10 +138,10 @@ fn eviction_keeps_the_block_count_but_clears_the_ledger() {
         "the evicted result no longer counts"
     );
     for _ in 0..4 {
-        monitor.record_call("read", "a", "doc");
+        monitor.record_call("read", "a", "doc", true);
     }
     assert!(
         matches!(monitor.pre_call("read", "a"), CallGate::Halt(_)),
-        "but the earlier block still counts toward the halt"
+        "but the earlier block of that call still counts toward the halt"
     );
 }

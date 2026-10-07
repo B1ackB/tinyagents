@@ -73,13 +73,58 @@ fn an_unseen_call_or_a_changed_result_is_never_blocked() {
 }
 
 #[test]
-fn a_call_that_ran_through_to_the_block_count_halts() {
-    // A host that never consults `pre_call` still gets bounded.
+fn a_call_that_ran_through_the_block_stage_still_halts() {
+    // A host that never consults `pre_call` (or whose predictions were
+    // invalidated every time) is still bounded, at the count where a second
+    // block would have happened.
+    let tracker = staged();
+    for _ in 0..5 {
+        assert!(!matches!(record(&tracker), SuccessfulRepeat::Halt(_)));
+    }
+    assert!(matches!(record(&tracker), SuccessfulRepeat::Halt(_)));
+}
+
+#[test]
+fn blocks_are_counted_per_call_signature() {
+    let tracker = staged();
+    let other = "read\u{1}other";
+    for _ in 0..4 {
+        record(&tracker);
+        tracker.record_call_outcome(other, "other result");
+    }
+    // A parallel batch [lookup, read]: each is blocked once, neither halts.
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
+    assert!(matches!(tracker.pre_call(other), CallGate::Block(_)));
+    // Each repeating once more halts.
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Halt(_)));
+}
+
+#[test]
+fn a_new_result_clears_the_blocks_of_that_call() {
     let tracker = staged();
     for _ in 0..4 {
         record(&tracker);
     }
-    assert!(matches!(record(&tracker), SuccessfulRepeat::Halt(_)));
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
+    tracker.record_call_outcome(CALL, "something new");
+    for _ in 0..4 {
+        record(&tracker);
+    }
+    assert!(
+        matches!(tracker.pre_call(CALL), CallGate::Block(_)),
+        "progress in between: this is a first block again, not a halt"
+    );
+}
+
+#[test]
+fn invalidating_predictions_keeps_the_ledger_counts() {
+    let tracker = staged();
+    for _ in 0..4 {
+        record(&tracker);
+    }
+    tracker.invalidate_predictions_except("edit\u{1}x");
+    assert_eq!(tracker.pre_call(CALL), CallGate::Allow);
+    assert_eq!(tracker.recurrence_count(CALL, "same result"), 4);
 }
 
 #[test]

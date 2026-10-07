@@ -58,7 +58,10 @@ fn only_the_last_window_calls_before_compaction_are_the_tail() {
     guard.record("new\u{1}2", "r2", true);
     guard.record("new\u{1}3", "r3", true);
     guard.arm();
-    assert!(!guard.record("old\u{1}1", "r1", true), "fell out of the tail");
+    assert!(
+        !guard.record("old\u{1}1", "r1", true),
+        "fell out of the tail"
+    );
 }
 
 #[test]
