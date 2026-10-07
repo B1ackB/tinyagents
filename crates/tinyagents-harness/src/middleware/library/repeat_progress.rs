@@ -94,6 +94,37 @@ impl RepeatState {
     }
 }
 
+impl RepeatState {
+    /// Runs `f` on the run's monitor, creating it on first use. `None` only if
+    /// the lock is poisoned, in which case the guard stays out of the way.
+    fn with_monitor<R>(&self, run_id: u64, f: impl FnOnce(&RepeatMonitor) -> R) -> Option<R> {
+        let mut monitors = self.monitors.lock().ok()?;
+        let monitor = monitors
+            .entry(run_id)
+            .or_insert_with(|| RepeatMonitor::new(&self.config));
+        Some(f(monitor))
+    }
+}
+
+/// Appends each warning to the result the model is about to read, in the plain
+/// blocks and in the markdown rendering.
+fn append_notes(result: &mut TaToolResult, notes: &[String]) {
+    for note in notes {
+        let mut chars = note.chars();
+        let note = match chars.next() {
+            Some(first) => format!("[repeat notice] {}{}", first.to_uppercase(), chars.as_str()),
+            None => continue,
+        };
+        result.content.push(ToolContent::Text {
+            text: format!("\n\n{note}"),
+        });
+        if let Some(markdown) = result.markdown_formatted.as_mut() {
+            markdown.push_str("\n\n");
+            markdown.push_str(&note);
+        }
+    }
+}
+
 /// The `ids` whose tool result is still in `request` with its body intact.
 fn visible_tool_results(
     request: &ModelRequest,
@@ -322,15 +353,11 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             .map(|call| {
                 (
                     call.id.clone(),
-                    format!(
-                        "{}\u{1}{}",
-                        call.name,
-                        fingerprint_arguments(&call.arguments)
-                    ),
+                    (call.name.clone(), fingerprint_arguments(&call.arguments)),
                 )
             })
             .fold(
-                HashMap::<String, VecDeque<String>>::new(),
+                HashMap::<String, VecDeque<(String, String)>>::new(),
                 |mut calls, (id, sig)| {
                     calls.entry(id).or_default().push_back(sig);
                     calls
@@ -339,12 +366,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
 
         // Stage output with the crate tracker. Its halt verdict is intentionally
         // deferred until the matching tool batch is confirmed successful.
-        if let Ok(mut trackers) = self.state.tracker.lock() {
-            let _ = trackers
-                .entry(ctx.instance_id())
-                .or_default()
-                .record_output(&output_sig, all_exempt);
-        }
+        self.state.with_monitor(ctx.instance_id(), |monitor| {
+            monitor.record_output(&output_sig, all_exempt)
+        });
 
         // Stage the batch for the repeat-CALL guard, evaluated once every result
         // is back (gated on success) in `after_tool`.
@@ -364,6 +388,44 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         Ok(())
     }
 
+    async fn before_tool(
+        &self,
+        ctx: &mut RunContext<C>,
+        _state: &(),
+        call: &mut ToolCall,
+    ) -> TaResult<()> {
+        if (self.exempt)(&call.name) {
+            return Ok(());
+        }
+        let arguments = fingerprint_arguments(&call.arguments);
+        let gate = self
+            .state
+            .with_monitor(ctx.instance_id(), |monitor| {
+                monitor.pre_call(&call.name, &arguments)
+            })
+            .unwrap_or(CallGate::Allow);
+        match gate {
+            CallGate::Allow => Ok(()),
+            // Refusing admission answers the call with this text as an error
+            // result and never runs the tool (see `agent_loop::tools`).
+            CallGate::Block(text) => {
+                tracing::warn!(
+                    tool = call.name,
+                    "[tinyagents::mw] repeat-progress blocked a repeated call"
+                );
+                Err(TinyAgentsError::ToolFailed(text))
+            }
+            CallGate::Halt(summary) => {
+                tracing::warn!(
+                    tool = call.name,
+                    "[tinyagents::mw] repeat-progress halted the run after repeated blocks"
+                );
+                self.halt(summary.clone());
+                Err(TinyAgentsError::ToolFailed(summary))
+            }
+        }
+    }
+
     async fn after_tool(
         &self,
         ctx: &mut RunContext<C>,
@@ -373,37 +435,37 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
+        let run_id = ctx.instance_id();
         // Fingerprint outside the mutexes below: it scans the whole result.
         let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
+        let mut notes = Vec::new();
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
             let Ok(mut pending) = self.pending.lock() else {
                 return Ok(());
             };
-            let Some(batch) = pending.get_mut(&ctx.instance_id()) else {
+            let Some(batch) = pending.get_mut(&run_id) else {
                 return Ok(());
             };
             let already_halted = batch.halted;
             let mut recurrence = SuccessfulRepeat::Continue;
             if result.is_error {
                 batch.all_ok = false;
-            } else if let Some(sig) = batch
+            } else if let Some((tool, arguments)) = batch
                 .call_sigs
                 .get_mut(&call_id)
                 .and_then(VecDeque::pop_front)
             {
-                if let Ok(mut trackers) = self.state.tracker.lock() {
-                    recurrence = trackers
-                        .entry(ctx.instance_id())
-                        .or_default()
-                        .record_call_identity(&sig, identity.as_deref().unwrap_or_default());
+                let identity = identity.as_deref().unwrap_or_default();
+                if let Some(observation) = self.state.with_monitor(run_id, |monitor| {
+                    monitor.record_call(&tool, &arguments, identity)
+                }) {
+                    recurrence = observation.verdict;
+                    notes.extend(observation.notes);
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
-                    recorded
-                        .entry(ctx.instance_id())
-                        .or_default()
-                        .insert(call_id);
+                    recorded.entry(run_id).or_default().insert(call_id);
                 }
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
@@ -411,38 +473,47 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             }
             batch.remaining = batch.remaining.saturating_sub(1);
             let completed = if batch.remaining == 0 {
-                pending.remove(&ctx.instance_id())
+                pending.remove(&run_id)
             } else {
                 None
             };
             (already_halted, recurrence, completed)
         };
+        let batch_verdict = completed.and_then(|batch| {
+            self.state.with_monitor(run_id, |monitor| {
+                monitor.record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
+            })
+        });
+        let (batch_verdict, recurrence) = (
+            batch_verdict.unwrap_or(SuccessfulRepeat::Continue),
+            recurrence,
+        );
+        // Warnings go to the model on this result whatever else happens.
+        // The per-call recurrence note is the more specific one: when it fires,
+        // the batch streak that coincides with it adds nothing.
+        match (&recurrence, &batch_verdict) {
+            (SuccessfulRepeat::Warn(note), _) | (_, SuccessfulRepeat::Warn(note)) => {
+                notes.push(note.clone());
+            }
+            _ => {}
+        }
+        if !notes.is_empty() {
+            tracing::debug!(
+                tool = tool_name,
+                notes = notes.len(),
+                "[tinyagents::mw] repeat-progress appended a warning to the tool result"
+            );
+            append_notes(result, &notes);
+        }
         if already_halted {
             // An earlier result in this batch paused the run; keep the streak
             // accounting current without pausing again.
-            if let Some(batch) = completed
-                && let Ok(mut trackers) = self.state.tracker.lock()
-            {
-                let _ = trackers
-                    .entry(ctx.instance_id())
-                    .or_default()
-                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
-            }
             return Ok(());
         }
-
-        let batch_verdict = completed.and_then(|batch| {
-            self.state.tracker.lock().ok().map(|mut trackers| {
-                trackers
-                    .entry(ctx.instance_id())
-                    .or_default()
-                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
-            })
-        });
         // When both fire on the same result, the batch summary wins: it is the
         // more specific description of an adjacent repeat.
         let summary = match (batch_verdict, recurrence) {
-            (Some(SuccessfulRepeat::Halt(summary)), _) => summary,
+            (SuccessfulRepeat::Halt(summary), _) => summary,
             (_, SuccessfulRepeat::Halt(summary)) => summary,
             _ => return Ok(()),
         };
@@ -500,10 +571,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
             evicted,
             "[tinyagents::mw] repeat-progress ledger reset: recorded tool results left the context"
         );
-        if let Ok(mut trackers) = self.state.tracker.lock()
-            && let Some(tracker) = trackers.get_mut(&run_id)
+        if let Ok(mut monitors) = self.state.monitors.lock()
+            && let Some(monitor) = monitors.get_mut(&run_id)
         {
-            tracker.reset();
+            monitor.on_context_evicted();
         }
         if let Ok(mut recorded) = self.state.recorded.lock() {
             recorded.remove(&run_id);

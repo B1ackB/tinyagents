@@ -77,8 +77,15 @@ async fn turn(
     result.output()
 }
 
+/// The same call every time. The narration varies so that only the call
+/// recurrence (not the identical-output streak) is in play.
 async fn same_turn(mw: &RepeatProgressMiddleware, output: &str) -> String {
-    turn(mw, "lookup", json!({"id": 1}), "working", output).await
+    static TURN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let narration = format!(
+        "working {}",
+        TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    turn(mw, "lookup", json!({"id": 1}), &narration, output).await
 }
 
 #[tokio::test]
@@ -136,12 +143,12 @@ async fn immediate_halt_config_halts_at_the_first_threshold_with_no_note() {
 }
 
 #[tokio::test]
-async fn a_changed_result_never_warns_or_blocks() {
+async fn a_changed_result_is_never_blocked() {
     let handle = SteeringHandle::allow_all();
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
-    for i in 0..10 {
-        let output = format!("result-{i}");
-        assert_eq!(same_turn(&mw, &output).await, output);
+    for i in 0..4 {
+        let text = same_turn(&mw, &format!("result-{i}")).await;
+        assert!(!text.contains("not executed"), "{text}");
     }
     assert_eq!(pauses(&handle), 0);
 }
@@ -149,12 +156,11 @@ async fn a_changed_result_never_warns_or_blocks() {
 #[tokio::test]
 async fn thresholds_come_from_the_config() {
     let handle = SteeringHandle::allow_all();
-    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_config(
-        RepeatProgressConfig {
+    let mw =
+        mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_config(RepeatProgressConfig {
             call_threshold: 2,
             ..RepeatProgressConfig::default()
-        },
-    );
+        });
     same_turn(&mw, "ok").await;
     assert!(same_turn(&mw, "ok").await.contains("[repeat notice]"));
 }
@@ -196,7 +202,9 @@ async fn argument_churn_gets_a_warning() {
         }
     }
     assert!(
-        texts.iter().any(|text| text.contains("different sets of arguments")),
+        texts
+            .iter()
+            .any(|text| text.contains("different sets of arguments")),
         "{texts:?}"
     );
     assert_eq!(pauses(&handle), 0, "churn only warns");
@@ -262,12 +270,11 @@ async fn a_different_call_after_compaction_is_left_alone() {
 async fn compaction_does_not_forgive_an_earlier_block() {
     let handle = SteeringHandle::allow_all();
     // The guard would escalate sooner; isolate the run-wide block count.
-    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_config(
-        RepeatProgressConfig {
+    let mw =
+        mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_config(RepeatProgressConfig {
             post_compaction_window: 0,
             ..RepeatProgressConfig::default()
-        },
-    );
+        });
     for _ in 0..4 {
         same_turn(&mw, "ok").await;
     }
@@ -277,5 +284,9 @@ async fn compaction_does_not_forgive_an_earlier_block() {
         same_turn(&mw, "ok").await;
     }
     same_turn(&mw, "ok").await;
-    assert_eq!(pauses(&handle), 1, "the second block halts even after compaction");
+    assert_eq!(
+        pauses(&handle),
+        1,
+        "the second block halts even after compaction"
+    );
 }
