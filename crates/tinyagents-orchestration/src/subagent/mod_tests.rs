@@ -1430,3 +1430,132 @@ fn absent_host_capabilities_fail_closed() {
     };
     assert_eq!(error, SubagentError::MissingCapability("planner"));
 }
+
+fn admission_policy(parent: Option<usize>, total: Option<usize>, targets: Option<&[&str]>) -> SpawnAdmission {
+    SpawnAdmission::new(SpawnPolicy {
+        max_children_per_parent: parent,
+        max_total_per_root: total,
+        allowed_targets: targets.map(|t| t.iter().map(|s| (*s).to_owned()).collect()),
+    })
+}
+
+fn sibling_request(task_id: &str) -> SubagentRequest<String> {
+    // Every call builds a context with the same run id, so all tasks share one
+    // parent and root.
+    request_with_parent(
+        task_id,
+        RunContext::new(RunConfig::new("shared-parent"), String::new()),
+    )
+}
+
+#[tokio::test]
+async fn driver_rejects_a_spawn_over_the_parent_cap_and_frees_the_slot_on_finish() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::WaitForCancellation);
+    let driver = Arc::new(
+        driver(planner.clone(), executor.clone(), persistence)
+            .with_spawn_admission(admission_policy(Some(1), None, None)),
+    );
+    let first_cancel = CancellationToken::new();
+    let (started_tx, started) = tokio::sync::oneshot::channel();
+    *executor.started.lock().unwrap() = Some(started_tx);
+    let first = tokio::spawn({
+        let driver = driver.clone();
+        let cancel = first_cancel.clone();
+        async move { driver.run(sibling_request("first"), cancel).await }
+    });
+    started.await.unwrap();
+
+    let rejected = driver
+        .run(sibling_request("second"), CancellationToken::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        rejected,
+        SubagentError::SpawnRejected(SpawnRejection::MaxChildrenPerParent { active: 1, max: 1 })
+    );
+    assert!(rejected.to_string().contains("1/1"), "{rejected}");
+    assert_eq!(
+        *planner.calls.lock().unwrap(),
+        1,
+        "a rejected spawn never reaches the planner"
+    );
+
+    first_cancel.cancel();
+    first.await.unwrap().unwrap();
+    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
+}
+
+#[tokio::test]
+async fn driver_enforces_the_target_allowlist_and_fails_closed_without_a_target() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
+    let driver = driver(planner, executor, persistence)
+        .with_spawn_admission(admission_policy(None, None, Some(&["researcher"])));
+
+    let missing = driver
+        .run(sibling_request("no-target"), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing,
+        SubagentError::SpawnRejected(SpawnRejection::TargetNotAllowed { .. })
+    ));
+    let wrong = driver
+        .run(
+            sibling_request("wrong").with_target("coder"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        wrong,
+        SubagentError::SpawnRejected(SpawnRejection::TargetNotAllowed {
+            target: "coder".into()
+        })
+    );
+    driver
+        .run(
+            sibling_request("right").with_target("researcher"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn driver_total_budget_is_refunded_when_the_spawn_fails() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Error);
+    let driver = driver(planner, executor, persistence)
+        .with_spawn_admission(admission_policy(Some(1), Some(1), None));
+
+    // The executor fails, so no child ever completed: the budget stays whole
+    // and the next attempt is admitted (and fails the same way), not rejected.
+    for task in ["a", "b"] {
+        let error = driver
+            .run(sibling_request(task), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error, SubagentError::Execution("executor failed".into()));
+    }
+    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
+}
+
+#[tokio::test]
+async fn driver_total_budget_is_spent_by_completed_children() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
+    let driver = driver(planner, executor, persistence)
+        .with_spawn_admission(admission_policy(None, Some(1), None));
+
+    driver
+        .run(sibling_request("one"), CancellationToken::new())
+        .await
+        .unwrap();
+    let over = driver
+        .run(sibling_request("two"), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        over,
+        SubagentError::SpawnRejected(SpawnRejection::MaxTotalPerRoot { spawned: 1, max: 1 })
+    );
+}
