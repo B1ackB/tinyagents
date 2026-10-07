@@ -645,70 +645,24 @@ pub fn list_agent_runs(
 ) -> Result<AgentRunListResponse> {
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-        if let Some(kind) = request.kind.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(kind.to_string()));
-            where_clauses.push(format!("kind = ?{}", values.len()));
-        }
-        if let Some(parent) = request
-            .parent_run_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(parent.to_string()));
-            where_clauses.push(format!("parent_run_id = ?{}", values.len()));
-        }
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM agent_runs {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         let offset = request.offset.unwrap_or(0) as i64;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, kind, parent_run_id, parent_thread_id, agent_id, status,
-                    prompt_ref, worker_thread_id,
-                    checkpoint_path, checkpoint_json, summary, error, metadata_json,
-                    started_at, updated_at, completed_at
-             FROM agent_runs {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), |row| map_agent_run_row(conn, row))?;
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
+        let (runs, count) = ListQuery::default()
+            .filter("status", request.status.as_deref())
+            .filter("kind", request.kind.as_deref())
+            .filter("parent_run_id", request.parent_run_id.as_deref())
+            .filter("parent_thread_id", request.parent_thread_id.as_deref())
+            .run(
+                conn,
+                "agent_runs",
+                "id, kind, parent_run_id, parent_thread_id, agent_id, status,
+                 prompt_ref, worker_thread_id,
+                 checkpoint_path, checkpoint_json, summary, error, metadata_json,
+                 started_at, updated_at, completed_at",
+                limit,
+                offset,
+                |row| map_agent_run_row(conn, row),
+            )?;
         Ok(AgentRunListResponse { runs, count })
     })
 }
@@ -742,6 +696,69 @@ pub fn list_recent_run_events(
             events,
         })
     })
+}
+
+/// One page of a `SELECT` over a run-ledger table, newest first, with
+/// optional `column = value` filters — the shared body of the paged `list_*`
+/// functions here.
+#[derive(Default)]
+struct ListQuery {
+    clauses: Vec<String>,
+    values: Vec<Box<dyn rusqlite::types::ToSql>>,
+}
+
+impl ListQuery {
+    /// Filters on `column = value` when `value` is present and not blank.
+    fn filter(mut self, column: &str, value: Option<&str>) -> Self {
+        if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+            self.values.push(Box::new(value.to_owned()));
+            self.clauses
+                .push(format!("{column} = ?{}", self.values.len()));
+        }
+        self
+    }
+
+    /// Counts every matching row, then fetches `columns` for one page of them
+    /// ordered by `updated_at DESC`. Returns the page and the total count.
+    fn run<T>(
+        mut self,
+        conn: &Connection,
+        table: &str,
+        columns: &str,
+        limit: i64,
+        offset: i64,
+        map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> Result<(Vec<T>, usize)> {
+        let where_sql = if self.clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", self.clauses.join(" AND "))
+        };
+        let count = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} {where_sql}"),
+            self.params().as_slice(),
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+
+        self.values.push(Box::new(limit));
+        let limit_idx = self.values.len();
+        self.values.push(Box::new(offset));
+        let offset_idx = self.values.len();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {columns}
+             FROM {table} {where_sql}
+             ORDER BY updated_at DESC
+             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+        ))?;
+        let rows = stmt
+            .query_map(self.params().as_slice(), map)?
+            .collect::<rusqlite::Result<Vec<T>>>()?;
+        Ok((rows, count))
+    }
+
+    fn params(&self) -> Vec<&dyn rusqlite::types::ToSql> {
+        self.values.iter().map(|value| value.as_ref()).collect()
+    }
 }
 
 /// Fetches one row by id inside its own connection, logging the lookup's
@@ -789,7 +806,12 @@ fn get_workflow_run_inner(conn: &Connection, id: &str) -> Result<Option<Workflow
 
 /// Fetches a single [`WorkflowRun`] by id, or `None` if no row matches.
 pub fn get_workflow_run(workspace_dir: &Path, id: &str) -> Result<Option<WorkflowRun>> {
-    get_logged(workspace_dir, "get_workflow_run", id, get_workflow_run_inner)
+    get_logged(
+        workspace_dir,
+        "get_workflow_run",
+        id,
+        get_workflow_run_inner,
+    )
 }
 
 /// List durable workflow runs, most-recently-updated first, with optional
@@ -809,68 +831,25 @@ pub fn list_workflow_runs(
     );
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(definition) = request
-            .definition_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(definition.to_string()));
-            where_clauses.push(format!("definition_id = ?{}", values.len()));
-        }
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM workflow_runs {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         // `offset` is `u64`; convert checked so a value > i64::MAX surfaces a
         // clear error instead of wrapping negative and corrupting pagination.
         let offset = i64::try_from(request.offset.unwrap_or(0))
             .storage_context("workflow run list offset exceeds i64::MAX")?;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, definition_id, parent_thread_id, input_json, phase_states_json,
-                    child_run_ids_json, status, summary, started_at, updated_at, completed_at,
-                    revision, lease_owner, lease_expires_at
-             FROM workflow_runs {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), map_workflow_run_row)?;
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
+        let (runs, count) = ListQuery::default()
+            .filter("definition_id", request.definition_id.as_deref())
+            .filter("status", request.status.as_deref())
+            .filter("parent_thread_id", request.parent_thread_id.as_deref())
+            .run(
+                conn,
+                "workflow_runs",
+                "id, definition_id, parent_thread_id, input_json, phase_states_json,
+                 child_run_ids_json, status, summary, started_at, updated_at, completed_at,
+                 revision, lease_owner, lease_expires_at",
+                limit,
+                offset,
+                map_workflow_run_row,
+            )?;
         tracing::debug!(
             "{LOG_PREFIX} list_workflow_runs.exit count={count} returned={}",
             runs.len()
@@ -948,59 +927,23 @@ pub fn list_agent_teams(
     );
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM agent_teams {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         // `offset` is `u64`; convert checked so a value > i64::MAX surfaces a
         // clear error instead of wrapping negative and corrupting pagination.
         let offset = i64::try_from(request.offset.unwrap_or(0))
             .storage_context("agent team list offset exceeds i64::MAX")?;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, parent_thread_id, lead_agent_id, status, summary,
-                    created_at, updated_at, closed_at
-             FROM agent_teams {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), map_agent_team_row)?;
-        let mut teams = Vec::new();
-        for row in rows {
-            teams.push(row?);
-        }
+        let (teams, count) = ListQuery::default()
+            .filter("parent_thread_id", request.parent_thread_id.as_deref())
+            .filter("status", request.status.as_deref())
+            .run(
+                conn,
+                "agent_teams",
+                "id, parent_thread_id, lead_agent_id, status, summary,
+                 created_at, updated_at, closed_at",
+                limit,
+                offset,
+                map_agent_team_row,
+            )?;
         tracing::debug!(
             "{LOG_PREFIX} list_agent_teams.exit count={count} returned={}",
             teams.len()
@@ -1068,7 +1011,12 @@ pub fn upsert_agent_team_member(
 
 /// Fetch a single member by id.
 pub fn get_agent_team_member(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamMember>> {
-    get_logged(workspace_dir, "get_agent_team_member", id, get_agent_team_member_inner)
+    get_logged(
+        workspace_dir,
+        "get_agent_team_member",
+        id,
+        get_agent_team_member_inner,
+    )
 }
 
 /// List all members of a team, by creation order.
@@ -1184,7 +1132,12 @@ pub fn upsert_agent_team_task(
 
 /// Fetch a single task by id.
 pub fn get_agent_team_task(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamTask>> {
-    get_logged(workspace_dir, "get_agent_team_task", id, get_agent_team_task_inner)
+    get_logged(
+        workspace_dir,
+        "get_agent_team_task",
+        id,
+        get_agent_team_task_inner,
+    )
 }
 
 /// List all tasks of a team, by `order_index` then creation order.
