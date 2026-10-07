@@ -250,3 +250,63 @@ async fn retry_binding_is_fresh_and_reaches_the_failed_subagent() {
     assert_eq!(request.parent_run_id, retried.run_id);
     assert_eq!(request.root_run_id, retried.root_run_id);
 }
+
+fn usage_output(input: u64, output: u64) -> SubAgentOutput {
+    let mut out = SubAgentOutput::default();
+    out.usage.usage.input_tokens = input;
+    out.usage.usage.output_tokens = output;
+    out
+}
+
+#[test]
+fn token_budget_is_enforced_after_the_child_returns() {
+    let budget = SubAgentBudget::unlimited()
+        .with_max_input_tokens(100)
+        .with_max_output_tokens(50);
+    assert!(budget.check(&usage_output(100, 50), "a").is_ok());
+    let err = budget.check(&usage_output(101, 0), "a").unwrap_err();
+    assert!(matches!(err, TinyAgentsError::LimitExceeded(m) if m.contains("input-token")));
+    let err = budget.check(&usage_output(0, 51), "a").unwrap_err();
+    assert!(matches!(err, TinyAgentsError::LimitExceeded(m) if m.contains("output-token")));
+}
+
+#[test]
+fn budget_maps_onto_the_harness_budget_limits_including_cost() {
+    let limits = SubAgentBudget::unlimited()
+        .with_max_input_tokens(7)
+        .with_max_output_tokens(8)
+        .with_max_cost(1.5)
+        .to_budget_limits();
+    assert_eq!(limits.max_input_tokens, Some(7));
+    assert_eq!(limits.max_output_tokens, Some(8));
+    assert_eq!(limits.max_cost, Some(1.5));
+}
+
+#[test]
+fn call_caps_only_ever_tighten_a_run_config() {
+    let budget = SubAgentBudget {
+        max_model_calls: Some(3),
+        max_tool_calls: Some(9),
+        ..SubAgentBudget::unlimited()
+    };
+    let mut loose = tinyagents_harness::context::RunConfig::new("r");
+    budget.apply_call_caps(&mut loose);
+    assert_eq!(loose.max_model_calls, Some(3));
+    assert_eq!(loose.max_tool_calls, Some(9));
+    let mut tight = tinyagents_harness::context::RunConfig::new("r")
+        .with_max_model_calls(2)
+        .with_max_tool_calls(20);
+    budget.apply_call_caps(&mut tight);
+    assert_eq!(tight.max_model_calls, Some(2), "a tighter cap is kept");
+    assert_eq!(tight.max_tool_calls, Some(9));
+}
+
+#[test]
+fn policy_defaults_to_no_retry_after_tool_calls() {
+    assert!(!SubAgentPolicy::default().retry_after_tool_calls);
+    assert!(
+        SubAgentPolicy::default()
+            .with_retry_after_tool_calls(true)
+            .retry_after_tool_calls
+    );
+}
