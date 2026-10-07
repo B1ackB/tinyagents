@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use super::jobs_tests::PanickingModel;
 use super::test::BlockedModel;
 use crate::subagent::{SpawnAdmission, SpawnPolicy};
 use tinyagents_harness::context::{RunConfig, RunContext};
@@ -172,13 +173,13 @@ async fn failed_spawn_refunds_the_reservation() {
     let result = call(&tool, &too_deep, json!({"input": "x"})).await;
     assert_limit_signal(&result);
     assert_eq!(tool.spawn_admission().active_children("parent"), 0);
-    assert_eq!(tool.spawn_admission().spawned_in_root("parent"), 0);
+    assert_eq!(tool.spawn_admission().spawned_in_scope("parent"), 0);
 
     let ok = call(&tool, &parent(), json!({"input": "x", "mode": "inline"})).await;
     assert!(!ok.is_error, "{}", ok.output());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_background_spawns_cannot_exceed_the_cap() {
     let (tool, _started, release) = blocked_tool(policy(Some(3), None, None));
     let parent = Arc::new(parent());
@@ -221,4 +222,68 @@ async fn shared_admission_counts_across_tools() {
     assert_limit_signal(&call(&tool_b, &parent, json!({"input": "b"})).await);
     release_a.add_permits(1);
     release_b.add_permits(1);
+}
+
+fn parent_on_thread(run_id: &str, thread: &str) -> RunContext<()> {
+    RunContext::new(RunConfig::new(run_id).with_thread(thread), ())
+}
+
+#[tokio::test]
+async fn a_later_turn_shares_the_cap_with_a_background_child_still_alive() {
+    let (tool, started, release) = blocked_tool(policy(Some(1), None, None));
+
+    // Turn 1 spawns a background child and ends; turn 2 has a fresh run id on
+    // the same conversation thread.
+    let turn_one = parent_on_thread("run-turn-1", "thread-A");
+    assert!(!call(&tool, &turn_one, json!({"input": "a"})).await.is_error);
+    let _started = started.acquire().await.unwrap();
+    drop(turn_one);
+
+    let turn_two = parent_on_thread("run-turn-2", "thread-A");
+    let blocked = call(&tool, &turn_two, json!({"input": "b"})).await;
+    assert_limit_signal(&blocked);
+    assert_eq!(tool.spawn_admission().active_children("thread-A"), 1);
+
+    // A different conversation is unaffected.
+    let other = parent_on_thread("run-turn-3", "thread-B");
+    assert!(!call(&tool, &other, json!({"input": "c"})).await.is_error);
+
+    release.add_permits(2);
+}
+
+#[tokio::test]
+async fn dropping_an_inline_call_releases_its_slot() {
+    let (tool, started, _release) = blocked_tool(policy(Some(1), Some(1), None));
+    let parent = parent();
+
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(50),
+        call(&tool, &parent, json!({"input": "a", "mode": "inline"})),
+    )
+    .await;
+    assert!(abandoned.is_err(), "the blocked inline call timed out");
+    let _started = started.acquire().await.unwrap();
+
+    // The dropped future released the live slot, and refunded nothing it
+    // already spent: the child had started, so the budget stays consumed.
+    assert_eq!(tool.spawn_admission().active_children("parent"), 0);
+    assert_eq!(tool.spawn_admission().spawned_in_scope("parent"), 1);
+}
+
+#[tokio::test]
+async fn a_panicking_background_child_releases_its_slot() {
+    let mut harness = AgentHarness::new();
+    harness.register_model("worker", Arc::new(PanickingModel));
+    let tool = SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    )
+    .with_spawn_admission(SpawnAdmission::new(policy(Some(1), None, None)));
+    let parent = parent();
+
+    assert!(!call(&tool, &parent, json!({"input": "a"})).await.is_error);
+    slots_settle_to(&tool, "parent", 0).await;
+
+    let again = call(&tool, &parent, json!({"input": "b"})).await;
+    assert!(!again.is_error, "{}", again.output());
 }

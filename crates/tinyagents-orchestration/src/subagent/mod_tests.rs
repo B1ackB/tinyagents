@@ -1487,7 +1487,7 @@ async fn driver_rejects_a_spawn_over_the_parent_cap_and_frees_the_slot_on_finish
 
     first_cancel.cancel();
     first.await.unwrap().unwrap();
-    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
 }
 
 #[tokio::test]
@@ -1551,8 +1551,8 @@ async fn driver_refunds_the_reservation_when_planning_fails_before_launch() {
             .unwrap_err();
         assert!(matches!(error, SubagentError::Planning(_)), "{error}");
     }
-    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
-    assert_eq!(driver.spawn_admission().spawned_in_root("shared-parent"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 0);
     assert_eq!(*executor.calls.lock().unwrap(), 0);
 }
 
@@ -1571,7 +1571,7 @@ async fn driver_releases_the_live_slot_when_execution_fails() {
             .unwrap_err();
         assert_eq!(error, SubagentError::Execution("executor failed".into()));
     }
-    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
 }
 
 #[tokio::test]
@@ -1595,4 +1595,86 @@ async fn driver_total_budget_is_spent_by_completed_children() {
         over,
         SubagentError::SpawnRejected(SpawnRejection::MaxTotalPerRoot { spawned: 1, max: 1 })
     );
+}
+
+#[tokio::test]
+async fn driver_continuation_takes_a_live_slot_but_no_total_budget() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
+    let driver = driver(planner, executor, persistence)
+        .with_spawn_admission(admission_policy(Some(1), Some(1), None));
+
+    driver
+        .run(sibling_request("original"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 1);
+
+    // The budget is spent, so a fresh spawn is refused...
+    let fresh = driver
+        .run(sibling_request("fresh"), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        fresh,
+        SubagentError::SpawnRejected(SpawnRejection::MaxTotalPerRoot { .. })
+    ));
+
+    // ...but continuing an existing child (it carries a resume) is admitted
+    // under the same scope without spending more budget.
+    let context = RunContext::new(RunConfig::new("another-turn"), String::new());
+    let key = SubagentTaskKey::from_context(&context, "paused", Some("thread-1".into()));
+    let resumed = SubagentRequest::continue_with_key(
+        key,
+        context,
+        (),
+        "continue",
+        Some(SubagentResume::default()),
+    )
+    .unwrap();
+    driver.run(resumed, CancellationToken::new()).await.unwrap();
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 1);
+    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
+}
+
+#[tokio::test]
+async fn driver_scope_is_the_thread_so_turn_run_ids_share_the_cap() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::WaitForCancellation);
+    let driver = Arc::new(
+        driver(planner, executor.clone(), persistence)
+            .with_spawn_admission(admission_policy(Some(1), None, None)),
+    );
+    let (started_tx, started) = tokio::sync::oneshot::channel();
+    *executor.started.lock().unwrap() = Some(started_tx);
+    let cancel = CancellationToken::new();
+    let first = tokio::spawn({
+        let driver = driver.clone();
+        let cancel = cancel.clone();
+        async move {
+            driver
+                .run(
+                    request_with_parent(
+                        "t1",
+                        RunContext::new(RunConfig::new("turn-1"), String::new()),
+                    ),
+                    cancel,
+                )
+                .await
+        }
+    });
+    started.await.unwrap();
+
+    let second_turn = request_with_parent(
+        "t2",
+        RunContext::new(RunConfig::new("turn-2"), String::new()),
+    );
+    let rejected = driver
+        .run(second_turn, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        rejected,
+        SubagentError::SpawnRejected(SpawnRejection::MaxChildrenPerParent { .. })
+    ));
+    cancel.cancel();
+    first.await.unwrap().unwrap();
 }
