@@ -159,6 +159,10 @@ fn roomy_policy() -> SummarizationPolicy {
     SummarizationPolicy::default().with_context_window(10_000)
 }
 
+fn short_mw(policy: SummarizationPolicy) -> ContextCompressionMiddleware {
+    ContextCompressionMiddleware::with_summarizer(policy, Box::new(ShortSummarizer::default()))
+}
+
 fn stack_of(mw: ContextCompressionMiddleware) -> MiddlewareStack<()> {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_model_middleware(Arc::new(mw));
@@ -220,14 +224,14 @@ async fn a_persistent_overflow_gets_three_compaction_attempts_by_default() {
 async fn the_attempt_budget_is_configurable() {
     let base = ScriptedBase::new(|_, _| Err(overflow_error()));
     let stack = stack_of(
-        ContextCompressionMiddleware::new(roomy_policy()).with_max_overflow_attempts(1),
+        short_mw(roomy_policy()).with_max_overflow_attempts(1),
     );
     assert!(run(&stack, &base, long_transcript()).await.is_err());
     assert_eq!(base.calls(), 2);
 
     let base = ScriptedBase::new(|_, _| Err(overflow_error()));
     let stack = stack_of(
-        ContextCompressionMiddleware::new(roomy_policy()).with_max_overflow_attempts(0),
+        short_mw(roomy_policy()).with_max_overflow_attempts(0),
     );
     assert!(run(&stack, &base, long_transcript()).await.is_err());
     assert_eq!(base.calls(), 1, "zero attempts disables recovery");
@@ -242,7 +246,7 @@ async fn recovery_stops_at_the_first_attempt_that_succeeds() {
             Ok(response(None, Some("stop")))
         }
     });
-    let stack = stack_of(ContextCompressionMiddleware::new(roomy_policy()));
+    let stack = stack_of(short_mw(roomy_policy()));
     assert!(run(&stack, &base, long_transcript()).await.is_ok());
     assert_eq!(base.calls(), 3);
 }
@@ -277,7 +281,7 @@ fn small_window() -> SummarizationPolicy {
 #[tokio::test]
 async fn usage_above_the_window_on_a_successful_response_is_recovered() {
     let base = silent_overflow_then_ok();
-    let stack = stack_of(ContextCompressionMiddleware::new(small_window()));
+    let stack = stack_of(short_mw(small_window()));
     let response = run(&stack, &base, long_transcript()).await.unwrap();
     assert_eq!(response.usage.unwrap().input_tokens, 50);
     assert_eq!(base.calls(), 2);
@@ -287,7 +291,7 @@ async fn usage_above_the_window_on_a_successful_response_is_recovered() {
 async fn response_overflow_detection_can_be_switched_off() {
     let base = silent_overflow_then_ok();
     let stack = stack_of(
-        ContextCompressionMiddleware::new(small_window())
+        short_mw(small_window())
             .with_response_overflow_detection(ResponseOverflowDetection::Off),
     );
     let response = run(&stack, &base, long_transcript()).await.unwrap();
@@ -311,7 +315,7 @@ async fn a_length_stop_far_below_the_cap_is_recovered_only_when_opted_in() {
     };
 
     let base = ScriptedBase::new(respond);
-    let stack = stack_of(ContextCompressionMiddleware::new(small_window()));
+    let stack = stack_of(short_mw(small_window()));
     let mut c = ctx();
     stack
         .run_wrapped_model(&mut c, &(), capped(long_transcript()), &base)
@@ -321,7 +325,7 @@ async fn a_length_stop_far_below_the_cap_is_recovered_only_when_opted_in() {
 
     let base = ScriptedBase::new(respond);
     let stack = stack_of(
-        ContextCompressionMiddleware::new(small_window())
+        short_mw(small_window())
             .with_response_overflow_detection(ResponseOverflowDetection::UsageAndShortLength),
     );
     let mut c = ctx();
@@ -338,7 +342,7 @@ async fn a_length_stop_far_below_the_cap_is_recovered_only_when_opted_in() {
 async fn an_unrecoverable_response_overflow_is_returned_not_turned_into_an_error() {
     // One message: nothing can be compacted, so the response stands.
     let base = silent_overflow_then_ok();
-    let stack = stack_of(ContextCompressionMiddleware::new(small_window()));
+    let stack = stack_of(short_mw(small_window()));
     let response = run(&stack, &base, vec![user("hello")]).await.unwrap();
     assert_eq!(response.usage.unwrap().input_tokens, 9_000);
     assert_eq!(base.calls(), 1);
@@ -532,7 +536,7 @@ async fn once_truncation_engages_it_stays_applied_for_the_run() {
 
 #[tokio::test]
 async fn a_prompt_under_the_trigger_is_never_truncated() {
-    let mw = ContextCompressionMiddleware::new(roomy_policy()).with_tool_result_truncation(400);
+    let mw = short_mw(roomy_policy()).with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
     messages.extend(call_and_result("c1", 8_000));
     let original = messages.clone();
