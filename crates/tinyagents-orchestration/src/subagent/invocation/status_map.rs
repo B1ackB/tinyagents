@@ -60,7 +60,7 @@ impl SubAgentJob {
 /// `Abandoned` have no job equivalent and fail with [`NoEquivalentStatus`].
 ///
 /// `TimedOut` -> `Incomplete` drops the cause: the job status carries no
-/// [`IncompleteKind`](super::IncompleteKind), so callers must set
+/// `IncompleteKind`, so callers must set
 /// `IncompleteKind::Timeout` themselves when they convert a timed-out task.
 impl TryFrom<OrchestrationTaskStatus> for SubAgentJobStatus {
     type Error = NoEquivalentStatus;
