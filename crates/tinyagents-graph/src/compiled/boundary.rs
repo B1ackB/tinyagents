@@ -604,11 +604,7 @@ where
         .with_versions_seen(versions_seen)
         .with_metadata(metadata);
         let writes = checkpoint.pending_writes.clone();
-        let config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let config = checkpoint.config();
         let id = checkpointer.put(checkpoint).await?;
         if !writes.is_empty() {
             checkpointer.put_writes(&config, &writes).await?;
@@ -748,11 +744,7 @@ where
             boundary.pending,
         ));
         let writes = checkpoint.pending_writes.clone();
-        let config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let config = checkpoint.config();
         let id = checkpointer.put(checkpoint).await?;
         // Also record the ledger through the write protocol, so backends
         // that implement it can answer "did this task run?" without loading
@@ -784,11 +776,7 @@ where
         let checkpoint =
             self.build_loop_checkpoint(ctx, thread, boundary, step, interrupts, interrupted);
         let writes = checkpoint.pending_writes.clone();
-        let config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let config = checkpoint.config();
         let id = checkpointer.put(checkpoint).await?;
         checkpointer.put_writes(&config, &writes).await?;
         self.emit(
@@ -838,11 +826,7 @@ where
         // the ledger tooling sees no completion markers for any checkpoint
         // written under `DurabilityMode::Async`.
         let writes = checkpoint.pending_writes.clone();
-        let write_config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let write_config = checkpoint.config();
 
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {

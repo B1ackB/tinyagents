@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use tinyinference_image::{MediaReference, MockImageGenerator};
-use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::providers::MockModel;
 use tinyinference_llm::tool::ToolCall;
@@ -374,43 +374,12 @@ async fn video_tool_waits_for_delivery_and_saves_the_clip() {
 }
 
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: Some(format!("msg-{id}")),
-            content: Vec::new(),
-            tool_calls: vec![ToolCall::new(id, name, arguments)],
-            usage: Some(Usage::new(1, 1)),
-            origin: None,
-        },
-        usage: Some(Usage::new(1, 1)),
-        finish_reason: Some("tool_calls".to_owned()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    crate::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(1, 1))
 }
 
 fn text_response(text: &str) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: None,
-            content: vec![ContentBlock::Text(text.to_owned())],
-            tool_calls: Vec::new(),
-            usage: Some(Usage::new(1, 1)),
-            origin: None,
-        },
-        usage: Some(Usage::new(1, 1)),
-        finish_reason: Some("stop".to_owned()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    crate::testkit::text_response(text).with_usage(Usage::new(1, 1))
 }
 
 #[tokio::test]

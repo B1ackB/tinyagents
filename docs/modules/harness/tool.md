@@ -314,7 +314,7 @@ are handled separately:
   all) is surfaced by the provider as a `ToolCall` with `invalid: Some(reason)`
   and the raw string preserved in `arguments`. Small local models (Ollama, LM
   Studio, llama.cpp, vLLM) emit this occasionally. Before giving up, admission
-  first tries `relaxed_json::recover_relaxed_object` on the raw string —
+  first tries `tinytools_agent::repair::json::recover_object` on the raw string —
   conservative, meaning-preserving repairs for the shapes those gateways
   actually produce (unquoted object keys, redundant wrapping braces, leaked
   chat-template quote tokens; see that module's doc comment). On success the
