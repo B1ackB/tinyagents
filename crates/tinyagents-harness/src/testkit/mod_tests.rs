@@ -590,7 +590,10 @@ async fn schema_driven_model_with_no_tools_returns_final_response_immediately() 
 
 #[test]
 fn canned_responses_carry_their_finish_reason_and_content() {
-    use tinyinference_llm::model::Usage;
+    use super::{text_response, tool_call_response};
+    use serde_json::json;
+    use tinyinference_llm::Usage;
+    use tinyinference_llm::tool::ToolCall;
 
     let text = text_response("done").with_usage(Usage::new(3, 2));
     assert_eq!(text.text(), "done");
