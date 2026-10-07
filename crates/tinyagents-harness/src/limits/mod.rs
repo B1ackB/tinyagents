@@ -85,15 +85,16 @@ impl RunLimits {
         self
     }
 
-    /// Sets the maximum silence between streaming-model output events, after
-    /// the first one. `None` disables the inactivity timeout. See
-    /// [`RunLimits::stream_idle_timeout_ms`].
+    /// Sets the maximum nested tool-call depth. See
+    /// [`RunLimits::max_nested_depth`].
     pub fn with_max_nested_depth(mut self, n: usize) -> Self {
         self.max_nested_depth = n;
         self
     }
 
-    /// Sets [`RunLimits::stream_idle_timeout_ms`].
+    /// Sets the maximum silence between streaming-model output events, after
+    /// the first one. `None` disables the inactivity timeout. See
+    /// [`RunLimits::stream_idle_timeout_ms`].
     pub fn with_stream_idle_timeout_ms(mut self, ms: Option<u64>) -> Self {
         self.stream_idle_timeout_ms = ms;
         self
@@ -126,6 +127,11 @@ pub struct LimitTracker {
     limits: RunLimits,
     model_calls: usize,
     tool_calls: usize,
+    /// Tool calls tools made through `ToolExecutionContext::call_tool`.
+    /// Shared (atomic) because nested calls run from inside a tool future that
+    /// holds only `&RunContext`; they count against `max_tool_calls` together
+    /// with `tool_calls`.
+    nested_tool_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Streaming model calls that ended in an idle timeout since the last
     /// output event arrived (the agent loop also clears it when it switches to
     /// a fallback model, making it a per-model count). See [`LimitTracker::record_stream_idle_timeout`].
@@ -147,6 +153,7 @@ impl LimitTracker {
             limits,
             model_calls: 0,
             tool_calls: 0,
+            nested_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             consecutive_stream_idle_timeouts: 0,
             stream_idle_timeouts_by_model: HashMap::new(),
             skipped_models: HashSet::new(),
@@ -264,10 +271,48 @@ impl LimitTracker {
     /// [`LimitOutcome`]. See [`LimitTracker::try_record_model_call`].
     pub fn try_record_tool_call(&mut self) -> Result<LimitOutcome> {
         self.tool_calls += 1;
-        if self.tool_calls > self.limits.max_tool_calls {
+        if self.tool_calls + self.nested_tool_calls() > self.limits.max_tool_calls {
             return self.exhausted(LimitKind::ToolCalls, self.limits.max_tool_calls);
         }
         Ok(LimitOutcome::Proceed)
+    }
+
+    /// Reserves one slot of the tool-call cap for a nested call (a tool
+    /// calling another tool), counted together with the model-issued calls.
+    ///
+    /// Takes `&self` because nested calls run while a tool future holds a
+    /// shared `&RunContext`. Always fails closed with `LimitExceeded` when the
+    /// cap is spent, whatever [`RunLimits::behavior`] says: there is no loop
+    /// boundary at which a nested call could be answered with a partial result.
+    /// Pair a successful reservation with
+    /// [`LimitTracker::release_nested_tool_call`] when the call never runs.
+    pub fn try_reserve_nested_tool_call(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let nested = self.nested_tool_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.tool_calls + nested > self.limits.max_tool_calls {
+            self.nested_tool_calls.fetch_sub(1, Ordering::SeqCst);
+            return Err(TinyAgentsError::LimitExceeded(format!(
+                "max tool calls ({}) exceeded by a nested tool call",
+                self.limits.max_tool_calls
+            )));
+        }
+        Ok(())
+    }
+
+    /// Releases a slot taken by [`LimitTracker::try_reserve_nested_tool_call`]
+    /// for a call that never ran. Saturates at zero.
+    pub fn release_nested_tool_call(&self) {
+        let _ = self.nested_tool_calls.fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| n.checked_sub(1),
+        );
+    }
+
+    /// Returns the number of nested tool calls counted against the cap so far.
+    pub fn nested_tool_calls(&self) -> usize {
+        self.nested_tool_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Shared exhaustion branch: error or clean stop, per [`RunLimits::behavior`].

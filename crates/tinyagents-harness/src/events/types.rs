@@ -235,6 +235,11 @@ pub enum AgentEvent {
         /// instead of waiting for [`AgentEvent::ToolCompleted`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<serde_json::Value>,
+        /// The model-issued call whose tool made this one through
+        /// `ToolExecutionContext::call_tool`; `None` for a call the model
+        /// issued. A nested call's `call_id` is `<parent call id>/<n>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<CallId>,
     },
 
     /// A tool invocation returned.
@@ -287,6 +292,11 @@ pub enum AgentEvent {
         /// tool's deliberate host-facing channel, not captured I/O.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// The model-issued call whose tool made this one through
+        /// `ToolExecutionContext::call_tool`; `None` for a call the model
+        /// issued. A nested call's `call_id` is `<parent call id>/<n>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<CallId>,
     },
 
     /// A tool invocation failed and the run is propagating the error rather
@@ -319,6 +329,11 @@ pub enum AgentEvent {
         duration_ms: Option<u64>,
         /// Human-readable failure description.
         error: String,
+        /// The model-issued call whose tool made this one through
+        /// `ToolExecutionContext::call_tool`; `None` for a call the model
+        /// issued. A nested call's `call_id` is `<parent call id>/<n>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<CallId>,
     },
 
     /// A resumed run reconciled an unresolved tool-effect-ledger row left
