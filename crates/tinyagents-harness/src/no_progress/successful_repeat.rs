@@ -216,8 +216,8 @@ impl SuccessfulRepeatTracker {
             *count += 1;
             *count
         };
-        lock(&self.last_outcome).insert(call, key);
-        if count == 1 {
+        let previous = lock(&self.last_outcome).insert(call, key);
+        if previous.is_some_and(|previous| previous != key) {
             // The call returned something new: that is progress, so earlier
             // blocks of it no longer count toward a halt.
             lock(&self.blocks).remove(&call);

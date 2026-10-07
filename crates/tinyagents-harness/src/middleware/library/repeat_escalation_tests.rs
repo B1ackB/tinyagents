@@ -170,8 +170,9 @@ async fn alternating_calls_get_a_ping_pong_warning() {
     let handle = SteeringHandle::allow_all();
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
     let mut texts = Vec::new();
-    // Distinct narration keeps the output streak out of it.
-    for i in 0..3 {
+    // Distinct narration keeps the output streak out of it. The warning waits
+    // one result behind the recurrence warning that lands on the same one.
+    for i in 0..4 {
         texts.push(turn(&mw, "read", json!({"p": "a"}), &format!("a{i}"), "doc").await);
         texts.push(turn(&mw, "search", json!({"q": "b"}), &format!("b{i}"), "hits").await);
     }
@@ -188,7 +189,7 @@ async fn argument_churn_gets_a_warning() {
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
     let mut texts = Vec::new();
     for variant in 0..3 {
-        for n in 0..3 {
+        for n in 0..4 {
             texts.push(
                 turn(
                     &mw,
@@ -239,19 +240,26 @@ async fn compact(mw: &RepeatProgressMiddleware) {
 }
 
 #[tokio::test]
-async fn repeating_the_pre_compaction_tail_blocks_after_one_repeat() {
+async fn one_re_read_after_compaction_is_neither_warned_nor_blocked() {
     let handle = SteeringHandle::allow_all();
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
     assert_eq!(same_turn(&mw, "ok").await, "ok");
     compact(&mw).await;
+    assert_eq!(same_turn(&mw, "ok").await, "ok");
+    assert_eq!(same_turn(&mw, "ok").await, "ok");
+}
 
+#[tokio::test]
+async fn repeating_an_already_repeating_tail_after_compaction_warns_but_never_blocks() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    same_turn(&mw, "ok").await;
+    same_turn(&mw, "ok").await;
+    compact(&mw).await;
     let after = same_turn(&mw, "ok").await;
     assert!(after.contains("compacted"), "{after}");
-    let blocked = same_turn(&mw, "ok").await;
-    assert!(
-        blocked.contains("not executed"),
-        "the repeat after compaction skips the warn-block gap: {blocked}"
-    );
+    assert_eq!(same_turn(&mw, "ok").await, "ok", "no block follows");
+    assert_eq!(pauses(&handle), 0);
 }
 
 #[tokio::test]
@@ -288,5 +296,109 @@ async fn compaction_does_not_forgive_an_earlier_block() {
         pauses(&handle),
         1,
         "the second block halts even after compaction"
+    );
+}
+
+async fn edit_turn(mw: &RepeatProgressMiddleware) -> String {
+    turn(mw, "edit", json!({"file": "a"}), "editing", "edited").await
+}
+
+#[tokio::test]
+async fn a_read_after_an_edit_is_not_blocked_on_the_old_prediction() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)))
+        .with_read_only(Arc::new(|tool| tool == "lookup"));
+    for _ in 0..4 {
+        same_turn(&mw, "ok").await;
+    }
+    assert_eq!(edit_turn(&mw).await, "edited");
+    assert_eq!(
+        same_turn(&mw, "changed by the edit").await,
+        "changed by the edit",
+        "the read runs: the edit may have changed what it returns"
+    );
+}
+
+#[tokio::test]
+async fn reads_between_identical_reads_keep_the_block_prediction() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_read_only(Arc::new(|_| true));
+    for _ in 0..4 {
+        same_turn(&mw, "ok").await;
+        turn(&mw, "grep", json!({"q": 1}), "searching", "hits").await;
+    }
+    assert!(same_turn(&mw, "ok").await.contains("not executed"));
+}
+
+#[tokio::test]
+async fn without_a_read_only_check_only_the_latest_call_is_predicted() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    for _ in 0..4 {
+        same_turn(&mw, "ok").await;
+        turn(&mw, "grep", json!({"q": 1}), "searching", "hits").await;
+    }
+    assert_eq!(
+        same_turn(&mw, "ok").await,
+        "ok",
+        "any other call might have changed state, so the repeat runs"
+    );
+}
+
+#[tokio::test]
+async fn blocked_and_halted_results_carry_the_guard_marker() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    for _ in 0..4 {
+        same_turn(&mw, "ok").await;
+    }
+    for expected in [REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED] {
+        let mut resp = response("lookup", json!({"id": 1}), "again");
+        mw.after_model(&mut ctx(), &(), &mut resp).await.unwrap();
+        let mut call = TaToolCall::new("repeat-1", "lookup", json!({"id": 1}));
+        let Err(TinyAgentsError::ToolFailed(message)) =
+            mw.before_tool(&mut ctx(), &(), &mut call).await
+        else {
+            panic!("expected a refusal");
+        };
+        let mut result = TaToolResult::failed(message);
+        let invocation = ToolInvocationIdentity::new("repeat-1", "lookup");
+        mw.after_tool(&mut ctx(), &(), &invocation, &mut result)
+            .await
+            .unwrap();
+        assert_eq!(repeat_guard_marker(&result), Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn a_tool_error_is_not_marked_as_a_guard_answer() {
+    let result = TaToolResult::error("boom");
+    assert_eq!(repeat_guard_marker(&result), None);
+}
+
+#[tokio::test]
+async fn only_one_warning_lands_on_a_result_and_the_rest_follow() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    let mut texts = Vec::new();
+    // Alternating reads: the recurrence warning and the ping-pong warning both
+    // become due on the sixth call.
+    for i in 0..8 {
+        let (tool, args, out) = if i % 2 == 0 {
+            ("read", json!({"p": "a"}), "doc")
+        } else {
+            ("search", json!({"q": "b"}), "hits")
+        };
+        texts.push(turn(&mw, tool, args, &format!("n{i}"), out).await);
+    }
+    assert!(
+        texts
+            .iter()
+            .all(|t| t.matches("[repeat notice]").count() <= 1),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("alternating")),
+        "the held-back warning still arrives: {texts:?}"
     );
 }
