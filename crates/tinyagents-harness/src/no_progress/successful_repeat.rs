@@ -96,7 +96,7 @@ impl SuccessfulRepeatTracker {
     ) -> SuccessfulRepeat {
         match self.escalation {
             None if consecutive >= threshold => SuccessfulRepeat::Halt(halt()),
-            Some(escalation) if consecutive >= threshold + escalation.gap() => {
+            Some(escalation) if consecutive >= threshold.saturating_add(escalation.gap()) => {
                 SuccessfulRepeat::Halt(halt())
             }
             Some(_) if consecutive == threshold => SuccessfulRepeat::Warn(warn()),
@@ -217,12 +217,16 @@ impl SuccessfulRepeatTracker {
             *count += 1;
             *count
         };
-        let previous = lock(&self.last_outcome).insert(call, key);
-        lock(&self.predictable).insert(call);
-        if previous.is_some_and(|previous| previous != key) {
-            // The call returned something new: that is progress, so earlier
-            // blocks of it no longer count toward a halt.
-            lock(&self.blocks).remove(&call);
+        // Prediction state only feeds `pre_call`, which is inert without
+        // escalation; do not retain it per distinct call in that mode.
+        if self.escalation.is_some() {
+            let previous = lock(&self.last_outcome).insert(call, key);
+            lock(&self.predictable).insert(call);
+            if previous.is_some_and(|previous| previous != key) {
+                // The call returned something new: that is progress, so
+                // earlier blocks of it no longer count toward a halt.
+                lock(&self.blocks).remove(&call);
+            }
         }
         let warn = || {
             format!(
@@ -242,7 +246,7 @@ impl SuccessfulRepeatTracker {
             // count where a second block would have happened rather than
             // loop on.
             Some(escalation)
-                if count >= self.block_count(escalation) + escalation.halt_block() - 1 =>
+                if count >= self.block_count(escalation).saturating_add(escalation.halt_block() - 1) =>
             {
                 SuccessfulRepeat::Halt(halt())
             }
@@ -254,7 +258,7 @@ impl SuccessfulRepeatTracker {
     /// Ledger count at which a call is blocked (the Nth identical call is not
     /// executed).
     fn block_count(&self, escalation: RepeatEscalation) -> u32 {
-        self.call_threshold + escalation.gap()
+        self.call_threshold.saturating_add(escalation.gap())
     }
 
     /// How many times `call_signature` has returned `outcome_identity` in this
@@ -294,7 +298,7 @@ impl SuccessfulRepeatTracker {
             return CallGate::Allow;
         };
         let count = lock(&self.recurrences).get(&key).copied().unwrap_or(0);
-        if count + 1 < self.block_count(escalation) {
+        if count.saturating_add(1) < self.block_count(escalation) {
             return CallGate::Allow;
         }
         let mut blocks = lock(&self.blocks);
@@ -320,6 +324,13 @@ impl SuccessfulRepeatTracker {
     pub fn invalidate_predictions_except(&self, call_signature: &str) {
         let keep = hash_of(call_signature);
         lock(&self.predictable).retain(|call| *call == keep);
+    }
+
+    /// Discards every remembered last result, so [`pre_call`](Self::pre_call)
+    /// stops predicting any call. For a successful call of unknown effect that
+    /// is not itself tracked (an exempt polling tool): state may have changed.
+    pub fn invalidate_all_predictions(&self) {
+        lock(&self.predictable).clear();
     }
 
     /// Clears both streaks, the recurrence ledger and the block counts, for

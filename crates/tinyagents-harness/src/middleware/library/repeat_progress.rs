@@ -61,7 +61,7 @@ pub type ReadOnlyCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 ///   later evicts stops counting; see [`RepeatEvictionObserver`].
 ///
 /// Escalation is **staged** by default (see [`RepeatProgressConfig`]): each
-/// halt above first only *warns*, appending a `[repeat notice]` to the tool
+/// first threshold only *warns*, appending a `[repeat notice]` to the tool
 /// result; an identical call that keeps repeating is then **blocked** in
 /// `before_tool` (answered with an error result, never executed); a second
 /// block *of the same call* halts as described below. Ping-pong and
@@ -385,6 +385,13 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     .entry(run_id)
                     .or_default()
                     .insert(call_id);
+            } else {
+                // An exempt (polling/wait) call succeeded: it stays out of the
+                // repeat accounting, but it may have changed state, so results
+                // predicted before it are no longer safe to block on.
+                let read_only = (self.read_only)(tool_name);
+                self.state
+                    .with_monitor(run_id, |monitor| monitor.note_untracked_success(read_only));
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
                 batch.halted = true;

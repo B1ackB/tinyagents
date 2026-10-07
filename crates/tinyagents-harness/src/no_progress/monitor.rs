@@ -127,8 +127,10 @@ pub struct RepeatMonitor {
     guard: Option<PostCompactionGuard>,
 }
 
+/// `tool\u{1}arguments`, with the tool name prefixed by its length so a
+/// `\u{1}` inside either part cannot make two distinct calls collide.
 fn call_signature(tool: &str, arguments_fingerprint: &str) -> String {
-    format!("{tool}\u{1}{arguments_fingerprint}")
+    format!("{}:{tool}\u{1}{arguments_fingerprint}", tool.len())
 }
 
 impl RepeatMonitor {
@@ -214,6 +216,14 @@ impl RepeatMonitor {
             self.tracker.invalidate_predictions_except(&signature);
         }
         CallObservation { verdict, notes }
+    }
+
+    /// A successful call this monitor does not track (an exempt polling tool)
+    /// ran and may have changed state: stop predicting every remembered result.
+    pub fn note_untracked_success(&self, read_only: bool) {
+        if !read_only {
+            self.tracker.invalidate_all_predictions();
+        }
     }
 
     /// Context reduction removed results the model had seen: the ledger and

@@ -27,9 +27,6 @@ pub(super) fn assistant_visible_text(
     let mut out = String::new();
     for block in &message.content {
         if let ContentBlock::Text(t) = block {
-            if !out.is_empty() {
-                out.push('\n');
-            }
             out.push_str(t);
         }
     }

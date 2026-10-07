@@ -25,8 +25,11 @@ pub const DEFAULT_POST_COMPACTION_WINDOW: u32 = 3;
 
 #[derive(Default)]
 struct GuardState {
-    /// Most recent `(call, result)` hashes, oldest first, capped at the window.
-    tail: VecDeque<u64>,
+    /// Repeating `(call, result)` hashes with the call number they were seen
+    /// at, oldest first. Only pairs from the last `window` calls are kept.
+    tail: VecDeque<(u64, u64)>,
+    /// Successful calls recorded so far, repeating or not.
+    calls: u64,
     /// The tail captured at compaction and the calls still to watch.
     armed: Option<(Vec<u64>, u32)>,
 }
@@ -72,11 +75,20 @@ impl PostCompactionGuard {
             }
             return repeated;
         }
+        // Every successful call ages the tail, so a pair that stopped
+        // repeating long ago cannot be flagged after a later compaction.
+        state.calls += 1;
+        let now = state.calls;
         if repeating {
-            if state.tail.len() == self.window as usize {
-                state.tail.pop_front();
-            }
-            state.tail.push_back(pair);
+            state.tail.push_back((pair, now));
+        }
+        let window = u64::from(self.window);
+        while state
+            .tail
+            .front()
+            .is_some_and(|(_, seen)| now - seen >= window)
+        {
+            state.tail.pop_front();
         }
         false
     }
@@ -92,7 +104,7 @@ impl PostCompactionGuard {
         if state.tail.is_empty() {
             return;
         }
-        let tail = state.tail.drain(..).collect();
+        let tail = state.tail.drain(..).map(|(pair, _)| pair).collect();
         state.armed = Some((tail, self.window));
     }
 
