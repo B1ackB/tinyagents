@@ -632,6 +632,48 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
 }
 
 #[tokio::test]
+async fn a_truncation_route_that_falls_short_still_cuts_the_result_after_compacting() {
+    // The route estimate (bare chars / 4) says cutting the result is enough,
+    // but the measured request (per-message framing over many tiny messages)
+    // is still over the trigger, so it compacts. The splice rebuilds the
+    // request from the untruncated transcript and must cut the result again.
+    let summarizer = ShortSummarizer::default();
+    let mw = ContextCompressionMiddleware::with_summarizer(
+        truncating_policy(),
+        Box::new(summarizer.clone()),
+    )
+    .with_keep_recent_tokens(3_000)
+    .with_tool_result_truncation(400);
+    let mut messages: Vec<Message> = (0..500)
+        .map(|i| {
+            if i % 2 == 0 {
+                user("a")
+            } else {
+                Message::assistant("b")
+            }
+        })
+        .collect();
+    messages.extend(call_and_result("c1", 10_000));
+    let mut request = ModelRequest {
+        messages,
+        ..Default::default()
+    };
+    let mut c = ctx();
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut request)
+        .await
+        .unwrap();
+    assert!(*summarizer.calls.lock().unwrap() >= 1, "it compacted");
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| matches!(m, Message::Tool(_))),
+        "the result stayed in the kept tail"
+    );
+    assert!(tool_text_len(&request) < 1_000, "and the result is cut");
+}
+
+#[tokio::test]
 async fn aging_out_an_oversized_result_moves_the_prefix_epoch_only_when_it_cuts() {
     let mw =
         ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
