@@ -1705,11 +1705,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .admit_tool_call(state, ctx, status, &mut call, promoted_names)
                 .await?
             {
-                ResolvedToolCall::Tool { dispatch, tool } => admitted.push(AdmittedCall::Execute {
-                    dispatch,
-                    tool,
-                    call,
-                }),
+                ResolvedToolCall::Tool { dispatch, .. } => {
+                    admitted.push(AdmittedCall::Execute { dispatch, call })
+                }
                 ResolvedToolCall::Answered(result) => {
                     admitted.push(AdmittedCall::Recovered { call, result })
                 }
