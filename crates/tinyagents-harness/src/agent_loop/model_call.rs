@@ -20,7 +20,7 @@ use super::*;
 use crate::cache::{CacheSkipReason, apply_prompt_cache_breakpoints, scoped_cache_key};
 use crate::no_progress::StreamTextStallDetector;
 use crate::retry::{
-    FailoverDecision, FailoverReason, FailoverState, decide, is_model_specific_format,
+    FailoverDecision, FailoverReason, FailoverState, decide,
 };
 use tinyinference_llm::cache::CachePolicy;
 
@@ -619,7 +619,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         if ctx.limits.is_model_skipped(&current_name)
             && crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?.is_none()
             && let Some((name, next_model)) =
-                self.select_fallback(ctx, request, &current_name, &mut visited)
+                self.select_fallback(ctx, request, &current_name, &mut visited, None)
         {
             tracing::debug!(
                 call_id = %call_id.as_str(),
@@ -836,9 +836,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         return Err(error);
                     }
                     // Retries are over for this model. Ask the failover table
-                    // whether another model could help at all: a malformed
-                    // request or a context overflow fails identically on every
-                    // model, so it surfaces here instead of walking the chain.
+                    // whether another model could help. A context overflow is
+                    // the one case that needs a *specific* kind of candidate:
+                    // one whose declared window is strictly larger than this
+                    // model's; with none, it surfaces here so compaction (not a
+                    // lookalike sibling) handles it.
                     let reason = FailoverReason::classify(&error);
                     if reason.skips_model_for_run() {
                         tracing::warn!(
@@ -849,12 +851,27 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         );
                         ctx.limits.skip_model_for_run(&current_name);
                     }
+                    // Unknown current window => no evidence any sibling is
+                    // larger, so nothing qualifies.
+                    let larger_than = (reason == FailoverReason::ContextOverflow).then(|| {
+                        model
+                            .profile()
+                            .and_then(|profile| profile.max_input_tokens)
+                            .unwrap_or(u64::MAX)
+                    });
+                    let selected = self.select_fallback(
+                        ctx,
+                        request,
+                        &current_name,
+                        &mut visited,
+                        larger_than,
+                    );
                     let decision = decide(
                         reason,
                         FailoverState {
                             retryable: false,
                             attempts_remaining: false,
-                            model_specific: is_model_specific_format(&error),
+                            larger_window_available: selected.is_some(),
                         },
                     );
                     tracing::debug!(
@@ -867,7 +884,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     if decision == FailoverDecision::Surface {
                         return Err(error);
                     }
-                    let selected = self.select_fallback(ctx, request, &current_name, &mut visited);
                     match selected {
                         Some((name, next_model)) => {
                             visited.insert(name.clone());
@@ -916,6 +932,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         request: &ModelRequest,
         cursor: &str,
         visited: &mut std::collections::HashSet<String>,
+        larger_than: Option<u64>,
     ) -> Option<(String, Arc<dyn ChatModel<State>>)> {
         let required = request.required_capabilities.as_ref();
         let mut cursor = cursor.to_owned();
@@ -930,7 +947,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let (name, next_model) =
                 next.and_then(|name| self.models.get(&name).map(|m| (name, m)))?;
             let written_off = ctx.limits.is_model_skipped(&name);
-            if written_off || !model_eligible(next_model.as_ref(), required, false) {
+            // `larger_than` (context-overflow failover): the candidate must
+            // *declare* a window strictly above the given one.
+            let too_small = larger_than.is_some_and(|floor| {
+                !next_model
+                    .profile()
+                    .and_then(|profile| profile.max_input_tokens)
+                    .is_some_and(|window| window > floor)
+            });
+            if written_off || too_small || !model_eligible(next_model.as_ref(), required, false) {
                 visited.insert(name.clone());
                 ctx.emit(AgentEvent::FallbackSkipped {
                     model: name.clone(),
