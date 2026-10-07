@@ -46,6 +46,7 @@ mod hash;
 mod key;
 mod layout;
 mod memory;
+mod miss;
 mod singleflight;
 #[cfg(feature = "sqlite")]
 mod sqlite;
@@ -63,6 +64,7 @@ pub use key::{
 pub use singleflight::SingleFlight;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteResponseCache;
+pub use miss::{DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS, PromptCacheMiss, PromptCacheTracker};
 pub use types::*;
 
 #[cfg(test)]
