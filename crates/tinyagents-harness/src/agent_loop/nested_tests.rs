@@ -1374,8 +1374,11 @@ async fn fan_out_to(target: Arc<Overlap>, count: usize) -> Vec<Outcome> {
     }));
     harness.register_tool(target);
     run(&harness, &EventRecorder::new()).await.unwrap();
-    let collected = outcomes.lock().unwrap().clone();
-    collected
+    drop(harness);
+    Arc::try_unwrap(outcomes)
+        .expect("the harness is dropped")
+        .into_inner()
+        .unwrap()
 }
 
 #[tokio::test]
