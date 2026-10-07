@@ -110,11 +110,14 @@ result metadata (host-only; `ToolCompleted.metadata` and
 {
   "nested_calls": [
     {"id": "p1/1", "name": "leaf", "status": "ok", "duration_ms": 3,
-     "args": "{\"n\":7}", "error": null}
-  ],
-  "nested_calls_truncated": 8
+     "args": "{\"n\":7}"},
+    {"id": "p1/2", "name": "ghost", "status": "failed", "duration_ms": 0,
+     "args": "{}", "error": "tool not found: ghost"}
+  ]
 }
 ```
+
+(`nested_calls_truncated` is added, as a count, only when more than 32 calls ran.)
 
 `status` is `ok`, `error` (the tool returned `is_error`), `failed` (refused or
 raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB; `error` is cut at 256

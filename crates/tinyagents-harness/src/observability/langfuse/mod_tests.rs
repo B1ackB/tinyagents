@@ -391,6 +391,47 @@ fn call_scoped_observation_ids_are_unique_per_trace() {
 }
 
 #[test]
+fn nested_tool_span_nests_under_its_parent_call_span() {
+    let client =
+        LangfuseClient::proxy("https://backend.test/telemetry/langfuse/ingestion", "t").unwrap();
+    let completed = |parent: Option<&str>, id: &str, name: &str| AgentEvent::ToolCompleted {
+        parent_call_id: parent.map(CallId::new),
+        call_id: CallId::new(id),
+        tool_name: name.to_string(),
+        started_at_ms: None,
+        input: None,
+        output: None,
+        duration_ms: None,
+        output_bytes: None,
+        error: None,
+        metadata: None,
+    };
+    let batch = client
+        .build_ingestion_batch(
+            LangfuseTraceConfig {
+                trace_id: Some("trace-1".to_string()),
+                ..Default::default()
+            },
+            &[
+                obs(1, completed(Some("p1"), "p1/1", "leaf")),
+                obs(2, completed(None, "p1", "caller")),
+            ],
+        )
+        .unwrap();
+    let events = batch["batch"].as_array().unwrap();
+    let body = |name: &str| {
+        events
+            .iter()
+            .find(|e| e["type"] == "span-create" && e["body"]["name"] == name)
+            .unwrap()["body"]
+            .clone()
+    };
+    let (leaf, caller) = (body("leaf"), body("caller"));
+    assert_eq!(leaf["parentObservationId"], caller["id"]);
+    assert_ne!(caller["parentObservationId"], caller["id"]);
+}
+
+#[test]
 fn sub_agent_run_nests_under_its_parent_run_span() {
     // A child run (distinct run_id, parented to the top-level run) exported in
     // its own batch must reference its parent's run span so the two batches
