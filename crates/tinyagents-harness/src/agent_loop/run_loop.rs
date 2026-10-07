@@ -763,15 +763,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // the replacement call fails. Do not leave that usage in
                     // the context when the `?` below would skip normal
                     // response accounting.
-                    let active_call = ctx
-                        .active_model_call
-                        .clone()
-                        .expect("active model call while model middleware runs");
                     self.account_discarded_usage(
                         ctx,
                         run,
                         status,
-                        &active_call,
+                        &call_id,
                         &model_name,
                         model_started_at_ms,
                         &host_budget,
