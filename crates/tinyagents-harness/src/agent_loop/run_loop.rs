@@ -7,7 +7,6 @@
 
 use super::handoff_transform;
 use super::model_call::ModelCallBase;
-use super::tool_changes;
 use super::turn_recovery::TurnRecovery;
 use super::*;
 
@@ -188,177 +187,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         ctx.limits
             .sync_call_limits(effective_model_calls, effective_tool_calls);
 
-        // Build the direct tool set once. Discovery can add typed declarations
-        // after a search, while the base declarations stay stable.
-        //
-        // Only *direct* tools go on the initial wire request. Deferred tools
-        // are indexed into the run's catalogue and reached through the
-        // `tool_search` bridge. Search matches are promoted on
-        // the next request; the bridge schemas follow the direct set.
-        // The same host allow-list gates both halves: deferral only ever
-        // subtracts from what the host admitted. `resolve_tool_allowlist`
-        // (not a raw read of `binding.allowed_tools`) is what applies I-9's
-        // fail-closed default, so an empty declared list denies every tool
-        // here exactly as it does for the direct set below.
+        // Build the tool surface once (see `tool_surface.rs`): the direct tool
+        // set plus the deferred catalogue behind the `tool_search` bridge. The
+        // host allow-list gates both halves; `resolve_tool_allowlist` (not a raw
+        // read of `binding.allowed_tools`) is what applies I-9's fail-closed
+        // default, so an empty declared list denies every tool.
         let allowed_tools = self.resolve_tool_allowlist(ctx)?;
         let host_allows = |name: &str| {
             allowed_tools
                 .as_ref()
                 .is_none_or(|allowed| allowed.contains(name))
         };
-        let mut tool_schemas = self
-            .tools
-            .schemas()
-            .into_iter()
-            .filter(|schema| host_allows(&schema.name))
-            .collect::<Vec<_>>();
-        // Composable toolset chain (gap B3, `AgentHarness::with_toolset`):
-        // additive to the registry's own `Direct` schemas above — a name the
-        // registry already advertises keeps the registry's declaration, so a
-        // registered tool always wins a collision. This run's toolset is
-        // consulted once here, matching the registry's own once-per-run
-        // schema build a few lines up (the comment above explains why: the
-        // resulting request tool list feeds the provider prompt cache, so
-        // rebuilding it every turn would defeat that cache). A caller that
-        // genuinely needs true per-turn variance can still call
-        // [`crate::tool::toolset::ToolSet::tools`] directly from a
-        // `before_model` middleware, which *does* run every turn.
-        if let Some(toolset) = &self.toolset {
-            let existing: std::collections::HashSet<&str> = tool_schemas
-                .iter()
-                .map(|schema| schema.name.as_str())
-                .collect();
-            let extra: Vec<_> = toolset
-                .tools(ctx)
-                .await?
-                .into_iter()
-                .filter(|tool| tool.exposure() == tinytools::ToolExposure::Direct)
-                .filter(|tool| host_allows(tool.name()))
-                .filter(|tool| !existing.contains(tool.name()))
-                .map(|tool| crate::tool::provider_schema(tool.as_ref()))
-                .collect();
-            tool_schemas.extend(extra);
-            // Keep the combined set name-sorted: every consumer of
-            // `tool_schemas` below (and the provider request it feeds) relies
-            // on the sort for wire-byte/prompt-cache stability.
-            tool_schemas.sort_by(|left, right| left.name.cmp(&right.name));
-        }
-        // Provider projection applies once, to the full combined set
-        // (registry + toolset), so a toolset-supplied schema reaches the
-        // wire cleaned exactly like a registered one.
-        if let Some(preparation) = &self.policy.tool_schemas {
-            tool_schemas = crate::tool::prepare_tool_schemas(&tool_schemas, preparation);
-        }
-        // Captured before the bridge schemas are appended below, so
-        // `ToolsAdvertised.direct` reports the actual `Direct`-exposure
-        // count. Otherwise it would silently include the intrinsic
-        // bridge schemas whenever discovery is enabled, double-counting
-        // relative to `deferred` and making `direct` mean different things
-        // depending on whether any tool happens to be deferred.
-        let direct_schema_count = tool_schemas.len();
-        let mut direct_tool_schemas = tool_schemas.clone();
-        // B6 (`docs/runtime-comparison/plan.md`): `declared_tool_schemas`
-        // tracks what the transcript has actually been told about the
-        // toolset chain's tools so far (folded or patched in, turn by turn,
-        // by the loop below), so a later turn's live toolset resolution can
-        // be diffed against it instead of against the wire list — the wire
-        // list also carries the bridge schemas captured into
-        // `bridge_schemas` next, which never change within a run and so are
-        // deliberately excluded from the diff.
-        //
-        // Starts empty rather than seeded from the merge above: nothing has
-        // been recorded on the transcript yet, so the loop's first-turn diff
-        // (below) always fires when a toolset is installed, declaring the
-        // full initial toolset-supplied set as one patch (turn 1 has no
-        // prior cached prefix to protect, so there is no cost to always
-        // recording it). This is what makes
-        // [`tinyinference_llm::message::replay_system_state`] able to
-        // reconstruct the *complete* effective tool set from the transcript
-        // alone, not just later deltas — the alternative (seeding from the
-        // merge above) would leave the initial toolset-only tools
-        // permanently undeclared on the wire-only `tool_schemas` snapshot
-        // computed here, which a replay can never see.
-        let mut declared_tool_schemas: Vec<ToolSchema> = Vec::new();
-        let mut bridge_schemas: Vec<ToolSchema> = Vec::new();
-        let deferred_catalog = self.deferred_catalog(&host_allows);
-        // A resumed transcript carries promoted declarations in SystemMessage
-        // patches. Only restore names still admitted into this run's catalogue.
-        let mut promoted_schemas: std::collections::BTreeMap<String, ToolSchema> =
-            tinyinference_llm::message::replay_system_state(messages)
-                .1
-                .into_iter()
-                .filter(|schema| deferred_catalog.get(&schema.name).is_some())
-                .map(|schema| (schema.name.clone(), schema))
-                .collect();
-        let mut promoted_names: std::collections::BTreeSet<String> =
-            promoted_schemas.keys().cloned().collect();
-        let mut recorded_promotions = promoted_names.clone();
-        if !deferred_catalog.is_empty() {
-            // A host-registered `tool_search` keeps its slot: the
-            // intrinsic bridge only fills a name nobody registered. Check the
-            // full registry (`self.tools.dispatch`), not just the direct set
-            // collected into `tool_schemas` above — a `Hidden` or `Deferred`
-            // registration under that name must also suppress the intrinsic
-            // schema, because admission's own collision rule
-            // (`self.tools.dispatch(&call.name).is_none()` in
-            // `answer_discovery_bridge`) checks the same full registry. Using
-            // a narrower rule here than admission uses would let this loop
-            // advertise an intrinsic schema that admission then treats as
-            // owned by the registered tool (or, for `Hidden`, refuses).
-            let mut bridge: Vec<_> =
-                crate::tool::discover::bridge_schemas(&deferred_catalog, &self.policy.discovery)
-                    .into_iter()
-                    .collect();
-            if let Some(preparation) = &self.policy.tool_schemas {
-                // The bridge schemas are generated here, after the direct set
-                // was prepared above, so they need the same provider
-                // projection (for example Gemini's `minimum`/`maximum`
-                // removal) applied individually or they reach the wire raw.
-                bridge = bridge
-                    .into_iter()
-                    .map(|schema| crate::tool::prepare_tool_schema(&schema, preparation))
-                    .collect();
-            }
-            for schema in bridge {
-                if self.tools.dispatch(&schema.name).is_none() {
-                    tool_schemas.push(schema.clone());
-                    bridge_schemas.push(schema);
-                }
-            }
-        }
-        // Fail closed on a structured-output schema whose name collides with a
-        // registered tool *or* the intrinsic discovery bridge. Under the
-        // tool-call strategy the schema is sent as an extra `function` entry,
-        // so a collision puts two identically-named functions in one request
-        // — which OpenAI rejects outright — and makes "was this the schema or
-        // the real tool?" unanswerable for every returned call. Two checks,
-        // because neither alone covers every name that ends up on the wire:
-        // `self.tools.names()` covers every registered tool (Direct, Deferred,
-        // Hidden), but not the intrinsic `tool_search` bridge,
-        // which has no registry entry; `tool_schemas` covers the bridge (and
-        // the Direct set) but never contains a Deferred tool's own name.
-        if let Some(name) = self
-            .policy
-            .default_response_format
-            .as_ref()
-            .and_then(|format| match format {
-                ResponseFormat::Auto { name, .. } | ResponseFormat::JsonSchema { name, .. } => {
-                    Some(name)
-                }
-                _ => None,
-            })
-            && (self
-                .tools
-                .names()
-                .iter()
-                .any(|registered| registered == name)
-                || tool_schemas.iter().any(|schema| &schema.name == name))
-        {
-            return Err(TinyAgentsError::Validation(format!(
-                "structured-output schema name `{name}` collides with a registered tool (or the \
-                 intrinsic discovery bridge) of the same name; rename one of them"
-            )));
-        }
+        let mut surface = self.build_tool_surface(ctx, messages, &host_allows).await?;
+        self.check_structured_schema_name(&surface.tool_schemas)?;
 
         status.mark_running(HarnessPhase::Middleware);
         self.middleware.run_before_agent(ctx, state).await?;
@@ -370,9 +211,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // output tool-call fallback can still narrow or grow what an
         // individual request actually sends.
         let record = ctx.emit(AgentEvent::ToolsAdvertised {
-            direct: direct_schema_count,
-            deferred: deferred_catalog.len(),
-            schema_bytes: crate::token_estimation::tool_schema_bytes(&tool_schemas),
+            direct: surface.direct_schema_count,
+            deferred: surface.deferred_catalog.len(),
+            schema_bytes: crate::token_estimation::tool_schema_bytes(&surface.tool_schemas),
         });
         status.set_last_event(record.id);
 
@@ -529,80 +370,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     self.preview_model_profile(&patch_request)
                 };
 
-            // B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
-            // re-consult the toolset chain (documented as "called once per
-            // turn", `ToolSet::tools`) and diff its live set against what
-            // this transcript has declared so far. A caller whose toolset
-            // never varies turn to turn sees no diff and pays nothing here —
-            // this only fires for a genuine mid-run change. Deliberately
-            // runs before the request/`ModelStarted` below, so the patch (if
-            // any) is part of *this* turn's request.
-            if let Some(toolset) = &self.toolset {
-                let mut live_schemas: Vec<ToolSchema> = self
-                    .tools
-                    .schemas()
-                    .into_iter()
-                    .filter(|schema| host_allows(&schema.name))
-                    .collect();
-                let existing: std::collections::HashSet<&str> = live_schemas
-                    .iter()
-                    .map(|schema| schema.name.as_str())
-                    .collect();
-                let extra: Vec<_> = toolset
-                    .tools(ctx)
-                    .await?
-                    .into_iter()
-                    .filter(|tool| tool.exposure() == tinytools::ToolExposure::Direct)
-                    .filter(|tool| host_allows(tool.name()))
-                    .filter(|tool| !existing.contains(tool.name()))
-                    .map(|tool| crate::tool::provider_schema(tool.as_ref()))
-                    .collect();
-                live_schemas.extend(extra);
-                live_schemas.sort_by(|left, right| left.name.cmp(&right.name));
-                if let Some(preparation) = &self.policy.tool_schemas {
-                    live_schemas = crate::tool::prepare_tool_schemas(&live_schemas, preparation);
-                }
-                if let Some(patch) =
-                    tool_changes::diff_tool_set(&declared_tool_schemas, &live_schemas)
-                {
-                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
-                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
-                    declared_tool_schemas = live_schemas.clone();
-                    direct_tool_schemas = live_schemas;
-                }
-            }
-
-            // Promote only names returned by a successful intrinsic search.
-            // The patch makes the declaration recoverable from the transcript;
-            // the provider receives its typed schema on this and later calls.
-            let newly_promoted: Vec<ToolSchema> = promoted_names
-                .difference(&recorded_promotions)
-                .filter_map(|name| deferred_catalog.get(name).cloned())
-                .collect();
-            if !newly_promoted.is_empty() {
-                if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
-                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
-                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
-                }
-                recorded_promotions.extend(newly_promoted.iter().map(|schema| schema.name.clone()));
-                promoted_schemas.extend(
-                    newly_promoted
-                        .into_iter()
-                        .map(|schema| (schema.name.clone(), schema)),
-                );
-            }
-            tool_schemas = direct_tool_schemas.clone();
-            tool_schemas.extend(
-                promoted_schemas
-                    .values()
-                    .filter(|schema| {
-                        !direct_tool_schemas
-                            .iter()
-                            .any(|direct| direct.name == schema.name)
-                    })
-                    .cloned(),
-            );
-            tool_schemas.extend(bridge_schemas.clone());
+            // B6: re-consult the toolset chain and declare any live change as a
+            // transcript patch, so it is part of *this* turn's request; then
+            // promote tools a successful `tool_search` returned and assemble
+            // the turn's wire list.
+            surface
+                .declare_toolset_changes(self, ctx, messages, &host_allows, patch_profile.as_ref())
+                .await?;
+            surface.promote_discovered(messages, patch_profile.as_ref());
+            surface.assemble_turn_schemas();
 
             // Build the request from the working transcript, tool schemas, and
             // policy response format.  Go through `PromptBuilder` rather than
@@ -613,8 +389,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let system_end = cacheable_system_prefix_end(messages, ctx.frozen_system_prefix_len);
             let mut prompt = crate::prompt::PromptBuilder::new();
             prompt.push_system_messages(&messages[..system_end]);
-            if !tool_schemas.is_empty() {
-                prompt.push_tools_segment("tools", tool_schemas.clone());
+            if !surface.tool_schemas.is_empty() {
+                prompt.push_tools_segment("tools", surface.tool_schemas.clone());
             }
             let mut request = prompt.build(messages[system_end..].to_vec());
             mark_empty_frozen_prefix(&mut request, ctx.frozen_system_prefix_len);
@@ -969,7 +745,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                 // is the only remaining callable tool, even
                                 // though the run-level registry still contains
                                 // the withdrawn tools.
-                                if tool_schemas.is_empty()
+                                if surface.tool_schemas.is_empty()
                                     || (tools_before_structured_plan == 0
                                         && request.tool_choice == ToolChoice::None)
                                 {
@@ -979,7 +755,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                         target: "tinyagents::agent_loop",
                                         run_id = %ctx.run_id(),
                                         schema_name = %name,
-                                        registered_tools = tool_schemas.len(),
+                                        registered_tools = surface.tool_schemas.len(),
                                         "[agent_loop] structured tool offered but not forced; \
                                          registered tools stay callable"
                                     );
@@ -1584,7 +1360,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             status,
                             messages,
                             real_tool_calls,
-                            &mut promoted_names,
+                            &mut surface.promoted_names,
                         )
                         .await?;
                     if let Some(exit) = self
@@ -1649,7 +1425,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         status,
                         messages,
                         real_tool_calls,
-                        &mut promoted_names,
+                        &mut surface.promoted_names,
                     )
                     .await?;
                 if let Some(exit) = self
@@ -2013,7 +1789,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     status,
                     messages,
                     real_tool_calls,
-                    &mut promoted_names,
+                    &mut surface.promoted_names,
                 )
                 .await?;
             // A2: a batch that deferred calls either resolves them inline

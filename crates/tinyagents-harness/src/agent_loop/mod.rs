@@ -126,6 +126,7 @@ pub mod phases;
 mod run_loop;
 pub(crate) mod stream;
 mod tool_changes;
+mod tool_surface;
 mod tool_timing;
 mod tools;
 mod turn_recovery;

@@ -55,7 +55,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     async fn direct_tool_schemas(
         &self,
         ctx: &RunContext<Ctx>,
-        host_allows: &dyn Fn(&str) -> bool,
+        host_allows: &(dyn Fn(&str) -> bool + Sync),
     ) -> Result<Vec<ToolSchema>> {
         let mut schemas = self
             .tools
@@ -64,7 +64,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .filter(|schema| host_allows(&schema.name))
             .collect::<Vec<_>>();
         if let Some(toolset) = &self.toolset {
-            let existing: HashSet<&str> = schemas.iter().map(|schema| schema.name.as_str()).collect();
+            let existing: HashSet<&str> =
+                schemas.iter().map(|schema| schema.name.as_str()).collect();
             let extra: Vec<_> = toolset
                 .tools(ctx)
                 .await?
@@ -97,7 +98,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         &self,
         ctx: &RunContext<Ctx>,
         messages: &[Message],
-        host_allows: &dyn Fn(&str) -> bool,
+        host_allows: &(dyn Fn(&str) -> bool + Sync),
     ) -> Result<ToolSurface> {
         let mut tool_schemas = self.direct_tool_schemas(ctx, host_allows).await?;
         // Captured before the bridge schemas are appended below, so
@@ -209,7 +210,7 @@ impl ToolSurface {
         harness: &AgentHarness<State, Ctx>,
         ctx: &RunContext<Ctx>,
         messages: &mut Vec<Message>,
-        host_allows: &dyn Fn(&str) -> bool,
+        host_allows: &(dyn Fn(&str) -> bool + Sync),
         patch_profile: Option<&tinyinference_llm::model::ModelProfile>,
     ) -> Result<()> {
         if harness.toolset.is_none() {
