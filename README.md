@@ -46,6 +46,11 @@ TinyAgents is a Cargo workspace, not one crate. Depend on the pieces you need:
 - **`tinyagents-runtime`** — host-neutral stateful turns over the harness and
   append-only transcript seam; hosts retain policy, prompt composition,
   authorization, and durable-dialect conversion.
+- **`tinyagents-live`** — live (realtime voice) agent sessions: declares a
+  harness's tools to a [`tinyliveagents`](https://github.com/tinyhumansai/tinyliveagents)
+  provider (Gemini Live, ElevenLabs Agents, Sarvam) and runs every tool call
+  the model makes through the harness's own admission and middleware
+  pipeline, so host policy applies to spoken requests too.
 - **`tinyagents-orchestration`** — host-neutral composition of durable
   multi-agent work (teams and workflows) over the graph, harness, and session
   layers; depends one-way on those crates and stays host-free.

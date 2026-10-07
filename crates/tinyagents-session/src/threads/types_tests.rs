@@ -50,6 +50,7 @@ fn create_thread_optional_fields_roundtrip() {
         parent_thread_id: None,
         labels: Some(vec!["important".into(), "memory".into()]),
         personality_id: None,
+        working_dir: None,
     };
 
     let encoded = serde_json::to_value(&create).unwrap();

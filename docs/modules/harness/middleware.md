@@ -443,10 +443,17 @@ optional `ToolControl { return_direct, terminate, goto, state_update }`. The
 loop translates it into the same `MiddlewareControl` vocabulary after
 `after_tool`/`after_tool_control` run:
 
-- `return_direct` or `terminate` — the tool's own output becomes
-  `AgentRun::final_response` and the loop requests `JumpTo(End)` (recording the
-  final response directly rather than falling back to the last assistant
-  text, which `JumpTo(End)` alone cannot target precisely).
+- `return_direct` — the tool's own output becomes `AgentRun::final_response`
+  and the loop requests `JumpTo(End)` (recording the final response directly
+  rather than falling back to the last assistant text, which `JumpTo(End)`
+  alone cannot target precisely). Any one call asking is enough.
+- `terminate` — a *batch* decision (pi's `shouldTerminateToolBatch`): the run
+  ends only when **every** call of the turn's batch asked to terminate, because
+  a sibling that did not may have returned something the model still has to
+  read. A mixed batch, or one with a deferred call, ignores the hint and the
+  loop continues. When the batch does end the run, the final response is the
+  last call's output in source order. A call that sets `terminate` does not
+  also act on its own `goto`.
 - `goto: Some("model" | "tools" | "end")` — mapped to the matching
   `JumpTo(LoopTarget)`; an unrecognized value is logged and ignored.
 - `state_update: Some(json)` — queued as raw JSON via

@@ -7,6 +7,7 @@ default-members = [
     "crates/tinyagents-session",
     "crates/tinyagents-runtime",
     "crates/tinyagents-orchestration",
+    "crates/tinyagents-live",
 ]
 exclude = ["vendor", "worktrees"]
 resolver = "3"

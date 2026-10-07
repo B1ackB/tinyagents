@@ -102,7 +102,7 @@ impl VerifyBeforeFinishMiddleware {
         if response.text().trim().is_empty() {
             return Some("empty_answer");
         }
-        if response.finish_reason.as_deref() == Some("length") {
+        if crate::finish_reason::is_length_stop(response.finish_reason.as_deref()) {
             return Some("truncated");
         }
         if response.continue_turn.is_some() {

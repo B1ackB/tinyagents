@@ -12,6 +12,7 @@ fn search_cross_thread_messages_finds_japanese_bigram_match() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -52,6 +53,7 @@ fn search_cross_thread_messages_rebuilds_index_from_jsonl_after_reopen() {
                 created_at: "2026-04-10T12:00:00Z".to_string(),
                 labels: None,
                 personality_id: None,
+                working_dir: None,
             })
             .unwrap();
         store
@@ -88,6 +90,7 @@ fn cold_index_retries_after_transcript_read_failure() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     let path = store.thread_messages_path("unreadable");
@@ -144,6 +147,7 @@ fn cold_search_does_not_serialize_on_outer_lock() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -294,6 +298,7 @@ fn long_thread_ids_use_bounded_transcript_filenames() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -368,6 +373,7 @@ fn search_cold_rebuild_does_not_block_concurrent_append() {
             created_at: ts.clone(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -378,6 +384,7 @@ fn search_cold_rebuild_does_not_block_concurrent_append() {
             created_at: ts.clone(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -476,6 +483,7 @@ fn delete_during_cold_prime_cannot_republish_stale_messages() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -545,6 +553,7 @@ fn delete_and_purge_evict_historical_thread_locks() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     let t1_lock = store.locks.thread("t1");
@@ -604,6 +613,7 @@ fn prime_index_cold_build_works_on_legacy_workspace_without_stats() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         },
     )
     .unwrap();
@@ -676,6 +686,7 @@ fn legacy_workspace_cold_rebuild_does_not_block_concurrent_append() {
                 parent_thread_id: None,
                 labels: None,
                 personality_id: None,
+                working_dir: None,
             },
         )
         .unwrap();
@@ -708,6 +719,7 @@ fn legacy_workspace_cold_rebuild_does_not_block_concurrent_append() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         },
     )
     .unwrap();
@@ -769,6 +781,7 @@ fn delete_error_still_evicts_tombstoned_thread_from_warm_index() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -822,6 +835,7 @@ fn delete_retry_removes_orphaned_transcript() {
         created_at: "2026-04-10T12:00:00Z".to_string(),
         labels: None,
         personality_id: None,
+        working_dir: None,
     };
     store.ensure_thread(request.clone()).unwrap();
     store
@@ -869,6 +883,7 @@ fn reused_thread_id_clears_orphaned_transcript_without_delete_retry() {
         created_at: "2026-04-10T12:00:00Z".to_string(),
         labels: None,
         personality_id: None,
+        working_dir: None,
     };
     store.ensure_thread(request.clone()).unwrap();
     let transcript = store.thread_messages_path("reused-id");
@@ -900,6 +915,7 @@ fn truncation_refreshes_warm_search_without_losing_kept_messages() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     for (id, content) in [("keep", "orchid"), ("cut", "quartz")] {
@@ -960,6 +976,7 @@ fn truncation_waits_for_cold_index_publication() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
