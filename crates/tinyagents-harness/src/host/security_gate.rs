@@ -155,6 +155,18 @@ impl ToolCallRequest {
         }
     }
 
+    /// Marks this request as a nested call made by a tool of `parent`.
+    #[must_use]
+    pub fn with_parent_call_id(mut self, parent: impl Into<CallId>) -> Self {
+        self.parent_call_id = Some(parent.into());
+        self
+    }
+
+    /// Whether a running tool, rather than the model, made this call.
+    pub fn is_nested(&self) -> bool {
+        self.parent_call_id.is_some()
+    }
+
     /// Attaches `call_id` to this request.
     pub fn with_call_id(mut self, call_id: impl Into<CallId>) -> Self {
         self.call_id = Some(call_id.into());

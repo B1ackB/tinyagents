@@ -214,18 +214,18 @@ enum ToolSlot {
 
 /// Admission metadata for one executable call, paired 1:1 (in order) with its
 /// execution future/result on the concurrent path.
-struct PreparedToolCall {
-    call_id: CallId,
-    tool_name: String,
+pub(super) struct PreparedToolCall {
+    pub(super) call_id: CallId,
+    pub(super) tool_name: String,
     /// The admitted call, kept so an execution-time deferral
     /// (`ApprovalRequired`/`CallDeferred` raised by the tool) can hand the
     /// original request back through [`DeferredToolRequests`].
-    call: ToolCall,
-    options: ToolCallOptions,
-    captured_input: Option<Value>,
-    started_at_ms: u64,
-    executed: bool,
-    output_origin: crate::host::ContentOrigin,
+    pub(super) call: ToolCall,
+    pub(super) options: ToolCallOptions,
+    pub(super) captured_input: Option<Value>,
+    pub(super) started_at_ms: u64,
+    pub(super) executed: bool,
+    pub(super) output_origin: crate::host::ContentOrigin,
 }
 
 /// Derives a best-effort deduplication key for one tool call from its name
@@ -997,7 +997,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// whether that is fatal ([`LedgerFailure::Abort`], the default — the
     /// caller must fail the call and propagate the error) or merely logged
     /// ([`LedgerFailure::Continue`] — the call proceeds unrecorded).
-    async fn record_tool_effect_started(
+    pub(super) async fn record_tool_effect_started(
         &self,
         ctx: &RunContext<Ctx>,
         arguments: &Value,
@@ -1042,7 +1042,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// discard a real result rather than merely skip recording one. A failed
     /// settle write is logged; the row stays `started` and will surface again
     /// from [`crate::tool::ToolEffectLedger::unresolved`] on the next resume.
-    async fn record_tool_effect_settled(
+    pub(super) async fn record_tool_effect_settled(
         &self,
         ctx: &RunContext<Ctx>,
         prepared: &PreparedToolCall,
