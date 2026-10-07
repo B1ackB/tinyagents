@@ -176,10 +176,7 @@ impl RepeatProgressMiddleware {
     /// empty/last-model reply, and pause at the top of the next iteration (before
     /// the next model call), matching the repeated-failure breaker's halt path.
     fn halt(&self, summary: String) {
-        {
-        let mut slot = lock(&self.halt_summary);
-            *slot = Some(summary);
-        }
+        *lock(&self.halt_summary) = Some(summary);
         self.handle.send(SteeringCommand::Pause);
     }
 }
@@ -292,7 +289,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // Stage the batch for the repeat-CALL guard, evaluated once every result
         // is back (gated on success) in `after_tool`.
         {
-        let mut pending = lock(&self.pending);
+            let mut pending = lock(&self.pending);
             pending.insert(
                 ctx.instance_id(),
                 PendingCallBatch {
@@ -318,12 +315,10 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             return Ok(());
         }
         let arguments = fingerprint_arguments(&call.arguments);
+        let run_id = ctx.instance_id();
         let gate = self
             .state
-            .with_monitor(ctx.instance_id(), |monitor| {
-                monitor.pre_call(&call.name, &arguments)
-            })
-            .unwrap_or(CallGate::Allow);
+            .with_monitor(run_id, |monitor| monitor.pre_call(&call.name, &arguments));
         match gate {
             CallGate::Allow => Ok(()),
             // Refusing admission answers the call with this text as an error
@@ -333,8 +328,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     tool = call.name,
                     "[tinyagents::mw] repeat-progress blocked a repeated call"
                 );
-                self.state
-                    .mark_refused(ctx.instance_id(), &call.id, REPEAT_GUARD_BLOCKED);
+                // Stamped now, so every `after_tool` in the stack sees it
+                // (`after_tool` hooks run in reverse registration order).
+                ctx.set_refusal_metadata(call.id.clone(), guard_metadata(REPEAT_GUARD_BLOCKED));
                 Err(TinyAgentsError::ToolFailed(text))
             }
             CallGate::Halt(summary) => {
@@ -342,8 +338,11 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     tool = call.name,
                     "[tinyagents::mw] repeat-progress halted the run after repeated blocks"
                 );
-                self.state
-                    .mark_refused(ctx.instance_id(), &call.id, REPEAT_GUARD_HALTED);
+                ctx.set_refusal_metadata(call.id.clone(), guard_metadata(REPEAT_GUARD_HALTED));
+                // This batch's other results must not pause the run again.
+                if let Some(batch) = lock(&self.pending).get_mut(&run_id) {
+                    batch.halted = true;
+                }
                 self.halt(summary.clone());
                 Err(TinyAgentsError::ToolFailed(summary))
             }
@@ -360,9 +359,6 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
         let run_id = ctx.instance_id();
-        if let Some(marker) = self.state.take_refused(run_id, &call_id) {
-            tag_result(result, marker);
-        }
         // Fingerprint outside the mutexes below: it scans the whole result.
         let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
         let mut notes = Vec::new();
@@ -383,16 +379,15 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                 .and_then(VecDeque::pop_front)
             {
                 let identity = identity.as_deref().unwrap_or_default();
-                if let Some(observation) = self.state.with_monitor(run_id, |monitor| {
+                let observation = self.state.with_monitor(run_id, |monitor| {
                     monitor.record_call(&tool, &arguments, identity, (self.read_only)(&tool))
-                }) {
-                    recurrence = observation.verdict;
-                    notes.extend(observation.notes);
-                }
-                {
-        let mut recorded = lock(&self.state.recorded);
-                    recorded.entry(run_id).or_default().insert(call_id);
-                }
+                });
+                recurrence = observation.verdict;
+                notes.extend(observation.notes);
+                lock(&self.state.recorded)
+                    .entry(run_id)
+                    .or_default()
+                    .insert(call_id);
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
                 batch.halted = true;
@@ -405,15 +400,13 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             };
             (already_halted, recurrence, completed)
         };
-        let batch_verdict = completed.and_then(|batch| {
-            self.state.with_monitor(run_id, |monitor| {
-                monitor.record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
+        let batch_verdict = completed
+            .map(|batch| {
+                self.state.with_monitor(run_id, |monitor| {
+                    monitor.record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
+                })
             })
-        });
-        let (batch_verdict, recurrence) = (
-            batch_verdict.unwrap_or(SuccessfulRepeat::Continue),
-            recurrence,
-        );
+            .unwrap_or(SuccessfulRepeat::Continue);
         // The per-call recurrence note is the more specific one: when it fires,
         // the batch streak that coincides with it adds nothing.
         let mut candidates = Vec::new();
