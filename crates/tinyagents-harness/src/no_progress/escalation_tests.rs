@@ -235,3 +235,37 @@ fn progress_after_a_ledger_reset_clears_the_blocks_too() {
     }
     assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
 }
+
+#[test]
+fn extreme_thresholds_saturate_instead_of_overflowing() {
+    let tracker = SuccessfulRepeatTracker::new(u32::MAX, u32::MAX)
+        .with_escalation(RepeatEscalation::new(u32::MAX, u32::MAX));
+    for _ in 0..3 {
+        assert_eq!(record(&tracker), SuccessfulRepeat::Continue);
+        assert_eq!(
+            tracker.record_call_batch("sig", true, false),
+            SuccessfulRepeat::Continue
+        );
+        assert!(matches!(tracker.pre_call(CALL), CallGate::Allow));
+    }
+}
+
+#[test]
+fn prediction_state_is_not_retained_without_escalation() {
+    let tracker = SuccessfulRepeatTracker::new(4, 3);
+    for n in 0..50 {
+        tracker.record_call_outcome(&format!("read\u{1}{n}"), "result");
+    }
+    assert!(lock(&tracker.last_outcome).is_empty());
+    assert!(lock(&tracker.predictable).is_empty());
+}
+
+#[test]
+fn invalidating_all_predictions_stops_blocks_until_the_call_returns_again() {
+    let tracker = staged();
+    for _ in 0..4 {
+        record(&tracker);
+    }
+    tracker.invalidate_all_predictions();
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Allow));
+}

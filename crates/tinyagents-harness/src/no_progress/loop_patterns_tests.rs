@@ -118,3 +118,36 @@ fn argument_churn_is_scoped_to_one_tool() {
         }
     }
 }
+
+#[test]
+fn churn_state_stays_bounded_under_unique_calls() {
+    let detector = ArgumentChurnDetector::new(3, 3);
+    for n in 0..(MAX_CHURN_GROUPS * 2) {
+        assert!(
+            detector
+                .record("read", "args", &format!("outcome-{n}"))
+                .is_none()
+        );
+    }
+    assert!(lock(&detector.state).groups.len() <= MAX_CHURN_GROUPS);
+}
+
+#[test]
+fn churn_warns_once_and_drops_the_warned_group() {
+    let detector = ArgumentChurnDetector::new(2, 2);
+    let mut notes = 0;
+    for _ in 0..3 {
+        for args in ["a", "b"] {
+            notes += usize::from(detector.record("read", args, "same").is_some());
+        }
+    }
+    assert_eq!(notes, 1);
+    assert!(lock(&detector.state).groups.is_empty());
+}
+
+#[test]
+fn tool_name_handles_length_prefixed_and_plain_signatures() {
+    assert_eq!(tool_name("4:read\u{1}x"), "read");
+    assert_eq!(tool_name("a:b\u{1}c"), "a:b");
+    assert_eq!(tool_name("read\u{1}x"), "read");
+}

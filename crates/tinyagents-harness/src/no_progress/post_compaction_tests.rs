@@ -97,3 +97,18 @@ fn a_tail_that_was_not_repeating_is_not_remembered() {
         "one re-read of evicted content is correct behaviour"
     );
 }
+
+#[test]
+fn a_repeating_pair_ages_out_while_unrelated_calls_run() {
+    let guard = PostCompactionGuard::new(3);
+    assert!(!guard.record("read\u{1}a", "doc-a", true));
+    for n in 0..3 {
+        assert!(!guard.record(&format!("other\u{1}{n}"), "x", false));
+    }
+    assert!(!guard.record("read\u{1}z", "doc-z", true));
+    guard.arm();
+    assert!(
+        !guard.record("read\u{1}a", "doc-a", true),
+        "the stale pair is outside the last window of calls"
+    );
+}

@@ -145,3 +145,24 @@ fn eviction_keeps_the_block_count_but_clears_the_ledger() {
         "but the earlier block of that call still counts toward the halt"
     );
 }
+
+#[test]
+fn signatures_with_the_separator_inside_do_not_collide() {
+    assert_ne!(
+        call_signature("a\u{1}b", "c"),
+        call_signature("a", "b\u{1}c")
+    );
+}
+
+#[test]
+fn an_untracked_state_changing_success_stops_block_predictions() {
+    let monitor = RepeatMonitor::new(&RepeatProgressConfig::default());
+    for _ in 0..4 {
+        monitor.record_call("read", "x", "same", true);
+    }
+    assert!(matches!(monitor.pre_call("read", "x"), CallGate::Block(_)));
+    monitor.note_untracked_success(true);
+    assert!(matches!(monitor.pre_call("read", "x"), CallGate::Block(_)));
+    monitor.note_untracked_success(false);
+    assert!(matches!(monitor.pre_call("read", "x"), CallGate::Allow));
+}
