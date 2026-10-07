@@ -41,44 +41,12 @@ struct AgentGraphState {
 
 /// Builds an assistant response that asks for a single tool call.
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: Some(format!("msg-{id}")),
-            content: Vec::new(),
-            tool_calls: vec![ToolCall::new(id, name, arguments)],
-            usage: Some(Usage::new(6, 2)),
-            origin: None,
-        },
-        usage: Some(Usage::new(6, 2)),
-        finish_reason: Some("tool_calls".to_string()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(6, 2))
 }
 
 /// Builds a plain-text final assistant response.
 fn text_response(text: &str, input: u64, output: u64) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: None,
-            content: vec![ContentBlock::Text(text.to_string())],
-            tool_calls: Vec::new(),
-            usage: Some(Usage::new(input, output)),
-            origin: None,
-        },
-        usage: Some(Usage::new(input, output)),
-        finish_reason: Some("stop".to_string()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::text_response(text).with_usage(Usage::new(input, output))
 }
 
 #[tokio::test]
