@@ -3,7 +3,8 @@
 //! [`TranscriptMeta`] / [`DisplayMessage`] types.
 
 use super::types::{
-    DisplayMessage, MessageUsage, TRANSCRIPT_SCHEMA_VERSION, TranscriptMeta, TurnUsage,
+    BackgroundOrigin, DisplayMessage, MessageUsage, TRANSCRIPT_SCHEMA_VERSION, TranscriptMeta,
+    TurnUsage,
 };
 use super::types::{ToolFailure, TranscriptMessage, TranscriptPart, TranscriptToolCall};
 use anyhow::{Context, Result};
@@ -179,9 +180,30 @@ pub(super) struct MessageLine {
         deserialize_with = "lenient_parts"
     )]
     pub(super) parts: Option<Vec<TranscriptPart>>,
+    /// Set only on a line written out of band by
+    /// [`append_background_message`](super::append_background_message): who
+    /// delivered it and its idempotency key. Additive — a reader that predates
+    /// it keeps the line as an ordinary message — and lenient, so a malformed
+    /// value reads as `None` instead of costing the whole message.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_background"
+    )]
+    pub(super) background: Option<BackgroundOrigin>,
     /// Absorb any unknown fields so forward-compat reads don't error.
     #[serde(flatten)]
     pub(super) _extra: HashMap<String, serde_json::Value>,
+}
+
+/// Deserialises `background`, mapping a shape this reader cannot decode to
+/// `None` rather than failing the whole line.
+fn lenient_background<'de, D>(deserializer: D) -> Result<Option<BackgroundOrigin>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// Deserialises `parts`, mapping any shape this reader cannot decode (an
@@ -369,6 +391,7 @@ pub(super) fn build_message_line(
         shape: typed.as_ref().map(|typed| typed.shape.as_str().to_string()),
         tool_call_id: typed.as_ref().and_then(|typed| typed.tool_call_id.clone()),
         parts: typed.and_then(|typed| typed.parts),
+        background: None,
         _extra: HashMap::new(),
     }
 }
@@ -785,6 +808,7 @@ pub(super) fn display_message_from_line(ml: MessageLine) -> DisplayMessage {
         reasoning_content,
         failure: ml.failure,
         failure_detail: ml.failure_detail.clone(),
+        background: ml.background.clone(),
         message: TranscriptMessage {
             id: typed.id,
             role: typed.role,

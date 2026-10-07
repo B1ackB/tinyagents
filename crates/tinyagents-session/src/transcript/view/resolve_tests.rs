@@ -14,6 +14,7 @@ fn display(message: TranscriptMessage) -> DisplayRecord {
         reasoning_content: None,
         failure: false,
         failure_detail: None,
+        background: None,
     }))
 }
 

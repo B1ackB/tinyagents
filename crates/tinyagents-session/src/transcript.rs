@@ -130,8 +130,11 @@
 //! | `migration`     | One-shot legacy date-grouped layout conversion.               |
 //! | `session`       | [`SessionRef`] identity and its deterministic stem.           |
 //! | `adoption`      | Folding pre-identity transcripts into a session.              |
+//! | `background`    | Out-of-band, idempotent assistant appends into the head.      |
+//! | `turn_lock`     | Per-session turn lock shared with background appends.         |
 
 mod adoption;
+mod background;
 mod history;
 pub mod import;
 mod jsonl;
@@ -143,11 +146,13 @@ mod reader;
 mod session;
 pub mod spend;
 mod thread_lookup;
+mod turn_lock;
 mod types;
 pub mod view;
 mod writer;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
+pub use background::{append_background_message, append_background_message_with_lock_notification};
 pub use history::{
     FileTranscriptHistory, FileTranscriptLocator, TranscriptHistory, TranscriptLocator,
     TranscriptPartial, TranscriptRead, TranscriptTurn, TruncateCut,
@@ -161,10 +166,12 @@ pub use thread_lookup::{
     find_root_transcript_for_thread, find_root_transcript_for_thread_scoped,
     find_root_transcripts_for_thread, read_thread_usage_summary,
 };
+pub use turn_lock::{SessionTurnGuard, lock_session_turn};
 pub use types::{
-    CompactionMarker, DisplayMessage, DisplayRecord, DisplaySessionTranscript, LegacyText,
-    MessageUsage, SessionTranscript, ToolFailure, TranscriptMediaRef, TranscriptMessage,
-    TranscriptMeta, TranscriptPart, TranscriptToolCall, TurnUsage,
+    BackgroundAppend, BackgroundAppendOutcome, BackgroundOrigin, CompactionMarker, DisplayMessage,
+    DisplayRecord, DisplaySessionTranscript, LegacyText, MessageUsage, SessionTranscript,
+    ToolFailure, TranscriptMediaRef, TranscriptMessage, TranscriptMeta, TranscriptPart,
+    TranscriptToolCall, TurnUsage,
 };
 pub use writer::{
     append_interrupted_partial, append_tools_record, append_transcript_turn,
