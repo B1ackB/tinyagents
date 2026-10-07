@@ -68,6 +68,7 @@ impl CancellationToken {
                 cancelled: AtomicBool::new(false),
                 notify: Notify::new(),
                 children: Mutex::new(Vec::new()),
+                ancestors: Vec::new(),
             }),
         }
     }
@@ -80,14 +81,23 @@ impl CancellationToken {
     /// tree cancel one sub-run independently while a parent cancel still
     /// unwinds every descendant.
     pub fn child_token(&self) -> Self {
-        let child = Self::new();
-        {
-            let mut children = self
-                .state
+        let mut ancestors = self.state.ancestors.clone();
+        ancestors.push(Arc::clone(&self.state));
+        let child = Self {
+            state: Arc::new(CancelState {
+                cancelled: AtomicBool::new(false),
+                notify: Notify::new(),
+                children: Mutex::new(Vec::new()),
+                ancestors,
+            }),
+        };
+        for ancestor in &child.state.ancestors {
+            let mut children = ancestor
                 .children
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            children.push(Arc::clone(&child.state));
+            children.retain(|link| link.strong_count() > 0);
+            children.push(Arc::downgrade(&child.state));
         }
         // Re-check after linking: a `cancel` racing the registration either
         // saw the link (and cancels the child) or is observed here.
@@ -165,6 +175,7 @@ fn cancel_state(state: &Arc<CancelState>) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
+            .filter_map(|link| link.upgrade())
             .collect::<Vec<_>>();
         pending.extend(children);
     }
