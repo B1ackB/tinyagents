@@ -263,7 +263,7 @@ pub enum FailoverDecision {
     Surface,
 }
 
-/// The per-attempt facts [`decide`] combines with the [`FailoverReason`].
+/// The per-attempt facts [`decide`][crate::retry::decide] combines with the [`FailoverReason`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FailoverState {
     /// The retry policy ([`RetryPolicy::is_retryable_error`], honouring a
