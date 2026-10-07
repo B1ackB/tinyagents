@@ -166,6 +166,16 @@ fn visible_tool_results(
 ///   re-read whose output changed does not count. A result that compaction
 ///   later evicts stops counting; see [`RepeatEvictionObserver`].
 ///
+/// Escalation is **staged** by default (see [`RepeatProgressConfig`]): each
+/// halt above first only *warns*, appending a `[repeat notice]` to the tool
+/// result; an identical call that keeps repeating is then **blocked** in
+/// `before_tool` (answered with an error result, never executed); a second
+/// block in the run halts as described below. Ping-pong and argument-churn
+/// patterns only warn, and a repeat of the calls made right before a context
+/// compaction jumps straight to the block stage.
+/// [`RepeatProgressConfig::immediate_halt`] restores halting at the first
+/// threshold.
+///
 /// Polling/wait tools (per the [`RepeatExemption`]) are exempt from all three:
 /// their contract is to be re-invoked identically, so an all-poll batch resets
 /// the streaks instead of recording. On a trip it writes the legacy root-cause

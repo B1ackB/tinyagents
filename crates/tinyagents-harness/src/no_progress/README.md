@@ -19,6 +19,16 @@ A sibling tracker, [`SuccessfulRepeatTracker`], covers the complementary shape
 — a model that keeps *succeeding* at the same no-op call (or cycles through a
 short repeating sequence) without making progress.
 
+The successful-repeat side escalates in stages: the first threshold **warns**
+(a note for the host to attach to the tool result), a call that keeps
+repeating is **blocked** before it executes ([`SuccessfulRepeatTracker::pre_call`]
+-> [`CallGate`]), and a second block in the run **halts**. [`RepeatEscalation`]
+sets the gaps; a tracker built with `new` and no escalation halts at the first
+threshold, as it always did. Two warning-only detectors ([`PingPongDetector`],
+[`ArgumentChurnDetector`]) and a [`PostCompactionGuard`] sit beside it, and
+[`RepeatMonitor`] composes all of them for one run behind
+[`RepeatProgressConfig`].
+
 All trackers are free of harness types (no `RunContext`, no `Message`) so they
 can be unit-tested in isolation. The agent loop drives
 `StreamTextStallDetector` on visible streaming output and ends the model call
@@ -86,6 +96,16 @@ hook" section in `mod.rs` for that contract.
 - [`SuccessfulRepeatTracker`] / [`SuccessfulRepeat`] — the successful-repeat
   counterpart: `record_output`, `record_call_batch`, `record_call_outcome`,
   and `reset`.
+- [`RepeatEscalation`] / [`CallGate`] — staged escalation settings (defaults:
+  block 2 repeats after the warning, halt on the 2nd block) and the
+  before-execution verdict (`Allow` / `Block` / `Halt`);
+  `SuccessfulRepeat::Warn` is the first-stage verdict.
+- [`PingPongDetector`] (warn at 6 alternating calls) and
+  [`ArgumentChurnDetector`] (3 variants x 3 calls, one result) — warning-only.
+- [`PostCompactionGuard`] — remembers the last 3 calls before a compaction and
+  flags a repeat of one within the next 3.
+- [`RepeatMonitor`] / [`RepeatProgressConfig`] — one run's composed repeat
+  accounting; `RepeatProgressConfig::immediate_halt()` is the legacy preset.
 - [`StreamTextStallDetector`] — consumes visible text fragments during one
   model call and flags a long run of similarly opened sentences before the
   provider stream finishes.
@@ -99,6 +119,10 @@ hook" section in `mod.rs` for that contract.
 | --- | --- |
 | `mod.rs` | The identical/any-failure escalation ladder (`NoProgressTracker::record`), argument fingerprinting, and the nudge/halt message builders. |
 | `successful_repeat.rs` | The successful-repeat streak tracker (`SuccessfulRepeatTracker`) and its private `Streak` helper. |
+| `escalation.rs` | `RepeatEscalation`: the block/halt gaps for staged escalation. |
+| `loop_patterns.rs` | Warning-only `PingPongDetector` and `ArgumentChurnDetector`. |
+| `post_compaction.rs` | `PostCompactionGuard`. |
+| `monitor.rs` | `RepeatMonitor` and `RepeatProgressConfig`: the per-run composition a middleware drives. |
 | `stream_text/` | Chunk-independent streamed-text stall detector and focused tests. |
 | `types.rs` | Public and crate-private type definitions shared by both trackers. |
 | `test.rs` | Unit tests for the escalation ladder. |
