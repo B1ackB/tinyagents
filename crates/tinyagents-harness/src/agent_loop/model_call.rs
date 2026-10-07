@@ -19,9 +19,7 @@ pub(super) const PER_CALL_BOUND_LABEL: &str = "per-model-call ceiling";
 use super::*;
 use crate::cache::{CacheSkipReason, apply_prompt_cache_breakpoints, scoped_cache_key};
 use crate::no_progress::StreamTextStallDetector;
-use crate::retry::{
-    FailoverDecision, FailoverReason, FailoverState, decide,
-};
+use crate::retry::{FailoverDecision, FailoverReason, FailoverState, decide};
 use tinyinference_llm::cache::CachePolicy;
 
 /// Converts a configured stream window to a [`Duration`]. `None` and a zero
@@ -925,7 +923,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// that can't call tools, lacks vision, or has a smaller context window
     /// (issue #4641). `allow_retired` is `false` to match
     /// `ModelRegistry::resolve_request`. Every skipped candidate is recorded as
-    /// visited and surfaced as [`AgentEvent::FallbackSkipped`].
+    /// visited and surfaced as [`AgentEvent::FallbackSkipped`]. With
+    /// `larger_than = Some(n)` a candidate must also declare a
+    /// `max_input_tokens` strictly greater than `n` (context-overflow failover).
     fn select_fallback(
         &self,
         ctx: &mut RunContext<Ctx>,

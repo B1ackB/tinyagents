@@ -14,7 +14,9 @@ use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::runtime::{AgentHarness, RunPolicy};
 use crate::testkit::{EventRecorder, FakeTool};
 use tinyinference_llm::message::Message;
-use tinyinference_llm::model::{ChatModel, ModelProfile, ModelRequest, ModelResponse, ProviderError};
+use tinyinference_llm::model::{
+    ChatModel, ModelProfile, ModelRequest, ModelResponse, ProviderError,
+};
 use tinyinference_llm::tool::ToolCall;
 
 /// Plays a script of outcomes (one per call); once exhausted it repeats the
@@ -251,11 +253,13 @@ impl ChatModel<()> for Windowed {
     ) -> tinyinference_llm::Result<ModelResponse> {
         *self.attempts.lock().unwrap() += 1;
         if self.overflow {
-            return Err(tinyinference_llm::Error::Provider(Box::new(provider_error(
-                400,
-                "This model's maximum context length is 8192 tokens",
-                false,
-            ))));
+            return Err(tinyinference_llm::Error::Provider(Box::new(
+                provider_error(
+                    400,
+                    "This model's maximum context length is 8192 tokens",
+                    false,
+                ),
+            )));
         }
         Ok(ModelResponse::assistant("from sibling"))
     }
@@ -315,7 +319,10 @@ async fn harness_err(harness: &AgentHarness<()>) {
         .invoke_default(&(), vec![Message::user("hi")])
         .await
         .expect_err("overflow with no larger sibling surfaces");
-    assert!(matches!(error, TinyAgentsError::Provider(_)), "got {error:?}");
+    assert!(
+        matches!(error, TinyAgentsError::Provider(_)),
+        "got {error:?}"
+    );
 }
 
 #[tokio::test]

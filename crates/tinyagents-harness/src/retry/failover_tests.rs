@@ -99,7 +99,12 @@ fn fixable_or_per_project_auth_states_are_not_permanent() {
 
 #[test]
 fn a_timeout_parameter_in_a_4xx_body_is_not_a_timeout() {
-    let error = provider(Some(400), None, "invalid value for 'timeout': expected integer", false);
+    let error = provider(
+        Some(400),
+        None,
+        "invalid value for 'timeout': expected integer",
+        false,
+    );
     assert_eq!(reason_of(&error), FailoverReason::Format);
     let real = provider(Some(504), None, "gateway timeout", true);
     assert_eq!(reason_of(&real), FailoverReason::Timeout);
@@ -179,7 +184,11 @@ fn classifies_dedicated_error_variants() {
 
 // ── decision table ───────────────────────────────────────────────────────────
 
-fn state(retryable: bool, attempts_remaining: bool, larger_window_available: bool) -> FailoverState {
+fn state(
+    retryable: bool,
+    attempts_remaining: bool,
+    larger_window_available: bool,
+) -> FailoverState {
     FailoverState {
         retryable,
         attempts_remaining,
@@ -283,5 +292,8 @@ fn state_for_reads_the_retry_policy_and_the_error() {
     assert!(state.retryable && state.attempts_remaining);
     let exhausted = FailoverState::for_error(&policy, 1, &transient);
     assert!(exhausted.retryable && !exhausted.attempts_remaining);
-    assert!(!exhausted.larger_window_available, "defaults to no larger window");
+    assert!(
+        !exhausted.larger_window_available,
+        "defaults to no larger window"
+    );
 }
