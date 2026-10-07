@@ -410,10 +410,19 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
                 () = reply.cancellation() => None,
             }
         };
+        // Tool output and tool-raised errors can carry user data or secrets:
+        // like the arguments, they are recorded only under `tool_io` capture.
+        let capture = self.harness.policy.capture.tool_io;
         let (status, error) = match &outcome {
-            Some(Ok(result)) if result.is_error => ("error", Some(truncate(&result.output(), 256))),
+            Some(Ok(result)) if result.is_error => (
+                "error",
+                capture.then(|| truncate(&result.output(), 256)),
+            ),
             Some(Ok(_)) => ("ok", None),
-            Some(Err(error)) => ("failed", Some(truncate(&error.to_string(), 256))),
+            Some(Err(error)) => (
+                "failed",
+                capture.then(|| truncate(&error.to_string(), 256)),
+            ),
             None => (
                 "abandoned",
                 Some("the calling tool stopped waiting for the call".to_string()),
@@ -467,7 +476,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             );
             return;
         };
-        if object.contains_key("nested_calls") {
+        if object.contains_key("nested_calls") || object.contains_key("nested_calls_truncated") {
             // The tool owns that key; never overwrite its value.
             tracing::debug!(
                 target: "tinyagents::nested_tools",

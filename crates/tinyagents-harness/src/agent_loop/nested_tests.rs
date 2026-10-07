@@ -1759,6 +1759,28 @@ async fn tool_owned_nested_calls_metadata_is_not_overwritten() {
 }
 
 #[tokio::test]
+async fn nested_summaries_omit_error_output_unless_tool_io_capture_is_on() {
+    for capture in [false, true] {
+        let caller = Caller::new("caller", vec![("secret", json!({}))]);
+        let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+        if capture {
+            harness.policy.capture = crate::runtime::PayloadCapture::all();
+        }
+        harness.register_tool(Leaf::new("secret"));
+        harness.register_tool(Arc::new(caller));
+        harness.push_tool_middleware(Arc::new(DenySecret));
+        let run = run(&harness, &EventRecorder::new()).await.unwrap();
+        let entry = &run.tool_metadata[0].metadata["nested_calls"][0];
+        assert_eq!(entry["status"], "error");
+        assert_eq!(
+            entry.get("error").is_some(),
+            capture,
+            "capture={capture}: {entry}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn nested_summaries_omit_arguments_unless_tool_io_capture_is_on() {
     let caller = Caller::new("caller", vec![("leaf", json!({"n": 7}))]);
     let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
