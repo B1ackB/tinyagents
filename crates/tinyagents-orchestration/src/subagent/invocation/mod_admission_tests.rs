@@ -133,7 +133,7 @@ async fn inline_slot_is_released_when_the_call_returns() {
         let result = call(&tool, &parent, json!({"input": "x", "mode": "inline"})).await;
         assert!(!result.is_error, "{}", result.output());
     }
-    assert_eq!(tool.spawn_admission().active_children("parent"), 0);
+    assert_eq!(tool.spawn_admission().active_children("run:parent"), 0);
 }
 
 #[tokio::test]
@@ -172,8 +172,8 @@ async fn failed_spawn_refunds_the_reservation() {
     let too_deep = RunContext::new(RunConfig::new("parent").with_max_depth(0), ());
     let result = call(&tool, &too_deep, json!({"input": "x"})).await;
     assert_limit_signal(&result);
-    assert_eq!(tool.spawn_admission().active_children("parent"), 0);
-    assert_eq!(tool.spawn_admission().spawned_in_scope("parent"), 0);
+    assert_eq!(tool.spawn_admission().active_children("run:parent"), 0);
+    assert_eq!(tool.spawn_admission().spawned_in_scope("run:parent"), 0);
 
     let ok = call(&tool, &parent(), json!({"input": "x", "mode": "inline"})).await;
     assert!(!ok.is_error, "{}", ok.output());
@@ -242,7 +242,7 @@ async fn a_later_turn_shares_the_cap_with_a_background_child_still_alive() {
     let turn_two = parent_on_thread("run-turn-2", "thread-A");
     let blocked = call(&tool, &turn_two, json!({"input": "b"})).await;
     assert_limit_signal(&blocked);
-    assert_eq!(tool.spawn_admission().active_children("thread-A"), 1);
+    assert_eq!(tool.spawn_admission().active_children("thread:thread-A"), 1);
 
     // A different conversation is unaffected.
     let other = parent_on_thread("run-turn-3", "thread-B");
@@ -266,8 +266,8 @@ async fn dropping_an_inline_call_releases_its_slot() {
 
     // The dropped future released the live slot, and refunded nothing it
     // already spent: the child had started, so the budget stays consumed.
-    assert_eq!(tool.spawn_admission().active_children("parent"), 0);
-    assert_eq!(tool.spawn_admission().spawned_in_scope("parent"), 1);
+    assert_eq!(tool.spawn_admission().active_children("run:parent"), 0);
+    assert_eq!(tool.spawn_admission().spawned_in_scope("run:parent"), 1);
 }
 
 #[tokio::test]

@@ -151,10 +151,12 @@ pub struct SpawnAdmission {
 type ScopeKeyFn = Arc<dyn Fn(&RunConfig) -> String + Send + Sync>;
 
 /// Default scope rule: the parent's conversation (`thread_id`), else its run id.
+/// Keys carry a `thread:` / `run:` prefix so a thread id and a run id that
+/// happen to share text can never alias one ledger entry.
 fn default_scope_key(parent: &RunConfig) -> String {
     match &parent.thread_id {
-        Some(thread) => thread.as_str().to_owned(),
-        None => parent.run_id.as_str().to_owned(),
+        Some(thread) => format!("thread:{}", thread.as_str()),
+        None => format!("run:{}", parent.run_id.as_str()),
     }
 }
 
@@ -195,7 +197,9 @@ impl SpawnAdmission {
         self
     }
 
-    /// The scope key `parent` resolves to under this ledger's rule.
+    /// The scope key `parent` resolves to under this ledger's rule. Under the
+    /// default rule it is `thread:<thread_id>` or, without a thread,
+    /// `run:<run_id>`.
     pub fn scope_of(&self, parent: &RunConfig) -> String {
         (self.scope_key)(parent)
     }
@@ -240,6 +244,12 @@ impl SpawnAdmission {
     /// live slot (so the resumed run counts against the scope's live cap) but
     /// not another unit of the total budget, which the original spawn paid. The
     /// scope is resolved exactly as for a fresh spawn.
+    ///
+    /// This is a trusted-host entry point: the ledger holds no per-child
+    /// identity, so it cannot verify that `target` names a child that already
+    /// paid its budget. The caller must only use it after confirming the child
+    /// exists (the driver does so by requiring a persisted resume); calling it
+    /// for a fresh spawn would bypass `max_total_per_root`.
     pub fn try_reserve_continuation(
         &self,
         parent: &RunConfig,

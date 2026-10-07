@@ -1487,7 +1487,7 @@ async fn driver_rejects_a_spawn_over_the_parent_cap_and_frees_the_slot_on_finish
 
     first_cancel.cancel();
     first.await.unwrap().unwrap();
-    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread:thread-1"), 0);
 }
 
 #[tokio::test]
@@ -1551,8 +1551,8 @@ async fn driver_refunds_the_reservation_when_planning_fails_before_launch() {
             .unwrap_err();
         assert!(matches!(error, SubagentError::Planning(_)), "{error}");
     }
-    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
-    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread:thread-1"), 0);
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread:thread-1"), 0);
     assert_eq!(*executor.calls.lock().unwrap(), 0);
 }
 
@@ -1571,7 +1571,7 @@ async fn driver_releases_the_live_slot_when_execution_fails() {
             .unwrap_err();
         assert_eq!(error, SubagentError::Execution("executor failed".into()));
     }
-    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
+    assert_eq!(driver.spawn_admission().active_children("thread:thread-1"), 0);
 }
 
 #[tokio::test]
@@ -1610,7 +1610,7 @@ async fn driver_continuation_takes_a_live_slot_but_no_total_budget() {
         .run(sibling_request("original"), CancellationToken::new())
         .await
         .unwrap();
-    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 1);
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread:thread-1"), 1);
 
     // The budget is spent, so a fresh spawn is refused...
     let fresh = driver
@@ -1635,8 +1635,8 @@ async fn driver_continuation_takes_a_live_slot_but_no_total_budget() {
     )
     .unwrap();
     driver.run(resumed, CancellationToken::new()).await.unwrap();
-    assert_eq!(driver.spawn_admission().spawned_in_scope("thread-1"), 1);
-    assert_eq!(driver.spawn_admission().active_children("thread-1"), 0);
+    assert_eq!(driver.spawn_admission().spawned_in_scope("thread:thread-1"), 1);
+    assert_eq!(driver.spawn_admission().active_children("thread:thread-1"), 0);
 }
 
 #[tokio::test]

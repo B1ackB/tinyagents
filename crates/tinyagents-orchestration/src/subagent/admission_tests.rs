@@ -46,10 +46,10 @@ fn per_scope_cap_rejects_then_admits_after_release() {
         admission.try_reserve(&cfg("p"), "w").unwrap_err(),
         SpawnRejection::MaxChildrenPerParent { active: 2, max: 2 }
     );
-    assert_eq!(admission.active_children("p"), 2);
+    assert_eq!(admission.active_children("run:p"), 2);
 
     drop(first);
-    assert_eq!(admission.active_children("p"), 1);
+    assert_eq!(admission.active_children("run:p"), 1);
     drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
@@ -66,7 +66,7 @@ fn turns_with_different_run_ids_on_one_thread_share_the_cap() {
     let admission = admission(Some(1), Some(2), None);
     assert_eq!(
         admission.scope_of(&turn("run-1", "thread-A")),
-        "thread-A",
+        "thread:thread-A",
         "the thread, not the run id, is the scope"
     );
     let mut first = admission
@@ -105,7 +105,7 @@ fn total_budget_survives_run_id_churn_on_a_thread() {
             .unwrap();
         r.commit();
     }
-    assert_eq!(admission.spawned_in_scope("thread-A"), 2);
+    assert_eq!(admission.spawned_in_scope("thread:thread-A"), 2);
     assert_eq!(
         admission
             .try_reserve(&turn("run-9", "thread-A"), "w")
@@ -131,7 +131,7 @@ fn total_per_scope_counts_spawned_children_even_after_they_finish() {
         reservation.commit();
         drop(reservation); // child reached a terminal state
     }
-    assert_eq!(admission.spawned_in_scope("root"), 2);
+    assert_eq!(admission.spawned_in_scope("run:root"), 2);
     assert_eq!(
         admission.try_reserve(&cfg("root"), "w").unwrap_err(),
         SpawnRejection::MaxTotalPerRoot { spawned: 2, max: 2 }
@@ -145,8 +145,8 @@ fn uncommitted_reservation_refunds_both_counters() {
     let admission = admission(Some(1), Some(1), None);
     let reservation = admission.try_reserve(&cfg("p"), "w").unwrap();
     drop(reservation); // spawn failed before the child started
-    assert_eq!(admission.active_children("p"), 0);
-    assert_eq!(admission.spawned_in_scope("p"), 0);
+    assert_eq!(admission.active_children("run:p"), 0);
+    assert_eq!(admission.spawned_in_scope("run:p"), 0);
     drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
@@ -160,10 +160,10 @@ fn continuation_takes_an_active_slot_but_no_total_budget() {
 
     let mut resumed = admission.try_reserve_continuation(&cfg("p"), "w").unwrap();
     resumed.commit();
-    assert_eq!(admission.active_children("p"), 1);
+    assert_eq!(admission.active_children("run:p"), 1);
     assert!(admission.try_reserve_continuation(&cfg("p"), "w").is_err());
     drop(resumed);
-    assert_eq!(admission.spawned_in_scope("p"), 1);
+    assert_eq!(admission.spawned_in_scope("run:p"), 1);
 }
 
 #[test]
@@ -198,8 +198,8 @@ fn allowed_targets_gate_the_target_name() {
 fn rejected_target_does_not_consume_a_slot() {
     let admission = admission(Some(1), Some(1), Some(&["w"]));
     assert!(admission.try_reserve(&cfg("p"), "nope").is_err());
-    assert_eq!(admission.active_children("p"), 0);
-    assert_eq!(admission.spawned_in_scope("p"), 0);
+    assert_eq!(admission.active_children("run:p"), 0);
+    assert_eq!(admission.spawned_in_scope("run:p"), 0);
     drop(admission.try_reserve(&cfg("p"), "w").unwrap());
 }
 
@@ -232,7 +232,7 @@ fn concurrent_reservations_cannot_race_past_the_cap() {
         .filter_map(|handle| handle.join().unwrap())
         .collect();
     assert_eq!(admitted.len(), CAP);
-    assert_eq!(admission.active_children("p"), CAP);
+    assert_eq!(admission.active_children("run:p"), CAP);
 }
 
 #[test]
@@ -248,4 +248,16 @@ fn rejection_messages_name_the_limit() {
     }
     .to_string();
     assert!(unnamed.contains("named none"), "{unnamed}");
+}
+
+#[test]
+fn a_thread_id_and_a_run_id_with_the_same_text_do_not_share_a_scope() {
+    let admission = admission(Some(1), Some(1), None);
+    let mut threaded = admission.try_reserve(&turn("r", "x"), "w").unwrap();
+    threaded.commit();
+    // An unthreaded parent whose run id is "x" is a different scope.
+    assert_ne!(admission.scope_of(&turn("r", "x")), admission.scope_of(&cfg("x")));
+    let _unthreaded = admission.try_reserve(&cfg("x"), "w").unwrap();
+    assert_eq!(admission.active_children("thread:x"), 1);
+    assert_eq!(admission.active_children("run:x"), 1);
 }
