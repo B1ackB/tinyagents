@@ -419,6 +419,11 @@ fn subagent_status_follows_a_typed_incomplete_result() {
         ),
         SubagentStatus::Incomplete
     );
+    assert_ne!(
+        status_for_delegation_result(r#"{"status":"incomplete"}"#),
+        SubagentStatus::Incomplete,
+        "foreign JSON without the harness job keys is not trusted"
+    );
     assert_eq!(
         status_for_delegation_result(r#"{"job_id":"j","status":"completed"}"#),
         SubagentStatus::Completed
