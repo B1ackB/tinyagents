@@ -131,7 +131,9 @@ fn is_state_timestamp_field(text: &str, found: &Match<'_>) -> bool {
             "event_at",
             "eventat",
             "created_at",
+            "createdat",
             "updated_at",
+            "updatedat",
             "timestamp",
         ]
         .iter()

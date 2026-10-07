@@ -57,6 +57,14 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
         r#"{"event_at" : "2026-10-06T12:34:57Z"}"#,
     );
     differ(
+        r#"{"status":"ok","createdAt":"2026-10-06T12:34:56Z"}"#,
+        r#"{"status":"ok","createdAt":"2026-10-06T12:34:57Z"}"#,
+    );
+    differ(
+        r#"{"status":"ok","updatedAt":"2026-10-06T12:34:56Z"}"#,
+        r#"{"status":"ok","updatedAt":"2026-10-06T12:34:57Z"}"#,
+    );
+    differ(
         "2026-10-06T12:34:56Z started",
         "2026-10-06T12:34:56Z stopped",
     );
@@ -111,7 +119,8 @@ fn epoch_numbers_are_normalized_only_under_a_time_key() {
         r#"{"status":"running","updated_at": 1759752896}"#,
         r#"{"status":"running","updated_at": 1759752999}"#,
     );
-    same("createdAt=1759752896 saved", "createdAt=1759752999 saved");
+    differ("createdAt=1759752896 saved", "createdAt=1759752999 saved");
+    differ("updatedAt=1759752896 saved", "updatedAt=1759752999 saved");
     same("mtime=1759752896 file", "mtime=1759752999 file");
     differ("ts=1759752896 ok", "ts=1759752896 bad");
 }
