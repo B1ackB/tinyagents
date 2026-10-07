@@ -5,6 +5,9 @@
 //! durable lifecycle driver. Hosts supply persistence and concrete execution;
 //! policy, credentials, progress, and RPC remain host concerns.
 //!
+//! The [`status`] module and the `to_*_status` methods map the job, detached,
+//! task and run-ledger status vocabularies onto each other.
+//!
 //! Dependency direction is deliberately one way:
 //! `orchestration -> {harness, runtime}`. The lower-level crates never
 //! depend on this composition layer.
