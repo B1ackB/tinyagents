@@ -624,13 +624,16 @@ impl TranscriptLocator for FileTranscriptLocator {
         }
         // A partial belongs to the conversation's current head: a compaction
         // seals generation `n` and opens `n+1`, and a sealed generation is
-        // never written again. The head is re-checked under the write locks,
-        // so a compaction cannot open a successor between scan and append.
-        let path = head_generation_path(&path);
-        let history =
-            FileTranscriptHistory::opened_at(path.clone(), seed_meta_for_discovered(thread_id));
+        // never written again. Keep the initial root path so both successor
+        // resolution and the append happen under the same write locks.
+        let root_path = path;
+        let history = FileTranscriptHistory::opened_at(
+            root_path.clone(),
+            seed_meta_for_discovered(thread_id),
+        );
         history.with_write_locks(|| {
-            if head_generation_path(&path) != path {
+            let path = head_generation_path(&root_path);
+            if path != root_path {
                 return Ok(false);
             }
             crate::transcript::append_interrupted_partial(
