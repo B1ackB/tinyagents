@@ -92,3 +92,26 @@ fn non_text_blocks_are_preserved() {
     assert!(matches!(tool.content[0], ContentBlock::Json(_)));
     assert!(tool.artifact.is_some());
 }
+
+#[test]
+fn older_truncation_spares_results_after_the_last_assistant_message() {
+    let mut messages = vec![
+        Message::user("go"),
+        Message::assistant("calling"),
+        Message::tool("old", big(10_000)),
+        Message::assistant("calling again"),
+        Message::tool("new-a", big(10_000)),
+        Message::tool("new-b", big(10_000)),
+    ];
+    let outcome = truncate_older_tool_results(&mut messages, 1_000);
+    assert_eq!(outcome.truncated, 1);
+    assert!(tool_text(&messages[2]).contains("truncated by tool_result_budget"));
+    assert_eq!(tool_text(&messages[4]).len(), 10_000);
+    assert_eq!(tool_text(&messages[5]).len(), 10_000);
+}
+
+#[test]
+fn older_truncation_with_no_assistant_message_cuts_nothing() {
+    let mut messages = vec![Message::tool("c", big(10_000))];
+    assert_eq!(truncate_older_tool_results(&mut messages, 1_000).truncated, 0);
+}

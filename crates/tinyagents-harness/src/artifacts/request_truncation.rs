@@ -109,6 +109,18 @@ pub fn truncate_tool_results(messages: &mut [Message], max_bytes: usize) -> Requ
     outcome
 }
 
+/// [`truncate_tool_results`] over everything before the last assistant message:
+/// the results that follow it are what the model just asked for and are left
+/// whole. This is the cut a run applies to *every* request once truncation has
+/// engaged, so the model always sees the answer to its latest call.
+pub fn truncate_older_tool_results(messages: &mut [Message], max_bytes: usize) -> RequestTruncation {
+    let boundary = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::Assistant(_)))
+        .unwrap_or(0);
+    truncate_tool_results(&mut messages[..boundary], max_bytes)
+}
+
 #[cfg(test)]
 #[path = "request_truncation_tests.rs"]
 mod request_truncation_test;

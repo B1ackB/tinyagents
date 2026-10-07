@@ -78,7 +78,8 @@ pub use ops::{
 pub use paths::{relative_to_root, resolve_artifact_path, sanitize_component};
 pub use policy::{ArtifactPathPolicy, ArtifactRedactor, NoRedaction, OpenPathPolicy, Redacted};
 pub use request_truncation::{
-    RequestTruncation, reducible_tool_result_bytes, truncate_tool_results,
+    RequestTruncation, reducible_tool_result_bytes, truncate_older_tool_results,
+    truncate_tool_results,
 };
 pub use types::{
     ABSTRACT_BUDGET_CHARS, ARTIFACT_POINTER_PREFIX, ArtifactKind, DEFAULT_OFFLOAD_THRESHOLD_BYTES,

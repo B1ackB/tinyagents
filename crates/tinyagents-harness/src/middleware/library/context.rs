@@ -147,7 +147,8 @@ impl ContextCompressionMiddleware {
     /// Opt-in: unset (the default) never truncates. The cut rewrites only the
     /// outgoing request; the transcript keeps the full results, and a run that
     /// has truncated once keeps truncating, so its prompt prefix stays
-    /// byte-stable. Results flagged `trusted_verbatim` are never cut.
+    /// byte-stable within a run, apart from each result being cut once when a
+    /// later assistant turn follows it (the newest results are spared). Results flagged `trusted_verbatim` are never cut.
     pub fn with_tool_result_truncation(mut self, max_bytes: usize) -> Self {
         self.tool_result_truncation = Some(max_bytes).filter(|bytes| *bytes > 0);
         self
@@ -725,9 +726,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         request: ModelRequest,
         next: ModelHandler<'_, State, Ctx>,
     ) -> Result<MiddlewareModelOutcome> {
-        // `base` holds the compactions so far and is never truncated, so a
-        // later compaction summarizes full tool results; `truncate` is applied
-        // on top of it when sending.
+        // `base` holds the compactions so far; this loop never truncates it, so
+        // a later compaction summarizes the results as it received them.
+        // `truncate` is applied on top of it when sending. (A request that
+        // `before_model` already cut in truncating mode arrives cut.)
         let mut base = request;
         let mut truncate: Option<usize> = None;
         let mut attempts = 0u32;

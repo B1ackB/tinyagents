@@ -6,7 +6,9 @@
 //! helpers (`remember_fold`, `finish_compaction`, the fingerprint chain).
 
 use super::*;
-use crate::artifacts::{reducible_tool_result_bytes, truncate_tool_results};
+use crate::artifacts::{
+    reducible_tool_result_bytes, truncate_older_tool_results, truncate_tool_results,
+};
 use crate::summarization::{OverflowInfo, detect_response_overflow};
 
 impl ContextCompressionMiddleware {
@@ -405,7 +407,8 @@ impl ContextCompressionMiddleware {
     }
 
     /// Re-applies the run's truncation to a request rebuilt from the full
-    /// transcript, once a route has engaged it. Silent (the engagement was
+    /// transcript, once a route has engaged it, sparing the results that follow
+    /// the last assistant message. Silent (the engagement was
     /// announced) and idempotent.
     pub(super) fn apply_run_truncation<Ctx: Send + Sync>(
         &self,
@@ -422,7 +425,9 @@ impl ContextCompressionMiddleware {
             .get(&ctx.instance_id())
             .is_some_and(|state| state.truncating);
         if engaged {
-            truncate_tool_results(&mut request.messages, cap);
+            // The newest results answer the model's latest call; they stay
+            // whole until a later assistant turn has had them.
+            truncate_older_tool_results(&mut request.messages, cap);
         }
     }
 
