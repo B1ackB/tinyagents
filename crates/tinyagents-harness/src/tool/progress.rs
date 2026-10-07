@@ -40,10 +40,26 @@
 //! A tool in a tight loop must not drown the event stream. Each gate admits at
 //! most [`ToolProgressLimits::max_per_window`] events per
 //! [`ToolProgressLimits::window`] (default 32 per second). Beyond that, updates
-//! are **coalesced**: the newest value of each field replaces the held one, and
-//! the held update is emitted when the next window opens or the gate closes, so
-//! the final state is never lost. Coalesced-away updates produce no event and
-//! no middleware delta.
+//! are **coalesced**: the newest value of each field replaces the held one.
+//! There is no timer: the held update is emitted on the first accepted update
+//! of the next window, or when the gate closes (the call settles or its
+//! future is dropped), so the final state is never lost but a tool that goes
+//! quiet right after a burst shows its last state only at settle. Coalesced-away
+//! updates produce no event and no middleware delta. The limits are fixed at
+//! the defaults; they are crate-private rather than a policy knob.
+//!
+//! The middleware replay queue is bounded too: at most
+//! [`MAX_PENDING_DELTAS`] deltas are retained (the newest win, the dropped
+//! count is logged), each delta's `content` is capped at
+//! [`MAX_DELTA_CONTENT_BYTES`] so a huge `partial` is never serialized in full,
+//! and nothing is queued at all when the run has no middleware.
+//!
+//! # Listeners
+//!
+//! Events are emitted while the gate's lock is held (that is what makes the
+//! drop-after-settle guarantee race-free). An [`EventListener`](crate::events::EventListener)
+//! must therefore not call `report_progress` re-entrantly: it would deadlock on
+//! that call's own gate.
 //!
 //! # Reaching the gate
 //!
@@ -51,11 +67,16 @@
 //! implemented outside this crate. It scopes the gate in a task-local around
 //! the dispatch future instead, and [`ToolExecutionContext::from_run_context`]
 //! picks it up when the dispatch builds the tool's context for the matching
-//! call id. The sink then lives in the context, so a tool may move it into a
+//! call id. A dispatch must therefore build its context **inside**
+//! `ToolDispatch::execute`'s future (not ahead of time or on another task), or
+//! the context carries no sink. The scope also closes the gate when the future
+//! is *dropped* (run cancelled mid-call), so a task the tool spawned cannot
+//! emit afterwards. The sink then lives in the context, so a tool may move it into a
 //! spawned task; the gate's `open` flag, not the task-local, is what silences
 //! it later.
 
 use std::future::Future;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -65,17 +86,22 @@ use tinytools::{ProgressSink, ToolProgress};
 use crate::events::{AgentEvent, EventSink};
 use crate::ids::CallId;
 
+/// Most deltas kept for the middleware replay; older ones are dropped.
+const MAX_PENDING_DELTAS: usize = 64;
+/// Most bytes of a delta's `content`; longer renderings are truncated.
+const MAX_DELTA_CONTENT_BYTES: usize = 4096;
+
 /// How many progress events one call may emit before coalescing starts.
 ///
 /// See the module docs ("Flooding"). The default admits 32 events per second,
 /// far above what a human-facing progress bar needs and far below what a tool
 /// looping over a file can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolProgressLimits {
+pub(crate) struct ToolProgressLimits {
     /// Events admitted per window before further updates are coalesced.
-    pub max_per_window: usize,
+    pub(crate) max_per_window: usize,
     /// Length of the window.
-    pub window: Duration,
+    pub(crate) window: Duration,
 }
 
 impl Default for ToolProgressLimits {
@@ -89,10 +115,13 @@ impl Default for ToolProgressLimits {
 
 #[derive(Default)]
 struct GateState {
-    /// `false` once the call has settled; further updates are dropped.
+    /// `true` once the call has settled; further updates are dropped.
     closed: bool,
-    /// Deltas for events already emitted, awaiting the middleware replay.
-    pending: Vec<ToolDelta>,
+    /// Deltas for events already emitted, awaiting the middleware replay
+    /// (bounded by [`MAX_PENDING_DELTAS`]).
+    pending: VecDeque<ToolDelta>,
+    /// Deltas evicted from `pending` because the replay queue was full.
+    evicted: usize,
     window_start: Option<Instant>,
     emitted_in_window: usize,
     /// The newest coalesced update not yet emitted.
@@ -105,6 +134,8 @@ pub(crate) struct ToolProgressGate {
     tool_name: String,
     events: EventSink,
     limits: ToolProgressLimits,
+    /// Whether anything will read the replay queue (the run has middleware).
+    queue_deltas: bool,
     state: Mutex<GateState>,
 }
 
@@ -118,12 +149,14 @@ impl ToolProgressGate {
         tool_name: impl Into<String>,
         events: EventSink,
         limits: ToolProgressLimits,
+        queue_deltas: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             call_id,
             tool_name: tool_name.into(),
             events,
             limits,
+            queue_deltas,
             state: Mutex::new(GateState::default()),
         })
     }
@@ -136,15 +169,32 @@ impl ToolProgressGate {
     }
 
     /// Runs `future` with this gate visible to
-    /// [`ToolExecutionContext::from_run_context`](super::ToolExecutionContext::from_run_context).
+    /// [`ToolExecutionContext::from_run_context`](super::ToolExecutionContext::from_run_context),
+    /// and closes the gate when the future finishes **or is dropped**.
     pub(crate) fn scope<F: Future>(self: &Arc<Self>, future: F) -> impl Future<Output = F::Output> {
-        CURRENT.scope(Arc::clone(self), future)
+        let guard = CloseOnDrop(Arc::clone(self));
+        CURRENT.scope(Arc::clone(self), async move {
+            let _guard = guard;
+            future.await
+        })
     }
 
     /// The sink for `call_id`, when a gate for exactly that call is in scope.
     pub(crate) fn current_sink_for(call_id: &CallId) -> Option<ProgressSink> {
         CURRENT
-            .try_with(|gate| (&gate.call_id == call_id).then(|| gate.sink()))
+            .try_with(|gate| {
+                if &gate.call_id == call_id {
+                    Some(gate.sink())
+                } else {
+                    tracing::trace!(
+                        target: "tinyagents::tool_progress",
+                        wanted = %call_id,
+                        scoped = %gate.call_id,
+                        "[tool_progress] scoped gate belongs to another call; no sink"
+                    );
+                    None
+                }
+            })
             .ok()
             .flatten()
     }
@@ -164,7 +214,17 @@ impl ToolProgressGate {
 
     /// Drains the deltas for events already emitted, for the middleware replay.
     pub(crate) fn take_pending(&self) -> Vec<ToolDelta> {
-        std::mem::take(&mut self.lock().pending)
+        let mut state = self.lock();
+        if state.evicted > 0 {
+            tracing::debug!(
+                target: "tinyagents::tool_progress",
+                call_id = %self.call_id,
+                evicted = state.evicted,
+                "[tool_progress] replay queue overflowed; oldest deltas dropped"
+            );
+            state.evicted = 0;
+        }
+        std::mem::take(&mut state.pending).into()
     }
 
     fn accept(&self, update: ToolProgress) {
@@ -210,16 +270,27 @@ impl ToolProgressGate {
 
     fn emit(&self, state: &mut GateState, update: ToolProgress) {
         state.emitted_in_window += 1;
-        state.pending.push(ToolDelta {
-            call_id: self.call_id.as_str().to_string(),
-            content: delta_content(&update),
-            tool_name: Some(self.tool_name.clone()),
-            ..ToolDelta::default()
-        });
+        // `ToolProgress::fraction` is a public field, so do not trust it.
+        let fraction = update
+            .fraction
+            .filter(|f| !f.is_nan())
+            .map(|f| f.clamp(0.0, 1.0));
+        if self.queue_deltas {
+            if state.pending.len() >= MAX_PENDING_DELTAS {
+                state.pending.pop_front();
+                state.evicted += 1;
+            }
+            state.pending.push_back(ToolDelta {
+                call_id: self.call_id.as_str().to_string(),
+                content: delta_content(&update, fraction),
+                tool_name: Some(self.tool_name.clone()),
+                ..ToolDelta::default()
+            });
+        }
         self.events.emit(AgentEvent::ToolProgress {
             call_id: self.call_id.clone(),
             message: update.message.unwrap_or_default(),
-            fraction: update.fraction,
+            fraction,
             partial: update.partial,
         });
     }
@@ -242,17 +313,67 @@ fn merge(older: ToolProgress, newer: ToolProgress) -> ToolProgress {
     }
 }
 
-/// The text the middleware sees: the status line, else the partial output,
-/// else the fraction as a percentage.
-fn delta_content(update: &ToolProgress) -> String {
-    if let Some(message) = &update.message {
-        return message.clone();
+/// Closes its gate when dropped, so cancelling a run mid-call silences a
+/// sink a spawned task still holds.
+struct CloseOnDrop(Arc<ToolProgressGate>);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
     }
-    if let Some(partial) = &update.partial {
-        return partial.to_string();
-    }
-    update
-        .fraction
-        .map(|fraction| format!("{:.0}%", fraction * 100.0))
-        .unwrap_or_default()
 }
+
+/// The text the middleware sees: the status line, else the partial output,
+/// else the fraction as a percentage. Capped at [`MAX_DELTA_CONTENT_BYTES`];
+/// a partial is serialized through a writer that stops at the cap, so a huge
+/// value costs a bounded amount of work.
+fn delta_content(update: &ToolProgress, fraction: Option<f32>) -> String {
+    let mut content = if let Some(message) = &update.message {
+        message.clone()
+    } else if let Some(partial) = &update.partial {
+        bounded_json(partial)
+    } else {
+        fraction
+            .map(|fraction| format!("{:.0}%", fraction * 100.0))
+            .unwrap_or_default()
+    };
+    truncate_at_char_boundary(&mut content, MAX_DELTA_CONTENT_BYTES);
+    content
+}
+
+fn truncate_at_char_boundary(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
+
+/// Serializes `value`, stopping once [`MAX_DELTA_CONTENT_BYTES`] are written.
+fn bounded_json(value: &serde_json::Value) -> String {
+    struct Bounded(Vec<u8>);
+    impl std::io::Write for Bounded {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = MAX_DELTA_CONTENT_BYTES.saturating_sub(self.0.len());
+            if room == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            let take = room.min(buf.len());
+            self.0.extend_from_slice(&buf[..take]);
+            Ok(take)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Bounded(Vec::new());
+    // An error here is just the cap being hit; keep what was written.
+    let _ = serde_json::to_writer(&mut out, value);
+    String::from_utf8_lossy(&out.0).into_owned()
+}
+
+#[cfg(test)]
+#[path = "progress_tests.rs"]
+mod tests;

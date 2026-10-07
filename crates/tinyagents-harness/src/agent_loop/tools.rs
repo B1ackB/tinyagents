@@ -2505,7 +2505,7 @@ pub(super) fn timeout_result(
 mod canonical_result_tests;
 
 #[cfg(test)]
-#[path = "tool_progress_tests.rs"]
+#[path = "tools_progress_tests.rs"]
 mod tool_progress_tests;
 
 /// Stamps the metadata a refusing `before_tool` hook queued for `call_id`
