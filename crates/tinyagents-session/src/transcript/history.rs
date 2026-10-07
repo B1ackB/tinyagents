@@ -536,10 +536,11 @@ impl TranscriptLocator for FileTranscriptLocator {
     /// The workspace root every lookup and bind resolves under, which is
     /// this locator's only field and therefore its whole identity.
     fn destination_key(&self) -> Option<String> {
+        // The resolved `session_raw/` directory, not the workspace root: two
+        // workspaces whose `session_raw` is a symlink to one directory share
+        // their transcript files, so they must share the turn lock.
         Some(
-            self.workspace_dir
-                .canonicalize()
-                .unwrap_or_else(|_| symlink_normalized_path(&self.workspace_dir))
+            symlink_normalized_path(&self.workspace_dir.join("session_raw"))
                 .to_string_lossy()
                 .into_owned(),
         )
