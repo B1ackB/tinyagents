@@ -363,7 +363,8 @@ impl ChatModel<()> for ProfiledModel {
 
 /// Builds a tool-call assistant response (no text, one tool call).
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    crate::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(7, 3))
+    crate::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(7, 3))
 }
 
 /// Builds a tool-call response whose arguments the provider could not parse,
