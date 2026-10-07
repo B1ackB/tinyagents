@@ -120,7 +120,7 @@ result metadata (host-only; `ToolCompleted.metadata` and
 (`nested_calls_truncated` is added, as a count, only when more than 32 calls ran.)
 
 `status` is `ok`, `error` (the tool returned `is_error`), `failed` (refused or
-raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB, present only when tool payload capture (`PayloadCapture::tool_io`) is on; `error` is cut at 256
+raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB, present only when tool payload capture (`PayloadCapture::tool_io`) is on; `error` (also only under `tool_io` capture, except for `abandoned`) is cut at 256
 bytes and omitted when empty. At most 32 entries are kept; `nested_calls_truncated`
 counts the rest. The summary is attached only when the metadata is absent or an
 object.
@@ -175,3 +175,12 @@ upgraded). The gate covers nested calls only: it does not stop a nested unsafe t
 from overlapping a *model-issued* sibling in the same batch, because that batch's
 safety was declared per call by the model-issued path; a tool that nests an unsafe
 tool takes that composition on itself.
+
+## Replay of a parent with nested effects
+
+Nested ledger rows are keyed by the deterministic nested id, and the ledger only
+lists unresolved rows. A nested call to a non-replay-safe tool is refused over an
+unresolved row of the same id, but a row that already settled cannot be seen
+through the ledger trait, so a parent that is replayed after its nested effect
+completed would issue the same id again. A parent that nests non-replayable
+effects must therefore declare `ToolReplay::Never` itself.

@@ -414,15 +414,11 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         // like the arguments, they are recorded only under `tool_io` capture.
         let capture = self.harness.policy.capture.tool_io;
         let (status, error) = match &outcome {
-            Some(Ok(result)) if result.is_error => (
-                "error",
-                capture.then(|| truncate(&result.output(), 256)),
-            ),
+            Some(Ok(result)) if result.is_error => {
+                ("error", capture.then(|| truncate(&result.output(), 256)))
+            }
             Some(Ok(_)) => ("ok", None),
-            Some(Err(error)) => (
-                "failed",
-                capture.then(|| truncate(&error.to_string(), 256)),
-            ),
+            Some(Err(error)) => ("failed", capture.then(|| truncate(&error.to_string(), 256))),
             None => (
                 "abandoned",
                 Some("the calling tool stopped waiting for the call".to_string()),
