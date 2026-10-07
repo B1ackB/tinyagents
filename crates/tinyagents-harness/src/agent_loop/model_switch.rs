@@ -122,6 +122,28 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         });
     }
 
+    /// Reports a steered switch as applied (`Steered { accepted: true }`, once
+    /// per switch) when `request` carries the switched model and is about to be
+    /// dispatched. Called after the pre-call control checkpoint, so a switch
+    /// whose request never reaches a model call produces no outcome.
+    pub(super) fn announce_applied_model_switch(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &ModelRequest,
+    ) {
+        let (Some(handle), Some(model)) = (ctx.steering.clone(), request.model.as_deref()) else {
+            return;
+        };
+        if handle.announce_model_override(model) {
+            ctx.emit(AgentEvent::Steered {
+                command_kind: crate::steering::SteeringCommandKind::SwitchModel
+                    .as_str()
+                    .to_string(),
+                accepted: true,
+            });
+        }
+    }
+
     /// Whether a fallback walk starting at `cursor` should begin at the head of
     /// the fallback chain rather than after `cursor`.
     ///
