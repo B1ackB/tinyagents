@@ -197,10 +197,9 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         seed: TranscriptMeta,
         baseline: &[crate::transcript::TranscriptMessage],
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        let _gate = self
-            .generation_gate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        // Validate baseline before acquiring the generation gate lock; the gate protects
+        // generation allocation, not transcript reads. Reading without the gate prevents
+        // a deadlock where read_session_transcript's open_stem would re-acquire it.
         if let Some(transcript) = self.read_session_transcript(session)
             && let Some(transcript) = transcript.read_session()?
         {
@@ -214,6 +213,10 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
                 "transcript baseline is stale; reload the session before creating a generation"
             );
         }
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.begin_generation_locked(session, seed)
     }
 
