@@ -7,8 +7,10 @@ The invocation surface provides `SubAgent`, `SubAgentTool`,
 `SubAgentJobRegistry`, `SubAgentSession`, and `ChildDataPolicy`. It wraps an
 `AgentHarness` as a child run, enforces recursion depth, and inherits live
 parent cancellation, events, and host authority. Model-facing delegation is
-always asynchronous: `SubAgentTool` returns a job id immediately while the
-child continues in the background. A host registers `SubAgentJobsTool` and
+background by default: `SubAgentTool` returns a job id immediately while the
+child continues in the background. Callers can request `mode: "inline"` to
+wait for the child and receive its final result in the same tool call. A host
+registers `SubAgentJobsTool` and
 `SubAgentMessageTool` over the same registry to query status/results and send
 messages to queued or running jobs. Message delivery is cooperative at the
 child loop's next safe steering checkpoint. The registry is process-local and
