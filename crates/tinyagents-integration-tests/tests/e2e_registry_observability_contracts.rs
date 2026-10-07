@@ -227,6 +227,8 @@ fn component_metadata_and_event_kinds_are_stable_serializable_contracts() {
         AgentEvent::ToolProgress {
             call_id: CallId::new("tool-1"),
             message: "halfway".into(),
+            fraction: Some(0.5),
+            partial: None,
         },
         AgentEvent::MiddlewareFailed {
             name: "mw".into(),

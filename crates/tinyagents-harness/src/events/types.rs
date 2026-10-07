@@ -763,16 +763,30 @@ pub enum AgentEvent {
     /// Defined for future emit when memory wiring lands.
     MemorySaved,
 
-    /// A long-running tool reported incremental progress before completing.
+    /// A running tool reported incremental progress before completing.
     ///
-    /// Defined for future emit: a tool that streams progress can surface it
-    /// here so UIs render activity between [`AgentEvent::ToolStarted`] and
-    /// [`AgentEvent::ToolCompleted`].
+    /// Emitted by the agent loop when the tool reports through
+    /// [`tinytools::ToolRunContext::report_progress`]. Ordering guarantee: every
+    /// `ToolProgress` for a call falls between that call's
+    /// [`AgentEvent::ToolStarted`] and its terminal
+    /// [`AgentEvent::ToolCompleted`] / [`AgentEvent::ToolFailed`]; an update the
+    /// tool reports after the call has returned is dropped, never emitted late.
+    /// Calls in one concurrent batch interleave their progress freely. A tool
+    /// that floods is coalesced (see `crate::tool::ToolProgressLimits`), so the
+    /// stream is a faithful but possibly thinned view of what the tool reported.
     ToolProgress {
         /// Identifier for the in-flight tool call.
         call_id: CallId,
-        /// Human-readable progress message.
+        /// Human-readable progress message; empty when the update carried only
+        /// a fraction or partial output.
+        #[serde(default)]
         message: String,
+        /// Completion in `0.0..=1.0`, when the tool reported one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fraction: Option<f32>,
+        /// Partial output reported so far, passed through verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<serde_json::Value>,
     },
 
     /// An application-defined event a tool (or any holder of the run's
