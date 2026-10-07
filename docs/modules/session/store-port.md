@@ -66,7 +66,7 @@ implement them, so code generic over a store accepts injected handles, and
 whole provider: transcripts (sessions, thread and agent lookups, compaction
 generations, partials kept out of the replay), turn states (conditional
 writes, settling, interrupted-marking) and the key-value and journal stores.
-The conformance suite runs against `InMemorySessionStores` and the file
-building blocks. `session_store_isolation_conformance` is a separate check
-that two agents cannot see each other's data; it runs only against
+The `session_store_conformance` suite runs against `InMemorySessionStores` and
+the file building blocks. `session_store_isolation_conformance` is a separate
+check that two agents cannot see each other's data; it runs only against
 `InMemorySessionStores` and against hosts whose providers claim isolation.

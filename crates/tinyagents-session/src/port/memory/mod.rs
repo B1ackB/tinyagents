@@ -134,6 +134,56 @@ impl InMemoryTranscriptLocator {
             history.clear_partials();
         }
     }
+
+    fn begin_generation_locked(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let successor = session.next_generation();
+        anyhow::ensure!(
+            successor.generation <= MAX_GENERATIONS,
+            "session generation limit reached"
+        );
+        let stem = session_stem(&successor);
+        let mut reservations = self
+            .reserved_generations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let already_exists = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(known, _, _)| known == &stem);
+        anyhow::ensure!(
+            !already_exists && reservations.insert(stem.clone()),
+            "session generation already exists or is reserved"
+        );
+        let mut meta = seed;
+        meta.session_id = Some(successor.session_id());
+        meta.parent_session_id = successor.parent_session_id();
+        let predecessor = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(known, _, _)| known == &session_stem(session))
+            .map(|(_, _, history)| history.clone());
+        if let Some(predecessor) = &predecessor {
+            predecessor.seal();
+        }
+        match TranscriptLocator::open_session(self, &successor, meta) {
+            Ok(handle) => Ok((successor, handle)),
+            Err(error) => {
+                if let Some(predecessor) = &predecessor {
+                    predecessor.unseal();
+                }
+                reservations.remove(&stem);
+                Err(error)
+            }
+        }
+    }
 }
 
 impl TranscriptLocator for InMemoryTranscriptLocator {
@@ -173,54 +223,6 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
             );
         }
         self.begin_generation_locked(session, seed)
-    }
-
-    fn begin_generation_locked(
-        &self,
-        session: &SessionRef,
-        seed: TranscriptMeta,
-    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        let successor = session.next_generation();
-        anyhow::ensure!(
-            successor.generation <= MAX_GENERATIONS,
-            "session generation limit reached"
-        );
-        let stem = session_stem(&successor);
-        let mut reservations = self
-            .reserved_generations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let already_exists = self
-            .stems
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .any(|(known, _, _)| known == &stem);
-        anyhow::ensure!(
-            !already_exists && reservations.insert(stem.clone()),
-            "session generation already exists or is reserved"
-        );
-        let mut meta = seed;
-        meta.session_id = Some(successor.session_id());
-        meta.parent_session_id = successor.parent_session_id();
-        match self.open_session(&successor, meta) {
-            Ok(handle) => {
-                if let Some((_, _, predecessor)) = self
-                    .stems
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .iter()
-                    .find(|(known, _, _)| known == &session_stem(session))
-                {
-                    predecessor.seal();
-                }
-                Ok((successor, handle))
-            }
-            Err(error) => {
-                reservations.remove(&stem);
-                Err(error)
-            }
-        }
     }
 
     fn destination_key(&self) -> Option<String> {

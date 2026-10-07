@@ -148,6 +148,7 @@ pub mod view;
 mod writer;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
+pub(crate) use history::same_transcript_messages;
 pub use history::{
     FileTranscriptHistory, FileTranscriptLocator, TranscriptHistory, TranscriptLocator,
     TranscriptPartial, TranscriptRead, TranscriptTurn, TruncateCut,

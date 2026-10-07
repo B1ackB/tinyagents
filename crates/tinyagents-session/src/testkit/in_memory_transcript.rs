@@ -117,6 +117,10 @@ impl InMemoryTranscriptHistory {
     pub(crate) fn seal(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = true;
     }
+
+    pub(crate) fn unseal(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = false;
+    }
 }
 
 impl TranscriptRead for InMemoryTranscriptHistory {
