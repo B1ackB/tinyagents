@@ -233,7 +233,7 @@ async fn middleware_stack_runs_lifecycle_hooks_and_builtin_guards() {
     assert!(tracing.records().iter().any(|r| r.phase == "agent"));
     assert!(recorder.events().iter().any(|r| matches!(
         r.event,
-        AgentEvent::MiddlewareStarted { ref name } if name == "log"
+        AgentEvent::MiddlewareStarted { ref name, .. } if name == "log"
     )));
 }
 

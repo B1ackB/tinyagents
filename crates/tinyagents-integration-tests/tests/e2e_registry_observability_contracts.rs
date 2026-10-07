@@ -171,8 +171,14 @@ fn component_metadata_and_event_kinds_are_stable_serializable_contracts() {
             metadata: None,
         },
         AgentEvent::StateUpdate,
-        AgentEvent::MiddlewareStarted { name: "mw".into(), call_id: None },
-        AgentEvent::MiddlewareCompleted { name: "mw".into(), call_id: None },
+        AgentEvent::MiddlewareStarted {
+            name: "mw".into(),
+            call_id: None,
+        },
+        AgentEvent::MiddlewareCompleted {
+            name: "mw".into(),
+            call_id: None,
+        },
         AgentEvent::CacheHit {
             call_id: CallId::new("cache-1"),
             key: "secret-key".into(),
