@@ -1108,6 +1108,9 @@ impl ContextCompressionMiddleware {
         reason: CompactionReason,
         latency_ms: Option<u64>,
     ) {
+        // The prompt prefix is rewritten on purpose: the provider's next cache
+        // read is expected to be cold.
+        ctx.mark_prompt_prefix_changed();
         // The run's last summary is set by `remember_fold` only: a summary
         // with no valid fold (an unaligned overflow) is not built on later.
         touch_run(
