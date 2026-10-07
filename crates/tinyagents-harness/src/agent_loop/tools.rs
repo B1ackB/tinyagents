@@ -103,7 +103,6 @@ enum ResolvedToolCall<State: Send + Sync, Ctx: Send + Sync> {
     /// A registered tool (possibly after an unknown-tool rewrite).
     Tool {
         dispatch: Arc<dyn ToolDispatch<State, Ctx>>,
-        tool: Arc<dyn tinytools::Tool>,
     },
     /// No tool runs; this result is appended to the transcript at the call's
     /// original position. A tool-error result for the recovery paths (unknown
@@ -927,7 +926,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 )));
             }
         }
-        Ok(ResolvedToolCall::Tool { dispatch, tool })
+        Ok(ResolvedToolCall::Tool { dispatch })
     }
 
     /// Marks one call as started: status bookkeeping, the `ToolStarted`
@@ -1397,7 +1396,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .admit_tool_call(state, ctx, status, &mut call, promoted_names)
             .await?
         {
-            ResolvedToolCall::Tool { dispatch, .. } => dispatch,
+            ResolvedToolCall::Tool { dispatch } => dispatch,
             ResolvedToolCall::Answered(result) => {
                 return self
                     .recover_tool_call(state, ctx, run, status, messages, &call, result)
@@ -1705,7 +1704,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .admit_tool_call(state, ctx, status, &mut call, promoted_names)
                 .await?
             {
-                ResolvedToolCall::Tool { dispatch, .. } => {
+                ResolvedToolCall::Tool { dispatch } => {
                     admitted.push(AdmittedCall::Execute { dispatch, call })
                 }
                 ResolvedToolCall::Answered(result) => {
