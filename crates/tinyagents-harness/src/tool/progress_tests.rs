@@ -157,8 +157,7 @@ fn a_new_window_flushes_what_the_last_one_held_back() {
 async fn the_execution_context_reports_through_the_scoped_gate() {
     let recorder = EventRecorder::new();
     let gate = gate(&recorder, unlimited());
-    let mut config = RunConfig::new("run-1");
-    config.run_id = "run-1".into();
+    let config = RunConfig::new("run-1");
     let run: RunContext = RunContext::new(config, ());
 
     let inside = gate
