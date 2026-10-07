@@ -642,7 +642,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 requested: Some(name.clone()),
                 source: ModelResolutionSource::Hint,
             };
-            attempt_request.model = Some(name.clone());
+            retarget_request_model(&mut attempt_request, &name);
             current_name = name;
             model = next_model;
         }
@@ -900,7 +900,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                 requested: Some(name.clone()),
                                 source: ModelResolutionSource::Hint,
                             };
-                            attempt_request.model = Some(name.clone());
+                            retarget_request_model(&mut attempt_request, &name);
                             current_name = name;
                             model = next_model;
                             if streaming && deltas_emitted > 0 {
@@ -1893,3 +1893,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
 #[cfg(test)]
 #[path = "model_call_failover_tests.rs"]
 mod failover_test;
+
+/// Retargets an attempt's wire-level `request.model` at a fallback binding,
+/// but only when the request already carried an explicit model. Registry names
+/// are runtime aliases, not guaranteed provider model ids, so a request that
+/// sent none (the provider's own configured model) keeps sending none.
+fn retarget_request_model(request: &mut ModelRequest, name: &str) {
+    if request.model.is_some() {
+        request.model = Some(name.to_string());
+    }
+}

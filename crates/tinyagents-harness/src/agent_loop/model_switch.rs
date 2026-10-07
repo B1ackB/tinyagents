@@ -55,7 +55,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
         model_before_switch: &Option<String>,
-        final_pass: bool,
     ) {
         let Some(handle) = ctx.steering.clone() else {
             return;
@@ -93,14 +92,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     ),
                 }
                 request.model = Some(requested);
-            }
-            if final_pass && handle.announce_model_override() {
-                ctx.emit(AgentEvent::Steered {
-                    command_kind: crate::steering::SteeringCommandKind::SwitchModel
-                        .as_str()
-                        .to_string(),
-                    accepted: true,
-                });
             }
             return;
         }
