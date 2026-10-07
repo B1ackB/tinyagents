@@ -38,7 +38,9 @@ const LOG_PREFIX: &str = "[threads][transcript][subagents]";
 /// that itself delegates still surfaces, without unbounded fan-out.
 const MAX_SUBAGENT_DEPTH: usize = 3;
 
-/// Prefix the delegation runner puts on a result it gave up on.
+/// Legacy text prefix a delegation runner put on a result it gave up on.
+/// Still read so old transcripts keep their status; new results carry the
+/// typed `"status": "incomplete"` instead (see [`is_incomplete_result`]).
 const INCOMPLETE_MARKER: &str = "[SUBAGENT_INCOMPLETE]";
 
 /// Prefix of an async spawn's acknowledgement — success of the *spawn*, not
@@ -465,7 +467,10 @@ fn derive_status(
     call_result: Option<&str>,
 ) -> SubagentStatus {
     let result = call_result.map(str::trim_start).unwrap_or_default();
-    if call_status == Some(ToolCallStatus::Error) || result.starts_with(INCOMPLETE_MARKER) {
+    if is_incomplete_result(result) {
+        return SubagentStatus::Incomplete;
+    }
+    if call_status == Some(ToolCallStatus::Error) {
         return SubagentStatus::Failed;
     }
     match own {
@@ -479,6 +484,15 @@ fn derive_status(
         }
         OwnState::Unknown => SubagentStatus::Running,
     }
+}
+
+/// Whether a spawn result reports the run incomplete: the typed
+/// `{"status": "incomplete"}` payload, or the legacy text marker.
+fn is_incomplete_result(result: &str) -> bool {
+    result.starts_with(INCOMPLETE_MARKER)
+        || serde_json::from_str::<serde_json::Value>(result)
+            .ok()
+            .is_some_and(|value| value.get("status").and_then(|s| s.as_str()) == Some("incomplete"))
 }
 
 /// `[start, end)` of `request_id`'s items (after its boundary, up to the next
