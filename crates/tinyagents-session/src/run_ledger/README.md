@@ -76,12 +76,14 @@ crate root as `session::run_ledger::`.
 
   | Effect record | Class | Meaning |
   | --- | --- | --- |
-  | none, or `deferred` | `Resume` | the call never began / awaits an answer; continue normally |
+  | none | `Resume` | the call never began; continue normally |
   | `completed`, `failed` | `ResumeReportOnly` | outcome is recorded; report it, do not re-execute |
+  | `deferred` | `AwaitingAnswer` | the call paused for approval/a result; resume by answering the deferral, never re-execute |
   | `started` only, `interrupted` | `NeedsVerification` | may have committed; verify real-world state, never blindly re-run |
 
+- When several effect rows match one call, the most cautious class wins.
 - `overall_recovery(&classified)` — the most cautious class (`Resume <
-  ResumeReportOnly < NeedsVerification`), `Resume` when nothing dangles.
+  ResumeReportOnly < AwaitingAnswer < NeedsVerification`), `Resume` when nothing dangles.
 
 The effect ledger writes `started` before a call executes, which is why "no
 row" means "never began"; hosts that did not attach the ledger must not rely on

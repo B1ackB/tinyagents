@@ -117,7 +117,7 @@ pub fn recovery_children(
 ///
 /// The roster is capped at [`MAX_RECOVERY_CHILDREN`] rows with a `+N more`
 /// line for the rest. Rows are JSON inside a `<child_task_facts>` block, and
-/// every `<` is escaped (`<`) so a hostile label cannot close the block
+/// every `<` is escaped as `\u003c` so a hostile label cannot close the block
 /// and masquerade as instructions.
 pub fn build_restart_recovery_note(children: &[RecoveryChild]) -> String {
     if children.is_empty() {

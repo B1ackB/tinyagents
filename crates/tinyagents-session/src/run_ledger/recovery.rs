@@ -8,7 +8,8 @@
 //!
 //! - no row means the call never began,
 //! - a `started` row means it may or may not have committed its side effects,
-//! - a settled row means its outcome is known.
+//! - a settled row means its outcome is known,
+//! - a `deferred` row means the call paused and awaits an answer.
 //!
 //! [`classify_recovery`] turns that into one advisory [`RecoveryClass`] per
 //! dangling call. It is pure — no database access, no mutation — and advisory:
@@ -34,12 +35,16 @@ pub struct DanglingToolCall {
 /// most cautious, so the maximum over a set is the set's verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecoveryClass {
-    /// Continue normally: the call never began, or is waiting on an answer
-    /// (`Deferred`), so no side effect is in doubt.
+    /// Continue normally: the call never began, so no side effect is in doubt.
     Resume,
     /// Continue, but only to *report*: the call settled (`Completed`/`Failed`)
     /// so its outcome is recorded. Surface that outcome; do not re-execute it.
     ResumeReportOnly,
+    /// The call paused itself (`Deferred`: approval or a deferred result) and
+    /// is waiting on an answer. Resume by *answering the deferral*; never
+    /// re-execute the call, and never treat it as a plain resume — the call has
+    /// begun and its answer must come from the same approver/source.
+    AwaitingAnswer,
     /// The call started and never settled (or was already marked
     /// `Interrupted`): it may have committed. Verify the real-world state
     /// before continuing, and never blindly re-run it.
@@ -66,8 +71,8 @@ fn classify_status(status: Option<ToolEffectStatus>) -> (RecoveryClass, &'static
             "no effect record: the call never began",
         ),
         Some(ToolEffectStatus::Deferred) => (
-            RecoveryClass::Resume,
-            "deferred: the call is waiting on an answer",
+            RecoveryClass::AwaitingAnswer,
+            "deferred: answer the pending deferral, do not re-execute",
         ),
         Some(ToolEffectStatus::Completed) => (
             RecoveryClass::ResumeReportOnly,
@@ -96,11 +101,20 @@ pub fn classify_recovery(
 ) -> Vec<CallRecovery> {
     tail.iter()
         .map(|call| {
-            let effect_status = tool_effects
+            // Several rows can match one call (e.g. a replayed write); take the
+            // most cautious verdict so the order of the rows never matters.
+            let (effect_status, class, reason) = tool_effects
                 .iter()
-                .find(|effect| effect.run_id == call.run_id && effect.call_id == call.call_id)
-                .map(|effect| effect.status);
-            let (class, reason) = classify_status(effect_status);
+                .filter(|effect| effect.run_id == call.run_id && effect.call_id == call.call_id)
+                .map(|effect| {
+                    let (class, reason) = classify_status(Some(effect.status));
+                    (Some(effect.status), class, reason)
+                })
+                .max_by_key(|(_, class, _)| *class)
+                .unwrap_or_else(|| {
+                    let (class, reason) = classify_status(None);
+                    (None, class, reason)
+                });
             tracing::debug!(
                 "[run_ledger:recovery] run_id={} call_id={} tool={} class={class:?}",
                 call.run_id,
