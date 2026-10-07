@@ -142,6 +142,9 @@ mod image_trim_test;
 #[path = "policy_gate_tests.rs"]
 mod policy_gate_test;
 #[cfg(test)]
+#[path = "repeat_escalation_loop_tests.rs"]
+mod repeat_escalation_loop_test;
+#[cfg(test)]
 #[path = "repeat_escalation_tests.rs"]
 mod repeat_escalation_test;
 #[cfg(test)]
