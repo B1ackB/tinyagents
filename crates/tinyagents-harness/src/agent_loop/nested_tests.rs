@@ -184,7 +184,10 @@ impl Tool for Relay {
         context: Option<&dyn tinytools::ToolRunContext>,
     ) -> anyhow::Result<ToolResult> {
         let harness = harness_extension(context);
-        self.reached.lock().unwrap().push(harness.call_id.to_string());
+        self.reached
+            .lock()
+            .unwrap()
+            .push(harness.call_id.to_string());
         match harness.call_tool("relay", json!({})).await {
             Ok(_) => {}
             Err(error) => *self.refusal.lock().unwrap() = Some(error.to_string()),
@@ -350,7 +353,9 @@ async fn a_nested_call_that_needs_approval_fails_without_deferring_the_parent() 
 
     let outcomes = outcomes.lock().unwrap();
     assert_eq!(
-        outcomes[0].as_ref().expect_err("approval-needed call fails"),
+        outcomes[0]
+            .as_ref()
+            .expect_err("approval-needed call fails"),
         "permanent tool failure: nested call 'delete' requires approval; nested calls cannot be deferred"
     );
     assert_eq!(gated.runs(), 0);
@@ -369,7 +374,11 @@ async fn nested_calls_count_against_max_tool_calls_and_trip_it() {
     let leaf = Leaf::new("leaf");
     let caller = Caller::new(
         "caller",
-        vec![("leaf", json!({})), ("leaf", json!({})), ("leaf", json!({}))],
+        vec![
+            ("leaf", json!({})),
+            ("leaf", json!({})),
+            ("leaf", json!({})),
+        ],
     );
     let outcomes = caller.outcomes();
     // One parent call + two nested calls fit; the third nested call trips.
@@ -446,7 +455,11 @@ async fn nesting_deeper_than_max_nested_depth_is_refused() {
 
     // Level 0 (model-issued), then levels 1 and 2; level 3 is refused.
     assert_eq!(reached.lock().unwrap().as_slice(), ["p1", "p1/1", "p1/1/1"]);
-    let refusal = refusal.lock().unwrap().clone().expect("deepest call refused");
+    let refusal = refusal
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("deepest call refused");
     assert!(refusal.contains("max_nested_depth"), "{refusal}");
 }
 
@@ -459,7 +472,9 @@ async fn default_depth_cap_allows_three_levels() {
         refusal: Arc::default(),
     }));
 
-    run(&harness, &EventRecorder::new()).await.expect("run succeeds");
+    run(&harness, &EventRecorder::new())
+        .await
+        .expect("run succeeds");
 
     assert_eq!(reached.lock().unwrap().len(), 4, "levels 0 through 3");
 }
@@ -673,7 +688,10 @@ async fn repeated_nested_calls_do_not_trip_the_repeat_guard() {
     let leaf = Leaf::new("leaf");
     // The same call, with the same arguments and result, many times over: a
     // model doing this would be halted, a tool fanning out is not.
-    let caller = Caller::new("caller", (0..8).map(|_| ("leaf", json!({"n": 1}))).collect());
+    let caller = Caller::new(
+        "caller",
+        (0..8).map(|_| ("leaf", json!({"n": 1}))).collect(),
+    );
     let mut harness = harness_with(
         vec![parent_call("p1", "caller")],
         RunLimits::default().with_max_tool_calls(20),

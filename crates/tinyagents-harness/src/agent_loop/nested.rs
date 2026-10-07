@@ -452,13 +452,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             call.name.clone(),
             call.arguments.clone(),
         );
-        let injected_values = dispatch
-            .injected_arguments(&canonical_call)
-            .map_err(|_| {
-                TinyAgentsError::Validation(format!(
-                    "failed to prepare injected arguments for tool `{name}`"
-                ))
-            })?;
+        let injected_values = dispatch.injected_arguments(&canonical_call).map_err(|_| {
+            TinyAgentsError::Validation(format!(
+                "failed to prepare injected arguments for tool `{name}`"
+            ))
+        })?;
         let injected_declarations = tool.injected_arguments();
         call.arguments = if injected_declarations.is_empty() {
             canonical_call.arguments.clone()

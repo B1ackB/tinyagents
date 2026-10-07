@@ -607,10 +607,22 @@ fn tool_events_serialise_parent_call_id_only_when_nested() {
     };
 
     let plain = serde_json::to_value(&model_issued).unwrap();
-    assert!(plain.to_string().find("parent_call_id").is_none(), "{plain}");
+    assert!(
+        plain.to_string().find("parent_call_id").is_none(),
+        "{plain}"
+    );
     let tagged = serde_json::to_value(&nested).unwrap();
-    assert!(tagged.to_string().contains(r#""parent_call_id":"p1""#), "{tagged}");
-    assert_eq!(serde_json::from_value::<AgentEvent>(tagged).unwrap(), nested);
+    assert!(
+        tagged.to_string().contains(r#""parent_call_id":"p1""#),
+        "{tagged}"
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentEvent>(tagged).unwrap(),
+        nested
+    );
     // Events journalled before the field existed still deserialise.
-    assert_eq!(serde_json::from_value::<AgentEvent>(plain).unwrap(), model_issued);
+    assert_eq!(
+        serde_json::from_value::<AgentEvent>(plain).unwrap(),
+        model_issued
+    );
 }
