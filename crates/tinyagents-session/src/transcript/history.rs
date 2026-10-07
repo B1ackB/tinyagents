@@ -622,43 +622,15 @@ impl TranscriptLocator for FileTranscriptLocator {
         if partial.content.is_empty() {
             return Ok(false);
         }
-        if read_transcript(&path).ok().is_some_and(|transcript| {
-            transcript.meta.session_id.as_deref().is_some_and(|id| {
-                id.rsplit_once(".g")
-                    .is_some_and(|(_, generation)| generation.parse::<u32>().is_ok())
-            })
-        }) {
-            return Ok(false);
-        }
-        // A root generation is immutable once its successor exists. Late
-        // interruption callbacks must not append display-only data to the
-        // sealed predecessor. Wrap the successor scan and append in write
-        // locks so they are atomic.
+        // A partial belongs to the conversation's current head: a compaction
+        // seals generation `n` and opens `n+1`, and a sealed generation is
+        // never written again. The head is re-checked under the write locks,
+        // so a compaction cannot open a successor between scan and append.
+        let path = head_generation_path(&path);
         let history =
             FileTranscriptHistory::opened_at(path.clone(), seed_meta_for_discovered(thread_id));
         history.with_write_locks(|| {
-            if path
-                .parent()
-                .and_then(|parent| std::fs::read_dir(parent).ok())
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-                .any(|entry| {
-                    entry
-                        .path()
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .is_some_and(|stem| {
-                            let base = path
-                                .file_stem()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or_default();
-                            stem.strip_prefix(base).is_some_and(|suffix| {
-                                suffix.starts_with(".g") && suffix[2..].parse::<u32>().is_ok()
-                            })
-                        })
-                })
-            {
+            if head_generation_path(&path) != path {
                 return Ok(false);
             }
             crate::transcript::append_interrupted_partial(
@@ -1505,4 +1477,42 @@ impl TranscriptHistory for FileTranscriptHistory {
         drop(os_lock);
         result
     }
+}
+
+/// The newest generation of the transcript at `path`: the sibling
+/// `{base}.g{n}.jsonl` with the largest `n`, or `path` itself when no successor
+/// exists. `path` may name any generation of the chain.
+fn head_generation_path(path: &Path) -> PathBuf {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return path.to_path_buf();
+    };
+    let base = match stem.rsplit_once(".g") {
+        Some((base, generation)) if generation.parse::<u32>().is_ok() => base,
+        _ => stem,
+    };
+    let Some(parent) = path.parent() else {
+        return path.to_path_buf();
+    };
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let candidate = entry.path();
+            if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let name = candidate.file_stem()?.to_str()?;
+            let generation = if name == base {
+                0
+            } else {
+                name.strip_prefix(base)?
+                    .strip_prefix(".g")?
+                    .parse::<u32>()
+                    .ok()?
+            };
+            Some((generation, candidate))
+        })
+        .max_by_key(|(generation, _)| *generation)
+        .map_or_else(|| path.to_path_buf(), |(_, head)| head)
 }
