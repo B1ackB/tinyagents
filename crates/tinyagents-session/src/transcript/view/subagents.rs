@@ -267,7 +267,7 @@ fn find_explicit_spawning_call(
         {
             return false;
         }
-        ["subagent_run_id", "job_id"].iter().all(|key| {
+        ["subagent_run_id", "job_id"].iter().any(|key| {
             payload
                 .get(*key)
                 .and_then(serde_json::Value::as_str)
