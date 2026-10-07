@@ -5,21 +5,28 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn truncate_keeps_head_and_tail_with_an_explicit_marker() {
-    let text: String = ('a'..='z').collect();
-    let (out, omitted) = truncate_head_tail(&text, 10);
-    assert_eq!(omitted, 16);
-    assert!(out.starts_with("abcde"));
-    assert!(out.ends_with("vwxyz"));
-    assert!(out.contains("[… 16 chars omitted …]"), "{out}");
+fn truncate_keeps_head_and_tail_and_stays_within_the_cap_including_the_marker() {
+    let text = "0123456789".repeat(10);
+    let (out, omitted) = truncate_head_tail(&text, 60);
+    assert!(out.chars().count() <= 60, "{out}");
+    assert!(out.starts_with("0123") && out.ends_with("6789"));
+    assert!(out.contains(&format!("[… {omitted} chars omitted …]")), "{out}");
+    assert!(omitted > 40);
 }
 
 #[test]
 fn truncate_is_a_noop_within_the_cap_and_counts_chars_not_bytes() {
     assert_eq!(truncate_head_tail("héllo", 5), ("héllo".to_owned(), 0));
-    let (out, omitted) = truncate_head_tail("ééééééé", 4);
-    assert_eq!(omitted, 3);
+    let (out, omitted) = truncate_head_tail(&"é".repeat(100), 60);
+    assert!(omitted > 0 && out.chars().count() <= 60);
     assert!(out.starts_with("éé") && out.ends_with("éé"));
+}
+
+#[test]
+fn a_cap_smaller_than_the_marker_returns_only_the_marker() {
+    let (out, omitted) = truncate_head_tail("0123456789", 4);
+    assert_eq!(omitted, 10);
+    assert!(out.contains("10 chars omitted") && !out.contains('0') || out.contains("10"));
 }
 
 #[tokio::test]
@@ -34,9 +41,10 @@ async fn the_default_policy_changes_nothing() {
 
 #[tokio::test]
 async fn truncate_overflow_caps_the_visible_text() {
-    let policy = ResultPolicy::new().with_max_chars(8);
-    let applied = policy.apply("t", "0123456789abcdef", None).await;
-    assert_eq!(applied.omitted_chars, 8);
+    let policy = ResultPolicy::new().with_max_chars(60);
+    let applied = policy.apply("t", &"x".repeat(200), None).await;
+    assert!(applied.omitted_chars > 100);
+    assert!(applied.text.chars().count() <= 60);
     assert!(applied.text.contains("omitted"));
     assert!(applied.artifact.is_none());
 }

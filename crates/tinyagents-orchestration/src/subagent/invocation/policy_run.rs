@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tinyagents_harness::context::RunContext;
-use tinyagents_harness::error::{Result, TinyAgentsError};
+use tinyagents_harness::error::TinyAgentsError;
 use tinyagents_harness::events::{AgentEvent, EventListener, EventRecord, EventSink};
 use tinyagents_harness::middleware::AgentRun;
 

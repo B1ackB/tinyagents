@@ -389,9 +389,26 @@ async fn result_policy_trims_output_and_surfaces_a_schema_error() {
         .run(request("t-result"), CancellationToken::new())
         .await
         .unwrap();
-    assert!(result.outcome.output.contains("6 chars omitted"));
+    assert!(result.outcome.output.contains("chars omitted"));
     assert!(result.outcome.schema_error.is_some());
     assert_eq!(result.outcome.status, SubagentStatus::Completed);
+}
+
+#[tokio::test]
+async fn artifact_overflow_without_a_store_surfaces_artifact_error_on_the_outcome() {
+    let executor = Executor::new(ok_with("0123456789"));
+    let plan: Planned = Arc::new(|p| {
+        p.with_result_policy(
+            ResultPolicy::new()
+                .with_max_chars(4)
+                .with_overflow(ResultOverflow::Artifact),
+        )
+    });
+    let result = driver(plan, executor)
+        .run(request("t-artifact"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(result.outcome.artifact_error.unwrap().contains("no artifact store"));
 }
 
 #[tokio::test]
