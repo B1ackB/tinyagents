@@ -757,7 +757,10 @@ fn switch_model_records_the_override_and_reports_applied() {
 
     assert_eq!(outcome, SteeringOutcome::Continue);
     assert_eq!(handle.model_override().as_deref(), Some("backup"));
-    assert!(messages.is_empty(), "a model switch never edits the transcript");
+    assert!(
+        messages.is_empty(),
+        "a model switch never edits the transcript"
+    );
     assert!(recorder.events().iter().any(|event| matches!(
         event,
         AgentEvent::Steered { command_kind, accepted: true } if command_kind == "switch_model"
@@ -819,7 +822,10 @@ fn switch_model_round_trips_through_serde_and_has_a_stable_label() {
         model: "backup".into(),
     };
     let encoded = serde_json::to_value(&command).unwrap();
-    assert_eq!(encoded, json!({"command": "switch_model", "model": "backup"}));
+    assert_eq!(
+        encoded,
+        json!({"command": "switch_model", "model": "backup"})
+    );
     assert_eq!(
         serde_json::from_value::<SteeringCommand>(encoded).unwrap(),
         command

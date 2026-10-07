@@ -148,7 +148,11 @@ async fn an_unknown_model_is_rejected_without_failing_the_run() {
         .expect("an unknown model must not crash the run");
 
     assert_eq!(run.text(), Some("primary".to_string()));
-    assert_eq!(handle.model_override(), None, "a rejected switch is dropped");
+    assert_eq!(
+        handle.model_override(),
+        None,
+        "a rejected switch is dropped"
+    );
     let events = recorder.events();
     assert!(events.iter().any(|event| matches!(
         event,
