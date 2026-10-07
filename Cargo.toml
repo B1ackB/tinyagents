@@ -31,6 +31,10 @@ serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
+# Storage ports from tinystoragedrivers, named by git tag so the crate builds
+# on its own; the `[patch]` below points it at the vendored submodule so one
+# copy of the port types is in the graph.
+tinystoragedrivers-core = { git = "https://github.com/tinyhumansai/tinystoragedrivers", tag = "v0.3.0" }
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
@@ -52,3 +56,8 @@ strip = "debuginfo"
 [patch."https://github.com/tinyhumansai/tinytools"]
 tinytools-agent = { path = "vendor/tinytools/crates/tinytools-agent" }
 tinytools = { path = "vendor/tinytools/crates/tinytools" }
+
+# One copy of the storage ports: the vendored tinystoragedrivers checkout.
+# Hosts that vendor tinyagents patch the same URL onto this path.
+[patch."https://github.com/tinyhumansai/tinystoragedrivers"]
+tinystoragedrivers-core = { path = "vendor/tinystoragedrivers/crates/tinystoragedrivers-core" }
