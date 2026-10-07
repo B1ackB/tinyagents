@@ -375,7 +375,11 @@ impl<Ctx> RunContext<Ctx> {
     /// `ToolFailed`/`ModelRetry`). The metadata is in place before any
     /// `after_tool` hook sees the result, whatever its position in the stack.
     /// Unused when the call is not refused.
-    pub fn set_refusal_metadata(&mut self, call_id: impl Into<String>, metadata: serde_json::Value) {
+    pub fn set_refusal_metadata(
+        &mut self,
+        call_id: impl Into<String>,
+        metadata: serde_json::Value,
+    ) {
         self.refusal_metadata.insert(call_id.into(), metadata);
     }
 
