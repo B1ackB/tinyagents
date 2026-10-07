@@ -151,3 +151,29 @@ fn tool_name_handles_length_prefixed_and_plain_signatures() {
     assert_eq!(tool_name("a:b\u{1}c"), "a:b");
     assert_eq!(tool_name("read\u{1}x"), "read");
 }
+
+#[test]
+fn churn_warning_history_is_bounded() {
+    let detector = ArgumentChurnDetector::new(2, 2);
+    for n in 0..(MAX_WARNED + 50) {
+        let outcome = format!("outcome-{n}");
+        for _ in 0..2 {
+            detector.record("read", "a", &outcome);
+            detector.record("read", "b", &outcome);
+        }
+    }
+    assert!(lock(&detector.state).warned.len() <= MAX_WARNED);
+}
+
+#[test]
+fn ping_pong_warning_history_is_bounded() {
+    let detector = PingPongDetector::new(4);
+    for n in 0..(MAX_WARNED + 50) {
+        let (a, b) = (format!("a{n}\u{1}x"), format!("b{n}\u{1}y"));
+        for _ in 0..3 {
+            detector.record(&a, "ra");
+            detector.record(&b, "rb");
+        }
+    }
+    assert!(lock(&detector.state).warned.len() <= MAX_WARNED);
+}
