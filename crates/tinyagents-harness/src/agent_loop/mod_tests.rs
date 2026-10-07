@@ -8737,3 +8737,195 @@ async fn request_reasoning_wins_over_the_run_policy_default() {
         request.reasoning
     );
 }
+
+// ── wave 1 follow-ups: batch termination and mixed truncated turns ───────────
+
+#[tokio::test]
+async fn return_direct_output_wins_over_a_later_terminating_sibling() {
+    // `return_direct` makes its own output final even when a later sibling asks
+    // to terminate: it must not take part in the terminate vote, or the batch
+    // looks unanimous and the sibling's output replaces it.
+    for concurrent in [false, true] {
+        let (harness, model) = harness_with_terminating_tools(
+            vec![
+                multi_tool_call_response(vec![("c1", "answer"), ("c2", "finish")]),
+                text_response("must not be reached", 4, 2),
+            ],
+            vec![
+                tool_for_mode(
+                    terminating_tool("answer", "the answer", Hint::ReturnDirect),
+                    concurrent,
+                    0,
+                ),
+                tool_for_mode(
+                    terminating_tool("finish", "finished", Hint::Terminate),
+                    concurrent,
+                    0,
+                ),
+            ],
+        );
+
+        let run = harness
+            .invoke_default(&(), vec![Message::user("go")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(model.requests().len(), 1, "concurrent: {concurrent}");
+        assert_eq!(
+            run.text(),
+            Some("the answer".to_string()),
+            "concurrent: {concurrent}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminate_beside_a_call_answered_at_admission_does_not_end_the_run() {
+    // The unknown tool is answered with an error at admission and never runs,
+    // yet it still counts as a call of the batch that did not ask to
+    // terminate: the model has to read that error.
+    for concurrent in [false, true] {
+        let (harness, model) = harness_with_terminating_tools(
+            vec![
+                multi_tool_call_response(vec![("c1", "finish"), ("c2", "no_such_tool")]),
+                text_response("model saw the error", 4, 2),
+            ],
+            vec![tool_for_mode(
+                terminating_tool("finish", "finished", Hint::Terminate),
+                concurrent,
+                0,
+            )],
+        );
+
+        let run = harness
+            .invoke_default(&(), vec![Message::user("go")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(model.requests().len(), 2, "concurrent: {concurrent}");
+        assert_eq!(run.text(), Some("model saw the error".to_string()));
+    }
+}
+
+/// Replays `responses` one per call, for a model without native structured
+/// output (so `Auto` falls back to the `answer` tool call).
+struct ScriptedStructuredModel {
+    profile: ModelProfile,
+    responses: Mutex<std::collections::VecDeque<ModelResponse>>,
+}
+
+impl ScriptedStructuredModel {
+    fn new(responses: Vec<ModelResponse>) -> Arc<Self> {
+        Arc::new(Self {
+            profile: ToolStructuredModel::new().profile,
+            responses: Mutex::new(responses.into()),
+        })
+    }
+}
+
+#[async_trait]
+impl ChatModel<()> for ScriptedStructuredModel {
+    fn profile(&self) -> Option<&ModelProfile> {
+        Some(&self.profile)
+    }
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        Ok(self
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("the model was called more often than scripted"))
+    }
+}
+
+/// `[answer(first), lookup(cut off)]`: a structured answer followed by a real
+/// call the output cap cut off.
+fn mixed_turn_cut_off_in_the_real_call() -> ModelResponse {
+    let mut response = multi_tool_call_response(vec![("s1", "answer"), ("c1", "lookup")]);
+    response.message.tool_calls[0].arguments = json!({"value": "first"});
+    response.finish_reason = Some("length".to_string());
+    response
+}
+
+fn structured_mixed_harness(
+    model: Arc<ScriptedStructuredModel>,
+    tool: Arc<FakeTool>,
+    end_strategy: crate::runtime::EndStrategy,
+) -> AgentHarness<()> {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", model)
+        .register_tool(tool)
+        .with_policy(RunPolicy {
+            end_strategy,
+            default_response_format: Some(ResponseFormat::auto(
+                "answer",
+                json!({"type": "object"}),
+            )),
+            ..RunPolicy::default()
+        });
+    harness
+}
+
+#[tokio::test]
+async fn graceful_mixed_turn_with_a_cut_off_real_call_retries_instead_of_finishing() {
+    // The answer arrived, but the real call was cut off and answered with a
+    // "re-issue it" error. Finishing here would drop the requested action, so
+    // the cut-off turn's answer is not recorded and the model gets another
+    // turn; the answer it gives then is the one kept.
+    let tool = Arc::new(FakeTool::new("lookup", "found"));
+    let model = ScriptedStructuredModel::new(vec![
+        mixed_turn_cut_off_in_the_real_call(),
+        tool_call_response("s2", "answer", json!({"value": "whole"})),
+    ]);
+    let harness = structured_mixed_harness(
+        model,
+        Arc::clone(&tool),
+        crate::runtime::EndStrategy::Graceful,
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("answer")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 2, "the cut-off turn was retried");
+    assert_eq!(
+        run.structured.expect("structured output present")["value"],
+        "whole"
+    );
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        0,
+        "the cut-off call is answered with an error, never run"
+    );
+}
+
+#[tokio::test]
+async fn graceful_mixed_turn_without_truncation_still_finishes_in_one_call() {
+    let tool = Arc::new(FakeTool::new("lookup", "found"));
+    let mut response = multi_tool_call_response(vec![("s1", "answer"), ("c1", "lookup")]);
+    response.message.tool_calls[0].arguments = json!({"value": "first"});
+    let model = ScriptedStructuredModel::new(vec![response]);
+    let harness = structured_mixed_harness(
+        model,
+        Arc::clone(&tool),
+        crate::runtime::EndStrategy::Graceful,
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("answer")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 1);
+    assert_eq!(
+        run.structured.expect("structured output present")["value"],
+        "first"
+    );
+    assert_eq!(*tool.calls.lock().unwrap(), 1);
+}
