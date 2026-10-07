@@ -539,7 +539,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         Some(
             self.workspace_dir
                 .canonicalize()
-                .unwrap_or_else(|_| absolute_normalized_path(&self.workspace_dir))
+                .unwrap_or_else(|_| symlink_normalized_path(&self.workspace_dir))
                 .to_string_lossy()
                 .into_owned(),
         )
@@ -684,6 +684,28 @@ fn absolute_normalized_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+/// Returns an absolute key with symlinks resolved in every existing prefix.
+/// The final workspace directory may not exist yet, so canonicalizing the
+/// whole path is not sufficient for locator identity.
+fn symlink_normalized_path(path: &Path) -> PathBuf {
+    let normalized = absolute_normalized_path(path);
+    let mut existing = normalized.clone();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        if let Some(name) = existing.file_name().map(std::ffi::OsString::from) {
+            missing.push(name);
+        }
+        if !existing.pop() {
+            return normalized;
+        }
+    }
+    let mut resolved = existing.canonicalize().unwrap_or(existing);
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    resolved
 }
 
 fn begin_file_generation_with_baseline(

@@ -520,6 +520,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             return Err(RuntimeError::Cancelled);
         }
         let cancellation = options.cancellation.clone();
+        // Hold the session lock before any resume preparation or transcript
+        // read. Background appends use the same lock and must not land after
+        // the baseline is read but before this turn acquires it.
+        let _turn_lock =
+            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resume_preparation = cancelable(
             &cancellation,
             self.hooks
@@ -527,12 +532,6 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         )
         .await?;
         self.apply_resume_preparation(resume_preparation)?;
-        // Held from the resume read through the persist below (and any
-        // partial persist on failure), so an out-of-band transcript append
-        // (`append_background_message`) lands between turns rather than
-        // staling this turn's baseline. See `lock_session_turn`.
-        let _turn_lock =
-            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resumed = if options.resume == ResumeMode::Never {
             false
         } else {

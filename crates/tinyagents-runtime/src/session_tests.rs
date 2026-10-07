@@ -156,6 +156,10 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let delivery_started_signal = delivery_started.clone();
     let mut delivery = tokio::spawn(async move {
         delivery_started_signal.notify_one();
+        // Let the append future be polled before the test observes the
+        // notification; the lock acquisition is the synchronization point
+        // being exercised, not task creation itself.
+        tokio::task::yield_now().await;
         append_background_message(
             &delivery_locator,
             &delivery_session,
@@ -166,7 +170,7 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     });
     delivery_started.notified().await;
     assert!(
-        timeout(Duration::from_millis(25), &mut delivery)
+        timeout(Duration::from_secs(1), &mut delivery)
             .await
             .is_err(),
         "delivery must wait for the turn"

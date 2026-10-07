@@ -91,7 +91,7 @@ pub async fn append_background_message(
     message: TranscriptMessage,
     options: BackgroundAppend,
 ) -> anyhow::Result<BackgroundAppendOutcome> {
-    validate(&message, &options)?;
+    let message = validate(message, &options)?;
     let root = session.first_generation();
     let stem = session_stem(&root);
     let key = options.idempotency_key.as_str();
@@ -180,8 +180,11 @@ fn stale(options: &BackgroundAppend, head: u32) -> Option<BackgroundAppendOutcom
 /// A tool-calling row would leave calls with no results in the model context,
 /// and an interrupted row would be skipped by the model-context reader — the
 /// opposite of what a delivery is for.
-fn validate(message: &TranscriptMessage, options: &BackgroundAppend) -> anyhow::Result<()> {
-    let normalized = message.clone().normalized();
+fn validate(
+    message: TranscriptMessage,
+    options: &BackgroundAppend,
+) -> anyhow::Result<TranscriptMessage> {
+    let normalized = message.normalized();
     anyhow::ensure!(
         !options.idempotency_key.trim().is_empty(),
         "background append needs a non-empty idempotency key"
@@ -201,7 +204,7 @@ fn validate(message: &TranscriptMessage, options: &BackgroundAppend) -> anyhow::
             && normalized.tool_failure.is_none(),
         "background append only writes plain, complete assistant messages"
     );
-    Ok(())
+    Ok(normalized)
 }
 
 /// Whether any message line of the transcript at `path` was delivered with

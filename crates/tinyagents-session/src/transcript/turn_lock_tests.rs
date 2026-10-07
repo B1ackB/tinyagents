@@ -60,6 +60,31 @@ async fn missing_workspace_paths_are_normalized_for_locking() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn missing_workspace_below_a_symlink_is_normalized_for_locking() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = dir.path().join("link");
+    symlink(&real, &link).unwrap();
+    let session = SessionRef::scoped("thread-1", "agent");
+    let first = FileTranscriptLocator::new(real.join("not-created"));
+    let second = FileTranscriptLocator::new(link.join("not-created"));
+
+    let _guard = lock_session_turn(&first, &session).await.unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            lock_session_turn(&second, &session),
+        )
+        .await
+        .is_err()
+    );
+}
+
 #[tokio::test]
 async fn other_sessions_and_other_workspaces_are_independent() {
     let dir = tempfile::tempdir().unwrap();
