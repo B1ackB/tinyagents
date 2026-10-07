@@ -179,6 +179,7 @@ impl SubagentExecutor<String> for FakeExecutor {
                 ..ArtifactReference::default()
             }],
             schema_error: None,
+            artifact_error: None,
         })
     }
 }
@@ -484,6 +485,7 @@ impl SubagentExecutor<String> for MismatchedExecutor {
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
             schema_error: None,
+            artifact_error: None,
         })
     }
 }
@@ -532,6 +534,7 @@ impl SubagentExecutor<String> for PauseThenCompleteExecutor {
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
             schema_error: None,
+            artifact_error: None,
         })
     }
 }
@@ -581,6 +584,7 @@ impl SubagentExecutor<String> for NestedExecutor {
                 },
                 artifacts: Vec::new(),
                 schema_error: None,
+            artifact_error: None,
             });
         }
         Ok(SubagentOutcome {
@@ -594,6 +598,7 @@ impl SubagentExecutor<String> for NestedExecutor {
             },
             artifacts: Vec::new(),
             schema_error: None,
+            artifact_error: None,
         })
     }
 }
