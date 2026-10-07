@@ -121,7 +121,17 @@ impl Summarizer for ShortSummarizer {
     }
 }
 
-/// Each summary is bigger than the last, and far bigger than the history.
+/// A summary larger than anything it replaces.
+struct HugeSummarizer;
+
+#[async_trait]
+impl Summarizer for HugeSummarizer {
+    async fn summarize(&self, _messages: &[Message]) -> Result<SummaryRecord> {
+        Ok(record(&"y".repeat(200_000)))
+    }
+}
+
+/// The first summary is tiny; each later one is far bigger than the history.
 #[derive(Default)]
 struct GrowingSummarizer {
     calls: Mutex<usize>,
@@ -135,7 +145,7 @@ impl Summarizer for GrowingSummarizer {
             *calls += 1;
             *calls
         };
-        Ok(record(&"y".repeat(50_000 * n)))
+        Ok(record(&"y".repeat(if n == 1 { 10 } else { 50_000 * n })))
     }
 }
 
@@ -270,8 +280,8 @@ async fn a_later_attempt_that_does_not_shrink_the_request_ends_recovery() {
     ));
     let result = run(&stack, &base, long_transcript()).await;
     assert!(matches!(result, Err(TinyAgentsError::Model(_))));
-    // The first attempt is always made; the second's summary is bigger than
-    // its input, so it is never sent.
+    // The first attempt shrinks and is sent; the second's summary is bigger
+    // than its input, so it is never sent.
     assert_eq!(base.calls(), 2);
 }
 
@@ -601,4 +611,39 @@ async fn a_streamed_response_is_never_discarded_for_its_usage() {
         .into_response();
     assert_eq!(out.usage.unwrap().input_tokens, 9_000);
     assert_eq!(base.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_first_attempt_that_grows_the_request_is_not_used_or_persisted() {
+    struct Sink(Mutex<usize>);
+    impl crate::summarization::CompactionSink for Sink {
+        fn persist(&self, _record: &crate::summarization::CompactionRecord) -> Result<()> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+    let base = ScriptedBase::new(|_, _| Err(overflow_error()));
+    let stack = stack_of(ContextCompressionMiddleware::with_summarizer(
+        roomy_policy(),
+        Box::new(HugeSummarizer),
+    ));
+    let sink = Arc::new(Sink(Mutex::new(0)));
+    let recorder = Arc::new(RecordingListener::new());
+    let mut c = ctx().with_compaction_sink(sink.clone());
+    c.events.subscribe(recorder.clone());
+    let result = stack
+        .run_wrapped_model(
+            &mut c,
+            &(),
+            ModelRequest {
+                messages: long_transcript(),
+                ..Default::default()
+            },
+            &base,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(base.calls(), 1, "a request that grew is never sent");
+    assert_eq!(*sink.0.lock().unwrap(), 0, "no boundary persisted");
+    assert_eq!(compacted_count(&recorder), 0);
 }

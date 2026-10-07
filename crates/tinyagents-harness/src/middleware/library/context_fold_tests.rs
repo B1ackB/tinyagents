@@ -494,10 +494,11 @@ impl Middleware<()> for LaterStep {
 /// wrap, with threshold compaction declined so only the overflow path fires.
 async fn overflow_call(later: Option<LaterStep>) -> Vec<CompactionRecord> {
     let mw = Arc::new(
-        ContextCompressionMiddleware::new(
+        ContextCompressionMiddleware::with_summarizer(
             SummarizationPolicy::default()
                 .with_context_window(100)
                 .with_threshold_fraction(0.5),
+            Box::new(ShortSummarizer::default()),
         )
         .with_before_compaction(|c| match c.reason {
             crate::summarization::CompactionReason::Threshold => {
