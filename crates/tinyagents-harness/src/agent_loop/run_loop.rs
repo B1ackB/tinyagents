@@ -395,28 +395,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
         }
 
-        // Truncated-empty recovery state (see `RunPolicy::truncated_empty_retries`).
-        // These persist across the retry `continue` within a single logical turn:
-        // `boosted_max_tokens` overrides the next request's cap, `truncation_base`
-        // records the original cap so growth stays clamped at 4x, and the counter
-        // bounds how many times we re-issue the call.
-        let mut truncated_empty_retries_used: u32 = 0;
-        // "Stop deliberating" re-prompts once the retries above are spent
-        // (see `RunPolicy::truncated_empty_nudges`). Same per-turn scope.
-        let mut truncated_empty_nudges_used: u32 = 0;
-        let mut empty_response_retries_used: u32 = 0;
-        // Consecutive "you said tool_calls but sent none" re-prompts
-        // (see `RunPolicy::dropped_tool_call_nudges`).
-        let mut dropped_tool_call_nudges_used: u32 = 0;
-        // Consecutive re-prompts after a call written on a turn with no
-        // callable tool (bounded by the same `dropped_tool_call_nudges`).
-        let mut withheld_call_nudges_used: u32 = 0;
-        let mut boosted_max_tokens: Option<u32> = None;
-        let mut truncation_base: Option<u32> = None;
-        // Consecutive length-truncated tool turns answered with errors (see
-        // `RunPolicy::truncated_tool_call_retries`); reset by any tool turn
-        // that was not cut off, never by the truncated turn itself.
-        let mut truncated_tool_call_retries_used: u32 = 0;
+        // Per-turn recovery state (retry/nudge counters and the boosted output
+        // cap; see `TurnRecovery`). It persists across the retry `continue`
+        // within a single logical turn and is reset at each turn boundary.
+        let mut turn_recovery = TurnRecovery::default();
 
         // Output-validation retry state (see `RunPolicy::output_retry`, A3).
         // Scoped to the whole run rather than reset per turn: `max_attempts`
@@ -2030,20 +2012,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // A tool-calling response is a resolved turn too: clear the
             // recovery state before the tools run so the next turn starts from
             // the caller's configured cap and a full retry budget.
-            dropped_tool_call_nudges_used = 0;
-            withheld_call_nudges_used = 0;
-            empty_response_retries_used = 0;
             // A turn whose call was cut off keeps its retry budget and boosted
             // output cap for the retry.
-            if !turn_had_truncated_calls {
-                truncated_tool_call_retries_used = 0;
-                reset_truncated_empty_recovery(
-                    &mut truncated_empty_retries_used,
-                    &mut truncated_empty_nudges_used,
-                    &mut boosted_max_tokens,
-                    &mut truncation_base,
-                );
-            }
+            turn_recovery.reset_after_tool_turn(turn_had_truncated_calls);
 
             // Execute requested tools: serial admission -> serial or
             // concurrent execution -> ordered fold. Multi-call turns run

@@ -91,7 +91,7 @@ impl TurnRecovery {
     /// A turn whose call was cut off by the output limit
     /// (`turn_had_truncated_calls`) keeps its truncated-tool-call retry budget
     /// and boosted output cap for the retry.
-    pub(super) fn reset_after_clean_tool_turn(&mut self, turn_had_truncated_calls: bool) {
+    pub(super) fn reset_after_tool_turn(&mut self, turn_had_truncated_calls: bool) {
         self.reset_nudges();
         if !turn_had_truncated_calls {
             self.reset_truncation();

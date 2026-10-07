@@ -49,16 +49,16 @@ fn reset_truncated_empty_clears_only_the_truncated_empty_state() {
 }
 
 #[test]
-fn reset_after_clean_tool_turn_clears_everything() {
+fn reset_after_tool_turn_clears_everything() {
     let mut recovery = spent();
-    recovery.reset_after_clean_tool_turn(false);
+    recovery.reset_after_tool_turn(false);
     assert_eq!(recovery, TurnRecovery::default());
 }
 
 #[test]
 fn reset_after_a_truncated_tool_turn_keeps_the_retry_budget_and_boost() {
     let mut recovery = spent();
-    recovery.reset_after_clean_tool_turn(true);
+    recovery.reset_after_tool_turn(true);
     // The re-prompt counters clear...
     assert_eq!(recovery.dropped_tool_call_nudges_used, 0);
     assert_eq!(recovery.withheld_call_nudges_used, 0);
