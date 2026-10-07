@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use crate::transcript::{self, DisplayRecord};
 
 use super::project::{native_tool_round, project_records};
-use super::types::{DisplayItem, TranscriptSubagentStatus, ToolCallStatus};
+use super::types::{DisplayItem, ToolCallStatus, TranscriptSubagentStatus};
 
 const LOG_PREFIX: &str = "[threads][transcript][subagents]";
 

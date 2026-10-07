@@ -10,9 +10,9 @@ use super::policy::{AttemptSource, apply_outcome_policies, may_retry};
 use super::{IncompleteKind, SpawnAdmission, SpawnRejection, SubagentIncomplete, restrict_tools};
 use super::{
     PersistedSubagentPause, SubagentError, SubagentExecution, SubagentExecutor, SubagentOutcome,
-    SubagentPausePersistenceDisposition, SubagentPersistence, SubagentPersistenceDisposition,
-    SubagentPlanner, SubagentRequest, SubagentRunResult, SubagentOutcomeKind, SubagentTaskKey,
-    SubagentTerminalPersistenceDisposition,
+    SubagentOutcomeKind, SubagentPausePersistenceDisposition, SubagentPersistence,
+    SubagentPersistenceDisposition, SubagentPlanner, SubagentRequest, SubagentRunResult,
+    SubagentTaskKey, SubagentTerminalPersistenceDisposition,
 };
 use tinyagents_harness::error::TinyAgentsError;
 

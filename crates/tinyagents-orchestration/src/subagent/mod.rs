@@ -51,12 +51,14 @@ pub use role::{
     SUBAGENT_JOBS_TOOL, SUBAGENT_MESSAGE_TOOL, SubagentRole, is_delegation_tool, restrict_tools,
     subagent_framing,
 };
+#[allow(deprecated)]
+pub use types::SubagentStatus;
 pub use types::{
     ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause,
     PreparedSubagent, SubagentError, SubagentExecution, SubagentIncomplete, SubagentOutcome,
-    SubagentPause, SubagentPausePersistenceDisposition, SubagentPersistenceDisposition,
-    SubagentRequest, SubagentRequestParts, SubagentResume, SubagentRunResult, SubagentOutcomeKind,
-    SubagentTaskKey, SubagentTerminalPersistenceDisposition,
+    SubagentOutcomeKind, SubagentPause, SubagentPausePersistenceDisposition,
+    SubagentPersistenceDisposition, SubagentRequest, SubagentRequestParts, SubagentResume,
+    SubagentRunResult, SubagentTaskKey, SubagentTerminalPersistenceDisposition,
 };
 
 #[cfg(test)]

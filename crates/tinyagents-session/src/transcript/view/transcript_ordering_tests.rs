@@ -4,7 +4,7 @@
 //! placement, and compaction-generation chains.
 
 use super::project::{project_records, project_thread, resolve_files};
-use super::types::{DisplayItem, TranscriptSubagentStatus, ToolCallStatus};
+use super::types::{DisplayItem, ToolCallStatus, TranscriptSubagentStatus};
 use crate::transcript::{
     self, SessionRef, TranscriptMessage, TranscriptMeta, TranscriptToolCall, TurnUsage,
     read_transcript, read_transcript_display,

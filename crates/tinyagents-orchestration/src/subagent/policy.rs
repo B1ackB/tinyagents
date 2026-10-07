@@ -26,7 +26,7 @@ use tinyinference_llm::message::Message;
 
 use super::{
     AttemptContextFactory, IncompleteKind, PreparedSubagent, ResultPolicy, SubagentError,
-    SubagentIncomplete, SubagentOutcome, SubagentRole, SubagentOutcomeKind,
+    SubagentIncomplete, SubagentOutcome, SubagentOutcomeKind, SubagentRole,
 };
 
 /// Whether a failed attempt `attempt` (0-based) may be retried.

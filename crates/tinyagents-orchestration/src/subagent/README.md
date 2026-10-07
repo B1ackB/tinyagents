@@ -218,7 +218,7 @@ and `..Default::default()`.
   a job whose child fails with `LimitExceeded` or `Timeout` now ends
   `Incomplete` (with `incomplete_kind`) instead of `Failed`; it is still
   terminal and still returned as a tool error.
-- The transcript view's `SubagentOutcomeKind` gained `Incomplete`, and a legacy
+- The transcript view's `TranscriptSubagentStatus` gained `Incomplete`, and a legacy
   `[SUBAGENT_INCOMPLETE]` result now projects as `Incomplete` instead of
   `Failed`.
 - `tinyagents-runtime`: new `ToolSnapshot::retaining`.

@@ -392,7 +392,14 @@ pub enum IncompleteKind {
     BudgetExceeded,
 }
 
-/// The visible status of one subagent run.
+/// The driver-level outcome of one subagent run: completed, paused for input,
+/// incomplete, or cancelled.
+///
+/// Not to be confused with the session crate's `TranscriptSubagentStatus` (a
+/// display projection read back from a transcript) or with the job / detached
+/// / task / run-ledger vocabularies; see the status-vocabulary map in the
+/// crate README. Formerly named `SubagentStatus`; the serde wire format is
+/// unchanged.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SubagentOutcomeKind {
     /// The subagent completed normally.
@@ -404,6 +411,13 @@ pub enum SubagentOutcomeKind {
     /// Cooperative cancellation won the lifecycle race.
     Cancelled,
 }
+
+/// Former name of [`SubagentOutcomeKind`].
+///
+/// Renamed so it no longer collides with the session crate's transcript-view
+/// status. The serde wire format is unchanged.
+#[deprecated(since = "2.1.4", note = "renamed to `SubagentOutcomeKind`")]
+pub type SubagentStatus = SubagentOutcomeKind;
 
 /// The durable lifecycle action that made a run result observable.
 ///

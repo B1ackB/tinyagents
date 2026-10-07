@@ -1016,7 +1016,10 @@ async fn cancelled_follower_returns_without_cancelling_the_leader_or_persisting(
         .expect("cancelled follower must not wait for the leader")
         .unwrap()
         .unwrap();
-    assert_eq!(follower_outcome.outcome.status, SubagentOutcomeKind::Cancelled);
+    assert_eq!(
+        follower_outcome.outcome.status,
+        SubagentOutcomeKind::Cancelled
+    );
     assert_eq!(
         follower_outcome.disposition,
         SubagentPersistenceDisposition::ObserverCancelled
