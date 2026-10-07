@@ -61,3 +61,7 @@ pub use types::{
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+
+#[cfg(test)]
+#[path = "driver_policy_tests.rs"]
+mod driver_policy_test;
