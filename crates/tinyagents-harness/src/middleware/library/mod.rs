@@ -71,6 +71,7 @@ mod memory_protocol_middleware;
 mod observe;
 mod policy_gate;
 mod repeat_progress;
+mod repeat_progress_state;
 mod resilience;
 mod tool_policy;
 mod turn_clock;
@@ -102,7 +103,11 @@ pub use policy_gate::{
     PolicyDecision, ToolCallPolicy, ToolPolicyGate, ToolPolicyGateMiddleware, record_approved,
 };
 pub use repeat_progress::{
-    HaltSummarySlot, RepeatEvictionObserver, RepeatExemption, RepeatProgressMiddleware,
+    HaltSummarySlot, ReadOnlyCheck, RepeatEvictionObserver, RepeatExemption,
+    RepeatProgressMiddleware,
+};
+pub use repeat_progress_state::{
+    REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, REPEAT_GUARD_METADATA_KEY, repeat_guard_marker,
 };
 pub(crate) use turn_clock::is_json_document;
 pub use turn_clock::{TurnClock, TurnClockMiddleware};

@@ -3,7 +3,7 @@
 //! make no progress (#4088 / #4095), including loops whose repeats are not
 //! back to back (#6275).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,11 +16,14 @@ use crate::no_progress::{
     VolatileSpanNormalizer, fingerprint_arguments,
 };
 use crate::steering::{SteeringCommand, SteeringHandle};
-use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
 use tinyinference_llm::tool::ToolCall;
-use tinytools::{ToolContent, ToolResult as TaToolResult};
+use tinytools::ToolResult as TaToolResult;
 
+use super::repeat_progress_state::{
+    PendingCallBatch, REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, RepeatState, append_notes,
+    assistant_visible_text, tag_result, visible_tool_results,
+};
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 
 /// Shared slot a guard writes its root-cause halt summary into when it trips, so
@@ -31,119 +34,10 @@ pub type HaltSummarySlot = Arc<Mutex<Option<String>>>;
 /// polling/wait tool), so an identical repeat is progress rather than a loop.
 pub type RepeatExemption = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Extract the assistant's visible text (concatenated [`ContentBlock::Text`]
-/// blocks) from a model response message, for the repeat-output signature.
-fn assistant_visible_text(message: &tinyinference_llm::message::AssistantMessage) -> String {
-    let mut out = String::new();
-    for block in &message.content {
-        if let ContentBlock::Text(t) = block {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(t);
-        }
-    }
-    out
-}
-
-/// Per-batch state the repeat-CALL guard needs but can only fully evaluate once
-/// every tool result in the assistant's batch has come back: the canonical
-/// `(tool, args)` signature captured at `after_model`, plus the running
-/// success/remaining accounting folded in at each `after_tool`.
-#[derive(Default)]
-struct PendingCallBatch {
-    /// Canonical `(tool, args)` signature of the batch, from `after_model`.
-    call_sig: String,
-    /// Tool results still outstanding for this batch.
-    remaining: usize,
-    /// `true` while every result so far in the batch has succeeded.
-    all_ok: bool,
-    /// `true` when every call in the batch is a polling/wait exemption.
-    exempt: bool,
-    /// `call_id` → per-call `(tool, argument fingerprint)` for the recurrence
-    /// ledger. Polling/wait calls are left out.
-    call_sigs: HashMap<String, VecDeque<(String, String)>>,
-    /// `true` once a result in this batch has already halted the run, so the
-    /// batch does not pause it a second time.
-    halted: bool,
-}
-
-/// Tracker state shared between [`RepeatProgressMiddleware`] and its
-/// [`RepeatEvictionObserver`].
-struct RepeatState {
-    monitors: Mutex<HashMap<u64, RepeatMonitor>>,
-    config: RepeatProgressConfig,
-    /// The body a cleared tool result carries.
-    cleared_placeholder: String,
-    /// `call_id`s of the results fed to the recurrence ledger since its last reset.
-    recorded: Mutex<HashMap<u64, HashSet<String>>>,
-    /// Recorded results still verbatim in the current request before any
-    /// reduction step ran; compared against the final request by the observer.
-    visible_before_reduction: Mutex<HashMap<u64, HashSet<String>>>,
-}
-
-impl RepeatState {
-    fn new(placeholder: impl Into<String>, config: RepeatProgressConfig) -> Self {
-        Self {
-            monitors: Mutex::default(),
-            config,
-            cleared_placeholder: placeholder.into(),
-            recorded: Mutex::default(),
-            visible_before_reduction: Mutex::default(),
-        }
-    }
-}
-
-impl RepeatState {
-    /// Runs `f` on the run's monitor, creating it on first use. `None` only if
-    /// the lock is poisoned, in which case the guard stays out of the way.
-    fn with_monitor<R>(&self, run_id: u64, f: impl FnOnce(&RepeatMonitor) -> R) -> Option<R> {
-        let mut monitors = self.monitors.lock().ok()?;
-        let monitor = monitors
-            .entry(run_id)
-            .or_insert_with(|| RepeatMonitor::new(&self.config));
-        Some(f(monitor))
-    }
-}
-
-/// Appends each warning to the result the model is about to read, in the plain
-/// blocks and in the markdown rendering.
-fn append_notes(result: &mut TaToolResult, notes: &[String]) {
-    for note in notes {
-        let mut chars = note.chars();
-        let note = match chars.next() {
-            Some(first) => format!("[repeat notice] {}{}", first.to_uppercase(), chars.as_str()),
-            None => continue,
-        };
-        result.content.push(ToolContent::Text {
-            text: format!("\n\n{note}"),
-        });
-        if let Some(markdown) = result.markdown_formatted.as_mut() {
-            markdown.push_str("\n\n");
-            markdown.push_str(&note);
-        }
-    }
-}
-
-/// The `ids` whose tool result is still in `request` with its body intact.
-fn visible_tool_results(
-    request: &ModelRequest,
-    ids: &HashSet<String>,
-    placeholder: &str,
-) -> HashSet<String> {
-    request
-        .messages
-        .iter()
-        .filter_map(|message| match message {
-            Message::Tool(tool)
-                if ids.contains(&tool.tool_call_id) && message.text() != placeholder =>
-            {
-                Some(tool.tool_call_id.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
+/// Whether a tool cannot change state (a pure read). Hosts supply it from the
+/// tools' declared policy (`ToolPolicy::read_only`); see
+/// [`RepeatProgressMiddleware::with_read_only`].
+pub type ReadOnlyCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Host adapter for the crate's successful-repeat tracker (#4088 / #4095).
 /// [`SuccessfulRepeatTracker`] owns the generic streak accounting; this adapter
