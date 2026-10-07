@@ -26,6 +26,7 @@ fn list_threads_repairs_an_interrupted_append_after_known_stats() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     let message = |id: &str, time: &str| ThreadMessage {
@@ -63,6 +64,7 @@ fn list_threads_reconciles_stats_with_authoritative_message_files() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     for i in 0..3 {
@@ -172,6 +174,7 @@ fn list_threads_repairs_message_append_without_matching_stat_event() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -249,6 +252,7 @@ fn delete_thread_clears_stats_from_index() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -285,6 +289,7 @@ fn search_cross_thread_messages_finds_hits_outside_excluded_thread() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -312,6 +317,7 @@ fn search_cross_thread_messages_finds_hits_outside_excluded_thread() {
             created_at: "2026-04-10T13:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -353,6 +359,7 @@ fn search_cross_thread_messages_excludes_active_thread() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -395,6 +402,7 @@ fn search_cross_thread_messages_skips_short_terms_and_empty_queries() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -438,6 +446,7 @@ fn search_cross_thread_messages_finds_polish_substring_without_diacritics() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store

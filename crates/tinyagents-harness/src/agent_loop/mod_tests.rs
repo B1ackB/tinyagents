@@ -1475,6 +1475,626 @@ async fn length_finish_with_text_is_not_treated_as_truncated_empty() {
     assert_eq!(run.text(), Some("partial answer".to_string()));
 }
 
+/// A tool-calling response cut off by the output cap (`finish_reason ==
+/// "length"`): its last native call may carry truncated, schema-valid-looking
+/// arguments.
+fn length_truncated_tool_calls_response(calls: &[(&str, &str)]) -> ModelResponse {
+    let mut response = tool_call_response(calls[0].0, calls[0].1, json!({"q": "cut"}));
+    for (id, name) in &calls[1..] {
+        response
+            .message
+            .tool_calls
+            .push(ToolCall::new(*id, *name, json!({"q": "cut"})));
+    }
+    response.finish_reason = Some("length".to_string());
+    response
+}
+
+fn tool_started_and_completed(
+    recorder: &crate::testkit::EventRecorder,
+    id: &str,
+) -> (usize, usize) {
+    let events = recorder.events();
+    let started = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolStarted { call_id, .. } if call_id.as_str() == id))
+        .count();
+    let completed = events
+        .iter()
+        .filter(
+            |e| matches!(e, AgentEvent::ToolCompleted { call_id, .. } if call_id.as_str() == id),
+        )
+        .count();
+    (started, completed)
+}
+
+#[tokio::test]
+async fn length_truncation_rejects_only_the_last_native_call() {
+    // Only the last native call of a length-cut turn can be incomplete: the
+    // earlier one runs, the last gets a synthetic error, and the loop carries
+    // on so the model can re-issue it.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup"), ("c2", "lookup")]),
+        tool_call_response("c3", "lookup", json!({"q": "whole"})),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    let recorder = crate::testkit::EventRecorder::new();
+    let ctx = RunContext::new(RunConfig::new("length-tool-calls"), ()).with_events(recorder.sink());
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("look it up")])
+        .await
+        .expect("the run recovers on the next model call");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(run.model_calls, 3);
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        2,
+        "c1 (complete) and the re-issued c3 run; the cut-off c2 does not"
+    );
+    // user, assistant(c1+c2), tool(c1), tool(c2), assistant(c3), tool(c3), final.
+    assert_eq!(run.messages.len(), 7, "{:?}", run.messages);
+    let Message::Tool(first) = &run.messages[2] else {
+        panic!("expected a tool result: {:?}", run.messages[2]);
+    };
+    assert_eq!(first.tool_call_id, "c1");
+    assert_eq!(run.messages[2].text(), "tool-output");
+    let Message::Tool(second) = &run.messages[3] else {
+        panic!("expected a tool result: {:?}", run.messages[3]);
+    };
+    assert_eq!(second.tool_call_id, "c2");
+    let text = run.messages[3].text();
+    assert!(text.contains("output token limit"), "{text}");
+    assert!(text.contains("lookup"), "{text}");
+    for id in ["c1", "c2"] {
+        assert_eq!(
+            tool_started_and_completed(&recorder, id),
+            (1, 1),
+            "call {id}: {:?}",
+            recorder.kinds()
+        );
+    }
+}
+
+#[tokio::test]
+async fn length_truncated_tool_calls_run_when_the_guard_is_disabled() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup")]),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+    harness.with_policy(RunPolicy {
+        reject_truncated_tool_calls: false,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(*tool.calls.lock().unwrap(), 1, "the call runs as parsed");
+    assert_eq!(run.messages[2].text(), "tool-output");
+}
+
+#[tokio::test]
+async fn max_tokens_finish_reason_counts_as_a_length_stop() {
+    // Anthropic reports `max_tokens`, not `length`.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let mut cut = length_truncated_tool_calls_response(&[("c1", "lookup")]);
+    cut.finish_reason = Some("max_tokens".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        0,
+        "the cut-off call must not run"
+    );
+}
+
+#[tokio::test]
+async fn consecutive_length_truncated_tool_turns_are_bounded_and_raise_the_token_cap() {
+    // Default budget: 2 retries. The third consecutive truncated tool turn
+    // stops the run with a typed limit error instead of looping, and each retry
+    // gets a bigger output cap (doubled, clamped at 4x) so it can actually fit.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup")]),
+        length_truncated_tool_calls_response(&[("c2", "lookup")]),
+        length_truncated_tool_calls_response(&[("c3", "lookup")]),
+        text_response("never reached", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    let ctx = RunContext::new(
+        RunConfig::new("length-bounded").with_max_turn_output_tokens(1000),
+        (),
+    );
+    let error = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("look it up")])
+        .await
+        .expect_err("the third consecutive truncated tool turn exhausts the budget");
+
+    assert!(
+        matches!(&error, TinyAgentsError::LimitExceeded(message) if message.contains("truncated")),
+        "{error:?}"
+    );
+    assert_eq!(
+        model
+            .requests()
+            .iter()
+            .map(|request| request.max_tokens)
+            .collect::<Vec<_>>(),
+        vec![Some(1000), Some(2000), Some(4000)]
+    );
+    assert_eq!(*tool.calls.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn truncated_tool_call_budget_resets_after_a_clean_tool_turn() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("c1", "lookup")]),
+        length_truncated_tool_calls_response(&[("c2", "lookup")]),
+        tool_call_response("c3", "lookup", json!({"q": "whole"})),
+        length_truncated_tool_calls_response(&[("c4", "lookup")]),
+        length_truncated_tool_calls_response(&[("c5", "lookup")]),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    let ctx = RunContext::new(
+        RunConfig::new("length-budget-reset").with_max_turn_output_tokens(1000),
+        (),
+    );
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("look it up")])
+        .await
+        .expect("a clean tool turn resets the budget and the boosted cap");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(
+        model
+            .requests()
+            .iter()
+            .map(|request| request.max_tokens)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(1000),
+            Some(2000),
+            Some(4000),
+            Some(1000),
+            Some(2000),
+            Some(4000)
+        ]
+    );
+    assert_eq!(*tool.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_text_recovered_last_call_is_rejected_under_a_length_stop() {
+    // A text grammar can close an open `{`/`[` or run a payload to the end of
+    // the text, so a recovered call can be cut off and still parse. The native
+    // call before it was finished and runs; the recovered last one does not.
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let mut cut = tool_call_response("n1", "lookup", json!({"q": "whole"}));
+    cut.message.content = vec![ContentBlock::Text(
+        r#"<tool_call>{"name":"lookup","arguments":{"q":"cut"}}</tool_call>"#.to_string(),
+    )];
+    cut.finish_reason = Some("length".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+    harness.with_policy(RunPolicy {
+        text_dialect_recovery: crate::runtime::TextDialectRecovery::On,
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        1,
+        "the native call runs, the recovered last call does not"
+    );
+    assert!(
+        run.messages
+            .iter()
+            .any(|m| m.text().contains("output token limit")),
+        "{:?}",
+        run.messages
+    );
+}
+
+#[tokio::test]
+async fn a_forced_text_dialect_call_cut_by_a_length_stop_is_rejected() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let mut cut = text_response(
+        r#"<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>"#,
+        4,
+        2,
+    );
+    cut.finish_reason = Some("length".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+    harness.with_policy(RunPolicy {
+        tool_dialect: crate::config::ToolDispatcher::Xml,
+        ..RunPolicy::default()
+    });
+
+    harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        0,
+        "the cut-off call must not run"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_provider_ids_reject_the_positional_last_call() {
+    let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        length_truncated_tool_calls_response(&[("dup", "lookup"), ("dup", "lookup")]),
+        text_response("done", 4, 2),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness
+        .register_model("mock", Arc::clone(&model) as _)
+        .register_tool(Arc::clone(&tool) as _);
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("look it up")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(
+        *tool.calls.lock().unwrap(),
+        1,
+        "only the first duplicate runs"
+    );
+    assert_eq!(run.messages[2].text(), "tool-output");
+    assert!(run.messages[3].text().contains("output token limit"));
+}
+
+#[tokio::test]
+async fn an_empty_max_tokens_reply_takes_the_truncated_empty_retry_path() {
+    // Anthropic spells the length stop `max_tokens`; an empty reply with it is
+    // a truncated-empty completion (retried with a bigger cap), not a blank final.
+    let mut cut = truncated_empty_response(2048);
+    cut.finish_reason = Some("max_tokens".to_string());
+    let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+        cut,
+        text_response("recovered", 4, 3),
+    ]));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+
+    let ctx = RunContext::new(
+        RunConfig::new("max-tokens-empty").with_max_turn_output_tokens(2048),
+        (),
+    );
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("retried, not surfaced");
+
+    assert_eq!(run.text(), Some("recovered".to_string()));
+    assert_eq!(model.requests()[1].max_tokens, Some(4096));
+}
+
+#[tokio::test]
+async fn an_invalid_call_is_rejected_not_repaired_under_a_length_stop() {
+    // `{q: "x"}` is repairable (unquoted key). A repaired call from a cut-off
+    // reply may still be incomplete, so under a length stop it is refused.
+    fn batch(finish_reason: &str) -> ModelResponse {
+        let mut response = tool_call_response("c2", "lookup", json!({"q": "ok"}));
+        response.message.tool_calls.insert(
+            0,
+            ToolCall::invalid("c1", "lookup", r#"{q: "x"}"#, "key must be a string"),
+        );
+        response.finish_reason = Some(finish_reason.to_string());
+        response
+    }
+    for (finish_reason, expected_runs) in [("tool_calls", 2), ("length", 0)] {
+        let tool = Arc::new(FakeTool::new("lookup", "tool-output"));
+        let model = Arc::new(crate::testkit::ScriptedModel::new(vec![
+            batch(finish_reason),
+            text_response("done", 4, 2),
+        ]));
+        let mut harness: AgentHarness<()> = AgentHarness::new();
+        harness
+            .register_model("mock", Arc::clone(&model) as _)
+            .register_tool(Arc::clone(&tool) as _);
+
+        harness
+            .invoke_default(&(), vec![Message::user("look it up")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(
+            *tool.calls.lock().unwrap(),
+            expected_runs,
+            "finish_reason {finish_reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_truncated_turn_never_terminates_even_if_its_tools_would() {
+    let (harness, model) = harness_with_terminating_tools(
+        vec![
+            length_truncated_tool_calls_response(&[("c1", "finish")]),
+            text_response("after retry", 4, 2),
+        ],
+        vec![terminating_tool("finish", "finished", Hint::Terminate)],
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(model.requests().len(), 2, "the model gets to retry");
+    assert_eq!(run.text(), Some("after retry".to_string()));
+}
+
+#[derive(Clone, Copy)]
+enum Hint {
+    None,
+    Terminate,
+    ReturnDirect,
+}
+
+/// A tool whose result optionally asks the loop to end the run
+/// (`ToolResult::terminate` / `return_direct`).
+struct TerminatingTool {
+    name: &'static str,
+    reply: &'static str,
+    hint: Hint,
+    concurrent: bool,
+    delay_ms: u64,
+}
+
+fn terminating_tool(name: &'static str, reply: &'static str, hint: Hint) -> TerminatingTool {
+    TerminatingTool {
+        name,
+        reply,
+        hint,
+        concurrent: false,
+        delay_ms: 0,
+    }
+}
+
+impl TerminatingTool {
+    /// Marks the tool concurrency-safe, so a multi-call batch runs it in
+    /// parallel with its siblings, finishing after `delay_ms`.
+    fn concurrent(mut self, delay_ms: u64) -> Self {
+        self.concurrent = true;
+        self.delay_ms = delay_ms;
+        self
+    }
+}
+
+#[async_trait]
+impl Tool for TerminatingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "tool that may request termination"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &serde_json::Value) -> bool {
+        self.concurrent
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
+        let result = ToolResult::success(self.reply);
+        Ok(match self.hint {
+            Hint::None => result,
+            Hint::Terminate => result.terminate(),
+            Hint::ReturnDirect => result.return_direct(),
+        })
+    }
+}
+
+fn harness_with_terminating_tools(
+    responses: Vec<ModelResponse>,
+    tools: Vec<TerminatingTool>,
+) -> (AgentHarness<()>, Arc<crate::testkit::ScriptedModel>) {
+    let model = Arc::new(crate::testkit::ScriptedModel::new(responses));
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("mock", Arc::clone(&model) as _);
+    for tool in tools {
+        harness.register_tool(Arc::new(tool));
+    }
+    (harness, model)
+}
+
+/// Applies `with` to a tool constructor for each execution mode: serial, and
+/// concurrent (with the first tool finishing last, to prove the result order
+/// does not depend on completion order).
+fn tool_for_mode(tool: TerminatingTool, concurrent: bool, delay_ms: u64) -> TerminatingTool {
+    if concurrent {
+        tool.concurrent(delay_ms)
+    } else {
+        tool
+    }
+}
+
+#[tokio::test]
+async fn terminate_in_a_mixed_batch_does_not_end_the_run() {
+    // Only some calls of the batch ask to terminate: the others still need the
+    // model to look at their results, so the run goes on (pi's
+    // `shouldTerminateToolBatch` requires every call to agree).
+    for concurrent in [false, true] {
+        let (harness, model) = harness_with_terminating_tools(
+            vec![
+                multi_tool_call_response(vec![("c1", "finish"), ("c2", "lookup")]),
+                text_response("model saw both results", 4, 2),
+            ],
+            vec![
+                tool_for_mode(
+                    terminating_tool("finish", "finished", Hint::Terminate),
+                    concurrent,
+                    0,
+                ),
+                tool_for_mode(
+                    terminating_tool("lookup", "found", Hint::None),
+                    concurrent,
+                    0,
+                ),
+            ],
+        );
+
+        let run = harness
+            .invoke_default(&(), vec![Message::user("go")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(
+            model.requests().len(),
+            2,
+            "the model gets another turn (concurrent: {concurrent})"
+        );
+        assert_eq!(run.text(), Some("model saw both results".to_string()));
+    }
+}
+
+#[tokio::test]
+async fn terminate_ends_the_run_when_every_call_of_the_batch_asks() {
+    // The unanimous batch ends the run; the final response is the *last* call's
+    // output in source order, whichever finishes first.
+    for concurrent in [false, true] {
+        let (harness, model) = harness_with_terminating_tools(
+            vec![multi_tool_call_response(vec![
+                ("c1", "first"),
+                ("c2", "second"),
+            ])],
+            vec![
+                tool_for_mode(
+                    terminating_tool("first", "first output", Hint::Terminate),
+                    concurrent,
+                    40,
+                ),
+                tool_for_mode(
+                    terminating_tool("second", "second output", Hint::Terminate),
+                    concurrent,
+                    0,
+                ),
+            ],
+        );
+
+        let run = harness
+            .invoke_default(&(), vec![Message::user("go")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(model.requests().len(), 1, "no further model turn");
+        assert_eq!(run.text(), Some("second output".to_string()));
+    }
+}
+
+#[tokio::test]
+async fn terminate_from_a_single_call_batch_ends_the_run() {
+    let (harness, model) = harness_with_terminating_tools(
+        vec![multi_tool_call_response(vec![("c1", "finish")])],
+        vec![terminating_tool("finish", "finished", Hint::Terminate)],
+    );
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(model.requests().len(), 1);
+    assert_eq!(run.text(), Some("finished".to_string()));
+}
+
+#[tokio::test]
+async fn return_direct_in_a_mixed_batch_still_ends_the_run() {
+    // `return_direct` stays any-call (unlike `terminate`).
+    for concurrent in [false, true] {
+        let (harness, model) = harness_with_terminating_tools(
+            vec![
+                multi_tool_call_response(vec![("c1", "answer"), ("c2", "lookup")]),
+                text_response("must not be reached", 4, 2),
+            ],
+            vec![
+                tool_for_mode(
+                    terminating_tool("answer", "the answer", Hint::ReturnDirect),
+                    concurrent,
+                    0,
+                ),
+                tool_for_mode(
+                    terminating_tool("lookup", "found", Hint::None),
+                    concurrent,
+                    0,
+                ),
+            ],
+        );
+
+        let run = harness
+            .invoke_default(&(), vec![Message::user("go")])
+            .await
+            .expect("run succeeds");
+
+        assert_eq!(model.requests().len(), 1, "concurrent: {concurrent}");
+        assert_eq!(run.text(), Some("the answer".to_string()));
+    }
+}
+
 #[tokio::test]
 async fn model_requests_tool_then_finishes() {
     let mut harness: AgentHarness<()> = AgentHarness::new();
@@ -2816,6 +3436,62 @@ async fn auto_format_uses_tool_call_for_non_native_model() {
     assert_eq!(structured["score"], 7);
     // Exactly one model call: the structured tool call ends the loop.
     assert_eq!(run.model_calls, 1);
+}
+
+/// Like [`ToolStructuredModel`], but its first structured call is cut off by
+/// the output cap (`finish_reason == "length"`).
+struct CutThenWholeStructuredModel {
+    profile: ModelProfile,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ChatModel<()> for CutThenWholeStructuredModel {
+    fn profile(&self) -> Option<&ModelProfile> {
+        Some(&self.profile)
+    }
+    async fn invoke(
+        &self,
+        _state: &(),
+        request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        let name = request
+            .tools
+            .last()
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            let mut cut = tool_call_response("s1", &name, json!({"value":"cut off"}));
+            cut.finish_reason = Some("length".to_string());
+            return Ok(cut);
+        }
+        Ok(tool_call_response("s2", &name, json!({"value":"whole"})))
+    }
+}
+
+#[tokio::test]
+async fn a_length_cut_structured_output_call_is_retried_not_extracted() {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model(
+        "tool",
+        Arc::new(CutThenWholeStructuredModel {
+            profile: ToolStructuredModel::new().profile,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+    );
+    harness.with_policy(RunPolicy {
+        default_response_format: Some(ResponseFormat::auto("answer", json!({"type": "object"}))),
+        ..RunPolicy::default()
+    });
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("answer")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.model_calls, 2, "the cut-off answer is asked for again");
+    let structured = run.structured.expect("structured output present");
+    assert_eq!(structured["value"], "whole");
 }
 
 #[tokio::test]

@@ -559,12 +559,17 @@ pub(super) fn recovered_tool_call_id(model_call_id: &CallId, slot: usize) -> Str
     if verbatim.chars().count() <= RECOVERED_TOOL_CALL_ID_MAX_LEN {
         return verbatim;
     }
+    format!("{}{slot}", fingerprinted_id_prefix(model_call_id))
+}
+
+/// The `mc{fingerprint}-tool-` stem of an over-long recovered call id.
+fn fingerprinted_id_prefix(model_call_id: &CallId) -> String {
     let fingerprint: String = Sha256::digest(model_call_id.as_str().as_bytes())
         .iter()
         .take(MODEL_CALL_FINGERPRINT_BYTES)
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    format!("mc{fingerprint}-tool-{slot}")
+    format!("mc{fingerprint}-tool-")
 }
 
 /// Reads text-dialect calls out of a response that carries no structured

@@ -39,7 +39,7 @@ mod types;
 pub use store::{
     ConversationPurgeStats, ConversationStore, append_message, delete_messages_from, delete_thread,
     ensure_thread, get_messages, list_threads, purge_threads, update_message, update_thread_labels,
-    update_thread_title,
+    update_thread_title, update_thread_working_dir,
 };
 pub use types::{
     ConversationThread, CreateConversationThread, CrossThreadHit, DETERMINISTIC_MESSAGE_ID_PREFIX,
