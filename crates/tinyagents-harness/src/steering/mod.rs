@@ -349,11 +349,15 @@ impl SteeringHandle {
     /// Marks the current model override as reported, returning `true` only the
     /// first time since it was set -- the caller emits the one
     /// `Steered { accepted: true }` for the command exactly then.
-    pub(crate) fn announce_model_override(&self) -> bool {
-        !self
-            .local
-            .model_override_announced
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+    pub(crate) fn announce_model_override(&self, applied: &str) -> bool {
+        // Held across the flag claim so it is atomic with `set_model_override`
+        // replacing the override and resetting the flag.
+        let slot = self.lock_model_override();
+        slot.as_deref() == Some(applied)
+            && !self
+                .local
+                .model_override_announced
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Drops a model override the model call could not honour, so the run

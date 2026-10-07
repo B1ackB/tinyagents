@@ -42,10 +42,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     ///
     /// Called both before and after `before_model` middleware: the second
     /// call re-validates against the capabilities middleware added and
-    /// re-asserts the switch over a model a middleware selected. Only the
-    /// `final_pass` call reports the switch as applied
-    /// ([`AgentEvent::Steered`] with `accepted: true`, once per switch), so a
-    /// switch the second pass rejects is never reported as accepted first.
+    /// re-asserts the switch over a model a middleware selected. Neither call
+    /// reports the switch as applied; [`Self::announce_applied_model_switch`]
+    /// does that once the request is actually about to be dispatched.
     /// `model_before_switch` is what `request.model` held before the first
     /// call; a rejection puts it back when `request.model` still carries the
     /// rejected name, so that name never reaches resolution or an adapter that
