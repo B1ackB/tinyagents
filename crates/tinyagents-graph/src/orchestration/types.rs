@@ -498,6 +498,8 @@ pub enum DetachedTaskRegistryError {
     AlreadyDone,
     /// The task has no live steering handle registered.
     NoSteeringHandle,
+    /// The supplied steering request id exceeds the bounded cache limit.
+    RequestIdTooLong,
     /// The status sender closed without publishing a terminal value.
     StatusChannelClosed,
 }
@@ -510,6 +512,7 @@ impl std::fmt::Display for DetachedTaskRegistryError {
             Self::NotOwned => "detached task is owned by another parent",
             Self::AlreadyDone => "detached task already reached a terminal status",
             Self::NoSteeringHandle => "detached task has no registered steering handle",
+            Self::RequestIdTooLong => "detached task steering request id is too long",
             Self::StatusChannelClosed => {
                 "detached task status channel closed before a terminal update"
             }

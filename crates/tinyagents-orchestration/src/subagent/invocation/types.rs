@@ -292,4 +292,7 @@ pub enum SubAgentJobError {
         /// Terminal status observed by the registry.
         status: SubAgentJobStatus,
     },
+    /// Cancellation has been requested and queued messages will not be read.
+    #[error("subagent job `{0}` is cancelling")]
+    Cancelling(String),
 }

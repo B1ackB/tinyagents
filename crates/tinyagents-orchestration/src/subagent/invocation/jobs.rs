@@ -276,6 +276,9 @@ impl SubAgentJobRegistry {
                 status: entry.job.status,
             });
         }
+        if entry.cancellation_requested {
+            return Err(SubAgentJobError::Cancelling(job_id.to_owned()));
+        }
         if let Some(request_id) = request_id
             && !entry.message_requests.claim(request_id)
         {

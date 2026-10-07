@@ -126,6 +126,9 @@ where
         task_id: &TaskId,
         request_id: &str,
     ) -> std::result::Result<bool, DetachedTaskRegistryError> {
+        if request_id.len() > tinyagents_harness::steering::RecentRequestIds::MAX_REQUEST_ID_BYTES {
+            return Err(DetachedTaskRegistryError::RequestIdTooLong);
+        }
         let mut guard = self.lock()?;
         let entry = guard
             .get_mut(task_id)
