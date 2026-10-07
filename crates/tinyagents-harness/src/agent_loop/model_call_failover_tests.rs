@@ -14,7 +14,7 @@ use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::runtime::{AgentHarness, RunPolicy};
 use crate::testkit::{EventRecorder, FakeTool};
 use tinyinference_llm::message::Message;
-use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse, ProviderError};
+use tinyinference_llm::model::{ChatModel, ModelProfile, ModelRequest, ModelResponse, ProviderError};
 use tinyinference_llm::tool::ToolCall;
 
 /// Plays a script of outcomes (one per call); once exhausted it repeats the
@@ -73,6 +73,54 @@ impl ChatModel<()> for ScriptedOutcomes {
     }
 }
 
+/// Fails every call with a non-provider error built by `make`.
+struct ScriptedErrors {
+    make: fn() -> tinyinference_llm::Error,
+    attempts: Mutex<usize>,
+}
+
+impl ScriptedErrors {
+    fn new(make: fn() -> tinyinference_llm::Error) -> Arc<Self> {
+        Arc::new(Self {
+            make,
+            attempts: Mutex::new(0),
+        })
+    }
+    fn attempts(&self) -> usize {
+        *self.attempts.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl ChatModel<()> for ScriptedErrors {
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        *self.attempts.lock().unwrap() += 1;
+        Err((self.make)())
+    }
+}
+
+fn harness_with_primary(
+    primary: Arc<ScriptedErrors>,
+    backup: &Arc<ScriptedOutcomes>,
+    max_attempts: usize,
+) -> AgentHarness<()> {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("primary", primary);
+    harness.register_model("backup", backup.clone());
+    harness.with_policy(RunPolicy {
+        retry: RetryPolicy::default()
+            .with_max_attempts(max_attempts)
+            .with_backoff_sleep(false),
+        fallback: Some(FallbackPolicy::new(["primary", "backup"])),
+        ..RunPolicy::default()
+    });
+    harness
+}
+
 fn harness(
     primary: &Arc<ScriptedOutcomes>,
     backup: &Arc<ScriptedOutcomes>,
@@ -122,35 +170,133 @@ async fn rate_limit_retries_the_same_model_then_falls_back() {
 }
 
 #[tokio::test]
-async fn format_error_surfaces_without_trying_the_fallback() {
-    let primary = ScriptedOutcomes::failing(400, "messages: field required", false);
-    let backup = ScriptedOutcomes::answering("must not be reached");
-    let error = harness(&primary, &backup, 3)
-        .invoke_default(&(), vec![Message::user("hi")])
-        .await
-        .expect_err("a malformed request is not fixed by another model");
-    assert!(
-        matches!(error, TinyAgentsError::Provider(_)),
-        "got {error:?}"
+async fn provider_specific_format_error_falls_back() {
+    // An OpenAI strict-schema rejection: another provider may accept it.
+    let primary = ScriptedOutcomes::failing(
+        400,
+        "Invalid schema for function 'lookup': 'additionalProperties' is required",
+        false,
     );
-    assert_eq!(primary.attempts(), 1);
-    assert_eq!(backup.attempts(), 0);
-}
-
-#[tokio::test]
-async fn model_specific_format_error_falls_back() {
-    let primary = ScriptedOutcomes::failing(400, "this model does not support tools", false);
     let backup = ScriptedOutcomes::answering("from backup");
     let run = harness(&primary, &backup, 3)
         .invoke_default(&(), vec![Message::user("hi")])
         .await
-        .expect("capability gap falls back");
+        .expect("a 4xx can be provider-specific, so the chain is walked");
+    assert_eq!(run.text(), Some("from backup".to_string()));
+    assert_eq!(primary.attempts(), 1, "format errors are not retried");
+}
+
+#[tokio::test]
+async fn adapter_validation_error_falls_back() {
+    let primary = ScriptedErrors::new(|| {
+        tinyinference_llm::Error::Unsupported("tool choice not supported by adapter".into())
+    });
+    let backup = ScriptedOutcomes::answering("from backup");
+    let run = harness_with_primary(primary.clone(), &backup, 3)
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("adapter-level rejection falls back");
     assert_eq!(run.text(), Some("from backup".to_string()));
     assert_eq!(primary.attempts(), 1);
 }
 
 #[tokio::test]
-async fn context_overflow_surfaces_without_trying_the_fallback() {
+async fn gateway_404_without_a_model_name_falls_back() {
+    let primary = ScriptedOutcomes::failing(404, "route not found", false);
+    let backup = ScriptedOutcomes::answering("from backup");
+    let run = harness(&primary, &backup, 3)
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("a wrong route is not a model verdict");
+    assert_eq!(run.text(), Some("from backup".to_string()));
+}
+
+fn windowed(max_input_tokens: u64) -> ModelProfile {
+    ModelProfile {
+        max_input_tokens: Some(max_input_tokens),
+        ..ModelProfile::default()
+    }
+}
+
+/// A model with a declared context window that either fails with a context
+/// overflow or answers.
+struct Windowed {
+    profile: ModelProfile,
+    overflow: bool,
+    attempts: Mutex<usize>,
+}
+
+impl Windowed {
+    fn new(window: u64, overflow: bool) -> Arc<Self> {
+        Arc::new(Self {
+            profile: windowed(window),
+            overflow,
+            attempts: Mutex::new(0),
+        })
+    }
+    fn attempts(&self) -> usize {
+        *self.attempts.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl ChatModel<()> for Windowed {
+    fn profile(&self) -> Option<&ModelProfile> {
+        Some(&self.profile)
+    }
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        *self.attempts.lock().unwrap() += 1;
+        if self.overflow {
+            return Err(tinyinference_llm::Error::Provider(Box::new(provider_error(
+                400,
+                "This model's maximum context length is 8192 tokens",
+                false,
+            ))));
+        }
+        Ok(ModelResponse::assistant("from sibling"))
+    }
+}
+
+fn windowed_harness(primary: &Arc<Windowed>, sibling: &Arc<Windowed>) -> AgentHarness<()> {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("primary", primary.clone());
+    harness.register_model("sibling", sibling.clone());
+    harness.with_policy(RunPolicy {
+        retry: RetryPolicy::default()
+            .with_max_attempts(2)
+            .with_backoff_sleep(false),
+        fallback: Some(FallbackPolicy::new(["primary", "sibling"])),
+        ..RunPolicy::default()
+    });
+    harness
+}
+
+#[tokio::test]
+async fn context_overflow_falls_back_to_a_strictly_larger_window() {
+    let primary = Windowed::new(8_000, true);
+    let sibling = Windowed::new(128_000, false);
+    let run = windowed_harness(&primary, &sibling)
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect("a larger-window sibling can take the request");
+    assert_eq!(run.text(), Some("from sibling".to_string()));
+    assert_eq!(primary.attempts(), 1, "overflow is not retried");
+}
+
+#[tokio::test]
+async fn context_overflow_surfaces_when_no_sibling_has_a_larger_window() {
+    let primary = Windowed::new(8_000, true);
+    let sibling = Windowed::new(8_000, false);
+    harness_err(&windowed_harness(&primary, &sibling)).await;
+    assert_eq!(sibling.attempts(), 0, "an equal window cannot help");
+}
+
+#[tokio::test]
+async fn context_overflow_surfaces_when_windows_are_unknown() {
     let primary = ScriptedOutcomes::failing(
         400,
         "This model's maximum context length is 8192 tokens",
@@ -160,8 +306,16 @@ async fn context_overflow_surfaces_without_trying_the_fallback() {
     harness(&primary, &backup, 3)
         .invoke_default(&(), vec![Message::user("hi")])
         .await
-        .expect_err("compaction, not failover, handles overflow");
+        .expect_err("no evidence the sibling is larger");
     assert_eq!(backup.attempts(), 0);
+}
+
+async fn harness_err(harness: &AgentHarness<()>) {
+    let error = harness
+        .invoke_default(&(), vec![Message::user("hi")])
+        .await
+        .expect_err("overflow with no larger sibling surfaces");
+    assert!(matches!(error, TinyAgentsError::Provider(_)), "got {error:?}");
 }
 
 #[tokio::test]

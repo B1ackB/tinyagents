@@ -44,6 +44,7 @@ fn classifies_http_statuses_on_provider_errors() {
         (529, "overloaded", FailoverReason::Overloaded),
         (500, "internal error", FailoverReason::Transport),
         (502, "bad gateway", FailoverReason::Transport),
+        (404, "route not found", FailoverReason::Format),
         (400, "bad request", FailoverReason::Format),
         (422, "unprocessable", FailoverReason::Format),
     ];
@@ -71,7 +72,6 @@ fn revoked_or_deactivated_keys_are_permanent_auth() {
     for message in [
         "API key has been revoked",
         "This account has been deactivated",
-        "api key disabled",
         "organization suspended",
     ] {
         let error = provider(Some(401), None, message, false);
@@ -83,6 +83,28 @@ fn revoked_or_deactivated_keys_are_permanent_auth() {
     }
     let plain = provider(Some(401), None, "invalid api key", false);
     assert_eq!(reason_of(&plain), FailoverReason::Auth);
+}
+
+#[test]
+fn fixable_or_per_project_auth_states_are_not_permanent() {
+    for message in [
+        "API key disabled for this project",
+        "access_terminated_error: endpoint disabled",
+        "key permanently scoped to another project",
+    ] {
+        let error = provider(Some(403), None, message, false);
+        assert_eq!(reason_of(&error), FailoverReason::Auth, "{message}");
+    }
+}
+
+#[test]
+fn a_timeout_parameter_in_a_4xx_body_is_not_a_timeout() {
+    let error = provider(Some(400), None, "invalid value for 'timeout': expected integer", false);
+    assert_eq!(reason_of(&error), FailoverReason::Format);
+    let real = provider(Some(504), None, "gateway timeout", true);
+    assert_eq!(reason_of(&real), FailoverReason::Timeout);
+    let flattened = TinyAgentsError::Model("request timed out".into());
+    assert_eq!(reason_of(&flattened), FailoverReason::Timeout);
 }
 
 #[test]
@@ -155,35 +177,13 @@ fn classifies_dedicated_error_variants() {
     );
 }
 
-#[test]
-fn model_specific_format_errors_are_recognised() {
-    let tools = provider(Some(400), None, "model does not support tools", false);
-    assert!(is_model_specific_format(&tools));
-    let vision = provider(
-        Some(400),
-        None,
-        "This model does not support image input",
-        false,
-    );
-    assert!(is_model_specific_format(&vision));
-    let param = provider(
-        Some(400),
-        None,
-        "Unsupported parameter: 'temperature'",
-        false,
-    );
-    assert!(is_model_specific_format(&param));
-    let malformed = provider(Some(400), None, "messages: field required", false);
-    assert!(!is_model_specific_format(&malformed));
-}
-
 // ── decision table ───────────────────────────────────────────────────────────
 
-fn state(retryable: bool, attempts_remaining: bool, model_specific: bool) -> FailoverState {
+fn state(retryable: bool, attempts_remaining: bool, larger_window_available: bool) -> FailoverState {
     FailoverState {
         retryable,
         attempts_remaining,
-        model_specific,
+        larger_window_available,
     }
 }
 
@@ -233,32 +233,25 @@ fn auth_billing_and_model_not_found_skip_retries_and_fall_back() {
 }
 
 #[test]
-fn format_errors_surface_unless_the_failure_is_model_specific() {
-    assert_eq!(
-        decide(FailoverReason::Format, state(false, true, false)),
-        FailoverDecision::Surface
-    );
-    assert_eq!(
-        decide(FailoverReason::Format, state(true, true, false)),
-        FailoverDecision::Surface
-    );
-    assert_eq!(
-        decide(FailoverReason::Format, state(false, true, true)),
-        FailoverDecision::Fallback
-    );
+fn format_errors_fall_back_because_provider_4xx_is_often_model_specific() {
+    for retryable in [false, true] {
+        assert_eq!(
+            decide(FailoverReason::Format, state(retryable, true, false)),
+            FailoverDecision::Fallback
+        );
+    }
 }
 
 #[test]
-fn context_overflow_always_surfaces() {
-    for model_specific in [false, true] {
-        assert_eq!(
-            decide(
-                FailoverReason::ContextOverflow,
-                state(true, true, model_specific)
-            ),
-            FailoverDecision::Surface
-        );
-    }
+fn context_overflow_falls_back_only_when_a_larger_window_exists() {
+    assert_eq!(
+        decide(FailoverReason::ContextOverflow, state(true, true, true)),
+        FailoverDecision::Fallback
+    );
+    assert_eq!(
+        decide(FailoverReason::ContextOverflow, state(true, true, false)),
+        FailoverDecision::Surface
+    );
 }
 
 #[test]
@@ -287,7 +280,8 @@ fn state_for_reads_the_retry_policy_and_the_error() {
     let policy = RetryPolicy::default().with_max_attempts(2);
     let transient = TinyAgentsError::Model("connection reset".into());
     let state = FailoverState::for_error(&policy, 0, &transient);
-    assert!(state.retryable && state.attempts_remaining && !state.model_specific);
+    assert!(state.retryable && state.attempts_remaining);
     let exhausted = FailoverState::for_error(&policy, 1, &transient);
     assert!(exhausted.retryable && !exhausted.attempts_remaining);
+    assert!(!exhausted.larger_window_available, "defaults to no larger window");
 }
