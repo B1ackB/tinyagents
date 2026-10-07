@@ -149,11 +149,7 @@ impl<State> DriverCheckpointer<State> {
     async fn next_seq(&self, thread: &str) -> Result<u64> {
         let id = key(&[thread]);
         for _ in 0..CAS_ATTEMPTS {
-            let current = self
-                .docs
-                .get(&self.threads, &id)
-                .await
-                .map_err(map_error)?;
+            let current = self.docs.get(&self.threads, &id).await.map_err(map_error)?;
             let (seq, precondition) = match &current {
                 Some(found) => (
                     found.doc.get("next").and_then(Value::as_u64).unwrap_or(0),
@@ -205,8 +201,10 @@ where
 {
     fn decode(stored: Versioned<Value>) -> Result<Checkpoint<State>> {
         let record = stored.doc.get("record").cloned().unwrap_or(Value::Null);
-        let mut checkpoint: Checkpoint<State> = serde_json::from_value(record)
-            .map_err(|error| TinyAgentsError::Checkpoint(format!("storage driver: decode: {error}")))?;
+        let mut checkpoint: Checkpoint<State> =
+            serde_json::from_value(record).map_err(|error| {
+                TinyAgentsError::Checkpoint(format!("storage driver: decode: {error}"))
+            })?;
         checkpoint.normalize();
         Ok(checkpoint)
     }
@@ -311,17 +309,19 @@ where
             return Ok(0);
         }
         self.declared().await?;
-        let filter = Filter::eq("thread", thread_id)
-            .and(Filter::one_of("checkpoint_id", ids.iter().map(String::as_str)));
+        let filter = Filter::eq("thread", thread_id).and(Filter::one_of(
+            "checkpoint_id",
+            ids.iter().map(String::as_str),
+        ));
         let removed = self
             .docs
             .delete_where(&self.checkpoints, &filter)
             .await
             .map_err(map_error)?;
-        self.drop_writes(
-            Filter::eq("thread", thread_id)
-                .and(Filter::one_of("checkpoint_id", ids.iter().map(String::as_str))),
-        )
+        self.drop_writes(Filter::eq("thread", thread_id).and(Filter::one_of(
+            "checkpoint_id",
+            ids.iter().map(String::as_str),
+        )))
         .await?;
         Ok(usize::try_from(removed).unwrap_or(usize::MAX))
     }
@@ -395,7 +395,8 @@ where
                     found.unchanged()
                 }
             };
-            let expires_at_ms = now.saturating_add(u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX));
+            let expires_at_ms =
+                now.saturating_add(u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX));
             let doc = json!({ "owner": owner, "expires_at_ms": expires_at_ms });
             match self.docs.put(&self.leases, &id, doc, precondition).await {
                 Ok(_) => return Ok(true),
@@ -424,7 +425,11 @@ where
         }
         let expires_at_ms = now.saturating_add(u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX));
         let doc = json!({ "owner": owner, "expires_at_ms": expires_at_ms });
-        match self.docs.put(&self.leases, &id, doc, found.unchanged()).await {
+        match self
+            .docs
+            .put(&self.leases, &id, doc, found.unchanged())
+            .await
+        {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == ErrorKind::Conflict => Ok(false),
             Err(error) => Err(map_error(error)),

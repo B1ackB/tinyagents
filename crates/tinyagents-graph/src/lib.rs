@@ -58,10 +58,10 @@ pub use channel::{
     Barrier, BinaryAggregate, Channel, ChannelSet, ChannelState, ChannelUpdate, ChannelWrite,
     Delta, Ephemeral, LastValue, Messages, NamedBarrier, ReducerRegistry, Topic, Untracked,
 };
-#[cfg(feature = "sqlite")]
-pub use checkpoint::SqliteCheckpointer;
 #[cfg(feature = "storage-drivers")]
 pub use checkpoint::DriverCheckpointer;
+#[cfg(feature = "sqlite")]
+pub use checkpoint::SqliteCheckpointer;
 pub use checkpoint::{
     BarrierArrivals, CHECKPOINT_FORMAT_VERSION, Checkpoint, CheckpointConfig, CheckpointMetadata,
     CheckpointSource, CheckpointTuple, Checkpointer, CompletedTask, DurabilityMode,

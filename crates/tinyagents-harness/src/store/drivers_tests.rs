@@ -3,9 +3,7 @@ use crate::store::conformance::run_store_conformance;
 use tinystoragedrivers_core::{MemoryStorage, Scope, StorageBackend};
 
 fn scoped(storage: &MemoryStorage, scope: &str) -> tinystoragedrivers_core::ScopedStorage {
-    storage
-        .for_scope(&Scope::new(scope).unwrap())
-        .unwrap()
+    storage.for_scope(&Scope::new(scope).unwrap()).unwrap()
 }
 
 #[tokio::test]
@@ -48,7 +46,10 @@ async fn a_list_follows_every_page() {
     let storage = MemoryStorage::new();
     let store = DriverStore::new(Arc::clone(scoped(&storage, "local").documents()));
     for i in 0..1_005 {
-        store.put("big", &format!("k{i:04}"), json!(i)).await.unwrap();
+        store
+            .put("big", &format!("k{i:04}"), json!(i))
+            .await
+            .unwrap();
     }
     assert_eq!(store.list("big").await.unwrap().len(), 1_005);
 }

@@ -77,8 +77,8 @@ impl DriverStore {
     async fn declared(&self) -> Result<()> {
         self.declared
             .get_or_try_init(|| async {
-                let spec = CollectionSpec::new(&self.collection)
-                    .index(IndexSpec::new("by_ns", ["ns"]));
+                let spec =
+                    CollectionSpec::new(&self.collection).index(IndexSpec::new("by_ns", ["ns"]));
                 self.docs.ensure_collection(&spec).await.map_err(map_error)
             })
             .await
@@ -136,7 +136,13 @@ impl Store for DriverStore {
             .map_err(map_error)?;
         Ok(found
             .into_iter()
-            .filter_map(|stored| stored.doc.get("key").and_then(Value::as_str).map(str::to_owned))
+            .filter_map(|stored| {
+                stored
+                    .doc
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .collect())
     }
 }

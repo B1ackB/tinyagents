@@ -67,22 +67,43 @@ async fn leases_follow_the_claim_protocol() {
     let cp = checkpointer();
     let minute = Duration::from_secs(60);
     assert!(cp.try_claim("t", "a", minute).await.unwrap());
-    assert!(!cp.try_claim("t", "b", minute).await.unwrap(), "live lease is refused");
-    assert!(cp.try_claim("t", "a", minute).await.unwrap(), "same owner re-claims");
+    assert!(
+        !cp.try_claim("t", "b", minute).await.unwrap(),
+        "live lease is refused"
+    );
+    assert!(
+        cp.try_claim("t", "a", minute).await.unwrap(),
+        "same owner re-claims"
+    );
     assert!(cp.renew("t", "a", minute).await.unwrap());
-    assert!(!cp.renew("t", "b", minute).await.unwrap(), "only the owner renews");
+    assert!(
+        !cp.renew("t", "b", minute).await.unwrap(),
+        "only the owner renews"
+    );
     assert!(!cp.renew("missing", "a", minute).await.unwrap());
 
     cp.release("t", "b").await.unwrap();
-    assert!(!cp.try_claim("t", "b", minute).await.unwrap(), "foreign release is a no-op");
+    assert!(
+        !cp.try_claim("t", "b", minute).await.unwrap(),
+        "foreign release is a no-op"
+    );
     cp.release("t", "a").await.unwrap();
     cp.release("t", "a").await.unwrap();
-    assert!(cp.try_claim("t", "b", minute).await.unwrap(), "released lease is free");
+    assert!(
+        cp.try_claim("t", "b", minute).await.unwrap(),
+        "released lease is free"
+    );
 
     assert!(cp.try_claim("z", "dead", Duration::ZERO).await.unwrap());
     tokio::time::sleep(Duration::from_millis(5)).await;
-    assert!(!cp.renew("z", "dead", minute).await.unwrap(), "expired lease cannot renew");
-    assert!(cp.try_claim("z", "new", minute).await.unwrap(), "expired lease is reclaimable");
+    assert!(
+        !cp.renew("z", "dead", minute).await.unwrap(),
+        "expired lease cannot renew"
+    );
+    assert!(
+        cp.try_claim("z", "new", minute).await.unwrap(),
+        "expired lease is reclaimable"
+    );
 }
 
 #[test]
@@ -105,9 +126,7 @@ async fn a_corrupt_record_is_a_checkpoint_error() {
     let storage = MemoryStorage::new();
     let docs = docs(&storage, "local");
     let cp = DriverCheckpointer::<i32>::new(Arc::clone(&docs));
-    cp.put(sample("t", "c1", None, 1))
-        .await
-        .unwrap();
+    cp.put(sample("t", "c1", None, 1)).await.unwrap();
     let stored = cp.thread_docs("t").await.unwrap().remove(0);
     docs.put(
         "graph_checkpoints",
