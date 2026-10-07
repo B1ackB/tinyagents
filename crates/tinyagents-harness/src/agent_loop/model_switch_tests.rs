@@ -497,3 +497,209 @@ async fn a_childs_rejected_switch_does_not_clear_the_parents_switch() {
     );
     assert_eq!(handle.model_override(), Some("b".to_string()));
 }
+
+/// A `before_model` hook that optionally picks a model and optionally raises
+/// the request's required capabilities (as a tool-adding middleware does).
+struct Tweak {
+    model: Option<&'static str>,
+    tool_calling: bool,
+}
+
+#[async_trait]
+impl Middleware<()> for Tweak {
+    fn name(&self) -> &str {
+        "tweak"
+    }
+
+    async fn before_model(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        request: &mut ModelRequest,
+    ) -> crate::error::Result<()> {
+        if let Some(model) = self.model {
+            request.model = Some(model.into());
+        }
+        if self.tool_calling {
+            request
+                .required_capabilities
+                .get_or_insert_default()
+                .tool_calling = true;
+        }
+        Ok(())
+    }
+}
+
+fn tool_capable(provider: &str, model: &str) -> ModelProfile {
+    ModelProfile {
+        tool_calling: true,
+        ..profile(provider, model)
+    }
+}
+
+#[tokio::test]
+async fn rejection_after_middleware_restores_request_model_and_reports_once() {
+    // `b` is eligible when the switch is first applied; middleware then
+    // raises the capability requirements and `b` no longer qualifies.
+    let (mut harness, a, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]).with_profile(tool_capable("openai", "gpt-5")),
+        ScriptedModel::replies(vec!["from b"]).with_profile(profile("openai", "mini")),
+    );
+    harness.push_middleware(Arc::new(Tweak {
+        model: None,
+        tool_calling: true,
+    }));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("a rejected switch never fails the run");
+
+    assert_eq!(run.text(), Some("from a".to_string()));
+    assert_eq!(model_started(&recorder), vec!["a"]);
+    assert!(b.requests().is_empty());
+    assert_eq!(steered_rejections(&recorder), 1);
+    assert_eq!(skipped(&recorder), vec![("b".to_string(), "a".to_string())]);
+    // The rejected name must not reach the provider adapter.
+    assert_eq!(a.requests()[0].model, None);
+    assert_eq!(handle.model_override(), None);
+}
+
+#[tokio::test]
+async fn switch_wins_over_a_model_chosen_by_before_model_middleware() {
+    let (mut harness, _, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    harness.register_model("c", Arc::new(ScriptedModel::replies(vec!["from c"])));
+    harness.push_middleware(Arc::new(Tweak {
+        model: Some("c"),
+        tool_calling: false,
+    }));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .unwrap();
+
+    assert_eq!(run.text(), Some("from b".to_string()));
+    assert_eq!(model_started(&recorder), vec!["b"]);
+    assert_eq!(b.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn rejected_switch_keeps_the_model_a_middleware_picked() {
+    let (mut harness, a, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]).with_profile(tool_capable("openai", "gpt-5")),
+        ScriptedModel::replies(vec!["from b"]).with_profile(profile("openai", "mini")),
+    );
+    let c = Arc::new(
+        ScriptedModel::replies(vec!["from c"]).with_profile(tool_capable("openai", "gpt-5-mini")),
+    );
+    harness.register_model("c", c.clone());
+    harness.push_middleware(Arc::new(Tweak {
+        model: Some("c"),
+        tool_calling: true,
+    }));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .unwrap();
+
+    assert_eq!(run.text(), Some("from c".to_string()));
+    assert_eq!(model_started(&recorder), vec!["c"]);
+    assert_eq!(steered_rejections(&recorder), 1);
+    assert_eq!(skipped(&recorder), vec![("b".to_string(), "c".to_string())]);
+    assert!(a.requests().is_empty() && b.requests().is_empty());
+    assert_eq!(c.requests()[0].model.as_deref(), Some("c"));
+}
+
+#[tokio::test]
+async fn a_written_off_switched_model_is_not_resent_the_revoked_key() {
+    // `b` is revoked on the first call; `c` answers. The next call must go
+    // straight to `c` rather than retry the sticky, revoked switch target.
+    let b = ScriptedOutcomesRevoked::new();
+    let c = Arc::new(ScriptedModel::new(vec![call("c1"), ModelResponse::assistant("done")]));
+    let mut harness = failover_harness(
+        &["a", "b", "c"],
+        vec![
+            ("a", Arc::new(ScriptedModel::replies(vec!["from a"]))),
+            ("b", b.clone()),
+            ("c", c.clone()),
+        ],
+    );
+    harness.register_tool(Arc::new(FakeTool::returning("lookup", "ok")));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .unwrap();
+
+    assert_eq!(run.text(), Some("done".to_string()));
+    assert_eq!(b.attempts(), 1, "revoked model tried once per run");
+    assert_eq!(c.requests().len(), 2);
+}
+
+/// Fails every call as a revoked credential (a permanent write-off).
+struct ScriptedOutcomesRevoked(AlwaysFailsWith);
+
+type AlwaysFailsWith = Mutex<usize>;
+
+impl ScriptedOutcomesRevoked {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(0)))
+    }
+    fn attempts(&self) -> usize {
+        *self.0.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl ChatModel<()> for ScriptedOutcomesRevoked {
+    async fn invoke(
+        &self,
+        _state: &(),
+        _request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
+        *self.0.lock().unwrap() += 1;
+        Err(tinyinference_llm::Error::Provider(Box::new(ProviderError {
+            provider: "test".into(),
+            status: Some(401),
+            message: "API key has been revoked".into(),
+            retryable: false,
+            ..ProviderError::default()
+        })))
+    }
+}
+
+#[tokio::test]
+async fn model_names_are_trimmed_before_they_are_stored() {
+    let (harness, _, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("  b \n"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .unwrap();
+
+    assert_eq!(model_started(&recorder), vec!["b"]);
+    assert_eq!(b.requests().len(), 1);
+}

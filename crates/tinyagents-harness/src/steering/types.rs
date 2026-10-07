@@ -55,6 +55,7 @@ pub enum SteeringTarget {
 /// logged, transported across a control channel, and replayed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command")]
+#[non_exhaustive]
 pub enum SteeringCommand {
     /// Cooperatively pause the run: the loop stops issuing further model and
     /// tool work at the next checkpoint, and **stays** paused until a
@@ -160,6 +161,7 @@ impl SteeringCommand {
 /// [`SteeringPolicy`] allowlist and to label observability events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SteeringCommandKind {
     /// See [`SteeringCommand::Pause`].
     Pause,

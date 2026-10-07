@@ -892,3 +892,17 @@ fn switch_model_command_round_trips_through_json() {
     );
     assert_eq!(command.kind().as_str(), "switch_model");
 }
+
+#[test]
+fn a_new_run_on_a_reused_handle_does_not_inherit_the_previous_runs_switch() {
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("first-run-model"));
+    let mut first: RunContext =
+        RunContext::new(RunConfig::new("first"), ()).with_steering(handle.clone());
+    apply_pending_steering(&mut first, &mut Vec::new()).unwrap();
+    assert_eq!(handle.model_override(), Some("first-run-model".to_string()));
+
+    // Attaching the handle to the next root run starts it from a clean slate.
+    let second: RunContext = RunContext::new(RunConfig::new("second"), ()).with_steering(handle);
+    assert_eq!(override_of(&second), None);
+}

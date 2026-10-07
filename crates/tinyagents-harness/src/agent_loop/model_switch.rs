@@ -43,10 +43,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Called both before and after `before_model` middleware: the second
     /// call re-validates against the capabilities middleware added and
     /// re-asserts the switch over a model a middleware selected.
+    /// `model_before_switch` is what `request.model` held before the first
+    /// call; a rejection puts it back when `request.model` still carries the
+    /// rejected name, so that name never reaches resolution or an adapter that
+    /// honours `request.model`. A model a middleware picked is left alone.
     pub(super) fn apply_steered_model_switch(
         &self,
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
+        model_before_switch: &Option<String>,
     ) {
         let Some(handle) = ctx.steering.clone() else {
             return;
@@ -68,16 +73,27 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             });
         if eligible {
             if request.model.as_deref() != Some(requested.as_str()) {
-                tracing::debug!(
-                    target: "tinyagents::steering",
-                    run_id = %ctx.run_id(),
-                    from = request.model.as_deref().unwrap_or("<default>"),
-                    to = %requested,
-                    "[steering] model switch applied at the model-call boundary"
-                );
+                match request.model.as_deref() {
+                    Some(chosen) => tracing::debug!(
+                        target: "tinyagents::steering",
+                        run_id = %ctx.run_id(),
+                        chosen = %chosen,
+                        to = %requested,
+                        "[steering] model switch overrides a model chosen by the request or middleware"
+                    ),
+                    None => tracing::debug!(
+                        target: "tinyagents::steering",
+                        run_id = %ctx.run_id(),
+                        to = %requested,
+                        "[steering] model switch applied at the model-call boundary"
+                    ),
+                }
                 request.model = Some(requested);
             }
             return;
+        }
+        if request.model.as_deref() == Some(requested.as_str()) {
+            request.model = model_before_switch.clone();
         }
         let resolved = self
             .models

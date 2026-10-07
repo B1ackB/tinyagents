@@ -150,7 +150,12 @@ impl SteeringHandle {
     /// Called by [`RunContext::with_steering`][crate::context::RunContext::with_steering]
     /// when an orchestrator attaches a handle to a run; every
     /// [`SteeringTarget::Root`]-addressed command drains here.
+    ///
+    /// A model switch is scoped to one run, but `local` is shared with the
+    /// handle being bound, so a switch left over from an earlier run on the
+    /// same handle is cleared here: the new run starts on its own model.
     pub(crate) fn bind_root(&self, run_id: RunId) -> Self {
+        self.reject_model_override();
         Self {
             inner: Arc::clone(&self.inner),
             run_id,
@@ -471,7 +476,8 @@ pub fn apply_pending_steering<Ctx>(
                 ctx.config.metadata = metadata;
             }
             SteeringCommand::SwitchModel { model } => {
-                if model.trim().is_empty() {
+                let model = model.trim().to_owned();
+                if model.is_empty() {
                     tracing::debug!(
                         target: "tinyagents::steering",
                         checkpoint,
