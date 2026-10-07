@@ -170,6 +170,10 @@ fn uuids_are_normalized_but_long_hex_ids_are_content() {
         r#"{"event_id":"123e4567-e89b-12d3-a456-426614174000","status":"ready"}"#,
         r#"{"event_id":"00000000-1111-2222-3333-444444444444","status":"ready"}"#,
     );
+    differ(
+        r#"{"event_id": "123e4567-e89b-12d3-a456-426614174000", "status":"ready"}"#,
+        r#"{"event_id": "00000000-1111-2222-3333-444444444444", "status":"ready"}"#,
+    );
     // A commit id or checksum is usually the answer, not noise around it.
     differ(
         "Created commit 0123456789abcdef0123456789abcdef01234567",
@@ -190,6 +194,18 @@ fn timestamps_need_a_boundary_after_them() {
     same(
         "built at 2026-10-06T12:34:56Z.",
         "built at 2026-10-07T01:02:03Z.",
+    );
+}
+
+#[test]
+fn quoted_json_durations_are_normalized() {
+    same(
+        r#"{"duration":"10ms","status":"failed"}"#,
+        r#"{"duration":"20ms","status":"failed"}"#,
+    );
+    same(
+        "{\"duration\": \"10ms\", \"status\": \"failed\"}",
+        "{\"duration\": \"20ms\", \"status\": \"failed\"}",
     );
 }
 

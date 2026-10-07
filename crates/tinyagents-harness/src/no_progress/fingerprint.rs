@@ -59,10 +59,7 @@ fn accept_all(_: &str, _: &Match<'_>) -> bool {
 /// Keeps UUIDs that identify returned entities, such as `event_id`, in the
 /// outcome identity. Request and correlation identifiers remain volatile.
 fn uuid_context(text: &str, found: &Match<'_>) -> bool {
-    let before = text[..found.start()].to_ascii_lowercase();
-    let field_prefix = before
-        .trim_end_matches(|character: char| character.is_ascii_whitespace())
-        .trim_end_matches(['"', '\'']);
+    let field_prefix = field_prefix(text, found);
     !field_prefix.ends_with("event_id\":")
         && !field_prefix.ends_with("eventid\":")
         && !field_prefix.ends_with("event_id:")
@@ -80,7 +77,9 @@ fn not_after_dot(text: &str, found: &Match<'_>) -> bool {
 /// semantic countdowns such as `lease expires in 30s` as content.
 fn duration_context(text: &str, found: &Match<'_>) -> bool {
     let before = text[..found.start()].to_ascii_lowercase();
-    let keyword_context = before.trim_end_matches([' ', ':', '=']);
+    let keyword_context = before.trim_end_matches(|character: char| {
+        character.is_ascii_whitespace() || matches!(character, '"' | '\'' | ':' | '=')
+    });
     if [
         "took", "elapsed", "duration", "latency", "timeout", "wait", "waited", "sleep", "sleeping",
     ]
@@ -89,11 +88,11 @@ fn duration_context(text: &str, found: &Match<'_>) -> bool {
     {
         return true;
     }
-    if before.ends_with("after ") {
+    if keyword_context.ends_with("after") {
         return true;
     }
-    before.ends_with(" in ") && {
-        let preceding = &before[..before.len() - " in ".len()];
+    keyword_context.ends_with("in") && {
+        let preceding = &keyword_context[..keyword_context.len() - "in".len()];
         preceding.contains("<timestamp>")
             || (preceding.contains(|character: char| character.is_ascii_digit())
                 && preceding.contains('-'))
