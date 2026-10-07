@@ -70,8 +70,10 @@ fn target_of(kind: &OrchestrationTaskKind) -> &str {
 ///
 /// Tasks settled as cancelled are excluded: a recorded cancellation is intent,
 /// not an interruption. Tasks the sweep failed to transition are included,
-/// since they are unfinished and unverified. `reason` is the same closure the
-/// host passed to the sweep, so the note repeats exactly what was recorded.
+/// since they are unfinished and unverified. A failed task reports the reason the
+/// sweep actually persisted (`ReconciledTask::recorded_reason`), so the note
+/// matches the store even when the host's closure is not repeatable; `reason`
+/// is evaluated only for tasks the sweep did not record one for.
 pub fn recovery_children(
     report: &ReconcileReport,
     reason: &dyn Fn(&OrchestrationTaskRecord) -> String,
@@ -102,7 +104,13 @@ pub fn recovery_children(
                 kind: spec.kind.as_str().to_owned(),
                 label: truncate_chars(label, MAX_RECOVERY_LABEL_CHARS),
                 last_status: task_status_label(task.prior_status).to_owned(),
-                interrupted_reason: truncate_chars(&reason(&task.record), MAX_RECOVERY_LABEL_CHARS),
+                interrupted_reason: truncate_chars(
+                    &task
+                        .recorded_reason
+                        .clone()
+                        .unwrap_or_else(|| reason(&task.record)),
+                    MAX_RECOVERY_LABEL_CHARS,
+                ),
             }
         })
         .collect();

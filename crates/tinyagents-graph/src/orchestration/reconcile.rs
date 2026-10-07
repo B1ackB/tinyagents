@@ -150,11 +150,6 @@ pub fn reconcile_orphaned_tasks(
                 }
             }
         };
-        let _ = match () {
-            () => (),
-                Err(err) => ReconcileOutcome::Error(err.to_string()),
-            },
-        };
 
         if let ReconcileOutcome::Error(detail) = &outcome {
             tracing::warn!(
@@ -170,6 +165,7 @@ pub fn reconcile_orphaned_tasks(
             prior_status,
             outcome,
             record,
+            recorded_reason,
         });
     }
 
