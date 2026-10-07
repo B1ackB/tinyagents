@@ -1451,6 +1451,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             timeout_settings: self.tool_timeouts.clone(),
             level: 0,
             nested_state: Default::default(),
+            gate_held: false,
         };
         let run_id = ctx.run_id().as_str().to_string();
         let gate = self.open_progress_gate(ctx, &prepared);
@@ -1798,6 +1799,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 timeout_settings: self.tool_timeouts.clone(),
                 level: 0,
                 nested_state: Default::default(),
+                gate_held: false,
             };
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();

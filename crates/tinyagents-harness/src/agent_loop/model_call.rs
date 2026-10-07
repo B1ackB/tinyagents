@@ -1871,6 +1871,9 @@ pub(super) struct ToolCallBase<'h, State: Send + Sync, Ctx: Send + Sync> {
     /// Nested-call ids, refusal budget and summaries for this logical call,
     /// kept across every attempt a wrap middleware makes (retries).
     pub(super) nested_state: super::nested::NestedState,
+    /// Whether this call already runs under the run-wide nested serialization
+    /// gate, so its own nested calls must not take it again.
+    pub(super) gate_held: bool,
 }
 
 impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
@@ -1894,6 +1897,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
                 CallId::new(call.id.clone()),
                 self.level,
                 &self.nested_state,
+                self.gate_held,
             );
             let future = super::tools::execute_tool_recovering_model_retry(self.dispatch.execute(
                 state,

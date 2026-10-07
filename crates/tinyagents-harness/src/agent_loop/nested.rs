@@ -226,7 +226,19 @@ impl RefusalSlot<'_> {
     /// A call that was already admitted turned out to need approval or a
     /// deferral at execution time: count it as a refusal after the fact.
     fn count_late_refusal(&self) {
-        self.shared.refused.fetch_add(1, Ordering::SeqCst);
+        // Saturates at the cap, like the reservation path.
+        let mut current = self.shared.refused.load(Ordering::SeqCst);
+        while current < MAX_NESTED_REFUSALS {
+            match self.shared.refused.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
@@ -262,6 +274,8 @@ pub(super) struct NestedCalls<'a, State: Send + Sync, Ctx: Send + Sync> {
     parent: CallId,
     /// Nesting level of that call: `0` for a model-issued call.
     level: usize,
+    /// Whether that call already runs under the run-wide serialization gate.
+    gate_held: bool,
     shared: &'a NestedState,
 }
 
@@ -273,6 +287,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         parent: CallId,
         level: usize,
         shared: &'a NestedState,
+        gate_held: bool,
     ) -> Self {
         Self {
             harness,
@@ -280,6 +295,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             state,
             parent,
             level,
+            gate_held,
             shared,
         }
     }
@@ -347,6 +363,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
                 &name,
                 arguments,
                 &mut slot,
+                self.gate_held,
             );
             tokio::pin!(run);
             tokio::select! {
@@ -506,6 +523,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         name: &str,
         arguments: Value,
         slot: &mut RefusalSlot<'_>,
+        gate_held: bool,
     ) -> Result<tinytools::ToolResult> {
         let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
         let (dispatch, call, mut budget) =
@@ -569,8 +587,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let serialize = !dispatch.tool().injected_arguments().is_empty()
             || !dispatch.tool().is_concurrency_safe(&call.arguments)
             || !self.middleware.tool_middleware_concurrent_safe();
+        // Two layers: this parent's own fan-out, then every concurrent parent
+        // of the run. A call already under the run gate (an ancestor took it)
+        // must not retake it, or a chain of unsafe tools would deadlock.
         let _serial = if serialize {
             Some(slot.shared.serial.lock().await)
+        } else {
+            None
+        };
+        let gate = if serialize && !gate_held {
+            Some(ctx.nested_serial.lock().await)
         } else {
             None
         };
@@ -583,6 +609,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             timeout_settings: self.tool_timeouts.clone(),
             level,
             nested_state: Default::default(),
+            gate_held: gate_held || gate.is_some(),
         };
         let execution = futures::FutureExt::map(
             self.middleware
