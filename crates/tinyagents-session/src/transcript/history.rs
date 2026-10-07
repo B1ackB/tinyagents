@@ -632,44 +632,51 @@ impl TranscriptLocator for FileTranscriptLocator {
         }
         // A root generation is immutable once its successor exists. Late
         // interruption callbacks must not append display-only data to the
-        // sealed predecessor.
-        if path
-            .parent()
-            .and_then(|parent| std::fs::read_dir(parent).ok())
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry
-                    .path()
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| {
-                        let base = path
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or_default();
-                        stem.strip_prefix(base).is_some_and(|suffix| {
-                            suffix.starts_with(".g") && suffix[2..].parse::<u32>().is_ok()
-                        })
-                    })
-            })
-        {
-            return Ok(false);
-        }
-        crate::transcript::append_interrupted_partial(
-            &path,
-            &partial.content,
-            request_id,
-            partial.iteration,
-            partial.reasoning_content.as_deref(),
-        )?;
-        tracing::debug!(
-            "[transcript-history] locator appended interrupted partial thread={thread_id} chars={} path={}",
-            partial.content.len(),
-            path.display()
+        // sealed predecessor. Wrap the successor scan and append in write
+        // locks so they are atomic.
+        let history = FileTranscriptHistory::opened_at(
+            path.clone(),
+            seed_meta_for_discovered(thread_id),
         );
-        Ok(true)
+        history.with_write_locks(|| {
+            if path
+                .parent()
+                .and_then(|parent| std::fs::read_dir(parent).ok())
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .path()
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| {
+                            let base = path
+                                .file_stem()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or_default();
+                            stem.strip_prefix(base).is_some_and(|suffix| {
+                                suffix.starts_with(".g") && suffix[2..].parse::<u32>().is_ok()
+                            })
+                        })
+                })
+            {
+                return Ok(false);
+            }
+            crate::transcript::append_interrupted_partial(
+                &path,
+                &partial.content,
+                request_id,
+                partial.iteration,
+                partial.reasoning_content.as_deref(),
+            )?;
+            tracing::debug!(
+                "[transcript-history] locator appended interrupted partial thread={thread_id} chars={} path={}",
+                partial.content.len(),
+                path.display()
+            );
+            Ok(true)
+        })
     }
 
     fn root_for_thread(&self, thread_id: &str) -> Option<Arc<dyn TranscriptRead>> {
