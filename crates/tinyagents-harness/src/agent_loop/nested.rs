@@ -592,6 +592,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             };
         // Admitted: the call no longer counts as a refusal-in-flight.
         slot.release();
+        // Tools (and wrap middleware) that opted out of concurrency must not
+        // overlap when one parent awaits several nested calls at once.
+        let serialize = !dispatch.tool().injected_arguments().is_empty()
+            || !dispatch.tool().is_concurrency_safe(&call.arguments)
+            || !self.middleware.tool_middleware_concurrent_safe();
+        // A shared hold cannot be upgraded without waiting on itself. Fail
+        // closed, before anything is journaled or started, rather than run an
+        // unsafe tool alongside other calls.
+        if serialize && gate_held == GateHold::Shared {
+            slot.count_late_refusal();
+            return Err(TinyAgentsError::ToolFailed(format!(
+                "nested call '{name}' refused: it is not concurrency-safe and its caller \
+                 runs under the shared nested-call gate"
+            )));
+        }
         // Nested rows are not in the transcript, so `reconcile_tool_effects`
         // never sees them. Nested ids are unique within a run, so a row still
         // `Started` for this id is evidence an earlier process attempted the
@@ -651,11 +666,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             guard.settle();
             return Err(self.fail_nested(ctx, &prepared, parent, error));
         }
-        // Tools (and wrap middleware) that opted out of concurrency must not
-        // overlap when one parent awaits several nested calls at once.
-        let serialize = !dispatch.tool().injected_arguments().is_empty()
-            || !dispatch.tool().is_concurrency_safe(&call.arguments)
-            || !self.middleware.tool_middleware_concurrent_safe();
         // Two layers: this parent's own fan-out, then every concurrent parent
         // of the run. A call already under the run gate (an ancestor took it)
         // must not retake it, or a chain of unsafe tools would deadlock.
@@ -663,16 +673,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // must not overlap an unsafe sibling either.
         let _serial = NestedGuard::acquire(&slot.shared.serial, serialize).await;
         let gate = match (gate_held, serialize) {
-            (GateHold::Exclusive, _) | (GateHold::Shared, false) => None,
-            (GateHold::Shared, true) => {
-                // A shared hold cannot be upgraded without waiting on itself.
-                // Fail closed rather than run an unsafe tool alongside others.
-                slot.count_late_refusal();
-                return Err(TinyAgentsError::ToolFailed(format!(
-                    "nested call '{name}' refused: it is not concurrency-safe and its caller \
-                     runs under the shared nested-call gate"
-                )));
-            }
+            // A shared hold with an unsafe call was refused above.
+            (GateHold::Exclusive | GateHold::Shared, _) => None,
             (GateHold::None, exclusive) => {
                 Some(NestedGuard::acquire(&ctx.nested_serial, exclusive).await)
             }

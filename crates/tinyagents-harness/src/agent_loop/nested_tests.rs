@@ -534,6 +534,7 @@ async fn nested_calls_are_summarised_in_parent_metadata_not_the_transcript() {
         vec![("leaf", json!({"n": 7})), ("missing", json!({}))],
     );
     let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.policy.capture = crate::runtime::PayloadCapture::all();
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
 
@@ -584,6 +585,7 @@ async fn the_nested_summary_is_capped_and_truncates_long_arguments() {
         vec![parent_call("p1", "caller")],
         enabled().with_max_tool_calls(100),
     );
+    harness.policy.capture = crate::runtime::PayloadCapture::all();
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
 
@@ -1754,6 +1756,18 @@ async fn tool_owned_nested_calls_metadata_is_not_overwritten() {
         run.tool_metadata[0].metadata["nested_calls"], "tool-owned",
         "the harness summary must not replace a tool's own key"
     );
+}
+
+#[tokio::test]
+async fn nested_summaries_omit_arguments_unless_tool_io_capture_is_on() {
+    let caller = Caller::new("caller", vec![("leaf", json!({"n": 7}))]);
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(Arc::new(caller));
+    let run = run(&harness, &EventRecorder::new()).await.unwrap();
+    let entry = &run.tool_metadata[0].metadata["nested_calls"][0];
+    assert_eq!(entry["name"], "leaf");
+    assert!(entry.get("args").is_none(), "{entry}");
 }
 
 // ── In-flight nested calls dropped with their parent ────────────────────────
