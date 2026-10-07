@@ -353,59 +353,22 @@ pub fn list_sessions(
     );
 
     with_connection(workspace_dir, |conn| {
-        let mut where_clauses: Vec<String> = Vec::new();
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(s) = status {
-            param_values.push(Box::new(s.to_string()));
-            where_clauses.push(format!("status = ?{}", param_values.len()));
-        }
-        if let Some(p) = parent_id {
-            param_values.push(Box::new(p.to_string()));
-            where_clauses.push(format!("parent_session_id = ?{}", param_values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-
         let lim = limit.unwrap_or(50).min(500) as i64;
         let off = offset.unwrap_or(0) as i64;
-
-        let count_sql = format!("SELECT COUNT(*) FROM sessions {where_sql}");
-        let total: u64 = {
-            let mut stmt = conn.prepare(&count_sql)?;
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                param_values.iter().map(|b| b.as_ref()).collect();
-            stmt.query_row(params_ref.as_slice(), |r| r.get::<_, i64>(0))? as u64
-        };
-
-        param_values.push(Box::new(lim));
-        let lim_idx = param_values.len();
-        param_values.push(Box::new(off));
-        let off_idx = param_values.len();
-
-        let query_sql = format!(
-            "SELECT id, agent_definition_id, agent_definition_name, session_key,
-                    parent_session_id, thread_id, source_channel, status, model,
-                    turn_count, input_tokens, output_tokens, cached_input_tokens,
-                    cost_usd, transcript_path, started_at, ended_at
-             FROM sessions {where_sql}
-             ORDER BY started_at DESC
-             LIMIT ?{lim_idx} OFFSET ?{off_idx}",
-        );
-
-        let mut stmt = conn.prepare(&query_sql)?;
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|b| b.as_ref()).collect();
-        let rows = stmt.query_map(params_ref.as_slice(), map_session_row)?;
-
-        let mut sessions = Vec::new();
-        for row in rows {
-            sessions.push(row?);
-        }
+        let (sessions, total) = crate::paging::PagedQuery::default()
+            .eq("status", status.map(str::to_owned))
+            .eq("parent_session_id", parent_id.map(str::to_owned))
+            .page(lim, off)
+            .fetch(
+                conn,
+                "sessions",
+                "id, agent_definition_id, agent_definition_name, session_key,
+                 parent_session_id, thread_id, source_channel, status, model,
+                 turn_count, input_tokens, output_tokens, cached_input_tokens,
+                 cost_usd, transcript_path, started_at, ended_at",
+                "started_at DESC",
+                map_session_row,
+            )?;
 
         Ok(SessionSearchResult { sessions, total })
     })
@@ -443,88 +406,36 @@ pub(super) fn search_sessions_inner(
     let lim = params.limit.unwrap_or(50).min(500) as i64;
     let off = params.offset.unwrap_or(0) as i64;
 
-    let mut where_clauses: Vec<String> = Vec::new();
-    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
+    let mut query = crate::paging::PagedQuery::default();
     if let Some(q) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
-        param_values.push(Box::new(fts_match_query(q)));
-        where_clauses.push(format!(
-            "s.id IN (SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?{})",
-            param_values.len()
-        ));
+        query.push(fts_match_query(q), |n| {
+            format!("s.id IN (SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?{n})")
+        });
     }
-
-    if let Some(ref agent) = params.agent_id {
-        param_values.push(Box::new(agent.clone()));
-        where_clauses.push(format!("s.agent_definition_id = ?{}", param_values.len()));
+    query.eq("s.agent_definition_id", params.agent_id.clone());
+    if let Some(tool) = params.tool_name.clone() {
+        query.push(tool, |n| {
+            format!(
+                "s.id IN (SELECT DISTINCT session_id FROM session_tool_calls WHERE tool_name = ?{n})"
+            )
+        });
     }
-
-    if let Some(ref tool) = params.tool_name {
-        param_values.push(Box::new(tool.clone()));
-        where_clauses.push(format!(
-            "s.id IN (SELECT DISTINCT session_id FROM session_tool_calls WHERE tool_name = ?{})",
-            param_values.len()
-        ));
-    }
-
-    if let Some(ref channel) = params.source_channel {
-        param_values.push(Box::new(channel.clone()));
-        where_clauses.push(format!("s.source_channel = ?{}", param_values.len()));
-    }
-
-    if let Some(ref parent) = params.parent_session_id {
-        param_values.push(Box::new(parent.clone()));
-        where_clauses.push(format!("s.parent_session_id = ?{}", param_values.len()));
-    }
-
-    if let Some(ref status) = params.status {
-        param_values.push(Box::new(status.clone()));
-        where_clauses.push(format!("s.status = ?{}", param_values.len()));
-    }
-
-    if let Some(ref tid) = params.thread_id {
-        param_values.push(Box::new(tid.clone()));
-        where_clauses.push(format!("s.thread_id = ?{}", param_values.len()));
-    }
-
-    let where_sql = if where_clauses.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_clauses.join(" AND "))
-    };
-
-    let count_sql = format!("SELECT COUNT(*) FROM sessions s {where_sql}");
-    let total: u64 = {
-        let mut stmt = conn.prepare(&count_sql)?;
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|b| b.as_ref()).collect();
-        stmt.query_row(params_ref.as_slice(), |r| r.get::<_, i64>(0))? as u64
-    };
-
-    param_values.push(Box::new(lim));
-    let lim_idx = param_values.len();
-    param_values.push(Box::new(off));
-    let off_idx = param_values.len();
-
-    let query = format!(
-        "SELECT s.id, s.agent_definition_id, s.agent_definition_name, s.session_key,
-                s.parent_session_id, s.thread_id, s.source_channel, s.status, s.model,
-                s.turn_count, s.input_tokens, s.output_tokens, s.cached_input_tokens,
-                s.cost_usd, s.transcript_path, s.started_at, s.ended_at
-         FROM sessions s {where_sql}
-         ORDER BY s.started_at DESC
-         LIMIT ?{lim_idx} OFFSET ?{off_idx}",
-    );
-
-    let mut stmt = conn.prepare(&query)?;
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|b| b.as_ref()).collect();
-    let rows = stmt.query_map(params_ref.as_slice(), map_session_row)?;
-
-    let mut sessions = Vec::new();
-    for row in rows {
-        sessions.push(row?);
-    }
+    let (sessions, total) = query
+        .eq("s.source_channel", params.source_channel.clone())
+        .eq("s.parent_session_id", params.parent_session_id.clone())
+        .eq("s.status", params.status.clone())
+        .eq("s.thread_id", params.thread_id.clone())
+        .page(lim, off)
+        .fetch(
+            conn,
+            "sessions s",
+            "s.id, s.agent_definition_id, s.agent_definition_name, s.session_key,
+             s.parent_session_id, s.thread_id, s.source_channel, s.status, s.model,
+             s.turn_count, s.input_tokens, s.output_tokens, s.cached_input_tokens,
+             s.cost_usd, s.transcript_path, s.started_at, s.ended_at",
+            "s.started_at DESC",
+            map_session_row,
+        )?;
 
     Ok(SessionSearchResult { sessions, total })
 }
