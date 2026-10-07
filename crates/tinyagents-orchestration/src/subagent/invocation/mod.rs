@@ -763,7 +763,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             let exposed =
                 policy_run::delegation_tools_exposed(&self.subagent, &self.delegation_tools);
             if !exposed.is_empty() {
-                tracing::debug!("{LOG_PREFIX} leaf_violation tool={} exposed={exposed:?}", self.tool_name);
+                tracing::debug!(
+                    "{LOG_PREFIX} leaf_violation tool={} exposed={exposed:?}",
+                    self.tool_name
+                );
                 return Ok(tinytools::ToolResult::error(format!(
                     "Sub-agent `{}` is a leaf but its harness exposes delegation tools {exposed:?}; it was not started.",
                     self.tool_name
