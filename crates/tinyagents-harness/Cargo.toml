@@ -74,7 +74,6 @@ tracing = ["tinytools-agent/tracing"]
 
 [dev-dependencies]
 png = "0.17"
-tinystoragedrivers-core = { workspace = true }
 tokio = { workspace = true, default-features = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
 [lints]
