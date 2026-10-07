@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::ModelResponse;
+use tinyinference_llm::prompt_tools::replace_text_blocks;
 use tinyinference_llm::tool::{ToolCall, ToolSchema};
 
 /// Opening / closing delimiters for a text-mode tool call.
@@ -517,33 +518,6 @@ pub fn apply_prompt_tool_calls(mut response: ModelResponse) -> ModelResponse {
     response.message.tool_calls.extend(calls);
     response.message.content = replace_text_blocks(response.message.content, cleaned);
     response
-}
-
-/// Rebuild a content vector, keeping every non-[`ContentBlock::Text`] block (e.g.
-/// `Thinking`) in place and substituting the single cleaned text at the position
-/// of the first original `Text` block. If the original content had no `Text`
-/// block, the cleaned text (when non-empty) is appended; if `cleaned` is empty,
-/// no text block is emitted at all.
-fn replace_text_blocks(content: Vec<ContentBlock>, cleaned: String) -> Vec<ContentBlock> {
-    let mut out = Vec::with_capacity(content.len());
-    let mut inserted = false;
-    for block in content {
-        match block {
-            ContentBlock::Text(_) => {
-                if !inserted {
-                    if !cleaned.is_empty() {
-                        out.push(ContentBlock::Text(cleaned.clone()));
-                    }
-                    inserted = true;
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    if !inserted && !cleaned.is_empty() {
-        out.push(ContentBlock::Text(cleaned));
-    }
-    out
 }
 
 /// Keys a model may put its arguments under inside a tool-call object.

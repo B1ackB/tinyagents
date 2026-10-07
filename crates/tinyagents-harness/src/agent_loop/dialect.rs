@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sha2::{Digest, Sha256};
 use tinyinference_llm::message::{ContentBlock, Message};
+use tinyinference_llm::prompt_tools::replace_text_blocks;
 use tinyinference_llm::model::{
     ModelRequest, ModelResponse, PromptSegment, SegmentRole, ToolChoice,
 };
@@ -610,30 +611,6 @@ pub(super) fn recover_text_calls(
     response.message.tool_calls.extend(recovered);
     response.message.content =
         replace_text_blocks(std::mem::take(&mut response.message.content), outcome.text);
-}
-
-/// Keeps every non-text block in place and substitutes one cleaned text at
-/// the first text block's position; an empty `cleaned` emits no text block.
-fn replace_text_blocks(content: Vec<ContentBlock>, cleaned: String) -> Vec<ContentBlock> {
-    let mut out = Vec::with_capacity(content.len());
-    let mut inserted = false;
-    for block in content {
-        match block {
-            ContentBlock::Text(_) => {
-                if !inserted {
-                    if !cleaned.is_empty() {
-                        out.push(ContentBlock::Text(cleaned.clone()));
-                    }
-                    inserted = true;
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    if !inserted && !cleaned.is_empty() {
-        out.push(ContentBlock::Text(cleaned));
-    }
-    out
 }
 
 /// Scrubs tool-call markup from streamed visible text and collects the
