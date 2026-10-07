@@ -36,6 +36,8 @@ struct Step {
 struct PingPongState {
     prev: Option<Step>,
     last: Option<Step>,
+    /// Tool names of `prev` and `last`, for the warning text.
+    names: (String, String),
     /// Length of the current strictly alternating tail ending at `last`.
     tail: u32,
     /// Pairs already warned about (order-independent hash of both calls).
@@ -82,6 +84,8 @@ impl PingPongDetector {
         };
         state.prev = state.last;
         state.last = Some(step);
+        let tool = call_signature.split('\u{1}').next().unwrap_or_default();
+        state.names = (std::mem::take(&mut state.names.1), tool.to_string());
         if state.tail < self.alternations {
             return None;
         }
@@ -91,8 +95,8 @@ impl PingPongDetector {
             return None;
         }
         Some(format!(
-            "two different tool calls have been alternating {} times, each returning the same result every time; going back and forth between them is not making progress. Use the results you already have or change approach.",
-            state.tail
+            "calls to `{}` and `{}` have been alternating {} times, each returning the same result every time; going back and forth between them is not making progress. Use the results you already have or change approach.",
+            state.names.0, state.names.1, state.tail
         ))
     }
 
