@@ -757,8 +757,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         // `crate::retry::decide` for the table). A rejected
                         // credential or a missing model is never re-sent.
                         let reason = FailoverReason::classify(&error);
-                        let mut failover_state =
-                            FailoverState::for_error(&capped, attempt, &error);
+                        let mut failover_state = FailoverState::for_error(&capped, attempt, &error);
                         if retry_overridden {
                             failover_state.attempts_remaining = false;
                         }

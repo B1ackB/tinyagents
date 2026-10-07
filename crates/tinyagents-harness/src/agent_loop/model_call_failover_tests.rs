@@ -102,7 +102,11 @@ async fn auth_failure_skips_retries_and_falls_back() {
         .await
         .expect("fallback answers");
     assert_eq!(run.text(), Some("from backup".to_string()));
-    assert_eq!(primary.attempts(), 1, "auth is never retried on the same model");
+    assert_eq!(
+        primary.attempts(),
+        1,
+        "auth is never retried on the same model"
+    );
 }
 
 #[tokio::test]
@@ -125,7 +129,10 @@ async fn format_error_surfaces_without_trying_the_fallback() {
         .invoke_default(&(), vec![Message::user("hi")])
         .await
         .expect_err("a malformed request is not fixed by another model");
-    assert!(matches!(error, TinyAgentsError::Provider(_)), "got {error:?}");
+    assert!(
+        matches!(error, TinyAgentsError::Provider(_)),
+        "got {error:?}"
+    );
     assert_eq!(primary.attempts(), 1);
     assert_eq!(backup.attempts(), 0);
 }
