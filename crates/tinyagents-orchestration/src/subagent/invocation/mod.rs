@@ -12,7 +12,9 @@
 //! - [`SubAgent`] wraps an [`AgentHarness`] and runs it as a *child run* one
 //!   level deeper in the recursion tree than its caller.
 //! - [`SubAgentTool`] adapts a [`SubAgent`] into a typed [`ToolDispatch`] that
-//!   returns a job id immediately while the child continues in the background.
+//!   runs in the background by default, returning a job id immediately; callers
+//!   can request `mode: "inline"` to await the child and receive its final
+//!   result in the same call.
 //! - [`SubAgentJobsTool`] and [`SubAgentMessageTool`] let the host or parent
 //!   query those jobs and steer live children by job id.
 //! - [`SubAgentSession`] keeps a single [`SubAgent`] alive across multiple

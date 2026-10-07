@@ -435,6 +435,7 @@ pub fn apply_pending_steering<Ctx>(
 }
 
 /// Validation failure from [`RecentRequestIds::claim`].
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestIdError {
     /// The identifier exceeds [`RecentRequestIds::MAX_REQUEST_ID_BYTES`].
