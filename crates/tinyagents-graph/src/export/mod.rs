@@ -439,37 +439,9 @@ impl<State, Update> CompiledGraph<State, Update> {
             |id| self.command_nodes.contains(id),
             &self.node_meta,
         );
-        let edges = self
-            .edges
-            .iter()
-            .flat_map(|(from, targets)| {
-                targets
-                    .iter()
-                    .map(move |to| (from.to_string(), to.to_string()))
-            })
-            .collect();
-        let conditional = self
-            .branches
-            .iter()
-            .map(|(from, branch)| {
-                let routes = branch
-                    .routes
-                    .iter()
-                    .map(|(label, target)| (label.clone(), target.to_string()))
-                    .collect();
-                (from.to_string(), routes)
-            })
-            .collect();
-        let waiting = self
-            .waiting
-            .iter()
-            .map(|(target, preds)| {
-                (
-                    target.to_string(),
-                    preds.iter().map(ToString::to_string).collect(),
-                )
-            })
-            .collect();
+        let edges = edge_pairs(&self.edges);
+        let conditional = conditional_routes(&self.branches);
+        let waiting = waiting_sets(&self.waiting);
         build_topology(TopologyParts {
             graph_id: self.graph_id().to_string(),
             name: self.name().map(str::to_string),
@@ -498,37 +470,9 @@ impl<State, Update> GraphBuilder<State, Update> {
             |id| self.command_nodes.contains(id),
             &self.node_meta,
         );
-        let edges = self
-            .edges
-            .iter()
-            .flat_map(|(from, targets)| {
-                targets
-                    .iter()
-                    .map(move |to| (from.to_string(), to.to_string()))
-            })
-            .collect();
-        let conditional = self
-            .branches
-            .iter()
-            .map(|(from, branch)| {
-                let routes = branch
-                    .routes
-                    .iter()
-                    .map(|(label, target)| (label.clone(), target.to_string()))
-                    .collect();
-                (from.to_string(), routes)
-            })
-            .collect();
-        let waiting = self
-            .waiting
-            .iter()
-            .map(|(target, preds)| {
-                (
-                    target.to_string(),
-                    preds.iter().map(ToString::to_string).collect(),
-                )
-            })
-            .collect();
+        let edges = edge_pairs(&self.edges);
+        let conditional = conditional_routes(&self.branches);
+        let waiting = waiting_sets(&self.waiting);
         build_topology(TopologyParts {
             graph_id: self.graph_id.to_string(),
             name: self.name.clone(),
