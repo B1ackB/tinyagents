@@ -609,6 +609,35 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         visited.insert(current_name.clone());
 
+        // Cross-call skip hint: a model that already failed with a permanent
+        // credential error earlier in this run is not asked again while a
+        // fallback can answer instead. With no eligible fallback it is tried
+        // anyway — failing again is better than refusing to try.
+        if ctx.limits.is_model_skipped(&current_name)
+            && crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?.is_none()
+        {
+            if let Some((name, next_model)) =
+                self.select_fallback(ctx, request, &current_name, &mut visited)
+            {
+                tracing::debug!(
+                    call_id = %call_id.as_str(),
+                    skipped = %current_name,
+                    to = %name,
+                    "[failover] skipping a model written off earlier in this run"
+                );
+                ctx.emit(AgentEvent::FallbackSkipped {
+                    model: current_name.clone(),
+                });
+                resolved = ResolvedModel {
+                    name: name.clone(),
+                    requested: Some(name.clone()),
+                    source: ModelResolutionSource::Hint,
+                };
+                current_name = name;
+                model = next_model;
+            }
+        }
+
         loop {
             // Retry loop for the current model.
             let mut attempt = 0usize;
@@ -720,7 +749,26 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         // uses), applying the harness ceiling by capping a
                         // cloned policy first so the two sites cannot drift.
                         let capped = self.policy.retry.clone().with_max_attempts(max_attempts);
-                        if !retry_overridden && capped.should_retry_error(attempt, &error) {
+                        // Reason-aware failover: *why* the call failed decides
+                        // whether a same-model retry can possibly help (see
+                        // `crate::retry::decide` for the table). A rejected
+                        // credential or a missing model is never re-sent.
+                        let reason = FailoverReason::classify(&error);
+                        let mut failover_state =
+                            FailoverState::for_error(&capped, attempt, &error);
+                        if retry_overridden {
+                            failover_state.attempts_remaining = false;
+                        }
+                        let decision = decide(reason, failover_state);
+                        tracing::debug!(
+                            call_id = %call_id.as_str(),
+                            model = %current_name,
+                            attempt,
+                            reason = reason.as_str(),
+                            ?decision,
+                            "[failover] model attempt failed"
+                        );
+                        if decision == FailoverDecision::RetrySame {
                             // Compute the backoff from the *pre-increment*
                             // attempt number: `attempt == 0` is the first
                             // retry and must sleep `initial_backoff_ms`
@@ -787,44 +835,39 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     if crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?.is_some() {
                         return Err(error);
                     }
-                    // Retries exhausted (or non-retryable): walk the fallback
-                    // chain for the next model, skipping any name already
-                    // visited in this chain (so a chain with a repeated name
-                    // cannot alternate between the same models forever) and any
-                    // candidate that fails the request's capability/lifecycle
-                    // gate. Initial resolution gates the primary selection
-                    // through `model_eligible`; without the same gate here a
-                    // primary failure could silently fall back to a model that
-                    // can't call tools, lacks vision, or has a smaller context
-                    // window (issue #4641). `allow_retired` is `false` to match
-                    // `ModelRegistry::resolve_request`.
-                    let required = request.required_capabilities.as_ref();
-                    let mut cursor = current_name.clone();
-                    let selected = loop {
-                        let next = self
-                            .policy
-                            .fallback
-                            .as_ref()
-                            .and_then(|fallback| fallback.next_after(&cursor))
-                            .map(str::to_owned)
-                            .filter(|name| !visited.contains(name));
-                        let Some((name, next_model)) =
-                            next.and_then(|name| self.models.get(&name).map(|m| (name, m)))
-                        else {
-                            break None;
-                        };
-                        if !model_eligible(next_model.as_ref(), required, false) {
-                            // Ineligible candidate: record it as visited, make
-                            // the skip observable, and keep walking the chain.
-                            visited.insert(name.clone());
-                            ctx.emit(AgentEvent::FallbackSkipped {
-                                model: name.clone(),
-                            });
-                            cursor = name;
-                            continue;
-                        }
-                        break Some((name, next_model));
-                    };
+                    // Retries are over for this model. Ask the failover table
+                    // whether another model could help at all: a malformed
+                    // request or a context overflow fails identically on every
+                    // model, so it surfaces here instead of walking the chain.
+                    let reason = FailoverReason::classify(&error);
+                    if reason.skips_model_for_run() {
+                        tracing::warn!(
+                            call_id = %call_id.as_str(),
+                            model = %current_name,
+                            reason = reason.as_str(),
+                            "[failover] model written off for the rest of this run"
+                        );
+                        ctx.limits.skip_model_for_run(&current_name);
+                    }
+                    let decision = decide(
+                        reason,
+                        FailoverState {
+                            retryable: false,
+                            attempts_remaining: false,
+                            model_specific: is_model_specific_format(&error),
+                        },
+                    );
+                    tracing::debug!(
+                        call_id = %call_id.as_str(),
+                        model = %current_name,
+                        reason = reason.as_str(),
+                        ?decision,
+                        "[failover] model gave up; deciding between fallback and surfacing"
+                    );
+                    if decision == FailoverDecision::Surface {
+                        return Err(error);
+                    }
+                    let selected = self.select_fallback(ctx, request, &current_name, &mut visited);
                     match selected {
                         Some((name, next_model)) => {
                             visited.insert(name.clone());
@@ -851,6 +894,51 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     }
                 }
             }
+        }
+    }
+
+    /// Picks the next fallback model after `cursor`, or `None` when the chain
+    /// is exhausted.
+    ///
+    /// Skips any name already in `visited` (so a chain with a repeated name
+    /// cannot alternate between the same models forever), any model the run has
+    /// written off ([`crate::limits::LimitTracker::is_model_skipped`]) and any
+    /// candidate that fails the request's capability/lifecycle gate. Initial
+    /// resolution gates the primary selection through `model_eligible`; without
+    /// the same gate here a primary failure could silently fall back to a model
+    /// that can't call tools, lacks vision, or has a smaller context window
+    /// (issue #4641). `allow_retired` is `false` to match
+    /// `ModelRegistry::resolve_request`. Every skipped candidate is recorded as
+    /// visited and surfaced as [`AgentEvent::FallbackSkipped`].
+    fn select_fallback(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &ModelRequest,
+        cursor: &str,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Option<(String, Arc<dyn ChatModel<State>>)> {
+        let required = request.required_capabilities.as_ref();
+        let mut cursor = cursor.to_owned();
+        loop {
+            let next = self
+                .policy
+                .fallback
+                .as_ref()
+                .and_then(|fallback| fallback.next_after(&cursor))
+                .map(str::to_owned)
+                .filter(|name| !visited.contains(name));
+            let (name, next_model) =
+                next.and_then(|name| self.models.get(&name).map(|m| (name, m)))?;
+            let written_off = ctx.limits.is_model_skipped(&name);
+            if written_off || !model_eligible(next_model.as_ref(), required, false) {
+                visited.insert(name.clone());
+                ctx.emit(AgentEvent::FallbackSkipped {
+                    model: name.clone(),
+                });
+                cursor = name;
+                continue;
+            }
+            return Some((name, next_model));
         }
     }
 
@@ -1756,3 +1844,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
         })
     }
 }
+
+#[cfg(test)]
+#[path = "model_call_failover_tests.rs"]
+mod failover_test;
