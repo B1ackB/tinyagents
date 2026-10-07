@@ -389,7 +389,7 @@ async fn result_policy_trims_output_and_surfaces_a_schema_error() {
         .run(request("t-result"), CancellationToken::new())
         .await
         .unwrap();
-    assert!(result.outcome.output.contains("chars omitted"));
+    assert_eq!(result.outcome.output, "0123", "hard-cut within the cap");
     assert!(result.outcome.schema_error.is_some());
     assert_eq!(result.outcome.status, SubagentStatus::Completed);
 }
