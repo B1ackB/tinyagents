@@ -1,6 +1,29 @@
 use super::*;
 use crate::testkit::conformance::{session_store_conformance, session_store_isolation_conformance};
-use crate::transcript::{SessionRef, TranscriptTurn};
+use crate::transcript::{SessionRef, TranscriptMessage, TranscriptTurn};
+
+fn test_meta(thread_id: &str) -> TranscriptMeta {
+    TranscriptMeta {
+        session_id: None,
+        parent_session_id: None,
+        agent_name: "planner".to_string(),
+        agent_id: Some("planner".to_string()),
+        agent_type: None,
+        dispatcher: "native".to_string(),
+        provider: None,
+        model: None,
+        created: "2026-01-01T00:00:00Z".to_string(),
+        updated: "2026-01-01T00:00:00Z".to_string(),
+        turn_count: 0,
+        prefix_message_count: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        charged_amount_usd: 0.0,
+        thread_id: Some(thread_id.to_string()),
+        task_id: None,
+    }
+}
 
 #[tokio::test]
 async fn in_memory_stores_meet_the_session_store_contract() {
@@ -167,4 +190,66 @@ fn the_newest_root_wins_and_sub_agents_are_never_roots() {
             .append_interrupted_partial("t", Some("other"), &TranscriptPartial::new("x"), None)
             .unwrap()
     );
+}
+
+#[test]
+fn probing_then_opening_a_session_replaces_placeholder_metadata() {
+    let locator = InMemoryTranscriptLocator::new("test");
+    let session = SessionRef::scoped("thread-meta", "planner");
+    assert!(locator.read_session_transcript(&session).is_none());
+
+    let meta = test_meta("thread-meta");
+    locator
+        .open_session(&session, meta.clone())
+        .unwrap()
+        .append(TranscriptMessage::user("hello"))
+        .unwrap();
+
+    let stored = locator
+        .read_session_transcript(&session)
+        .unwrap()
+        .read_session()
+        .unwrap()
+        .unwrap()
+        .meta;
+    assert_eq!(stored.agent_name, meta.agent_name);
+    assert_eq!(stored.agent_id, meta.agent_id);
+    assert_eq!(stored.thread_id, meta.thread_id);
+}
+
+#[test]
+fn an_unwritten_successor_is_reserved_until_written_or_dropped() {
+    let locator = InMemoryTranscriptLocator::new("test");
+    let session = SessionRef::scoped("thread-reservation", "planner");
+    let (_, first) = locator
+        .begin_generation(&session, test_meta("thread-reservation"))
+        .unwrap();
+    assert!(
+        locator
+            .begin_generation(&session, test_meta("thread-reservation"))
+            .is_err()
+    );
+    drop(first);
+    assert!(
+        locator
+            .begin_generation(&session, test_meta("thread-reservation"))
+            .is_err()
+    );
+}
+
+#[test]
+fn completed_retention_uses_completion_time() {
+    let turns = InMemoryTurnStates::default();
+    for (request_id, started_at, updated_at) in [
+        ("old-start", "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z"),
+        ("new-start", "2026-01-01T02:00:00Z", "2026-01-01T00:30:00Z"),
+    ] {
+        let mut turn = TurnState::started("t", request_id, 4, started_at);
+        turn.lifecycle = TurnLifecycle::Completed;
+        turn.updated_at = updated_at.to_string();
+        turns.put(&turn).unwrap();
+    }
+    let listed = turns.list_thread("t").unwrap();
+    assert_eq!(listed[0].request_id, "new-start");
+    assert_eq!(listed[1].request_id, "old-start");
 }

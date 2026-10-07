@@ -16,7 +16,8 @@ use tinyagents_harness::store::{InMemoryAppendStore, InMemoryStore};
 use super::{AgentStores, SessionStoreProvider, TurnStates};
 use crate::testkit::InMemoryTranscriptHistory;
 use crate::transcript::{
-    TranscriptHistory, TranscriptLocator, TranscriptMeta, TranscriptPartial, TranscriptRead,
+    SessionRef, TranscriptHistory, TranscriptLocator, TranscriptMeta, TranscriptPartial,
+    TranscriptRead, session_stem,
 };
 use crate::turn_state::{TurnLifecycle, TurnState};
 
@@ -162,6 +163,7 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
     ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
         let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, history)) = stems.iter().find(|(known, _)| known == stem) {
+            history.set_seed_if_unwritten(seed);
             return Ok(history.clone());
         }
         let history = Arc::new(InMemoryTranscriptHistory::new(
@@ -170,6 +172,36 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         ));
         stems.push((stem.to_string(), history.clone()));
         Ok(history)
+    }
+
+    fn begin_generation(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        const MAX_GENERATIONS: u32 = 4096;
+
+        let successor = session.next_generation();
+        anyhow::ensure!(
+            successor.generation <= MAX_GENERATIONS,
+            "session generation limit reached"
+        );
+        let stem = session_stem(&successor);
+        let mut meta = seed;
+        meta.session_id = Some(successor.session_id());
+        meta.parent_session_id = successor.parent_session_id();
+
+        let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
+        anyhow::ensure!(
+            stems.iter().all(|(known, _)| known != &stem),
+            "session generation already exists"
+        );
+        let history = Arc::new(InMemoryTranscriptHistory::new(
+            format!("{}/{stem}", self.label),
+            meta,
+        ));
+        stems.push((stem, history.clone()));
+        Ok((successor, history))
     }
 
     fn append_interrupted_partial(
@@ -212,6 +244,13 @@ fn newest_first(a: &TurnState, b: &TurnState) -> Ordering {
         .then_with(|| compare_rfc3339(&b.updated_at, &a.updated_at))
 }
 
+/// Completed-turn retention follows completion time, as the durable store
+/// does. Listing the latest live turn still follows its start time.
+fn completed_newest_first(a: &TurnState, b: &TurnState) -> Ordering {
+    compare_rfc3339(&b.updated_at, &a.updated_at)
+        .then_with(|| compare_rfc3339(&b.started_at, &a.started_at))
+}
+
 fn compare_rfc3339(left: &str, right: &str) -> Ordering {
     match (
         chrono::DateTime::parse_from_rfc3339(left),
@@ -241,7 +280,7 @@ fn prune_completed(turns: &mut HashMap<(String, String), TurnState>, thread_id: 
         .filter(|turn| turn.thread_id == thread_id && turn.lifecycle == TurnLifecycle::Completed)
         .cloned()
         .collect();
-    completed.sort_by(newest_first);
+    completed.sort_by(completed_newest_first);
     for stale in completed.iter().skip(COMPLETED_RETENTION) {
         turns.remove(&key(&stale.thread_id, &stale.request_id));
     }
