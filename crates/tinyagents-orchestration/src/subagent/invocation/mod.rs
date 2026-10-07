@@ -881,11 +881,17 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
             self.jobs.mark_running(&job_id);
             let mut guard = jobs::InlineJobGuard::new(self.jobs.clone(), job_id.clone());
-            let result = self
-                .subagent
-                .run_hosted_child(state, child, input, streaming)
-                .await;
-            self.jobs.mark_result(&job_id, result);
+            let result = policy_run::run_attempts(
+                &self.subagent,
+                &self.policy,
+                state,
+                attempts,
+                input,
+                streaming,
+                &job_token,
+            )
+            .await;
+            policy_run::settle(&self.jobs, &job_id, result, &self.result_policy).await;
             guard.disarm();
             drop(reservation);
             let Some(job) = self.jobs.get(job_id.as_str()) else {
@@ -910,6 +916,8 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
         let owned_state = state.clone();
+        let policy = self.policy.clone();
+        let result_policy = self.result_policy.clone();
         // The child runs in its own task and a supervisor awaits its
         // `JoinHandle`: a panic inside the child surfaces as a `JoinError`
         // there, so the job can never stay `Running` forever.
@@ -920,10 +928,17 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             // when this task ends, however it ends (result, panic, abort).
             let _reservation = reservation;
             child_jobs.mark_running(&child_job_id);
-            let result = subagent
-                .run_hosted_child(&owned_state, child, input, streaming)
-                .await;
-            child_jobs.mark_result(&child_job_id, result);
+            let result = policy_run::run_attempts(
+                &subagent,
+                &policy,
+                &owned_state,
+                attempts,
+                input,
+                streaming,
+                &job_token,
+            )
+            .await;
+            policy_run::settle(&child_jobs, &child_job_id, result, &result_policy).await;
         });
         tokio::spawn(async move {
             if let Err(join_error) = child_task.await {
