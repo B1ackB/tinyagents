@@ -226,6 +226,10 @@ pub struct SuccessfulRepeatTracker {
     /// last, so [`SuccessfulRepeatTracker::pre_call`] can tell how often the
     /// next attempt would repeat a result without executing it.
     pub(super) last_outcome: Mutex<HashMap<u64, u64>>,
+    /// Calls whose `last_outcome` may still be predicted. Invalidation removes
+    /// calls from here but keeps `last_outcome`, so a later new result is still
+    /// recognised as progress.
+    pub(super) predictable: Mutex<std::collections::HashSet<u64>>,
     /// Call-signature hash → times that call was blocked (survives context
     /// eviction; cleared when the call returns a new result).
     pub(super) blocks: Mutex<HashMap<u64, u32>>,

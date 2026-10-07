@@ -70,6 +70,7 @@ impl SuccessfulRepeatTracker {
             recurrences: std::sync::Mutex::new(std::collections::HashMap::new()),
             escalation: None,
             last_outcome: std::sync::Mutex::new(std::collections::HashMap::new()),
+            predictable: std::sync::Mutex::new(std::collections::HashSet::new()),
             blocks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -217,6 +218,7 @@ impl SuccessfulRepeatTracker {
             *count
         };
         let previous = lock(&self.last_outcome).insert(call, key);
+        lock(&self.predictable).insert(call);
         if previous.is_some_and(|previous| previous != key) {
             // The call returned something new: that is progress, so earlier
             // blocks of it no longer count toward a halt.
@@ -285,6 +287,9 @@ impl SuccessfulRepeatTracker {
             return CallGate::Allow;
         };
         let call = hash_of(call_signature);
+        if !lock(&self.predictable).contains(&call) {
+            return CallGate::Allow;
+        }
         let Some(key) = lock(&self.last_outcome).get(&call).copied() else {
             return CallGate::Allow;
         };
@@ -314,13 +319,14 @@ impl SuccessfulRepeatTracker {
     /// signature to keep predicting it.
     pub fn invalidate_predictions_except(&self, call_signature: &str) {
         let keep = hash_of(call_signature);
-        lock(&self.last_outcome).retain(|call, _| *call == keep);
+        lock(&self.predictable).retain(|call| *call == keep);
     }
 
     /// Clears both streaks, the recurrence ledger and the block counts, for
     /// example when a paused run is resumed.
     pub fn reset(&self) {
         self.reset_ledger();
+        lock(&self.last_outcome).clear();
         lock(&self.blocks).clear();
     }
 
@@ -331,6 +337,6 @@ impl SuccessfulRepeatTracker {
         lock(&self.output).reset();
         lock(&self.calls).reset();
         lock(&self.recurrences).clear();
-        lock(&self.last_outcome).clear();
+        lock(&self.predictable).clear();
     }
 }

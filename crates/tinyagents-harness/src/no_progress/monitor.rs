@@ -110,6 +110,7 @@ impl RepeatProgressConfig {
 
 /// What recording one successful call produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CallObservation {
     /// The exact-repeat ledger's verdict for the call.
     pub verdict: SuccessfulRepeat,
@@ -203,8 +204,9 @@ impl RepeatMonitor {
                 self.tracker.recurrence_count(&signature, outcome_identity) >= REPEATING_AT;
             if guard.record(&signature, outcome_identity, repeating) {
                 notes.push(
-                    "this call and its result repeat what you were doing, over and over, right before the context was compacted; you may be looping. Use the result you have or take a different action."
-                        .to_string(),
+                    format!(
+                        "`{tool}` with these arguments, returning this result, is what you were repeating right before the context was compacted; you may be looping. Use the result you have or take a different action."
+                    ),
                 );
             }
         }

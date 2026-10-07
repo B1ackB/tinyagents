@@ -13,13 +13,14 @@
 /// default for [`SuccessfulRepeatTracker::new`](super::SuccessfulRepeatTracker::new))
 /// the first threshold halts immediately, which is the historical behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RepeatEscalation {
     /// How many repeats past the warning the call is blocked at: with the
     /// default warning at 3 identical results, the 5th identical call is the
     /// first one blocked. Clamped to at least 1 so a warning always lands
     /// before a block.
     pub block_after_warn: u32,
-    /// Blocks tolerated in one run before the run halts; the halting block is
+    /// Blocks of one call tolerated before the run halts; the halting block is
     /// the `blocks_before_halt`-th. Clamped to at least 1 (halt on the first
     /// block).
     pub blocks_before_halt: u32,
@@ -40,6 +41,27 @@ impl Default for RepeatEscalation {
 }
 
 impl RepeatEscalation {
+    /// Escalation that blocks `block_after_warn` repeats after the warning and
+    /// halts on the `blocks_before_halt`-th block of one call.
+    pub fn new(block_after_warn: u32, blocks_before_halt: u32) -> Self {
+        Self {
+            block_after_warn,
+            blocks_before_halt,
+        }
+    }
+
+    /// Sets [`block_after_warn`](Self::block_after_warn).
+    pub fn with_block_after_warn(mut self, repeats: u32) -> Self {
+        self.block_after_warn = repeats;
+        self
+    }
+
+    /// Sets [`blocks_before_halt`](Self::blocks_before_halt).
+    pub fn with_blocks_before_halt(mut self, blocks: u32) -> Self {
+        self.blocks_before_halt = blocks;
+        self
+    }
+
     pub(super) fn gap(&self) -> u32 {
         self.block_after_warn.max(1)
     }
