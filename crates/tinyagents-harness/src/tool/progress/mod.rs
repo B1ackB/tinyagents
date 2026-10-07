@@ -254,7 +254,7 @@ impl ToolProgressGate {
             .map(|message| bounded_text(&message))
             .unwrap_or_default();
         let partial = update.partial.map(|partial| bounded_value(&partial));
-        self.events.emit(AgentEvent::ToolProgress {
+        self.events.emit(AgentEvent::ToolProgressDetail {
             call_id: self.call_id.clone(),
             message,
             fraction,

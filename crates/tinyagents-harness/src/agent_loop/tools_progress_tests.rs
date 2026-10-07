@@ -145,7 +145,7 @@ fn seen(recorder: &EventRecorder) -> Vec<Seen> {
         .into_iter()
         .filter_map(|event| match event {
             AgentEvent::ToolStarted { call_id, .. } => Some(Seen::Started(call_id.to_string())),
-            AgentEvent::ToolProgress {
+            AgentEvent::ToolProgressDetail {
                 call_id, message, ..
             } => Some(Seen::Progress(call_id.to_string(), message)),
             AgentEvent::ToolCompleted { call_id, .. } => Some(Seen::Completed(call_id.to_string())),
