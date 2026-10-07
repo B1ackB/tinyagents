@@ -721,27 +721,57 @@ async fn cancellation_during_the_idle_wait_is_cancelled_not_a_timeout() {
     assert_eq!(began.elapsed(), Duration::from_millis(300));
 }
 
-#[tokio::test(start_paused = true)]
-async fn run_deadline_still_wins_as_a_terminal_timeout() {
+/// The run deadline is measured by the limit tracker on the **real** clock
+/// (`std::time::Instant`), while this test's stream runs on tokio's paused
+/// virtual clock. Real time spent between building the context and issuing the
+/// call (scheduling, a loaded CI box) is therefore subtracted from the budget
+/// the call gets, so the virtual time to the timeout is `500ms - real_elapsed`,
+/// not exactly `500ms`. The test used to assert exact equality and failed
+/// whenever more than ~1ms of real time passed. `stall` makes that real delay
+/// explicit and deterministic.
+async fn run_against_a_500ms_deadline(stall: Duration) -> (usize, Duration, TinyAgentsError) {
     let model = ScriptedStreams::new(vec![vec![started(), delta("a"), Step::Hang]]);
     let harness = harness_with(
         model.clone(),
         RunLimits::default().with_stream_idle_timeout_ms(Some(60_000)),
         3,
     );
+    let ctx = RunContext::new(RunConfig::new("deadline-run").with_timeout_ms(500), ());
+    std::thread::sleep(stall);
 
     let began = Instant::now();
-    std::thread::sleep(Duration::from_millis(20));
-    let err = run(
-        &harness,
-        RunConfig::new("deadline-run").with_timeout_ms(500),
+    let err = tokio::time::timeout(
+        Duration::from_secs(3600),
+        harness.invoke_streaming_in_context(&(), ctx, vec![Message::user("hi")]),
     )
     .await
+    .expect("the run hung: the run deadline never fired")
     .expect_err("the run deadline must fire first");
+    (model.calls(), began.elapsed(), err)
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_deadline_still_wins_as_a_terminal_timeout() {
+    let (calls, elapsed, err) = run_against_a_500ms_deadline(Duration::ZERO).await;
 
     assert!(matches!(err, TinyAgentsError::Timeout(_)), "got {err:?}");
-    assert_eq!(model.calls(), 1, "a run-deadline timeout is not retried");
-    assert_eq!(began.elapsed(), Duration::from_millis(500));
+    assert_eq!(calls, 1, "a run-deadline timeout is not retried");
+    // Never later than the deadline (plus the timer wheel's 1ms rounding), and
+    // far sooner than the 60s idle window it must beat.
+    assert!(elapsed <= Duration::from_millis(501), "elapsed {elapsed:?}");
+    assert!(elapsed >= Duration::from_millis(400), "elapsed {elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_deadline_budget_shrinks_by_real_time_already_spent() {
+    // 100ms of real time spent before the call leaves ~400ms of the 500ms
+    // budget; the timeout must fire after that remainder, not a fresh 500ms.
+    let (calls, elapsed, err) = run_against_a_500ms_deadline(Duration::from_millis(100)).await;
+
+    assert!(matches!(err, TinyAgentsError::Timeout(_)), "got {err:?}");
+    assert_eq!(calls, 1);
+    assert!(elapsed <= Duration::from_millis(401), "elapsed {elapsed:?}");
+    assert!(elapsed >= Duration::from_millis(100), "elapsed {elapsed:?}");
 }
 
 #[tokio::test(start_paused = true)]
