@@ -117,7 +117,8 @@ struct NestedSummary {
     name: String,
     status: &'static str,
     duration_ms: u64,
-    args: String,
+    /// Serialized arguments; `None` unless payload capture (`tool_io`) is on.
+    args: Option<String>,
     error: Option<String>,
 }
 
@@ -128,8 +129,10 @@ impl NestedSummary {
             "name": self.name,
             "status": self.status,
             "duration_ms": self.duration_ms,
-            "args": self.args,
         });
+        if let Some(args) = &self.args {
+            entry["args"] = Value::String(args.clone());
+        }
         if let Some(error) = &self.error {
             entry["error"] = Value::String(error.clone());
         }
@@ -367,7 +370,14 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         } = request;
         let index = self.shared.issued.fetch_add(1, Ordering::SeqCst) + 1;
         let id = CallId::new(format!("{}/{index}", self.parent));
-        let args = truncated_json(&arguments);
+        // Arguments may be sensitive: they ride the parent's metadata only
+        // when the host opted in to tool payload capture.
+        let args = self
+            .harness
+            .policy
+            .capture
+            .tool_io
+            .then(|| truncated_json(&arguments));
         let started = std::time::Instant::now();
         // Reserve the refusal slot *before* admission: calls admitted
         // concurrently must not all read a count under the cap and then all be
