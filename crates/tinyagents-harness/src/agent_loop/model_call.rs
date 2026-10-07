@@ -1827,6 +1827,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
         Box::pin(async move {
             let mut request = request;
             let binding = self.rebind(ctx, &request).await?;
+            // Claim the switch only after the wrap onion has elected to call
+            // this base. A wrap middleware may short-circuit with a command or
+            // replacement response without invoking the model at all.
+            self.harness.announce_applied_model_switch(ctx, &request);
             crate::middleware::library::rehome_ephemeral_system_instructions(
                 &mut request,
                 binding.model.profile(),

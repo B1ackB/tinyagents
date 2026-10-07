@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::context::{RunConfig, RunContext};
 use crate::events::AgentEvent;
-use crate::middleware::Middleware;
+use crate::middleware::{Middleware, MiddlewareModelOutcome, ModelHandler, ModelMiddleware};
 use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::runtime::{AgentHarness, RunPolicy};
 use crate::steering::{SteeringCommand, SteeringHandle};
@@ -100,6 +100,25 @@ fn skipped(recorder: &EventRecorder) -> Vec<(String, String)> {
         .collect()
 }
 
+struct ShortCircuitModelMiddleware;
+
+#[async_trait]
+impl ModelMiddleware<()> for ShortCircuitModelMiddleware {
+    fn name(&self) -> &str {
+        "short_circuit_model"
+    }
+
+    async fn wrap_model(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _request: ModelRequest,
+        _next: ModelHandler<'_, (), ()>,
+    ) -> crate::Result<MiddlewareModelOutcome> {
+        Ok(ModelResponse::assistant("short-circuited").into())
+    }
+}
+
 /// Two registered models; `a` is the registry default.
 fn two_models(
     a: ScriptedModel,
@@ -157,6 +176,27 @@ async fn model_started_names_the_switched_model() {
     assert_eq!(model_started(&recorder), vec!["b"]);
     assert!(a.requests().is_empty());
     assert_eq!(b.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn short_circuit_wrap_does_not_announce_model_switch() {
+    let (mut harness, a, _b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    harness.push_model_middleware(Arc::new(ShortCircuitModelMiddleware));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.text(), Some("short-circuited".to_string()));
+    assert!(switch_outcomes(&recorder).is_empty());
+    assert!(a.requests().is_empty());
 }
 
 #[tokio::test]

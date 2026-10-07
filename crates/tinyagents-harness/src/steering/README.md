@@ -66,8 +66,10 @@ receives the transcript, it is **opt-in**: `SteeringPolicy::allow_all()` and
   model; the rejected name is dropped so it is reported once.
 - One outcome per command: queuing a switch emits nothing; the model call
   emits `Steered { accepted: true }` once when it first applies the switch, or
-  the `accepted: false` above when it rejects it. A switch replaced or
-  run-ended before any model call is never reported.
+  the `accepted: false` above when it rejects it. Replacing an unreported
+  switch rejects the superseded switch with `accepted: false`; a switch
+  replaced after it was reported, or a switch whose run ends before validation,
+  emits no additional outcome.
 - Fallback: when the switched model is in `RunPolicy::fallback`, the walk
   continues from its position; when it is not, a failure falls back through the
   whole chain from its head (the original primary's chain). Each fallback

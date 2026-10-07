@@ -491,10 +491,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 ControlEffect::Exit(exit) => return Ok(exit),
             }
 
-            // The request is now certain to be dispatched: report an applied
-            // steered switch (once per switch).
-            self.announce_applied_model_switch(ctx, &request);
-
             // Resolve the model for the event/log name before invoking.
             // Hosted turns install their routing decision against this live
             // `RunContext`; explicit-model SDK calls continue to resolve only
