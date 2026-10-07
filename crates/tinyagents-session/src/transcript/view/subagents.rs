@@ -487,12 +487,23 @@ fn derive_status(
 }
 
 /// Whether a spawn result reports the run incomplete: the typed
-/// `{"status": "incomplete"}` payload, or the legacy text marker.
+/// `{"status": "incomplete"}` of the harness's own job payload (which always
+/// names its `job_id` or `subagent_run_id`), or the legacy text marker.
+/// Foreign JSON that merely has a `status` key is not trusted.
 fn is_incomplete_result(result: &str) -> bool {
-    result.starts_with(INCOMPLETE_MARKER)
-        || serde_json::from_str::<serde_json::Value>(result)
-            .ok()
-            .is_some_and(|value| value.get("status").and_then(|s| s.as_str()) == Some("incomplete"))
+    if result.starts_with(INCOMPLETE_MARKER) {
+        return true;
+    }
+    // Cheap precheck: most results are prose and never reach the JSON parser.
+    if !result.starts_with('{') || !result.contains("incomplete") {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .is_some_and(|value| {
+            value.get("status").and_then(|s| s.as_str()) == Some("incomplete")
+                && (value.get("job_id").is_some() || value.get("subagent_run_id").is_some())
+        })
 }
 
 /// `[start, end)` of `request_id`'s items (after its boundary, up to the next

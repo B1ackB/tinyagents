@@ -40,7 +40,6 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 /// Cap, overflow behaviour and optional schema for a child's final output.
-#[non_exhaustive]
 #[derive(Clone, Default)]
 pub struct ResultPolicy {
     /// Most characters of output kept visible; `None` is uncapped.
@@ -161,28 +160,38 @@ impl ResultPolicy {
     }
 }
 
-/// Keeps the first and last halves of `max_chars` characters of `text` around
-/// a `[… N chars omitted …]` marker; returns the text and `N` (`0` when it
-/// already fits). Counts characters, never splitting a code point.
+/// Shortens `text` to at most `max_chars` characters *including* a
+/// `[… N chars omitted …]` marker between its head and tail; returns the text
+/// and `N` (`0` when it already fits). Counts characters, never splitting a
+/// code point. When `max_chars` is smaller than the marker itself, only the
+/// marker is returned.
 pub fn truncate_head_tail(text: &str, max_chars: usize) -> (String, usize) {
     let total = text.chars().count();
     if total <= max_chars {
         return (text.to_owned(), 0);
     }
-    let head = max_chars.div_ceil(2);
-    let tail = max_chars - head;
-    let omitted = total - max_chars;
+    let marker = |omitted: usize| format!("\n[… {omitted} chars omitted …]\n");
+    // The marker's width depends on the omitted count, which depends on how
+    // much the marker leaves room for: iterate to a fixed point.
+    let mut kept = max_chars;
+    let mut omitted = total - kept;
+    for _ in 0..4 {
+        let room = max_chars.saturating_sub(marker(omitted).chars().count());
+        if room == kept {
+            break;
+        }
+        kept = room;
+        omitted = total - kept;
+    }
+    let head = kept.div_ceil(2);
+    let tail = kept - head;
     let head_end = text.char_indices().nth(head).map_or(text.len(), |(i, _)| i);
     let tail_start = text
         .char_indices()
         .nth(total - tail)
         .map_or(text.len(), |(i, _)| i);
     (
-        format!(
-            "{}\n[… {omitted} chars omitted …]\n{}",
-            &text[..head_end],
-            &text[tail_start..]
-        ),
+        format!("{}{}{}", &text[..head_end], marker(omitted), &text[tail_start..]),
         omitted,
     )
 }
