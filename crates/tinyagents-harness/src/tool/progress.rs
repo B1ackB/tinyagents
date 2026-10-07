@@ -75,8 +75,8 @@
 //! spawned task; the gate's `open` flag, not the task-local, is what silences
 //! it later.
 
-use std::future::Future;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 

@@ -14,7 +14,13 @@ use crate::testkit::EventRecorder;
 use crate::tool::ToolExecutionContext;
 
 fn gate(recorder: &EventRecorder, limits: ToolProgressLimits) -> std::sync::Arc<ToolProgressGate> {
-    ToolProgressGate::new(CallId::new("call-1"), "build", recorder.sink(), limits, true)
+    ToolProgressGate::new(
+        CallId::new("call-1"),
+        "build",
+        recorder.sink(),
+        limits,
+        true,
+    )
 }
 
 fn unlimited() -> ToolProgressLimits {
@@ -181,4 +187,100 @@ async fn the_execution_context_reports_through_the_scoped_gate() {
     let bare = ToolExecutionContext::from_run_context(&run, CallId::new("call-1"));
     bare.report_progress(ToolProgress::message("nobody"));
     assert_eq!(messages(&recorder), vec!["scoped"]);
+}
+
+#[test]
+fn the_replay_queue_keeps_only_the_newest_deltas_but_every_event_is_emitted() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    let sink = gate.sink();
+    for n in 0..200 {
+        sink.report(ToolProgress::message(format!("u{n}")));
+    }
+    gate.close();
+    assert_eq!(messages(&recorder).len(), 200, "live events are not capped");
+    let deltas = gate.take_pending();
+    assert_eq!(deltas.len(), 64);
+    assert_eq!(deltas.first().unwrap().content, "u136");
+    assert_eq!(deltas.last().unwrap().content, "u199");
+}
+
+#[test]
+fn a_huge_partial_is_truncated_in_the_delta_not_serialized_in_full() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    let huge = "é".repeat(2_000_000);
+    gate.sink()
+        .report(ToolProgress::default().with_partial(json!({ "blob": huge })));
+    gate.close();
+    let deltas = gate.take_pending();
+    assert_eq!(deltas.len(), 1);
+    assert!(
+        deltas[0].content.len() <= 4096,
+        "{}",
+        deltas[0].content.len()
+    );
+    assert!(deltas[0].content.starts_with("{\"blob\":\"é"));
+}
+
+#[test]
+fn a_long_message_is_truncated_on_a_char_boundary() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    gate.sink().report(ToolProgress::message("日".repeat(5000)));
+    gate.close();
+    let content = gate.take_pending().remove(0).content;
+    assert!(content.len() <= 4096 && content.chars().all(|c| c == '日'));
+}
+
+#[test]
+fn nothing_is_queued_when_no_middleware_will_read_it() {
+    let recorder = EventRecorder::new();
+    let gate = ToolProgressGate::new(
+        CallId::new("call-1"),
+        "build",
+        recorder.sink(),
+        unlimited(),
+        false,
+    );
+    gate.sink().report(ToolProgress::message("x"));
+    gate.close();
+    assert_eq!(messages(&recorder), vec!["x"]);
+    assert!(gate.take_pending().is_empty());
+}
+
+#[test]
+fn an_out_of_range_fraction_set_on_the_field_is_sanitized() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    let sink = gate.sink();
+    for fraction in [7.0_f32, -2.0, f32::NAN] {
+        sink.report(ToolProgress {
+            message: Some("f".into()),
+            fraction: Some(fraction),
+            partial: None,
+        });
+    }
+    gate.close();
+    let fractions: Vec<_> = recorder
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolProgress { fraction, .. } => Some(fraction),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fractions, vec![Some(1.0), Some(0.0), None]);
+}
+
+#[tokio::test]
+async fn dropping_the_scoped_future_closes_the_gate() {
+    let recorder = EventRecorder::new();
+    let gate = gate(&recorder, unlimited());
+    let sink = gate.sink();
+    let scoped = gate.scope(std::future::pending::<()>());
+    // Poll once so the future is live, then drop it mid-flight.
+    let _ = tokio::time::timeout(Duration::from_millis(5), scoped).await;
+    sink.report(ToolProgress::message("after drop"));
+    assert!(messages(&recorder).is_empty());
 }

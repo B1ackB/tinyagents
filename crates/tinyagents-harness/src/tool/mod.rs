@@ -91,6 +91,11 @@ pub trait ToolDispatch<State: Send + Sync, Ctx: Send + Sync>: Send + Sync {
 
     /// Executes with the full typed parent run when the dispatch needs it.
     ///
+    /// The loop scopes the call's progress gate around the future this method
+    /// returns, so a dispatch that builds a [`ToolExecutionContext`] must do so
+    /// **inside** this future (as the canonical dispatch does); a context built
+    /// earlier or on another task carries no progress sink.
+    ///
     /// `call_id` is the admitted call's id — the one the transcript row and
     /// the `ToolStarted`/`ToolCompleted` events carry — so a dispatch that
     /// builds a [`ToolExecutionContext`] hands the tool the real id (B1).

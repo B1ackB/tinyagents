@@ -381,3 +381,55 @@ async fn progress_from_a_call_that_then_fails_still_precedes_its_failure() {
         .expect("the call has a terminal event");
     assert!(progress_at < terminal_at, "{events:?}");
 }
+
+/// Reports once, hands its context to the test, then never returns.
+struct HangAfterReport(Arc<Mutex<Option<crate::tool::ToolExecutionContext>>>);
+
+#[async_trait]
+impl Tool for HangAfterReport {
+    fn name(&self) -> &str {
+        "hang"
+    }
+    fn description(&self) -> &str {
+        "reports then hangs"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: serde_json::Value,
+        _options: ToolCallOptions,
+        context: Option<&dyn ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let context = context.expect("context");
+        let harness = context
+            .host_extension()
+            .and_then(|any| any.downcast_ref::<crate::tool::ToolExecutionContext>())
+            .expect("harness context");
+        *self.0.lock().unwrap() = Some(harness.clone());
+        context.report_progress(ToolProgress::message("working"));
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn cancelling_the_run_mid_call_silences_a_sink_a_spawned_task_still_holds() {
+    let stash = Arc::new(Mutex::new(None));
+    let mut fx = fixture(calls(&[("c1", "hang")]));
+    fx.harness
+        .register_tool(Arc::new(HangAfterReport(stash.clone())));
+    // Dropping the run future (as a cancelled or timed-out run does) is the
+    // only way this call ends.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(100), fx.run()).await;
+    let before = seen(&fx.recorder);
+    assert!(before.contains(&progress("c1", "working")), "{before:?}");
+
+    let held = stash.lock().unwrap().take().expect("tool ran");
+    held.report_progress(ToolProgress::message("from a straggler"));
+
+    assert_eq!(seen(&fx.recorder), before);
+}

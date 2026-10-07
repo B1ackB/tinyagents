@@ -35,6 +35,7 @@ use crate::store::namespaced::NamespacedStore;
 ///     .and_then(|any| any.downcast_ref::<ToolExecutionContext>());
 /// ```
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ToolExecutionContext {
     /// Run that invoked the tool.
     pub run_id: RunId,
