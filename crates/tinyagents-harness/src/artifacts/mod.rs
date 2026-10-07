@@ -63,6 +63,7 @@ mod contract;
 mod ops;
 mod paths;
 pub mod policy;
+pub mod request_truncation;
 pub mod tool_results;
 mod types;
 
@@ -76,6 +77,9 @@ pub use ops::{
 };
 pub use paths::{relative_to_root, resolve_artifact_path, sanitize_component};
 pub use policy::{ArtifactPathPolicy, ArtifactRedactor, NoRedaction, OpenPathPolicy, Redacted};
+pub use request_truncation::{
+    RequestTruncation, reducible_tool_result_bytes, truncate_tool_results,
+};
 pub use types::{
     ABSTRACT_BUDGET_CHARS, ARTIFACT_POINTER_PREFIX, ArtifactKind, DEFAULT_OFFLOAD_THRESHOLD_BYTES,
     OUTPUTS_DIR, OffloadError, OffloadedArtifact, SCRATCH_DIR,
@@ -84,3 +88,6 @@ pub use types::{
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+#[cfg(test)]
+#[path = "request_truncation_tests.rs"]
+mod request_truncation_test;
