@@ -67,6 +67,9 @@ pub struct ToolExecutionContext {
     /// held here (not looked up per report), it survives a move into a spawned
     /// task; the gate's closed flag silences it once the call settles.
     pub progress: Option<tinytools::ProgressSink>,
+    /// Runner behind [`Self::call_tool`], installed by the agent loop for the
+    /// call it is executing. `None` when the tool runs outside the loop.
+    pub nested: Option<Arc<dyn super::NestedToolRunner>>,
 }
 
 impl ToolExecutionContext {
@@ -86,6 +89,7 @@ impl ToolExecutionContext {
             store: ctx.namespaced_store.clone(),
             state_view: ctx.state_view.clone(),
             progress: super::progress::ToolProgressGate::current_sink_for(&call_id),
+            nested: super::nested::current_for(&call_id),
         }
     }
 
@@ -107,6 +111,44 @@ impl ToolExecutionContext {
         self.state_view
             .as_deref()
             .and_then(|view| view.downcast_ref::<S>())
+    }
+
+    /// Calls another registered tool as a **nested call** of this one and
+    /// returns its result.
+    ///
+    /// The call goes through the same admission and execution path as a call
+    /// the model issued: tool lookup and the host allow-list, argument
+    /// validation, host authorization, the tool-wrap middleware onion (so a
+    /// policy middleware can refuse it), timeouts, and the run's
+    /// `max_tool_calls` budget, which nested calls share with model-issued
+    /// ones. See `docs/modules/harness/nested-tool-calls.md`.
+    ///
+    /// # Errors
+    ///
+    /// - No harness runner is installed (the tool runs outside the agent
+    ///   loop).
+    /// - The tool is unknown, not callable, or the arguments are invalid.
+    /// - The nested depth (`RunLimits::max_nested_depth`) or the run's
+    ///   tool-call budget is spent, or the run is cancelled.
+    /// - The call would need approval or be deferred. A nested call **never**
+    ///   defers its parent; it fails with
+    ///   `nested call '<name>' requires approval; nested calls cannot be deferred`.
+    ///
+    /// A tool that reports its own failure (`ToolResult::is_error`) is an `Ok`
+    /// result, as for a model-issued call.
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> crate::error::Result<tinytools::ToolResult> {
+        match &self.nested {
+            Some(runner) => runner.call_tool(name, arguments).await,
+            None => Err(crate::error::TinyAgentsError::ToolFailed(format!(
+                "cannot call tool '{name}' from tool call '{}': nested tool calls are only \
+                 available while the agent loop executes the calling tool",
+                self.call_id
+            ))),
+        }
     }
 
     /// Emits an [`AgentEvent::Custom`] carrying `payload` on the run's event

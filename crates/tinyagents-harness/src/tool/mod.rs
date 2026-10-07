@@ -8,6 +8,7 @@ pub mod deferred;
 pub mod discover;
 pub mod effects;
 pub mod packs;
+pub mod nested;
 mod progress;
 mod prompt;
 mod schema;
@@ -43,6 +44,7 @@ pub use shared::{CanonicalSharedToolAdapter, EarlyExit, EarlyExitHook};
 pub use signature::*;
 pub use timeout::*;
 pub use toolset::{ToolExposureExplanation, ToolSet};
+pub use nested::NestedToolRunner;
 pub use types::ToolExecutionContext;
 
 /// A host-owned dispatch hook for the rare canonical tool that must execute
