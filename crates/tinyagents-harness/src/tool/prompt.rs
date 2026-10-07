@@ -17,6 +17,7 @@ use serde_json::{Map, Value};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::tool::{ToolCall, ToolSchema};
+use tinytools_agent::repair::json::recover_whole_object;
 
 /// Opening / closing delimiters for a text-mode tool call.
 const OPEN_TAG: &str = "<tool_call>";
