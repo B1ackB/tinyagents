@@ -155,11 +155,13 @@ fn component_metadata_and_event_kinds_are_stable_serializable_contracts() {
             output: None,
         },
         AgentEvent::ToolStarted {
+            parent_call_id: None,
             call_id: CallId::new("tool-1"),
             tool_name: "lookup".into(),
             input: None,
         },
         AgentEvent::ToolCompleted {
+            parent_call_id: None,
             call_id: CallId::new("tool-1"),
             tool_name: "lookup".into(),
             started_at_ms: None,
@@ -296,11 +298,13 @@ async fn event_sinks_journals_and_status_stores_preserve_run_lineage() {
     let journal = EventJournal::new();
     assert!(journal.is_empty());
     journal.append(AgentEvent::ToolStarted {
+        parent_call_id: None,
         call_id: CallId::new("tool-1"),
         tool_name: "lookup".into(),
         input: None,
     });
     journal.append(AgentEvent::ToolCompleted {
+        parent_call_id: None,
         call_id: CallId::new("tool-1"),
         tool_name: "lookup".into(),
         started_at_ms: None,

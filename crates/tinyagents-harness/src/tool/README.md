@@ -47,6 +47,14 @@ scrub) lives in `tinytools-agent`, reached through
   `ToolRunContext::report_progress`; it is `None` for a context built outside
   a loop, where reporting is a no-op.
 
+### Nested calls (`nested.rs`)
+
+- `NestedToolRunner` — the type-erased seam behind
+  `ToolExecutionContext::call_tool`; `nested` is `None` outside the agent loop,
+  where `call_tool` returns a clear error. The loop installs the runner in a
+  task-local scoped to the executing call (`agent_loop/nested.rs`); see
+  `docs/modules/harness/nested-tool-calls.md`.
+
 ### Progress (`progress/mod.rs`)
 
 - `ToolProgressGate` (crate-private) — the per-call destination for a tool's

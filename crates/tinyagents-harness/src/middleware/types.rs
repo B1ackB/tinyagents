@@ -297,6 +297,56 @@ pub trait Middleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync {
         Ok(())
     }
 
+    /// Shared-reference admission check for a **nested** tool call: a tool
+    /// calling another tool through
+    /// [`ToolExecutionContext::call_tool`][crate::tool::ToolExecutionContext::call_tool].
+    ///
+    /// `before_tool` takes `&mut RunContext`, which a running tool cannot lend,
+    /// so it never runs for nested calls. A middleware whose `before_tool` is an
+    /// *enforcement* (an allowlist, a deny mask, an approval gate, a plan-mode
+    /// guard, a host hook) must therefore also implement this method, over the
+    /// same decision, or `call_tool` becomes a way around it. The default
+    /// admits the call, which is right for hooks that only observe or rewrite.
+    ///
+    /// Runs for every registered middleware, in registration order, after
+    /// argument validation and before host authorization; the first `Err`
+    /// refuses the call. A nested call can never be deferred, so a gate that
+    /// would defer or interrupt must fail instead. `call.arguments` are the
+    /// prepared (validated) arguments; `call.id` is the nested id
+    /// (`<parent>/<n>`).
+    ///
+    /// A refusal is returned to the calling tool and is **not** fanned out to
+    /// [`Middleware::on_error`]: that hook needs `&mut RunContext`, which a
+    /// running tool cannot lend, and a refused nested call is a tool-level
+    /// result, not a run failure.
+    async fn check_nested_tool(
+        &self,
+        _ctx: &RunContext<Ctx>,
+        _state: &State,
+        _call: &ToolCall,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Observes the result of a nested tool call, after it ran.
+    ///
+    /// `after_tool` never runs for nested calls (it takes `&mut RunContext`),
+    /// so a middleware that accounts for tool results — a research budget, a
+    /// repeated-failure counter, a result auditor — implements this to see
+    /// them. It cannot rewrite the result. Called for every registered
+    /// middleware, in registration order, once per nested call that produced a
+    /// result (a tool-reported error included; a refused or raised call has no
+    /// result). Interior mutability is the way to keep state: the context is
+    /// shared.
+    async fn observe_nested_result(
+        &self,
+        _ctx: &RunContext<Ctx>,
+        _state: &State,
+        _call: &ToolCall,
+        _result: &ToolResult,
+    ) {
+    }
+
     /// Runs when any hook in the stack errors, giving every middleware a chance
     /// to log, redact, or react to the failure. The original error is still
     /// returned to the caller after this runs; errors from `on_error` itself

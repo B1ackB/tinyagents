@@ -1859,13 +1859,26 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
 /// Implements [`ToolBaseCall`] over a single resolved [`Tool`] so a
 /// [`crate::middleware::ToolMiddleware`] can wrap the real tool
 /// invocation.
-pub(super) struct ToolCallBase<State: Send + Sync, Ctx: Send + Sync> {
+pub(super) struct ToolCallBase<'h, State: Send + Sync, Ctx: Send + Sync> {
+    /// Services the nested calls the tool makes (C9).
+    pub(super) harness: &'h AgentHarness<State, Ctx>,
+    /// Nesting level of this call: `0` for a model-issued call, `n` for a call
+    /// nested `n` deep.
+    pub(super) level: usize,
     pub(super) dispatch: Arc<dyn crate::tool::ToolDispatch<State, Ctx>>,
     pub(super) options: tinytools::ToolCallOptions,
     pub(super) timeout_settings: Option<crate::tool::ToolTimeoutSettings>,
+    /// Nested-call ids, refusal budget and summaries for this logical call,
+    /// kept across every attempt a wrap middleware makes (retries).
+    pub(super) nested_state: super::nested::NestedState,
+    /// Whether this call already runs under the run-wide nested serialization
+    /// gate, so its own nested calls must not take it again.
+    pub(super) gate_held: super::nested::GateHold,
 }
 
-impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCallBase<State, Ctx> {
+impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
+    for ToolCallBase<'_, State, Ctx>
+{
     fn call<'a>(
         &'a self,
         ctx: &'a RunContext<Ctx>,
@@ -1877,6 +1890,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
                 settings.resolve(self.dispatch.tool().timeout_policy(&call.arguments))
             });
             let timeout_result = super::tools::timeout_result(&call, timeout);
+            let nested = super::nested::NestedCalls::new(
+                self.harness,
+                ctx,
+                state,
+                CallId::new(call.id.clone()),
+                self.level,
+                &self.nested_state,
+                self.gate_held,
+            );
             let future = super::tools::execute_tool_recovering_model_retry(self.dispatch.execute(
                 state,
                 CallId::new(call.id),
@@ -1884,13 +1906,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
                 self.options,
                 ctx,
             ));
-            match timeout.and_then(|resolved| resolved.deadline) {
-                Some(deadline) => match tokio::time::timeout(deadline, future).await {
-                    Ok(result) => result,
-                    Err(_) => Ok(timeout_result),
-                },
-                None => future.await,
-            }
+            let bounded = async {
+                match timeout.and_then(|resolved| resolved.deadline) {
+                    Some(deadline) => match tokio::time::timeout(deadline, future).await {
+                        Ok(result) => result,
+                        Err(_) => Ok(timeout_result),
+                    },
+                    None => future.await,
+                }
+            };
+            let mut result = nested.drive(bounded).await?;
+            nested.attach_summary(&mut result);
+            Ok(result)
         })
     }
 }

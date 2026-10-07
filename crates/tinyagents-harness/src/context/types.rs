@@ -559,6 +559,10 @@ pub struct RunContext<Ctx = ()> {
     /// [`crate::tool::LedgerFailure`] for the two modes; defaults to
     /// [`crate::tool::LedgerFailure::Abort`].
     pub tool_effect_ledger_failure: crate::tool::LedgerFailure,
+    /// Run-wide gate for nested tool calls across every concurrent parent:
+    /// concurrency-safe calls hold it shared, calls to tools (or wrap
+    /// middleware) that are not concurrency-safe hold it exclusively. A call already running under the gate does not retake it.
+    pub(crate) nested_serial: std::sync::Arc<tokio::sync::RwLock<()>>,
     /// Durable sink for [`crate::summarization::CompactionRecord`]s this run
     /// produces, when a host wants every compaction persisted somewhere
     /// durable rather than only kept in

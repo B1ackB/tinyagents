@@ -240,6 +240,7 @@ Feature details:
 - [Prompt feature](prompt.md)
 - [Tool feature](tool.md)
 - [Tool execution context and rich returns (B1/B2)](tool-context.md)
+- [Nested tool calls (C9)](nested-tool-calls.md)
 - [Tool exposure, discovery, and schema budgets](tool-discovery.md)
 - [Tool dialects](tool-dialect.md)
 - [Middleware feature](middleware.md)
