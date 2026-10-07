@@ -1694,14 +1694,19 @@ async fn an_unsafe_call_under_a_shared_gate_hold_is_refused() {
         safe: false,
     }));
     run(&harness, &EventRecorder::new()).await.unwrap();
-    // `safe_link` surfaces the refusal of its own nested call with `?`.
-    let error = outcome
+    // `safe_link` returns the refusal of its own nested call as an error result.
+    let result = outcome
         .lock()
         .unwrap()
         .take()
         .expect("root ran")
-        .expect_err("the nested chain fails");
-    assert!(error.contains("shared nested-call gate"), "{error}");
+        .expect("safe_link returned a result");
+    assert!(result.is_error);
+    assert!(
+        result.output().contains("shared nested-call gate"),
+        "{}",
+        result.output()
+    );
 }
 
 /// Returns its own `nested_calls` metadata while also making a nested call.
