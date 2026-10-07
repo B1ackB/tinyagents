@@ -77,7 +77,7 @@ pub type ReadOnlyCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// prediction and a repeat only blocks while it is the most recent call
 /// (A, A, A, ...). With it, reads do not discard predictions, so A, B, A, B
 /// cycles of reads block too. The results the guard answers itself carry
-/// [`REPEAT_GUARD_METADATA_KEY`](crate::no_progress::REPEAT_GUARD_METADATA_KEY) in their metadata so a host can keep them out
+/// `REPEAT_GUARD_METADATA_KEY` in their metadata so a host can keep them out
 /// of failure accounting.
 ///
 /// Polling/wait tools (per the [`RepeatExemption`]) are exempt from all three:
