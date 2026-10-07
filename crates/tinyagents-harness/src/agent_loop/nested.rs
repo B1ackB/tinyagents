@@ -502,6 +502,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             options,
             timeout_settings: self.tool_timeouts.clone(),
             level,
+            nested_state: Default::default(),
         };
         let execution = futures::FutureExt::map(
             self.middleware
