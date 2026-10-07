@@ -220,3 +220,34 @@ async fn journal_sink_handles_multibyte_utf8_spanning_window_boundary() {
         "no pad induced a torn multi-byte boundary"
     );
 }
+
+#[tokio::test]
+async fn a_status_store_over_any_store_reads_back_what_it_wrote() {
+    // A host's own store, injected as a trait object rather than a FileStore.
+    let kv: Arc<dyn Store> = Arc::new(crate::store::InMemoryStore::new());
+    let store = FileStatusStore::over(kv.clone());
+    let run_id = RunId::new("run.host-store");
+    let mut status = HarnessRunStatus::new(run_id.clone(), ComponentId::new("model"))
+        .with_thread(ThreadId::new("thread-1"));
+    status.mark_running(HarnessPhase::Model);
+    store.put_status(status).await.unwrap();
+    let read = store
+        .get_status(run_id.as_str())
+        .await
+        .unwrap()
+        .expect("written");
+    assert_eq!(read.run_id.as_str(), "run.host-store");
+    // The record lives in the injected store, keyed as on disk.
+    assert_eq!(kv.list(STATUS_NS).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_journal_over_a_shared_append_store_handle_is_a_journal() {
+    let shared: Arc<dyn crate::store::AppendStore> =
+        Arc::new(crate::store::InMemoryAppendStore::new());
+    let journal = StoreEventJournal::new(shared.clone());
+    assert!(journal.read_from("run.x", 0).await.unwrap().is_empty());
+    shared.append("s", serde_json::json!(1)).await.unwrap();
+    assert_eq!(shared.read_window("s", 0, 5).await.unwrap().len(), 1);
+    assert_eq!(shared.len("s").await.unwrap(), 1);
+}

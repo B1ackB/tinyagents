@@ -13,6 +13,8 @@ use super::HarnessStatusStore;
 use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{ExecutionStatus, RunId};
+use std::sync::Arc;
+
 use crate::store::{FileStore, Store};
 
 /// KV namespace the durable per-run [`HarnessRunStatus`] snapshots live under
@@ -80,12 +82,19 @@ pub fn secrets_from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Ve
 /// Each snapshot is compact (ids, phase, counters, timestamps, error), never
 /// prompts or payloads.
 pub struct FileStatusStore {
-    kv: FileStore,
+    kv: Arc<dyn Store>,
 }
 
 impl FileStatusStore {
     /// Wrap a kv store as a durable status store.
     pub fn new(kv: FileStore) -> Self {
+        Self::over(Arc::new(kv))
+    }
+
+    /// Wrap any [`Store`] — a host's own database included — as a durable
+    /// status store. Records keep the [`FileStore`]-safe key encoding, so
+    /// they read back identically whichever store holds them.
+    pub fn over(kv: Arc<dyn Store>) -> Self {
         Self { kv }
     }
 
