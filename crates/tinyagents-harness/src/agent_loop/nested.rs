@@ -508,21 +508,22 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         slot: &mut RefusalSlot<'_>,
     ) -> Result<tinytools::ToolResult> {
         let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
-        let (dispatch, call, mut budget) = match self.admit_nested(state, ctx, parent, level, call).await {
-            Ok(admitted) => admitted,
-            Err(error) => {
-                tracing::debug!(
-                    target: "tinyagents::nested_tools",
-                    parent = %parent,
-                    call_id = %call_id,
-                    tool = name,
-                    %error,
-                    "[nested_tools] nested call refused at admission"
-                );
-                slot.keep();
-                return Err(error);
-            }
-        };
+        let (dispatch, call, mut budget) =
+            match self.admit_nested(state, ctx, parent, level, call).await {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "tinyagents::nested_tools",
+                        parent = %parent,
+                        call_id = %call_id,
+                        tool = name,
+                        %error,
+                        "[nested_tools] nested call refused at admission"
+                    );
+                    slot.keep();
+                    return Err(error);
+                }
+            };
         // Admitted: the call no longer counts as a refusal-in-flight.
         slot.release();
 

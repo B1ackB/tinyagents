@@ -1204,6 +1204,198 @@ async fn each_nested_call_gets_its_own_effect_ledger_row() {
     assert_eq!(rows["p1/1"], crate::tool::ToolEffectStatus::Completed);
 }
 
+/// Fails the `started` write of every nested call (id with a `/`).
+struct FailingNestedLedger;
+
+#[async_trait]
+impl crate::tool::ToolEffectLedger for FailingNestedLedger {
+    async fn started(&self, start: crate::tool::ToolEffectStart) -> Result<()> {
+        if start.call_id.as_str().contains('/') {
+            return Err(crate::error::TinyAgentsError::ToolFailed(
+                "ledger write failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+    async fn settled(&self, _settle: crate::tool::ToolEffectSettle) -> Result<()> {
+        Ok(())
+    }
+    async fn unresolved(&self, _run_id: &str) -> Result<Vec<crate::tool::ToolEffect>> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn a_nested_ledger_write_failure_frees_the_budget_and_refusal_slots() {
+    // Cap = parent + one nested call, and ten attempts: if a failed ledger
+    // write kept its budget slot or spent a refusal slot, later attempts would
+    // report a budget or refusal-cap error instead of the ledger error.
+    let script: Vec<(&'static str, Value)> = (0..10).map(|_| ("leaf", json!({}))).collect();
+    let caller = Caller::new("caller", script);
+    let outcomes = caller.outcomes();
+    let leaf = Leaf::new("leaf");
+    let mut harness = harness_with(
+        vec![parent_call("p1", "caller")],
+        enabled().with_max_tool_calls(2),
+    );
+    harness.register_tool(leaf.clone());
+    harness.register_tool(Arc::new(caller));
+
+    let recorder = EventRecorder::new();
+    let ctx = RunContext::new(RunConfig::new("nested"), ())
+        .with_events(recorder.sink())
+        .with_tool_effect_ledger(Arc::new(FailingNestedLedger))
+        .with_tool_effect_ledger_failure(crate::tool::LedgerFailure::Abort);
+    harness
+        .invoke_in_context(&(), ctx, vec![Message::user("go")])
+        .await
+        .unwrap();
+
+    let outcomes = outcomes.lock().unwrap();
+    assert_eq!(outcomes.len(), 10);
+    for outcome in outcomes.iter() {
+        let error = outcome.as_ref().expect_err("ledger write fails");
+        assert!(error.contains("ledger write failed"), "{error}");
+    }
+    assert_eq!(leaf.runs(), 0);
+    let failed = recorder
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolFailed {
+                    parent_call_id: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(failed, 10, "each started nested call gets a terminal event");
+}
+
+/// Counts how many of its calls overlap.
+struct Overlap {
+    name: &'static str,
+    safe: bool,
+    now: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl Overlap {
+    fn new(name: &'static str, safe: bool) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            safe,
+            now: Default::default(),
+            peak: Default::default(),
+        })
+    }
+    fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl Tool for Overlap {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "tracks overlap"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn policy(&self) -> ToolPolicy {
+        ToolPolicy::read_only()
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        self.safe
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.now.fetch_add(1, SeqCst) + 1;
+        self.peak.fetch_max(now, SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        self.now.fetch_sub(1, SeqCst);
+        Ok(ToolResult::success("overlap-out"))
+    }
+}
+
+/// Makes `count` concurrent nested calls to `target`.
+struct FanTo {
+    target: &'static str,
+    count: usize,
+    outcomes: Arc<Mutex<Vec<Outcome>>>,
+}
+
+#[async_trait]
+impl Tool for FanTo {
+    fn name(&self) -> &str {
+        "fan_to"
+    }
+    fn description(&self) -> &str {
+        "fans out to one tool"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let harness = harness_extension(context);
+        let calls = (0..self.count).map(|_| harness.call_tool(self.target, json!({})));
+        let results = futures::future::join_all(calls).await;
+        self.outcomes
+            .lock()
+            .unwrap()
+            .extend(results.into_iter().map(|r| r.map_err(|e| e.to_string())));
+        Ok(ToolResult::success("fan-out"))
+    }
+}
+
+async fn fan_out_to(target: Arc<Overlap>, count: usize) -> Vec<Outcome> {
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = harness_with(vec![parent_call("p1", "fan_to")], enabled());
+    harness.register_tool(Arc::new(FanTo {
+        target: target.name,
+        count,
+        outcomes: Arc::clone(&outcomes),
+    }));
+    harness.register_tool(target);
+    run(&harness, &EventRecorder::new()).await.unwrap();
+    let outcomes = outcomes.lock().unwrap().clone();
+    outcomes
+}
+
+#[tokio::test]
+async fn concurrency_unsafe_nested_tools_do_not_overlap() {
+    let target = Overlap::new("serial_tool", false);
+    let outcomes = fan_out_to(Arc::clone(&target), 4).await;
+    assert!(outcomes.iter().all(|o| o.is_ok()), "{outcomes:?}");
+    assert_eq!(target.peak(), 1, "an unsafe tool never overlaps itself");
+}
+
+#[tokio::test]
+async fn concurrency_safe_nested_tools_may_overlap_and_are_not_spuriously_refused() {
+    // Twelve valid calls in flight at once, more than the refusal cap of
+    // eight: none was refused, so none may be.
+    let target = Overlap::new("parallel_tool", true);
+    let outcomes = fan_out_to(Arc::clone(&target), 12).await;
+    assert!(outcomes.iter().all(|o| o.is_ok()), "{outcomes:?}");
+    assert!(target.peak() > 1, "safe tools run concurrently");
+}
+
 // ── In-flight nested calls dropped with their parent ────────────────────────
 
 /// Sleeps far longer than any test waits, with no timeout of its own.
