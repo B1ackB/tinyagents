@@ -163,10 +163,6 @@ impl InMemoryTranscriptLocator {
             .find(|(known, _, _)| known == &session_stem(session))
             .map(|(_, _, history)| history.clone());
         if let Some(predecessor) = &predecessor {
-            // Record the predecessor session as the parent so compaction chains stay connected.
-            if let Some(parent_id) = predecessor.session_id() {
-                meta.parent_session_id = Some(parent_id);
-            }
             predecessor.seal();
         }
         match self.open_stem_locked(&stem, meta) {
