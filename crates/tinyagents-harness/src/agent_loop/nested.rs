@@ -175,7 +175,8 @@ impl NestedState {
     }
 
     /// Gives back a slot taken by [`Self::reserve_refusal`] for a call that
-    /// was admitted (or abandoned) rather than refused.
+    /// was admitted (or abandoned) rather than refused. Used by
+    /// [`RefusalSlot`]'s drop.
     fn refund_refusal(&self) {
         let mut current = self.refused.load(Ordering::SeqCst);
         while current > 0 {
@@ -188,6 +189,46 @@ impl NestedState {
                 Ok(_) => return,
                 Err(actual) => current = actual,
             }
+        }
+    }
+}
+
+/// A refusal slot held while a nested call's admission is in flight.
+///
+/// Dropping it refunds the slot, so a call dropped mid-admission (its parent
+/// timed out or was cancelled, which drops the whole in-flight set) cannot
+/// leak it; [`Self::keep`] is called once the call is classified as refused.
+struct RefusalSlot<'a> {
+    shared: &'a NestedState,
+    armed: bool,
+}
+
+impl RefusalSlot<'_> {
+    /// The call was refused: the slot stays spent.
+    fn keep(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RefusalSlot<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.shared.refund_refusal();
+        }
+    }
+}
+
+/// A `max_tool_calls` slot reserved for a nested call whose admission is in
+/// flight; released on drop unless the call was admitted.
+struct BudgetSlot<'a> {
+    limits: &'a crate::limits::LimitTracker,
+    armed: bool,
+}
+
+impl Drop for BudgetSlot<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.limits.release_nested_tool_call();
         }
     }
 }
@@ -273,6 +314,10 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
                 self.parent
             ))))
         } else {
+            let mut slot = RefusalSlot {
+                shared: self.shared,
+                armed: true,
+            };
             let run = self.harness.run_nested_tool(
                 self.state,
                 self.ctx,
@@ -285,15 +330,12 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             tokio::pin!(run);
             tokio::select! {
                 (refused, outcome) = &mut run => {
-                    if !refused {
-                        self.shared.refund_refusal();
+                    if refused {
+                        slot.keep();
                     }
                     Some(outcome)
                 }
-                () = reply.cancellation() => {
-                    self.shared.refund_refusal();
-                    None
-                }
+                () = reply.cancellation() => None,
             }
         };
         let (status, error) = match &outcome {
@@ -494,7 +536,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         {
             guard.settle();
             ctx.limits.release_nested_tool_call();
-            return (true, Err(self.fail_nested(ctx, &prepared, parent, error)));
+            // Not an admission refusal: the refusal slot is refunded.
+            return (false, Err(self.fail_nested(ctx, &prepared, parent, error)));
         }
         let base = ToolCallBase {
             harness: self,
@@ -641,14 +684,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             });
             return Err(error);
         }
-        match self.admit_nested_tool(state, ctx, parent, call).await {
-            Ok(admitted) => Ok(admitted),
-            Err(error) => {
-                // A refused call never ran: give the slot back.
-                ctx.limits.release_nested_tool_call();
-                Err(error)
-            }
-        }
+        // Released on a refusal and when this future is dropped mid-admission;
+        // kept once the call is admitted, because it then runs.
+        let mut slot = BudgetSlot {
+            limits: &ctx.limits,
+            armed: true,
+        };
+        let admitted = self.admit_nested_tool(state, ctx, parent, call).await?;
+        slot.armed = false;
+        Ok(admitted)
     }
 
     /// Lookup, argument preparation and validation, the approval refusal,
