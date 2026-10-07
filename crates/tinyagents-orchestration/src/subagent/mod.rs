@@ -16,6 +16,9 @@ mod executor;
 mod invocation;
 mod persistence;
 mod planner;
+mod policy;
+mod result_policy;
+mod role;
 mod types;
 
 pub use admission::{SpawnAdmission, SpawnPolicy, SpawnRejection, SpawnReservation};
@@ -39,9 +42,17 @@ pub use invocation::{
     SubAgentSession, SubAgentTool, register_subagent_job_tools,
 };
 pub use persistence::SubagentPersistence;
+pub use policy::{SubAgentBudget, SubAgentPolicy};
+pub use result_policy::{
+    AppliedResult, ArtifactStore, ResultOverflow, ResultPolicy, truncate_head_tail,
+};
+pub use role::{
+    SUBAGENT_JOBS_TOOL, SUBAGENT_MESSAGE_TOOL, SubagentRole, is_delegation_tool, restrict_tools,
+    subagent_framing,
+};
 pub use planner::SubagentPlanner;
 pub use types::{
-    ArtifactReference, PersistedSubagentPause, PreparedSubagent, SubagentError, SubagentExecution,
+    ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause, PreparedSubagent, SubagentError, SubagentExecution,
     SubagentIncomplete, SubagentOutcome, SubagentPause, SubagentPausePersistenceDisposition,
     SubagentPersistenceDisposition, SubagentRequest, SubagentRequestParts, SubagentResume,
     SubagentRunResult, SubagentStatus, SubagentTaskKey, SubagentTerminalPersistenceDisposition,

@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use tinyagents_harness::{CancellationToken, context::RunContext};
 use tinyagents_runtime::ToolSnapshot;
 use tinyinference_llm::{message::Message, usage::UsageTotals};
+
+use super::{ResultPolicy, SubAgentPolicy, SubagentRole};
 
 /// A host-provided request to run a task through a subagent.
 ///
@@ -233,6 +236,87 @@ pub struct PreparedSubagent<C = ()> {
     pub tools: ToolSnapshot,
     /// Explicit child run context, including lineage and host context data.
     pub run_context: RunContext<C>,
+    /// Whether the child may delegate. [`SubagentRole::Leaf`] makes the driver
+    /// strip the delegation tools from [`Self::tools`].
+    pub role: SubagentRole,
+    /// The tool set the child inherited. When set, the driver intersects
+    /// [`Self::tools`] with it so a child can never widen what it inherited.
+    pub tool_ceiling: Option<ToolSnapshot>,
+    /// Names of the host's own [`SubAgentTool`](super::SubAgentTool)s, which a
+    /// leaf must not keep (the crate cannot know custom tool names).
+    pub delegation_tools: Vec<String>,
+    /// Timeout, retry and budget the driver applies around the execution.
+    pub policy: SubAgentPolicy,
+    /// How the driver trims and checks the child's final output.
+    pub result_policy: ResultPolicy,
+    /// Mints a fresh run context for each retry attempt (a context is consumed
+    /// by its run). Without it the driver cannot retry and runs one attempt.
+    pub retry_context: Option<AttemptContextFactory<C>>,
+}
+
+/// Builds the run context for retry attempt `n` (`1` is the first retry).
+pub type AttemptContextFactory<C> =
+    Arc<dyn Fn(u32) -> Result<RunContext<C>, SubagentError> + Send + Sync>;
+
+impl<C> PreparedSubagent<C> {
+    /// A plan with the default (unchanged-behaviour) role and policies.
+    pub fn new(
+        task_id: impl Into<String>,
+        agent_key: impl Into<String>,
+        input: Vec<Message>,
+        tools: ToolSnapshot,
+        run_context: RunContext<C>,
+    ) -> Self {
+        Self {
+            task_id: task_id.into(),
+            agent_key: agent_key.into(),
+            input,
+            tools,
+            run_context,
+            role: SubagentRole::default(),
+            tool_ceiling: None,
+            delegation_tools: Vec::new(),
+            policy: SubAgentPolicy::default(),
+            result_policy: ResultPolicy::default(),
+            retry_context: None,
+        }
+    }
+
+    /// Sets the delegation role.
+    pub fn with_role(mut self, role: SubagentRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Sets the inherited tool ceiling.
+    pub fn with_tool_ceiling(mut self, ceiling: ToolSnapshot) -> Self {
+        self.tool_ceiling = Some(ceiling);
+        self
+    }
+
+    /// Names the host's delegation tools for a leaf to drop.
+    pub fn with_delegation_tools(mut self, names: Vec<String>) -> Self {
+        self.delegation_tools = names;
+        self
+    }
+
+    /// Sets the timeout/retry/budget policy.
+    pub fn with_policy(mut self, policy: SubAgentPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Sets the result policy.
+    pub fn with_result_policy(mut self, policy: ResultPolicy) -> Self {
+        self.result_policy = policy;
+        self
+    }
+
+    /// Supplies the per-attempt context factory that enables retries.
+    pub fn with_retry_context(mut self, factory: AttemptContextFactory<C>) -> Self {
+        self.retry_context = Some(factory);
+        self
+    }
 }
 
 /// The one execution handed to a [`crate::subagent::SubagentExecutor`].
@@ -271,6 +355,43 @@ pub struct SubagentPause {
 pub struct SubagentIncomplete {
     /// A host-safe explanation for incomplete work.
     pub reason: String,
+    /// Typed cause, so consumers never parse `reason` (or the retired
+    /// `[SUBAGENT_INCOMPLETE]` text marker). Records written before this field
+    /// existed read as [`IncompleteKind::Unspecified`].
+    #[serde(default)]
+    pub kind: IncompleteKind,
+}
+
+impl SubagentIncomplete {
+    /// An incomplete result with an unspecified cause.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            kind: IncompleteKind::Unspecified,
+        }
+    }
+
+    /// An incomplete result with a typed cause.
+    pub fn with_kind(mut self, kind: IncompleteKind) -> Self {
+        self.kind = kind;
+        self
+    }
+}
+
+/// Why a subagent run ended incomplete.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IncompleteKind {
+    /// No typed cause was recorded.
+    #[default]
+    Unspecified,
+    /// The policy timeout elapsed; the child was cancelled.
+    Timeout,
+    /// A policy budget (calls, tokens) was exceeded.
+    BudgetExceeded,
+    /// The child kept failing transiently and the retry policy gave up.
+    RetriesExhausted,
 }
 
 /// The visible status of one subagent run.
@@ -368,6 +489,11 @@ pub struct SubagentOutcome {
     pub usage: UsageTotals,
     /// Host-owned artifacts represented by neutral references.
     pub artifacts: Vec<ArtifactReference>,
+    /// Why the output failed the [`ResultPolicy::schema`], when one was set
+    /// and the output did not satisfy it. Informational: the status is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_error: Option<String>,
 }
 
 impl SubagentOutcome {
@@ -381,6 +507,16 @@ impl SubagentOutcome {
             status: SubagentStatus::Cancelled,
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
+            schema_error: None,
+        }
+    }
+
+    /// The truthful empty result for a run that ended without a complete
+    /// answer, with its typed cause.
+    pub fn incomplete(task_id: impl Into<String>, incomplete: SubagentIncomplete) -> Self {
+        Self {
+            status: SubagentStatus::Incomplete(incomplete),
+            ..Self::cancelled(task_id)
         }
     }
 
@@ -456,6 +592,18 @@ pub enum SubagentError {
         /// Task id returned by the planner or executor.
         actual: String,
     },
+    /// The executor failed in a way worth retrying (a transient provider or
+    /// transport failure). `tools_ran` says whether the attempt had already
+    /// executed tools: the driver retries such a failure only when the
+    /// [`SubAgentPolicy`] allows retry after tool calls. Adapters classify
+    /// their errors into this variant; an unclassified failure is
+    /// [`Self::Execution`] and is never retried.
+    Transient {
+        /// Host-safe description of the failure.
+        message: String,
+        /// Whether the failed attempt had executed any tool.
+        tools_ran: bool,
+    },
     /// Cooperative cancellation interrupted the lifecycle.
     Cancelled,
     /// The spawn policy refused to admit this lifecycle; nothing was planned
@@ -477,6 +625,9 @@ impl std::fmt::Display for SubagentError {
                 f,
                 "subagent host seam returned task id {actual:?}, expected {expected:?}"
             ),
+            Self::Transient { message, .. } => {
+                write!(f, "subagent execution failed transiently: {message}")
+            }
             Self::Cancelled => write!(f, "subagent execution was cancelled"),
             Self::SpawnRejected(rejection) => {
                 write!(f, "subagent spawn was not admitted: {rejection}")
