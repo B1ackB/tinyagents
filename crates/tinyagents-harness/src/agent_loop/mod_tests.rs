@@ -658,7 +658,7 @@ impl ToolMiddleware<()> for StampToolWrap {
     }
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<()>,
+        ctx: &RunContext<()>,
         state: &(),
         call: ToolCall,
         next: ToolHandler<'_, (), ()>,
@@ -682,7 +682,7 @@ impl ToolMiddleware<()> for UnboundToolWrap {
     }
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<()>,
+        ctx: &RunContext<()>,
         state: &(),
         mut call: ToolCall,
         next: ToolHandler<'_, (), ()>,
@@ -6016,7 +6016,7 @@ async fn parallel_tool_results_keep_original_call_order_and_ids() {
 }
 
 #[tokio::test]
-async fn tool_wrap_middleware_forces_serial_execution() {
+async fn tool_wrap_middleware_no_longer_forces_serial_execution() {
     let mut harness: AgentHarness<()> = AgentHarness::new();
     harness.register_model(
         "mock",
@@ -6026,8 +6026,8 @@ async fn tool_wrap_middleware_forces_serial_execution() {
         ])),
     );
     let max_seen = probe_pair(&mut harness, (40, 40));
-    // A tool-wrap middleware holds `&mut RunContext` across each wrapped call,
-    // so the loop must fall back to serial execution.
+    // The wrap onion runs inside each concurrent call (`wrap_tool` takes a
+    // shared `&RunContext`), so a wrap does not force serial execution.
     harness.push_tool_middleware(Arc::new(StampToolWrap));
 
     let run = harness
@@ -6038,8 +6038,8 @@ async fn tool_wrap_middleware_forces_serial_execution() {
     assert_eq!(run.tool_calls, 2);
     assert_eq!(
         max_seen.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "wrapped tool calls must never overlap"
+        2,
+        "wrapped tool calls overlap like unwrapped ones"
     );
     // The wrap still fired around each call.
     assert_eq!(run.messages[2].text(), "[wrapped] alpha-out");

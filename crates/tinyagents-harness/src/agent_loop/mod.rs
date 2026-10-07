@@ -32,9 +32,9 @@
 //!    - if the assistant requested tools, execute them (enforcing the tool-call
 //!      cap, running `before_tool`/`after_tool`, emitting tool events) and
 //!      append the tool results, then continue. Multi-call turns run
-//!      concurrently when no tool-wrap middleware is registered — see the
+//!      concurrently when every tool-wrap middleware is `concurrent_safe` — see the
 //!      `tools` submodule for the dispatch rules, the semantics preserved in
-//!      each mode, and why tool-wrap middleware forces serial execution,
+//!      each mode, and how tool-wrap middleware runs inside each concurrent call,
 //!    - otherwise extract structured output when configured and break.
 //! 4. Run `after_agent` middleware and emit [`AgentEvent::RunCompleted`].
 //!
@@ -167,3 +167,7 @@ mod test;
 #[cfg(test)]
 #[path = "unknown_tool_tests.rs"]
 mod unknown_tool_test;
+
+#[cfg(test)]
+#[path = "wrap_concurrency_tests.rs"]
+mod wrap_concurrency_test;

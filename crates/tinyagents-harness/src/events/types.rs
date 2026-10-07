@@ -468,12 +468,22 @@ pub enum AgentEvent {
     MiddlewareStarted {
         /// Registered name of the middleware.
         name: String,
+        /// The tool call this layer wraps, set only by the tool-wrap onion.
+        /// Wrapped calls of one batch run concurrently, so their events
+        /// interleave; pair a `Started` with its `Completed` and attribute
+        /// both to a call by this id, never by event order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<CallId>,
     },
 
     /// A middleware hook finished executing.
     MiddlewareCompleted {
         /// Registered name of the middleware.
         name: String,
+        /// The tool call this layer wrapped; see
+        /// [`AgentEvent::MiddlewareStarted::call_id`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<CallId>,
     },
 
     /// A response-cache lookup served the model call from the local

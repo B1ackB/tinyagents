@@ -495,7 +495,7 @@ pub trait ToolBaseCall<State: Send + Sync, Ctx: Send + Sync>: Send + Sync {
     /// Invokes the wrapped tool with the (possibly middleware-mutated) `call`.
     fn call<'a>(
         &'a self,
-        ctx: &'a mut RunContext<Ctx>,
+        ctx: &'a RunContext<Ctx>,
         state: &'a State,
         call: ToolCall,
     ) -> BoxToolFuture<'a>;
@@ -698,12 +698,37 @@ pub trait ToolMiddleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync
     /// `MiddlewareStarted`/`MiddlewareCompleted` events.
     fn name(&self) -> &str;
 
+    /// Whether this wrap tolerates **overlapping** invocations: the calls of
+    /// one multi-call tool batch each run the whole wrap onion at the same
+    /// time, on a shared `&RunContext`.
+    ///
+    /// Defaults to `true`, because `wrap_tool` only receives `&RunContext` and
+    /// so can do no more than read it, emit events, request control, and use
+    /// interior-mutable handles it owns. Return `false` when the wrap holds
+    /// state that must see one call at a time (a non-reentrant lock held
+    /// across `next.run`, a strictly ordered audit log, a single-slot
+    /// resource): if *any* registered wrap returns `false`, the harness runs
+    /// every multi-call batch serially, in call order, exactly as before the
+    /// wrap onion became concurrent.
+    ///
+    /// In concurrent mode every `ToolStarted` event is emitted at admission,
+    /// before any wrap runs, so never infer the "current call" from event
+    /// order; use the `call` argument and the `call_id` on the wrap's
+    /// `MiddlewareStarted`/`MiddlewareCompleted` events.
+    fn concurrent_safe(&self) -> bool {
+        true
+    }
+
     /// Wraps the inner tool pipeline. Call `next.run(ctx, state, call)` to
     /// proceed (zero or more times), or return a [`MiddlewareToolOutcome`]
     /// without calling it to short-circuit.
+    ///
+    /// `ctx` is shared (`&RunContext`) because the calls of a batch may run
+    /// this method concurrently; see [`Self::concurrent_safe`]. Events
+    /// (`ctx.emit`) and control requests (`ctx.request_control`) take `&self`.
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
         next: ToolHandler<'_, State, Ctx>,

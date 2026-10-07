@@ -39,6 +39,7 @@ use std::sync::Arc;
 use crate::context::{MiddlewareControl, RunContext};
 use crate::error::{Result, TinyAgentsError};
 use crate::events::AgentEvent;
+use crate::ids::CallId;
 use tinyinference_llm::model::{ModelDelta, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::{ToolCall, ToolDelta};
 use tinytools::ToolResult;
@@ -71,9 +72,15 @@ macro_rules! run_stack_hook {
                 continue;
             }
             let name = $mw.name().to_string();
-            $ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            $ctx.emit(AgentEvent::MiddlewareStarted {
+                name: name.clone(),
+                call_id: None,
+            });
             let result = $call.await;
-            $ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            $ctx.emit(AgentEvent::MiddlewareCompleted {
+                name: name.clone(),
+                call_id: None,
+            });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -213,6 +220,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
         self.tool_middlewares.len()
     }
 
+    /// Whether every registered [`ToolMiddleware`] tolerates overlapping
+    /// invocations ([`ToolMiddleware::concurrent_safe`]); vacuously `true`
+    /// when none is registered.
+    pub fn tool_middleware_concurrent_safe(&self) -> bool {
+        self.tool_middlewares.iter().all(|mw| mw.concurrent_safe())
+    }
+
     /// Returns the number of registered middleware.
     pub fn len(&self) -> usize {
         self.middlewares.len()
@@ -295,9 +309,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
             }
             ctx.model_profile = resolve_profile(provider, ctx, request).await?;
             let name = mw.name().to_string();
-            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareStarted {
+                name: name.clone(),
+                call_id: None,
+            });
             let result = mw.before_model_control(ctx, state, request).await;
-            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareCompleted {
+                name: name.clone(),
+                call_id: None,
+            });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -381,9 +401,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
                 continue;
             }
             let name = mw.name().to_string();
-            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareStarted {
+                name: name.clone(),
+                call_id: None,
+            });
             let result = mw.before_tool_control(ctx, state, call).await;
-            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareCompleted {
+                name: name.clone(),
+                call_id: None,
+            });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -474,10 +500,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
         for mw in self.middlewares.iter() {
             ctx.emit(AgentEvent::MiddlewareStarted {
                 name: mw.name().to_string(),
+                call_id: None,
             });
             let _ = mw.on_error(ctx, error).await;
             ctx.emit(AgentEvent::MiddlewareCompleted {
                 name: mw.name().to_string(),
+                call_id: None,
             });
         }
         Ok(())
@@ -533,7 +561,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
     /// The tool-wrap counterpart of [`Self::run_wrapped_model`].
     pub async fn run_wrapped_tool(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
         base: &dyn ToolBaseCall<State, Ctx>,
@@ -570,9 +598,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHandler<'_, State, Ctx> {
                     status,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                ctx.emit(AgentEvent::MiddlewareStarted {
+                    name: name.clone(),
+                    call_id: None,
+                });
                 let outcome = head.wrap_agent(ctx, state, request, run, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted {
+                    name,
+                    call_id: None,
+                });
                 outcome
             }
             None => base.call(ctx, state, request, run, status).await,
@@ -600,12 +634,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelHandler<'_, State, Ctx> {
                     base: self.base,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                ctx.emit(AgentEvent::MiddlewareStarted {
+                    name: name.clone(),
+                    call_id: None,
+                });
                 // Emit `Completed` whether the wrap layer succeeds or errors, so
                 // a failing layer never leaves a dangling `Started` in the event
                 // stream (the onion's balance invariant).
                 let outcome = head.wrap_model(ctx, state, request, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted {
+                    name,
+                    call_id: None,
+                });
                 outcome
             }
             None => Ok(MiddlewareModelOutcome::Response(
@@ -620,7 +660,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
     /// [`ModelHandler::run`].
     pub async fn run(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
     ) -> Result<MiddlewareToolOutcome> {
@@ -631,11 +671,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
                     base: self.base,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                // Tagged with the call so consumers can correlate under
+                // concurrency, where events of different calls interleave.
+                let call_id = Some(CallId::new(call.id.clone()));
+                ctx.emit(AgentEvent::MiddlewareStarted {
+                    name: name.clone(),
+                    call_id: call_id.clone(),
+                });
                 // Balance `Started` with `Completed` even when the wrap layer
                 // errors (see `ModelHandler::run`).
                 let outcome = head.wrap_tool(ctx, state, call, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id });
                 outcome
             }
             None => Ok(MiddlewareToolOutcome::Result(
