@@ -128,6 +128,44 @@ async fn child_run_metadata_names_the_parent_call_and_job() {
 }
 
 #[tokio::test]
+async fn child_run_metadata_preserves_non_object_parent_metadata() {
+    let seen = Arc::new(Mutex::new(None));
+    let mut harness = AgentHarness::new();
+    harness.register_model("child", Arc::new(MockModel::constant("done")));
+    harness.push_middleware(Arc::new(MetadataProbe(seen.clone())));
+    let tool = SubAgentTool::new(
+        Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
+        ChildDataPolicy::new(|_: &()| ()),
+    );
+    let jobs = tool.job_registry().clone();
+    let parent = RunContext::new(
+        RunConfig::new("parent").with_metadata(json!(["keep", 1])),
+        (),
+    );
+    let result = ToolDispatch::<(), ()>::execute(
+        &tool,
+        &(),
+        CallId::new("call-array"),
+        json!({"input": "work"}),
+        tinytools::ToolCallOptions::default(),
+        &parent,
+    )
+    .await
+    .unwrap();
+    let queued = json_of(&result);
+    wait_for_terminal(
+        &jobs,
+        queued["job_id"].as_str().unwrap(),
+        parent.instance_id(),
+    )
+    .await;
+
+    let metadata = seen.lock().unwrap().clone().expect("child ran");
+    assert_eq!(metadata["value"], json!(["keep", 1]));
+    assert_eq!(metadata["parent_tool_call_id"], "call-array");
+}
+
+#[tokio::test]
 async fn tool_call_id_is_omitted_when_the_caller_has_none() {
     let tool = tool();
     let parent = RunContext::new(RunConfig::new("parent"), ());

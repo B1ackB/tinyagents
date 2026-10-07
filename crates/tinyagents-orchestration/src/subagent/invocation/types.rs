@@ -273,6 +273,9 @@ pub(crate) struct SubAgentJobEntry {
     pub(crate) cancellation: Option<CancellationToken>,
     /// Message `request_id`s already applied, so a retried message is queued once.
     pub(crate) message_requests: RecentRequestIds,
+    /// Whether cancellation was requested while the child was still running.
+    /// The job remains non-terminal until the child reports its result.
+    pub(crate) cancellation_requested: bool,
 }
 
 /// Error returned by job lookup or live-message delivery.

@@ -11,6 +11,7 @@ use super::{
     SubAgentMessageTool, SubAgentTool,
 };
 use tinyagents_harness::context::{RunConfig, RunContext};
+use tinyagents_harness::error::TinyAgentsError;
 use tinyagents_harness::ids::new_call_id;
 use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
@@ -253,6 +254,7 @@ async fn terminal_jobs_never_return_to_running() {
     let jobs = SubAgentJobRegistry::new();
     let (job_id, _steering) = jobs.create("worker", 1);
     jobs.cancel_owned(job_id.as_str(), 1).expect("cancel");
+    jobs.mark_result(&job_id, Err(TinyAgentsError::Cancelled));
     jobs.mark_running(&job_id);
     assert_eq!(
         jobs.get(job_id.as_str()).unwrap().status,
@@ -267,6 +269,9 @@ async fn settled_jobs_release_their_cancellation_token() {
     assert!(jobs.inner.read().unwrap()[&job_id].cancellation.is_some());
     jobs.cancel_owned(job_id.as_str(), 1).expect("cancel");
     assert!(jobs.inner.read().unwrap()[&job_id].cancellation.is_none());
+    assert!(!jobs.inner.read().unwrap()[&job_id].job.status.is_terminal());
+    jobs.mark_result(&job_id, Err(TinyAgentsError::Cancelled));
+    assert!(jobs.inner.read().unwrap()[&job_id].job.status.is_terminal());
 
     let (aborted, _steering) = jobs.create("worker", 1);
     jobs.mark_aborted(&aborted, true);

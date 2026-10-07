@@ -90,6 +90,7 @@ impl SubAgentJobRegistry {
             steering: steering.clone(),
             cancellation: Some(cancellation),
             message_requests: RecentRequestIds::default(),
+            cancellation_requested: false,
         };
         self.write().insert(id.clone(), entry);
         (id, steering)
@@ -122,10 +123,16 @@ impl SubAgentJobRegistry {
             return;
         }
         entry.cancellation = None;
+        let cancellation_requested = entry.cancellation_requested;
         match result {
             Ok(run) => {
-                entry.job.status = SubAgentJobStatus::Completed;
-                entry.job.output = run.text();
+                if cancellation_requested {
+                    entry.job.status = SubAgentJobStatus::Cancelled;
+                    entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
+                } else {
+                    entry.job.status = SubAgentJobStatus::Completed;
+                    entry.job.output = run.text();
+                }
             }
             Err(TinyAgentsError::Cancelled) => {
                 entry.job.status = SubAgentJobStatus::Cancelled;
@@ -183,9 +190,11 @@ impl SubAgentJobRegistry {
         if let Some(token) = entry.cancellation.take() {
             token.cancel();
         }
-        entry.job.status = SubAgentJobStatus::Cancelled;
-        entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
-        Ok(entry.job.clone())
+        entry.cancellation_requested = true;
+        let mut snapshot = entry.job.clone();
+        snapshot.error =
+            Some("cancellation requested; job will be cancelled when the child unwinds".to_owned());
+        Ok(snapshot)
     }
 
     /// Returns a snapshot for `job_id` when it belongs to `owner`.

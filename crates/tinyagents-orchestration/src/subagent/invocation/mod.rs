@@ -399,8 +399,9 @@ fn stamp_link_metadata(
     job_id: &str,
     tool_call_id: Option<&str>,
 ) {
-    if metadata.is_null() {
-        *metadata = json!({});
+    if !metadata.is_object() {
+        let original = std::mem::take(metadata);
+        *metadata = json!({"value": original});
     }
     if let Value::Object(map) = metadata {
         map.insert("subagent_run_id".into(), json!(subagent_run_id));
