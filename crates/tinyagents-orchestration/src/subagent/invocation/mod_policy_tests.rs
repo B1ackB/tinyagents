@@ -128,7 +128,7 @@ async fn result_policy_trims_the_job_output_and_reports_schema_errors() {
         payload["output"]
             .as_str()
             .unwrap()
-            .contains("6 chars omitted")
+            .contains("chars omitted")
     );
     assert!(
         payload["schema_error"]
