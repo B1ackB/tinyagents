@@ -938,13 +938,22 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         larger_than: Option<u64>,
     ) -> Option<(String, Arc<dyn ChatModel<State>>)> {
         let required = request.required_capabilities.as_ref();
+        // A steered model outside the chain falls back through the whole
+        // chain (the original primary's), not from a position it lacks.
+        let mut from_chain_head = self.fallback_starts_at_chain_head(ctx, cursor);
         let mut cursor = cursor.to_owned();
         loop {
             let next = self
                 .policy
                 .fallback
                 .as_ref()
-                .and_then(|fallback| fallback.next_after(&cursor))
+                .and_then(|fallback| {
+                    if std::mem::take(&mut from_chain_head) {
+                        fallback.models.first().map(String::as_str)
+                    } else {
+                        fallback.next_after(&cursor)
+                    }
+                })
                 .map(str::to_owned)
                 .filter(|name| !visited.contains(name));
             let (name, next_model) =
