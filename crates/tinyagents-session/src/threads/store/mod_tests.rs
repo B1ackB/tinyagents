@@ -650,3 +650,39 @@ fn store_handles_labels_and_inference() {
 
 #[path = "mod_more_tests.rs"]
 mod more;
+
+#[test]
+fn working_dir_binds_survives_upserts_and_clears() {
+    let (_temp, store) = make_store();
+    let created_at = "2026-10-06T12:00:00Z".to_string();
+    let thread = store
+        .ensure_thread(CreateConversationThread {
+            parent_thread_id: None,
+            id: "workdir-thread".to_string(),
+            title: "Conversation".to_string(),
+            created_at: created_at.clone(),
+            labels: None,
+            personality_id: None,
+            working_dir: Some("/projects/alpha".to_string()),
+        })
+        .expect("ensure thread");
+    assert_eq!(thread.working_dir.as_deref(), Some("/projects/alpha"));
+
+    // A later upsert without a working dir keeps the bound one.
+    let renamed = store
+        .update_thread_title("workdir-thread", "Renamed", &created_at)
+        .expect("rename");
+    assert_eq!(renamed.working_dir.as_deref(), Some("/projects/alpha"));
+
+    let moved = store
+        .update_thread_working_dir("workdir-thread", Some("/projects/beta".into()), &created_at)
+        .expect("rebind");
+    assert_eq!(moved.working_dir.as_deref(), Some("/projects/beta"));
+
+    let cleared = store
+        .update_thread_working_dir("workdir-thread", None, &created_at)
+        .expect("clear");
+    assert_eq!(cleared.working_dir, None);
+    let listed = store.list_threads().expect("list");
+    assert_eq!(listed[0].working_dir, None);
+}
