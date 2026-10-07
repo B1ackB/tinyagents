@@ -45,6 +45,7 @@ struct InMemoryTranscriptState {
     /// Display-only partials of interrupted turns, with their request ids.
     /// Never part of [`TranscriptHistory::messages`].
     partials: Vec<(TranscriptPartial, Option<String>)>,
+    sealed: bool,
 }
 
 /// Rows as the file backend returns them: a legacy string row is lifted into
@@ -70,6 +71,7 @@ impl InMemoryTranscriptHistory {
                 tools: None,
                 written: false,
                 partials: Vec::new(),
+                sealed: false,
             }),
         }
     }
@@ -94,6 +96,10 @@ impl InMemoryTranscriptHistory {
     fn mark_written(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).written = true;
     }
+
+    pub(crate) fn seal(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = true;
+    }
 }
 
 impl TranscriptRead for InMemoryTranscriptHistory {
@@ -117,6 +123,7 @@ impl TranscriptRead for InMemoryTranscriptHistory {
 impl TranscriptHistory for InMemoryTranscriptHistory {
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages = normalized_rows(turn.next);
         state.meta = turn.meta.clone();
         // `None` means this logical turn does not replace the last durable
@@ -137,6 +144,7 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         // One lock for both halves, so the turn and its partial land as one
         // transition, as the trait asks.
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages = normalized_rows(turn.next);
         state.meta = turn.meta.clone();
         if let Some(tools) = turn.tools {
@@ -159,26 +167,24 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
     }
 
     fn append(&self, message: TranscriptMessage) -> anyhow::Result<()> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .messages
-            .push(message.normalized());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
+        state.messages.push(message.normalized());
         self.mark_written();
         Ok(())
     }
 
     fn replace(&self, messages: &[TranscriptMessage]) -> anyhow::Result<()> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .messages = normalized_rows(messages);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
+        state.messages = normalized_rows(messages);
         self.mark_written();
         Ok(())
     }
 
     fn clear(&self) -> anyhow::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         if !state.written {
             return Ok(());
         }

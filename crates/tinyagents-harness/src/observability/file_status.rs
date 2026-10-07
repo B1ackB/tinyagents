@@ -153,6 +153,19 @@ impl FileStatusStore {
 impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
         let key = status_key(status.run_id.as_str());
+        if let Some(existing) = self.kv.get(STATUS_NS, &key).await? {
+            if let Ok(existing) = serde_json::from_value::<HarnessRunStatus>(existing.clone())
+                && existing.run_id != status.run_id
+            {
+                let legacy_key = status_key(existing.run_id.as_str());
+                if legacy_key != key {
+                    self.kv
+                        .put(STATUS_NS, &legacy_key, serde_json::to_value(existing)?)
+                        .await?;
+                    self.kv.delete(STATUS_NS, &key).await?;
+                }
+            }
+        }
         let value = serde_json::to_value(&status)?;
         self.kv.put(STATUS_NS, &key, value).await
     }

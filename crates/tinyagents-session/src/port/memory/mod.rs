@@ -148,7 +148,18 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         meta.session_id = Some(successor.session_id());
         meta.parent_session_id = successor.parent_session_id();
         match self.open_session(&successor, meta) {
-            Ok(handle) => Ok((successor, handle)),
+            Ok(handle) => {
+                if let Some((_, predecessor)) = self
+                    .stems
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .find(|(known, _)| known == &session_stem(session))
+                {
+                    predecessor.seal();
+                }
+                Ok((successor, handle))
+            }
             Err(error) => {
                 reservations.remove(&stem);
                 Err(error)
