@@ -160,9 +160,10 @@ fn an_untracked_state_changing_success_stops_block_predictions() {
     for _ in 0..4 {
         monitor.record_call("read", "x", "same", true);
     }
-    assert!(matches!(monitor.pre_call("read", "x"), CallGate::Block(_)));
+    // A read-only untracked success keeps the prediction.
     monitor.note_untracked_success(true);
     assert!(matches!(monitor.pre_call("read", "x"), CallGate::Block(_)));
+    // A state-changing one discards it.
     monitor.note_untracked_success(false);
     assert!(matches!(monitor.pre_call("read", "x"), CallGate::Allow));
 }
