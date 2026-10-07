@@ -262,14 +262,12 @@ fn find_explicit_spawning_call(
         if !(payload.contains_key("job_id") && payload.contains_key("subagent_run_id")) {
             return false;
         }
-        if let Some(recorded) = payload
-            .get("parent_tool_call_id")
-            .and_then(serde_json::Value::as_str)
-            && recorded != call_id
+        if let Some(recorded) = payload.get("parent_tool_call_id")
+            && recorded.as_str() != Some(call_id)
         {
             return false;
         }
-        ["subagent_run_id", "job_id"].iter().any(|key| {
+        ["subagent_run_id", "job_id"].iter().all(|key| {
             payload
                 .get(*key)
                 .and_then(serde_json::Value::as_str)

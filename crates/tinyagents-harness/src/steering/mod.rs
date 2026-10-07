@@ -454,6 +454,9 @@ impl RecentRequestIds {
     /// it was already remembered (a duplicate). The oldest id is forgotten once
     /// the memory is full.
     pub fn claim(&mut self, request_id: &str) -> bool {
+        if request_id.len() > Self::MAX_REQUEST_ID_BYTES {
+            return false;
+        }
         if self.order.iter().any(|seen| seen == request_id) {
             return false;
         }

@@ -123,8 +123,8 @@ async fn inline_mode_reports_a_cancelled_child() {
 
 #[tokio::test]
 async fn inline_mode_observes_parent_cancellation_mid_run() {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
         "blocked",
@@ -143,7 +143,7 @@ async fn inline_mode_observes_parent_cancellation_mid_run() {
     let (result, ()) = tokio::join!(
         call(&tool, &parent, json!({"input": "work", "mode": "inline"})),
         async {
-            started.notified().await;
+            let _permit = started.acquire().await.unwrap();
             cancellation.cancel();
         }
     );
@@ -165,13 +165,13 @@ fn schema_advertises_the_mode_argument() {
 
 #[tokio::test]
 async fn dropping_an_inline_call_settles_its_job() {
-    let started = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
         "blocked",
         Arc::new(BlockedModel {
             started: started.clone(),
-            release: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Semaphore::new(0)),
         }),
     );
     let tool = SubAgentTool::new(
@@ -186,7 +186,7 @@ async fn dropping_an_inline_call_settles_its_job() {
         _ = call(&tool, &parent, json!({"input": "work", "mode": "inline"})) => {
             panic!("the blocked child cannot finish")
         }
-        _ = started.notified() => {}
+        _ = started.acquire() => {}
     }
 
     let jobs = tool.job_registry().list();

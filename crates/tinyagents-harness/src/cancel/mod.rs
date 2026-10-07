@@ -87,10 +87,7 @@ impl CancellationToken {
                 .children
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // Drop links to children that no longer exist so long-lived
-            // parents do not accumulate dead entries.
-            children.retain(|link| link.strong_count() > 0);
-            children.push(Arc::downgrade(&child.state));
+            children.push(Arc::clone(&child.state));
         }
         // Re-check after linking: a `cancel` racing the registration either
         // saw the link (and cancels the child) or is observed here.
@@ -158,18 +155,18 @@ impl CancellationToken {
 
 /// Latches `state` and cascades to every live descendant created through
 /// [`CancellationToken::child_token`].
-fn cancel_state(state: &CancelState) {
-    state.cancelled.store(true, Ordering::Release);
-    state.notify.notify_waiters();
-    let children: Vec<_> = state
-        .children
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .drain(..)
-        .filter_map(|link| link.upgrade())
-        .collect();
-    for child in children {
-        cancel_state(&child);
+fn cancel_state(state: &Arc<CancelState>) {
+    let mut pending = vec![Arc::clone(state)];
+    while let Some(current) = pending.pop() {
+        current.cancelled.store(true, Ordering::Release);
+        current.notify.notify_waiters();
+        let children = current
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect::<Vec<_>>();
+        pending.extend(children);
     }
 }
 

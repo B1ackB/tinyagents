@@ -29,7 +29,8 @@ struct DetachedTaskEntry<Metadata, Status> {
     cancellation: CancellationToken,
     abort: AbortHandle,
     /// Steering `request_id`s already applied to this task, so a retried
-    /// request is delivered once.
+    /// request is delivered once while its id remains in the bounded recent
+    /// window. Older ids may be accepted again after eviction.
     steer_requests: RecentRequestIds,
 }
 

@@ -166,9 +166,6 @@ where
     if !matches!(lane, QueueLane::Steer | QueueLane::Collect) {
         return Err(SteerError::UnsupportedLane);
     }
-    if request_id.is_some_and(|id| id.len() > RecentRequestIds::MAX_REQUEST_ID_BYTES) {
-        return Err(SteerError::RequestIdTooLong);
-    }
     let key = TaskId::new(task_id);
     let snapshot = match access {
         SteerAccess::Owner(owner) => registry.snapshot(&key, owner)?,
@@ -176,6 +173,9 @@ where
     };
     if snapshot.status.is_terminal() {
         return Err(SteerError::AlreadyDone);
+    }
+    if request_id.is_some_and(|id| id.len() > RecentRequestIds::MAX_REQUEST_ID_BYTES) {
+        return Err(SteerError::RequestIdTooLong);
     }
     if let Some(request_id) = request_id
         && !registry.claim_steer_request(&key, request_id)?

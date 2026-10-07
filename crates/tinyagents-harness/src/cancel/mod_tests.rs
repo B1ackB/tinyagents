@@ -96,6 +96,16 @@ fn parent_cancel_cascades_to_every_descendant() {
 }
 
 #[test]
+fn parent_cancel_reaches_grandchild_after_intermediate_handle_is_dropped() {
+    let root = CancellationToken::new();
+    let child = root.child_token();
+    let grandchild = child.child_token();
+    drop(child);
+    root.cancel();
+    assert!(grandchild.is_cancelled());
+}
+
+#[test]
 fn child_of_cancelled_parent_starts_cancelled() {
     let parent = CancellationToken::new();
     parent.cancel();

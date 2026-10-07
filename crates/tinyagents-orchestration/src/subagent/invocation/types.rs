@@ -220,10 +220,10 @@ impl SubAgentJobStatus {
 
 /// Host-queryable snapshot of one asynchronous subagent job.
 ///
-/// Non-exhaustive: new link/diagnostic fields may be added without a breaking
-/// change, so construct it only through the registry.
+/// The registry is the source of job snapshots. The link fields are populated
+/// by the registry when a job is created; callers should obtain snapshots from
+/// it rather than constructing this record directly.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
 pub struct SubAgentJob {
     /// Stable job identifier returned by the spawning tool.
     pub id: SubAgentJobId,

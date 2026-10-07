@@ -31,11 +31,11 @@ impl ChatModel<()> for PanickingModel {
 
 fn blocked_tool() -> (
     Arc<SubAgentTool<(), ()>>,
-    Arc<tokio::sync::Notify>,
-    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Semaphore>,
+    Arc<tokio::sync::Semaphore>,
 ) {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
         "blocked",
@@ -90,8 +90,8 @@ async fn cancelling_one_job_leaves_its_sibling_running() {
 
     let first = spawn(&tool, &parent).await;
     let second = spawn(&tool, &parent).await;
-    started.notified().await;
-    started.notified().await;
+    let _first = started.acquire().await.unwrap();
+    let _second = started.acquire().await.unwrap();
 
     let result = cancel_via_tool(&jobs_tool, &parent, &first)
         .await
@@ -110,7 +110,7 @@ async fn cancelling_one_job_leaves_its_sibling_running() {
         "child cancel must not cancel the parent"
     );
 
-    release.notify_waiters();
+    release.add_permits(1);
     let done = wait_for_terminal(&jobs, &second, owner).await;
     assert_eq!(done.status, SubAgentJobStatus::Completed);
 }
@@ -124,7 +124,7 @@ async fn cancel_is_owner_checked_and_rejects_terminal_jobs() {
     let stranger = RunContext::new(RunConfig::new("stranger"), ());
 
     let job = spawn(&tool, &parent).await;
-    started.notified().await;
+    let _permit = started.acquire().await.unwrap();
 
     assert!(
         cancel_via_tool(&jobs_tool, &stranger, &job).await.is_err(),
@@ -135,7 +135,7 @@ async fn cancel_is_owner_checked_and_rejects_terminal_jobs() {
         SubAgentJobStatus::Running
     );
 
-    release.notify_waiters();
+    release.add_permits(1);
     wait_for_terminal(&jobs, &job, parent.instance_id()).await;
     assert!(
         cancel_via_tool(&jobs_tool, &parent, &job).await.is_err(),
@@ -150,7 +150,7 @@ async fn parent_cancellation_cascades_to_running_jobs() {
     let parent = RunContext::new(RunConfig::new("parent"), ());
 
     let job = spawn(&tool, &parent).await;
-    started.notified().await;
+    let _permit = started.acquire().await.unwrap();
     parent.cancellation.cancel();
 
     let job = wait_for_terminal(&jobs, &job, parent.instance_id()).await;

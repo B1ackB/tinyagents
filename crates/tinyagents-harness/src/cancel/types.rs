@@ -17,7 +17,7 @@
 //! file owns the data layout.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
@@ -32,9 +32,10 @@ pub(super) struct CancelState {
     pub(super) cancelled: AtomicBool,
     /// Wakes tasks awaiting [`CancellationToken::cancelled`] on transition.
     pub(super) notify: Notify,
-    /// Weak links to tokens minted by [`CancellationToken::child_token`], so a
-    /// parent `cancel()` cascades down without keeping dropped children alive.
-    pub(super) children: Mutex<Vec<Weak<CancelState>>>,
+    /// Strong links to tokens minted by [`CancellationToken::child_token`].
+    /// Keeping the state alive is necessary for cancellation to reach a live
+    /// grandchild even when an intermediate token handle is dropped.
+    pub(super) children: Mutex<Vec<Arc<CancelState>>>,
 }
 
 /// A cheap, clonable handle used to request cooperative cancellation of a run.

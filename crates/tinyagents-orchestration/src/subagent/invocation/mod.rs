@@ -399,9 +399,6 @@ fn stamp_link_metadata(
     job_id: &str,
     tool_call_id: Option<&str>,
 ) {
-    if !metadata.is_object() {
-        *metadata = json!({});
-    }
     if let Value::Object(map) = metadata {
         map.insert("subagent_run_id".into(), json!(subagent_run_id));
         map.insert("subagent_job_id".into(), json!(job_id));

@@ -745,3 +745,11 @@ fn recent_request_ids_default_remembers_the_last_64() {
     assert!(ids.claim("overflow"));
     assert!(ids.claim("req-0"), "the oldest id aged out");
 }
+
+#[test]
+fn recent_request_ids_rejects_oversized_ids_without_storing_them() {
+    let mut ids = RecentRequestIds::default();
+    let oversized = "x".repeat(RecentRequestIds::MAX_REQUEST_ID_BYTES + 1);
+    assert!(!ids.claim(&oversized));
+    assert!(ids.order.is_empty());
+}
