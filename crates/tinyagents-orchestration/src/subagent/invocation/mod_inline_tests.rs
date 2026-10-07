@@ -128,7 +128,7 @@ async fn inline_mode_observes_parent_cancellation_mid_run() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
-        "child",
+        "worker",
         Arc::new(BlockedModel {
             started: started.clone(),
             release,
@@ -169,7 +169,7 @@ async fn dropping_an_inline_call_settles_its_job() {
     let started = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
-        "blocked",
+        "worker",
         Arc::new(BlockedModel {
             started: started.clone(),
             release: Arc::new(tokio::sync::Semaphore::new(0)),
@@ -217,7 +217,7 @@ async fn dropping_an_inline_call_settles_its_job() {
 #[tokio::test]
 async fn a_panicking_inline_child_marks_its_job_failed() {
     let mut harness = AgentHarness::new();
-    harness.register_model("child", Arc::new(PanickingModel));
+    harness.register_model("worker", Arc::new(PanickingModel));
     let tool = Arc::new(SubAgentTool::new(
         Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
         ChildDataPolicy::new(|_: &()| ()),

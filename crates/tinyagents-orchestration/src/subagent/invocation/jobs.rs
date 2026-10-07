@@ -483,12 +483,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolDispatch<State, Ctx> for SubAgent
                 let id = value
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("request_id must be a string when provided"))?;
-                if id.len() > RecentRequestIds::MAX_REQUEST_ID_BYTES {
-                    anyhow::bail!(
-                        "request_id must be at most {} bytes",
-                        RecentRequestIds::MAX_REQUEST_ID_BYTES
-                    );
-                }
                 Some(id)
             }
         };
