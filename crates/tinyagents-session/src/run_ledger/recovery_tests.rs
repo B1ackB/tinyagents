@@ -153,3 +153,28 @@ fn overall_recovery_is_the_most_cautious_class() {
 fn no_dangling_calls_classify_to_nothing() {
     assert!(classify_recovery(&[], &[effect("run-1", "x", ToolEffectStatus::Started)]).is_empty());
 }
+
+#[test]
+fn a_missing_row_needs_verification_when_started_write_failures_may_continue() {
+    let classified =
+        classify_recovery_with(&[call("c1")], &[], MissingEffectRow::Uncertain);
+    assert_eq!(classified[0].class, RecoveryClass::NeedsVerification);
+    assert_eq!(classified[0].effect_status, None);
+    // The default reading is unchanged.
+    assert_eq!(classify_recovery(&[call("c1")], &[])[0].class, RecoveryClass::Resume);
+}
+
+#[test]
+fn equal_class_rows_pick_the_same_status_in_either_order() {
+    let rows = [
+        effect("run-1", "c1", ToolEffectStatus::Completed),
+        effect("run-1", "c1", ToolEffectStatus::Failed),
+    ];
+    let forward = classify_recovery(&[call("c1")], &rows);
+    let mut reversed = rows.to_vec();
+    reversed.reverse();
+    let backward = classify_recovery(&[call("c1")], &reversed);
+    assert_eq!(forward[0].class, RecoveryClass::ResumeReportOnly);
+    assert_eq!(forward[0].effect_status, backward[0].effect_status);
+    assert_eq!(forward[0].reason, backward[0].reason);
+}

@@ -28,7 +28,8 @@ pub use ops::{
     upsert_agent_team_task, upsert_run_telemetry, upsert_workflow_run,
 };
 pub use recovery::{
-    CallRecovery, DanglingToolCall, RecoveryClass, classify_recovery, overall_recovery,
+    CallRecovery, DanglingToolCall, MissingEffectRow, RecoveryClass, classify_recovery,
+    classify_recovery_with, overall_recovery,
 };
 pub use tool_effects::{
     RunLedgerToolEffects, ToolEffectRow, ToolEffectSettle, ToolEffectStart, ToolEffectStatus,
