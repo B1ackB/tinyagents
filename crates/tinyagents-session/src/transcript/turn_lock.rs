@@ -89,13 +89,17 @@ impl<F: Future> Future for NotifyOnPoll<'_, F> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Poll the wrapped future first: a waiter woken by the notification
+        // then knows the lock attempt has already been made (and parked, if it
+        // is held), instead of racing a not-yet-polled acquisition.
+        let result = self.future.as_mut().poll(cx);
         if !self.notified {
             if let Some(notify) = self.notify {
                 notify.notify_one();
             }
             self.notified = true;
         }
-        self.future.as_mut().poll(cx)
+        result
     }
 }
 
