@@ -570,6 +570,7 @@ async fn a_response_discarded_for_the_truncation_fallback_is_still_accounted() {
             Box::new(ShortSummarizer::default()),
         )
         .with_response_overflow_detection(ResponseOverflowDetection::Usage)
+        .with_before_compaction(|_| crate::summarization::CompactionDecision::Decline)
         .with_tool_result_truncation(400),
     );
     let mut messages = vec![user("read it")];
@@ -605,6 +606,7 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
         truncating_policy(),
         Box::new(summarizer.clone()),
     )
+    .with_keep_recent_tokens(3_000)
     .with_tool_result_truncation(400);
     let mut messages = long_transcript();
     messages.extend(long_transcript());
@@ -619,6 +621,10 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
         .await
         .unwrap();
     assert!(*summarizer.calls.lock().unwrap() >= 1, "it compacted");
+    assert!(
+        request.messages.iter().any(|m| matches!(m, Message::Tool(_))),
+        "the result stayed in the kept tail"
+    );
     assert!(tool_text_len(&request) < 1_000, "and the result is cut");
 }
 
