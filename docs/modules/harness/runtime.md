@@ -114,9 +114,11 @@ Detailed lifecycle:
     `RunLimits::max_tool_concurrency` (`futures::stream::iter(..)
     .buffered(n)`; `None`, the default, is unbounded). Results always fold
     back in original call order.
-15. `on_tool_delta` middleware exists on the `Middleware` trait and
-    `MiddlewareChain::run_on_tool_delta` is implemented, but the agent loop
-    does not call it yet — no tool progress stream is wired up today.
+15. Progress a tool reports mid-call (`ToolRunContext::report_progress`)
+    is emitted live as `AgentEvent::ToolProgress`, then replayed to
+    `on_tool_delta` middleware in order once the call settles, before
+    `after_tool` and the terminal event. Updates reported after the call has
+    settled are dropped; floods are coalesced. See `streaming.md`.
 16. Run `after_tool` middleware per result.
 17. Append tool messages.
 18. Repeat until no tool calls remain.

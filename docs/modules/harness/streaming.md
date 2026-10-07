@@ -122,10 +122,31 @@ full snapshot, not a delta, so a reader that only has frames from a
 checkpoint onward (earlier per-fragment frames pruned from the journal) still
 reduces to a consistent result.
 
-**Not yet wired**: `MiddlewareStack::run_on_tool_delta` and
-`AgentEvent::ToolProgress` still have no real caller — that hook models
-progress from a *running* tool, and `tinytools::Tool` has no
-progress-callback surface for a tool to report through yet (a `tinytools`
-change, not a harness one; see `docs/sdk-gaps/streaming.md` §3). The typed
+**Mid-tool progress (C2).** A running tool reports through
+`tinytools::ToolRunContext::report_progress(ToolProgress { message, fraction,
+partial })` (a default no-op, so existing tools are unchanged). The loop gives
+every executing call a progress gate (`crates/tinyagents-harness/src/tool/progress.rs`)
+that emits `AgentEvent::ToolProgress { call_id, message, fraction, partial }`
+live and queues a `ToolDelta` for `Middleware::on_tool_delta`. Guarantees:
+
+- Every `ToolProgress` for a call falls between its `ToolStarted` and its
+  terminal `ToolCompleted`/`ToolFailed`, in the order the tool reported it.
+- The gate closes when the tool's future settles (return, error, timeout),
+  before the terminal event. An update reported afterwards (for example from a
+  task the tool spawned) is dropped, never emitted late; the open check and the
+  emit share one lock, so there is no race window.
+- A concurrent batch interleaves progress across calls; each call's progress
+  still precedes its own terminal event (terminals are emitted by the fold,
+  in call order, after the batch).
+- `on_tool_delta` needs `&mut RunContext`, which the executing tool holds, so
+  middleware sees a call's deltas replayed in order immediately after the call
+  settles and before `after_tool` and the terminal event. It observes; the live
+  event is already out. A failing hook is logged and does not fail the call.
+- Flooding is coalesced: at most 32 events per second per call
+  (`ToolProgressLimits`); beyond that the newest value of each field replaces
+  the held update, which is emitted when the next window opens or the call
+  settles, so the final reported state is never lost.
+
+The typed
 `HarnessStreamItem` enum, `StreamMode::{tools, usage, cost, events, final}`,
 and stream replay from event stores are still design-only.

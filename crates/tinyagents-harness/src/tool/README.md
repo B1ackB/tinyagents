@@ -43,6 +43,21 @@ scrub) lives in `tinytools-agent`, reached through
   the portable methods still cover only workspace/thread/output cap. A tool
   that needs a real child `RunContext` goes through the explicit dispatch
   seam instead (B1; see `docs/modules/harness/tool-context.md`).
+  `progress` is the per-call `tinytools::ProgressSink` behind
+  `ToolRunContext::report_progress`; it is `None` for a context built outside
+  a loop, where reporting is a no-op.
+
+### Progress (`progress.rs`)
+
+- `ToolProgressGate` (crate-private) — the per-call destination for a tool's
+  `report_progress` updates. Emits `AgentEvent::ToolProgress` live, queues a
+  `ToolDelta` per event for the loop to replay to `on_tool_delta`, closes when
+  the call settles so late updates are dropped, and coalesces floods. The loop
+  scopes it in a task-local around the dispatch future and
+  `ToolExecutionContext::from_run_context` picks it up for the matching call
+  id, so `ToolDispatch` implementors need no change.
+- `ToolProgressLimits` — events admitted per window before coalescing
+  (default 32 per second).
 
 ### Injected arguments (`injected.rs`)
 
