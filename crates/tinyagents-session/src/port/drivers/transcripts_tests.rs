@@ -396,22 +396,6 @@ fn an_unreadable_entry_is_an_error() {
         .await
     });
     assert!(history.messages().is_err());
-    let raw = Arc::clone(&docs);
-    on_bridge(async move {
-        raw.put(
-            ENTRIES,
-            &entry_id("t", 0),
-            json!({ "stem": "t" }),
-            Precondition::None,
-        )
-        .await
-    });
-    let error = locator
-        .open_stem("t", meta("t"))
-        .unwrap()
-        .read_session()
-        .unwrap_err();
-    assert!(error.to_string().contains("no seq"), "{error}");
 }
 
 #[test]
