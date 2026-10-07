@@ -378,7 +378,7 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
             cancellation: child_token,
         };
         let mut timed_out = false;
-        let mut token = execution.cancellation.clone();
+        let mut token;
         let executed = loop {
             token = execution.cancellation.clone();
             let run = self.executor.execute(execution);
