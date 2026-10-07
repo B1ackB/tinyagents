@@ -609,18 +609,22 @@ pub fn next_synthetic_call_id(slot: usize) -> String {
 /// Parses a JSON object, repairing the relaxed spellings small local models
 /// emit (unquoted keys, redundant braces, leaked quote tokens) when strict
 /// parsing fails.
+///
+/// Repair is [`tinytools_agent::repair::json::recover_whole_object`]: the
+/// repaired object must account for the **entire** candidate, so a valid
+/// object followed by prose is never accepted as a call.
 fn parse_relaxed_object(raw: &str) -> Option<Value> {
     match serde_json::from_str::<Value>(raw) {
         Ok(value) if value.is_object() => Some(value),
         // A non-object parsed strictly is not a tool call; do not try to
         // "repair" it into one.
         Ok(_) => None,
-        Err(_) => crate::relaxed_json::recover_relaxed_object(raw).or_else(|| {
+        Err(_) => recover_whole_object(raw).or_else(|| {
             // Python-style single-quoted objects are a common local-model
             // spelling. The conservative parser already rejected the exact
             // input; retrying its quote-normalized form keeps recovery scoped
             // to a whole object rather than interpreting prose as a call.
-            crate::relaxed_json::recover_relaxed_object(&raw.replace('\'', "\""))
+            recover_whole_object(&raw.replace('\'', "\""))
         }),
     }
 }
@@ -696,3 +700,7 @@ fn strip_code_fence(raw: &str) -> &str {
 #[cfg(test)]
 #[path = "prompt_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "prompt_relaxed_tests.rs"]
+mod relaxed_tests;
