@@ -3383,12 +3383,13 @@ async fn malformed_tool_arguments_recover_as_error_tool_result() {
     );
 }
 
-/// I-13 regression: provider-invalid arguments that `relaxed_json` can
-/// actually repair (unquoted object keys, here) must be recovered and the
+/// I-13 regression: provider-invalid arguments that relaxed-JSON repair can
+/// actually fix (unquoted object keys, here) must be recovered and the
 /// call executed — not turned into a "fix your JSON" round trip the model
 /// often cannot act on. Before the fix, admission short-circuited straight
-/// to the tool-error path without ever trying `recover_relaxed_object`,
-/// even though that module exists specifically for this input shape.
+/// to the tool-error path without ever trying the repair ladder
+/// (`tinytools_agent::repair::json`), even though it exists specifically for
+/// this input shape.
 #[tokio::test]
 async fn provider_invalid_arguments_recoverable_by_relaxed_json_are_repaired_and_executed() {
     use crate::testkit::EventRecorder;
@@ -3398,7 +3399,7 @@ async fn provider_invalid_arguments_recoverable_by_relaxed_json_are_repaired_and
     harness.register_model(
         "mock",
         Arc::new(MockModel::with_responses(vec![
-            // Unquoted object key: `relaxed_json::recover_relaxed_object`
+            // Unquoted object key: `tinytools_agent::repair::json::recover_object`
             // repairs this to `{"query":"weather"}`.
             invalid_tool_call_response("call-x", "lookup", "{query:\"weather\"}"),
             text_response("found it", 1, 1),
