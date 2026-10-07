@@ -89,7 +89,7 @@ impl PingPongDetector {
         let mut state = lock(&self.state);
         state.tail = match (state.prev, state.last) {
             // Same two calls with the same results as two steps ago.
-            (Some(prev), Some(last)) if prev == step && last.call != step.call => state.tail + 1,
+            (Some(prev), Some(last)) if prev == step && last.call != step.call => state.tail.saturating_add(1),
             // A different call than last time starts a fresh pair.
             (_, Some(last)) if last.call != step.call => 2,
             _ => 1,
@@ -103,6 +103,9 @@ impl PingPongDetector {
         }
         let other = state.prev.map_or(0, |prev| prev.call);
         let pair = step.call ^ other;
+        if state.warned.len() >= MAX_WARNED && !state.warned.contains(&pair) {
+            return None;
+        }
         if !state.warned.insert(pair) {
             return None;
         }
@@ -118,6 +121,9 @@ impl PingPongDetector {
     }
 }
 
+/// Warned patterns remembered per detector; past it the detector stops
+/// warning rather than grow without bound.
+const MAX_WARNED: usize = 1024;
 /// `(tool, outcome)` groups tracked at once; later groups are not tracked.
 const MAX_CHURN_GROUPS: usize = 1024;
 /// Argument variants tracked per group; later variants are not tracked.
@@ -182,7 +188,8 @@ impl ArgumentChurnDetector {
         if !variants.contains_key(&argument) && variants.len() >= MAX_CHURN_VARIANTS_PER_GROUP {
             return None;
         }
-        *variants.entry(argument).or_insert(0) += 1;
+        let calls = variants.entry(argument).or_insert(0);
+        *calls = calls.saturating_add(1);
         let qualifying = variants
             .values()
             .filter(|calls| **calls >= self.calls_per_variant)
@@ -191,7 +198,9 @@ impl ArgumentChurnDetector {
             return None;
         }
         state.groups.remove(&key);
-        state.warned.insert(key);
+        if state.warned.len() < MAX_WARNED {
+            state.warned.insert(key);
+        }
         Some(format!(
             "`{tool}` has been called with {qualifying} different sets of arguments, each at least {} times, and every one returned the same result; changing the arguments is not changing what you learn. Try a different tool or approach.",
             self.calls_per_variant

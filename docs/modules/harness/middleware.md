@@ -198,11 +198,7 @@ Each built-in must document:
 - interaction with provider prompt/KV-cache layout
 - interaction with retries and fallbacks
 
-## Repeat-progress guard
-
-`RepeatProgressMiddleware` catches loops that succeed but go nowhere (staged
-warn, block, halt; ping-pong, argument-churn and post-compaction warnings). It
-is documented in [repeat-progress.md](repeat-progress.md).
+The repeat-progress guard (`RepeatProgressMiddleware`) is documented in [repeat-progress.md](repeat-progress.md).
 
 ## Tool policy enforcement
 

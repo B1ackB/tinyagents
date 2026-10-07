@@ -20,6 +20,10 @@ use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
 use super::types::{CallGate, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
 use super::util::{hash_of, hash_pair, lock};
 
+/// Distinct calls (or `(call, result)` pairs) the tracker keeps state for; a
+/// run past this stops tracking new ones so memory stays bounded.
+const MAX_TRACKED_CALLS: usize = 65_536;
+
 /// Consecutive identical assistant-output batches required to halt.
 pub const DEFAULT_REPEAT_OUTPUT_THRESHOLD: u32 = 4;
 /// Consecutive identical successful tool-call batches required to halt.
@@ -33,7 +37,7 @@ impl Streak {
     fn record(&mut self, signature: &str) -> u32 {
         let hash = hash_of(signature);
         if self.last_hash == Some(hash) {
-            self.consecutive += 1;
+            self.consecutive = self.consecutive.saturating_add(1);
         } else {
             self.last_hash = Some(hash);
             self.consecutive = 1;
@@ -213,13 +217,19 @@ impl SuccessfulRepeatTracker {
         let key = hash_pair(call_signature, outcome_identity);
         let count = {
             let mut recurrences = lock(&self.recurrences);
-            let count = recurrences.entry(key).or_insert(0);
-            *count += 1;
-            *count
+            if recurrences.len() >= MAX_TRACKED_CALLS && !recurrences.contains_key(&key) {
+                // Bounded ledger: past the cap an unseen pair counts as its
+                // first occurrence and is not retained.
+                1
+            } else {
+                let count = recurrences.entry(key).or_insert(0);
+                *count = count.saturating_add(1);
+                *count
+            }
         };
         // Prediction state only feeds `pre_call`, which is inert without
         // escalation; do not retain it per distinct call in that mode.
-        if self.escalation.is_some() {
+        if self.escalation.is_some() && self.prediction_has_room(call) {
             let previous = lock(&self.last_outcome).insert(call, key);
             lock(&self.predictable).insert(call);
             if previous.is_some_and(|previous| previous != key) {
@@ -256,6 +266,13 @@ impl SuccessfulRepeatTracker {
             Some(_) if count == self.call_threshold => SuccessfulRepeat::Warn(warn()),
             _ => SuccessfulRepeat::Continue,
         }
+    }
+
+    /// Whether `call` is already tracked or the prediction state still has
+    /// room for another call signature.
+    fn prediction_has_room(&self, call: u64) -> bool {
+        let last_outcome = lock(&self.last_outcome);
+        last_outcome.contains_key(&call) || last_outcome.len() < MAX_TRACKED_CALLS
     }
 
     /// Ledger count at which a call is blocked (the Nth identical call is not
@@ -306,7 +323,7 @@ impl SuccessfulRepeatTracker {
         }
         let mut blocks = lock(&self.blocks);
         let blocked = blocks.entry(call).or_insert(0);
-        *blocked += 1;
+        *blocked = blocked.saturating_add(1);
         if *blocked >= escalation.halt_block() {
             return CallGate::Halt(format!(
                 "Stopping: the same successful tool call was blocked {blocked} times for returning the identical result {count} times; the model kept re-issuing it after being warned, so the run is stuck cycling without making progress."
