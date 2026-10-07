@@ -20,7 +20,7 @@ use crate::error::{Result, TinyAgentsError};
 
 use super::pairing::find_safe_cutoff_point;
 use super::trim::partition_system;
-use super::types::{CompactionReason, Summarizer, SummaryRecord, SummaryRequest};
+use super::types::{CompactionReason, Summarizer, SummaryKind, SummaryRecord, SummaryRequest};
 
 // ---------------------------------------------------------------------------
 // Cut points
@@ -160,7 +160,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
-                ..SummaryRequest::default()
+                kind: SummaryKind::Full,
             })
             .await;
     }
@@ -174,7 +174,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
-                ..SummaryRequest::default()
+                kind: SummaryKind::Full,
             })
             .await;
     }
@@ -185,12 +185,14 @@ pub async fn summarize_with_split(
         .summarize_request(&SummaryRequest {
             messages: first_half.to_vec(),
             previous_summary,
+            kind: SummaryKind::Full,
         })
         .await?;
     let second_summary = summarizer
         .summarize_request(&SummaryRequest {
             messages: second_half.to_vec(),
             previous_summary: None,
+            kind: SummaryKind::Full,
         })
         .await?;
 

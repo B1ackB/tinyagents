@@ -589,10 +589,7 @@ async fn keeps_system_prompts_ahead_of_the_reapplied_summary() {
 #[tokio::test]
 async fn concat_summarizer_carries_the_previous_summary_forward() {
     let record = crate::summarization::ConcatSummarizer
-        .summarize_request(&SummaryRequest {
-            messages: vec![user("new")],
-            previous_summary: Some("earlier".into()),
-        })
+        .summarize_request(&SummaryRequest::new(vec![user("new")]).with_previous_summary("earlier"))
         .await
         .unwrap();
     let text = record.summary.text();
