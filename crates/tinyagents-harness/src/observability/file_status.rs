@@ -23,11 +23,7 @@ use crate::store::{FileStore, Store};
 pub const STATUS_NS: &str = "run_status";
 
 fn status_key(run_id: &str) -> String {
-    let safe = !run_id.is_empty()
-        && !run_id.bytes().all(|byte| byte == b'.')
-        && run_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    let safe = is_safe_status_key(run_id);
     if safe && !run_id.starts_with("x-") {
         return run_id.to_string();
     }
@@ -36,6 +32,14 @@ fn status_key(run_id: &str) -> String {
         encoded.push_str(&format!("{byte:02x}"));
     }
     encoded
+}
+
+fn is_safe_status_key(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && !run_id.bytes().all(|byte| byte == b'.')
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 /// Name fragments that mark an environment variable as credential material.
@@ -154,7 +158,15 @@ impl HarnessStatusStore for FileStatusStore {
     }
 
     async fn get_status(&self, run_id: &str) -> Result<Option<HarnessRunStatus>> {
-        match self.kv.get(STATUS_NS, &status_key(run_id)).await? {
+        let key = status_key(run_id);
+        let value = match self.kv.get(STATUS_NS, &key).await? {
+            Some(value) => Some(value),
+            None if key != run_id && is_safe_status_key(run_id) => {
+                self.kv.get(STATUS_NS, run_id).await?
+            }
+            None => None,
+        };
+        match value {
             Some(value) => Ok(Some(serde_json::from_value(value)?)),
             None => Ok(None),
         }

@@ -21,6 +21,8 @@ use crate::transcript::{
 };
 use crate::turn_state::{TurnLifecycle, TurnState};
 
+const MAX_GENERATIONS: u32 = 4096;
+
 /// Completed turns kept per thread, as the on-disk store keeps them.
 const COMPLETED_RETENTION: usize = 20;
 
@@ -129,6 +131,10 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         seed: TranscriptMeta,
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
         let successor = session.next_generation();
+        anyhow::ensure!(
+            successor.generation <= MAX_GENERATIONS,
+            "session generation limit reached"
+        );
         let stem = session_stem(&successor);
         let mut reservations = self
             .reserved_generations
