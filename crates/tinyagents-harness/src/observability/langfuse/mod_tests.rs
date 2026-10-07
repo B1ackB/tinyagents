@@ -233,6 +233,7 @@ fn populates_generation_and_tool_io_when_captured() {
                 obs(
                     1,
                     AgentEvent::ToolCompleted {
+                        parent_call_id: None,
                         call_id: CallId::new("tool-call"),
                         tool_name: "lookup".to_string(),
                         started_at_ms: Some(1_704_067_199_500),
@@ -336,6 +337,7 @@ fn call_scoped_observation_ids_are_unique_per_trace() {
                     obs(
                         2,
                         AgentEvent::ToolCompleted {
+                            parent_call_id: None,
                             call_id: CallId::new("agent_turn-tool-1"),
                             tool_name: "lookup".to_string(),
                             started_at_ms: None,

@@ -559,6 +559,7 @@ fn observation_event(
             })
         }
         AgentEvent::ToolCompleted {
+            parent_call_id: _,
             call_id,
             tool_name,
             started_at_ms,

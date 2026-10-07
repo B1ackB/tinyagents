@@ -142,6 +142,7 @@ fn completed_events_deserialize_without_started_at_ms() {
 
     // A populated start time round-trips.
     let event = AgentEvent::ToolCompleted {
+        parent_call_id: None,
         call_id: crate::ids::CallId::new("t2"),
         tool_name: "lookup".to_string(),
         started_at_ms: Some(1_704_067_199_000),
@@ -415,6 +416,7 @@ fn failure_variants_exist_and_carry_stable_kind_strings() {
     use crate::ids::CallId;
 
     let tool_failed = AgentEvent::ToolFailed {
+        parent_call_id: None,
         call_id: CallId::new("call-1"),
         tool_name: "search".into(),
         started_at_ms: Some(1_000),
@@ -445,6 +447,7 @@ fn failure_variants_round_trip_through_serde() {
 
     for event in [
         AgentEvent::ToolFailed {
+            parent_call_id: None,
             call_id: CallId::new("call-1"),
             tool_name: "search".into(),
             started_at_ms: None,
@@ -537,6 +540,7 @@ fn tool_completed_metadata_is_optional_and_round_trips() {
     ));
 
     let event = AgentEvent::ToolCompleted {
+        parent_call_id: None,
         call_id: crate::ids::CallId::new("t2"),
         tool_name: "lookup".to_string(),
         started_at_ms: None,

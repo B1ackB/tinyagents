@@ -953,6 +953,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // call starts) and the fold-phase `ToolCompleted` event.
         let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
         let record = ctx.emit(AgentEvent::ToolStarted {
+            parent_call_id: None,
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
             input: captured_input.clone(),
@@ -1084,6 +1085,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             call_id.as_str()
         );
         let record = ctx.emit(AgentEvent::ToolFailed {
+            parent_call_id: None,
             call_id: call_id.clone(),
             tool_name: tool_name.to_string(),
             started_at_ms: Some(started_at_ms),
@@ -1301,6 +1303,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let event_call_id = prepared.call_id.clone();
         let event_tool_name = prepared.tool_name.clone();
         let record = ctx.emit(AgentEvent::ToolCompleted {
+            parent_call_id: None,
             call_id: event_call_id,
             tool_name: event_tool_name,
             started_at_ms: Some(prepared.started_at_ms),
