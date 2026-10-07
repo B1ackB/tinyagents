@@ -725,7 +725,7 @@ pub async fn session_store_isolation_conformance(provider: &dyn SessionStoreProv
         "another agent cannot find a transcript by a shared thread id"
     );
     assert!(
-        bob.transcripts.latest_for_agent("contract-iso-a").is_none(),
+        bob.transcripts.latest_for_agent("contract-agent").is_none(),
         "another agent cannot find a transcript by agent name"
     );
     assert!(
