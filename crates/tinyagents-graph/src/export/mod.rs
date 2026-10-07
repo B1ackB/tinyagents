@@ -50,11 +50,13 @@ pub use types::{
     NodePolicySummary, RouteInfo, ValidationReport, WaitingEdgeInfo,
 };
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::Result;
+use crate::builder::Branch;
 use crate::builder::{END, GraphBuilder, START};
 use crate::compiled::CompiledGraph;
+use tinyagents_harness::ids::NodeId;
 
 /// A behavior-free description of one node, fed into [`build_topology`].
 struct NodePart {
