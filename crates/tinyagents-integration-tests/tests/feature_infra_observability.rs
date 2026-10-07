@@ -75,6 +75,7 @@ fn latency_metrics_correlate_started_and_completed_by_call_id() {
             3,
             1_150,
             AgentEvent::ToolStarted {
+                parent_call_id: None,
                 call_id: CallId::new("t1"),
                 tool_name: "search".into(),
                 input: None,
@@ -85,6 +86,7 @@ fn latency_metrics_correlate_started_and_completed_by_call_id() {
             4,
             1_200,
             AgentEvent::ToolCompleted {
+                parent_call_id: None,
                 call_id: CallId::new("t1"),
                 tool_name: "search".into(),
                 started_at_ms: None,
@@ -185,6 +187,7 @@ async fn journal_read_filtered_selects_by_event_kind() {
             1,
             0,
             AgentEvent::ToolStarted {
+                parent_call_id: None,
                 call_id: CallId::new("t1"),
                 tool_name: "x".into(),
                 input: None,
