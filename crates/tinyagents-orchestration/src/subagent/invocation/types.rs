@@ -280,6 +280,7 @@ pub(crate) struct SubAgentJobEntry {
 }
 
 /// Error returned by job lookup or live-message delivery.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SubAgentJobError {
     /// No job exists for the supplied id.
