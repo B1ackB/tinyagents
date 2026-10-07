@@ -338,8 +338,32 @@ impl SteeringHandle {
     }
 
     /// Records the model a `SwitchModel` asked for, replacing any earlier one.
-    fn set_model_override(&self, model: String) {
-        *self.lock_model_override() = Some(model);
+    fn set_model_override(&self, model: String) -> bool {
+        let mut slot = self.lock_model_override();
+        let superseded = slot.is_some()
+            && !self
+                .local
+                .model_override_announced
+                .load(std::sync::atomic::Ordering::SeqCst);
+        *slot = Some(model);
+        self.local
+            .model_override_announced
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        superseded
+    }
+
+    /// Marks the current model override as reported, returning `true` only the
+    /// first time since it was set -- the caller emits the one
+    /// `Steered { accepted: true }` for the command exactly then.
+    pub(crate) fn announce_model_override(&self, applied: &str) -> bool {
+        // Held across the flag claim so it is atomic with `set_model_override`
+        // replacing the override and resetting the flag.
+        let slot = self.lock_model_override();
+        slot.as_deref() == Some(applied)
+            && !self
+                .local
+                .model_override_announced
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Drops a model override the model call could not honour, so the run
@@ -399,7 +423,10 @@ impl SteeringHandle {
 /// - [`SteeringCommand::SwitchModel`] records the requested model on the
 ///   handle ([`SteeringHandle::model_override`]); the agent loop validates and
 ///   applies it before resolving the next model call. A blank name is
-///   rejected here.
+///   rejected here (`accepted: false`). A queued switch emits **no**
+///   `Steered` event at the checkpoint: its single outcome is reported when
+///   the model call applies it (`accepted: true`) or rejects it
+///   (`accepted: false`).
 /// - [`SteeringCommand::InjectMessage`] and [`SteeringCommand::Redirect`]
 ///   append to `messages`; [`SteeringCommand::SetMetadata`] replaces
 ///   `ctx.config.metadata`.
@@ -495,7 +522,17 @@ pub fn apply_pending_steering<Ctx>(
                     model = %model,
                     "[steering] model switch queued for the next model call"
                 );
-                handle.set_model_override(model);
+                let superseded = handle.set_model_override(model);
+                if superseded {
+                    ctx.emit(AgentEvent::Steered {
+                        command_kind: kind.as_str().to_string(),
+                        accepted: false,
+                    });
+                }
+                // Queuing is not an outcome: the agent loop reports the one
+                // `Steered` event for this command when it applies or rejects
+                // the switch at the model-call boundary.
+                continue;
             }
         }
 

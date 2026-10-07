@@ -341,6 +341,10 @@ pub(crate) struct SteeringLocal {
     /// pause latch, so it never crosses a [`SteeringHandle::for_child`]
     /// boundary in either direction.
     pub(crate) model_override: Mutex<Option<String>>,
+    /// Whether the current [`Self::model_override`] has already been reported
+    /// as applied (`Steered { accepted: true }`), so a sticky switch is
+    /// announced once, not on every model call. Reset by every new switch.
+    pub(crate) model_override_announced: std::sync::atomic::AtomicBool,
 }
 
 /// Bounded memory of recently applied steering `request_id`s, used to make a

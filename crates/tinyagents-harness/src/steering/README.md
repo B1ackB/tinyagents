@@ -64,9 +64,17 @@ receives the transcript, it is **opt-in**: `SteeringPolicy::allow_all()` and
   host-routed run is rejected: `Steered { accepted: false }` (plus
   `ModelOverrideSkipped` from the loop) and the run continues on its current
   model; the rejected name is dropped so it is reported once.
+- One outcome per command: queuing a switch emits nothing; the model call
+  emits `Steered { accepted: true }` once when it first applies the switch, or
+  the `accepted: false` above when it rejects it. Replacing an unreported
+  switch rejects the superseded switch with `accepted: false`; a switch
+  replaced after it was reported, or a switch whose run ends before validation,
+  emits no additional outcome.
 - Fallback: when the switched model is in `RunPolicy::fallback`, the walk
   continues from its position; when it is not, a failure falls back through the
-  whole chain from its head (the original primary's chain).
+  whole chain from its head (the original primary's chain). Each fallback
+  call's `request.model` is retargeted to the fallback's own name, so adapters
+  that honour it never re-ask the model that just failed.
 - Precedence: wins over a `before_model` middleware's `request.model`; a
   rejection after middleware restores the request's earlier `request.model`
   (one rejection event, the rejected name never reaches an adapter). The

@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::context::{RunConfig, RunContext};
 use crate::events::AgentEvent;
-use crate::middleware::Middleware;
+use crate::middleware::{Middleware, MiddlewareModelOutcome, ModelHandler, ModelMiddleware};
 use crate::retry::{FallbackPolicy, RetryPolicy};
 use crate::runtime::{AgentHarness, RunPolicy};
 use crate::steering::{SteeringCommand, SteeringHandle};
@@ -71,6 +71,21 @@ fn steered_rejections(recorder: &EventRecorder) -> usize {
         .count()
 }
 
+/// Every `Steered` event reported for a `switch_model` command, in order.
+fn switch_outcomes(recorder: &EventRecorder) -> Vec<bool> {
+    recorder
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Steered {
+                command_kind,
+                accepted,
+            } if command_kind == "switch_model" => Some(*accepted),
+            _ => None,
+        })
+        .collect()
+}
+
 fn skipped(recorder: &EventRecorder) -> Vec<(String, String)> {
     recorder
         .events()
@@ -83,6 +98,25 @@ fn skipped(recorder: &EventRecorder) -> Vec<(String, String)> {
             _ => None,
         })
         .collect()
+}
+
+struct ShortCircuitModelMiddleware;
+
+#[async_trait]
+impl ModelMiddleware<()> for ShortCircuitModelMiddleware {
+    fn name(&self) -> &str {
+        "short_circuit_model"
+    }
+
+    async fn wrap_model(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _request: ModelRequest,
+        _next: ModelHandler<'_, (), ()>,
+    ) -> crate::Result<MiddlewareModelOutcome> {
+        Ok(ModelResponse::assistant("short-circuited").into())
+    }
 }
 
 /// Two registered models; `a` is the registry default.
@@ -142,6 +176,27 @@ async fn model_started_names_the_switched_model() {
     assert_eq!(model_started(&recorder), vec!["b"]);
     assert!(a.requests().is_empty());
     assert_eq!(b.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn short_circuit_wrap_does_not_announce_model_switch() {
+    let (mut harness, a, _b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    harness.push_model_middleware(Arc::new(ShortCircuitModelMiddleware));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let run = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(run.text(), Some("short-circuited".to_string()));
+    assert!(switch_outcomes(&recorder).is_empty());
+    assert!(a.requests().is_empty());
 }
 
 #[tokio::test]
@@ -707,4 +762,199 @@ async fn model_names_are_trimmed_before_they_are_stored() {
 
     assert_eq!(model_started(&recorder), vec!["b"]);
     assert_eq!(b.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn an_applied_switch_reports_one_accepted_outcome_across_calls() {
+    let (harness, _, _) = two_models(
+        ScriptedModel::replies(vec!["never"]),
+        ScriptedModel::new(vec![call("c1"), ModelResponse::assistant("done")]),
+    );
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("nope-first"));
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    // Two model calls on the sticky switch. The replaced `nope-first` is
+    // explicitly rejected, then `b` is reported when it is applied.
+    assert_eq!(model_started(&recorder), vec!["b", "b"]);
+    assert_eq!(switch_outcomes(&recorder), vec![false, true]);
+}
+
+#[tokio::test]
+async fn a_rejected_switch_reports_only_the_rejection() {
+    let (harness, _, _) = two_models(
+        ScriptedModel::new(vec![call("c1"), ModelResponse::assistant("done")]),
+        ScriptedModel::replies(vec!["never"]),
+    );
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("nope"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(switch_outcomes(&recorder), vec![false]);
+}
+
+#[tokio::test]
+async fn a_switch_rejected_after_middleware_never_looks_accepted() {
+    let (mut harness, _, _) = two_models(
+        ScriptedModel::replies(vec!["from a"]).with_profile(tool_capable("openai", "gpt-5")),
+        ScriptedModel::replies(vec!["from b"]).with_profile(profile("openai", "mini")),
+    );
+    harness.push_middleware(Arc::new(Tweak {
+        model: None,
+        tool_calling: true,
+    }));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(switch_outcomes(&recorder), vec![false]);
+}
+
+#[tokio::test]
+async fn fallback_from_a_steered_model_retargets_request_model() {
+    let (a, b, c) = (
+        Arc::new(ScriptedModel::replies(vec!["from a"])),
+        AlwaysFails::new(),
+        Arc::new(ScriptedModel::replies(vec!["from c"])),
+    );
+    let harness = failover_harness(
+        &["a", "b", "c"],
+        vec![("a", a.clone()), ("b", b.clone()), ("c", c.clone())],
+    );
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("c answers after b fails");
+
+    // A provider that honours `request.model` must be asked for the fallback,
+    // not for the steered model that just failed.
+    assert_eq!(c.requests()[0].model, Some("c".to_string()));
+}
+
+#[tokio::test]
+async fn chain_head_fallback_retargets_request_model() {
+    let (a, x, b) = (
+        Arc::new(ScriptedModel::replies(vec!["from a"])),
+        AlwaysFails::new(),
+        Arc::new(ScriptedModel::replies(vec!["from b"])),
+    );
+    let harness = failover_harness(
+        &["a", "b"],
+        vec![("a", a.clone()), ("b", b.clone()), ("x", x.clone())],
+    );
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("x"));
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("a answers after x fails");
+
+    assert_eq!(a.requests()[0].model, Some("a".to_string()));
+}
+
+#[tokio::test]
+async fn fallback_from_a_plain_request_model_override_retargets_request_model() {
+    // No steering: a middleware (like an SDK caller) pins `b`, which fails.
+    let (a, b, c) = (
+        Arc::new(ScriptedModel::replies(vec!["from a"])),
+        AlwaysFails::new(),
+        Arc::new(ScriptedModel::replies(vec!["from c"])),
+    );
+    let mut harness = failover_harness(
+        &["b", "c"],
+        vec![("a", a.clone()), ("b", b.clone()), ("c", c.clone())],
+    );
+    harness.push_middleware(Arc::new(Tweak {
+        model: Some("b"),
+        tool_calling: false,
+    }));
+
+    let run = harness
+        .invoke(&(), (), RunConfig::new("plain"), vec![Message::user("hi")])
+        .await
+        .expect("c answers after b fails");
+
+    assert_eq!(run.text(), Some("from c".to_string()));
+    assert_eq!(c.requests()[0].model, Some("c".to_string()));
+}
+
+/// A `before_model_control` hook that ends the run before dispatch.
+struct EndBeforeCall;
+
+#[async_trait]
+impl Middleware<()> for EndBeforeCall {
+    fn name(&self) -> &str {
+        "end-before-call"
+    }
+
+    async fn before_model_control(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _request: &mut ModelRequest,
+    ) -> crate::error::Result<crate::context::MiddlewareControl> {
+        Ok(crate::context::MiddlewareControl::JumpTo(
+            crate::context::LoopTarget::End,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_switch_whose_call_is_cancelled_by_control_reports_no_outcome() {
+    let (mut harness, a, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    harness.push_middleware(Arc::new(EndBeforeCall));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let _ = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await;
+
+    assert!(a.requests().is_empty() && b.requests().is_empty());
+    assert_eq!(switch_outcomes(&recorder), Vec::<bool>::new());
+}
+
+#[tokio::test]
+async fn fallback_keeps_an_absent_request_model_absent() {
+    let (a, b) = (
+        AlwaysFails::new(),
+        Arc::new(ScriptedModel::replies(vec!["from b"])),
+    );
+    let harness = failover_harness(&["a", "b"], vec![("a", a.clone()), ("b", b.clone())]);
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("b answers after a fails");
+
+    // A registry alias is not a provider model id: do not invent one.
+    assert_eq!(b.requests()[0].model, None);
 }
