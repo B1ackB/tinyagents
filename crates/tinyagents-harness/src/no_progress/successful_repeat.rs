@@ -16,8 +16,9 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use super::escalation::RepeatEscalation;
 use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
-use super::types::{Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
+use super::types::{CallGate, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
 
 /// Consecutive identical assistant-output batches required to halt.
 pub const DEFAULT_REPEAT_OUTPUT_THRESHOLD: u32 = 4;
@@ -69,6 +70,38 @@ impl SuccessfulRepeatTracker {
             output: std::sync::Mutex::new(Streak::default()),
             calls: std::sync::Mutex::new(Streak::default()),
             recurrences: std::sync::Mutex::new(std::collections::HashMap::new()),
+            escalation: None,
+            last_outcome: std::sync::Mutex::new(std::collections::HashMap::new()),
+            blocks: std::sync::Mutex::new(0),
+        }
+    }
+
+    /// Turns on staged escalation: each first threshold (`call_threshold`,
+    /// `output_threshold`) only reports [`SuccessfulRepeat::Warn`], a call is
+    /// then blocked through [`pre_call`](Self::pre_call), and the run halts on
+    /// the second block. Without this the first threshold halts immediately.
+    pub fn with_escalation(mut self, escalation: RepeatEscalation) -> Self {
+        self.escalation = Some(escalation);
+        self
+    }
+
+    /// Maps a streak length to its verdict: `Continue` below `threshold`;
+    /// without escalation `Halt` from `threshold` on; with it `Warn` exactly at
+    /// `threshold`, `Continue` until `threshold + gap`, then `Halt`.
+    fn streak_verdict(
+        &self,
+        consecutive: u32,
+        threshold: u32,
+        warn: impl FnOnce() -> String,
+        halt: impl FnOnce() -> String,
+    ) -> SuccessfulRepeat {
+        match self.escalation {
+            None if consecutive >= threshold => SuccessfulRepeat::Halt(halt()),
+            Some(escalation) if consecutive >= threshold + escalation.gap() => {
+                SuccessfulRepeat::Halt(halt())
+            }
+            Some(_) if consecutive == threshold => SuccessfulRepeat::Warn(warn()),
+            _ => SuccessfulRepeat::Continue,
         }
     }
 
@@ -114,19 +147,27 @@ impl SuccessfulRepeatTracker {
             return SuccessfulRepeat::Continue;
         }
         let output_consecutive = self.output.lock().unwrap().consecutive;
-        if output_consecutive >= self.output_threshold {
-            return SuccessfulRepeat::Halt(format!(
-                "Stopping: the last {output_consecutive} iterations produced the identical response and tool call with no change; the run is stuck repeating the same step without making progress."
-            ));
+        let output_verdict = self.streak_verdict(
+            output_consecutive,
+            self.output_threshold,
+            || format!("the last {output_consecutive} iterations produced the identical response and tool call with no change; you are repeating the same step without making progress."),
+            || format!("Stopping: the last {output_consecutive} iterations produced the identical response and tool call with no change; the run is stuck repeating the same step without making progress."),
+        );
+        // The call streak is recorded even when the output streak already
+        // decided, so a warning does not leave it a batch behind.
+        let consecutive = self.calls.lock().unwrap().record(signature);
+        let call_verdict = self.streak_verdict(
+            consecutive,
+            self.call_threshold,
+            || format!("the same successful tool-call batch was issued {consecutive} times in a row with identical arguments and no new information; you are repeating one action without making progress."),
+            || format!("Stopping: the same successful tool-call batch was issued {consecutive} times in a row with identical arguments and no new information; the run is stuck repeating one action without making progress."),
+        );
+        // Halt outranks warn; the output verdict wins a tie, as it always has.
+        match (output_verdict, call_verdict) {
+            (halt @ SuccessfulRepeat::Halt(_), _) | (_, halt @ SuccessfulRepeat::Halt(_)) => halt,
+            (warn @ SuccessfulRepeat::Warn(_), _) | (_, warn @ SuccessfulRepeat::Warn(_)) => warn,
+            _ => SuccessfulRepeat::Continue,
         }
-        let mut calls = self.calls.lock().unwrap();
-        let consecutive = calls.record(signature);
-        if consecutive < self.call_threshold {
-            return SuccessfulRepeat::Continue;
-        }
-        SuccessfulRepeat::Halt(format!(
-            "Stopping: the same successful tool-call batch was issued {consecutive} times in a row with identical arguments and no new information; the run is stuck repeating one action without making progress."
-        ))
     }
 
     /// Records one successful, non-exempt tool call with the result it returned,
@@ -169,24 +210,132 @@ impl SuccessfulRepeatTracker {
         call_signature: &str,
         outcome_identity: &str,
     ) -> SuccessfulRepeat {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (call_signature, outcome_identity).hash(&mut hasher);
+        let key = ledger_key(call_signature, outcome_identity);
         let mut recurrences = self.recurrences.lock().unwrap();
-        let count = recurrences.entry(hasher.finish()).or_insert(0);
+        let count = recurrences.entry(key).or_insert(0);
         *count += 1;
-        if *count < self.call_threshold {
-            return SuccessfulRepeat::Continue;
+        let count = *count;
+        drop(recurrences);
+        self.last_outcome
+            .lock()
+            .unwrap()
+            .insert(hash_of(call_signature), key);
+        let warn = || {
+            format!(
+                "the same successful tool call returned the identical result {count} times in this run; re-running steps whose results are already in the conversation adds no new information, so you are cycling without making progress."
+            )
+        };
+        let halt = || {
+            format!(
+                "Stopping: the same successful tool call returned the identical result {count} times in this run; re-running steps whose results are already in the conversation adds no new information, so the run is cycling without making progress."
+            )
+        };
+        match self.escalation {
+            None if count >= self.call_threshold => SuccessfulRepeat::Halt(halt()),
+            // Only reachable when the host never consults `pre_call`: the
+            // block did not happen, so stop rather than loop on.
+            Some(escalation) if count >= self.block_count(escalation) => {
+                SuccessfulRepeat::Halt(halt())
+            }
+            Some(_) if count == self.call_threshold => SuccessfulRepeat::Warn(warn()),
+            _ => SuccessfulRepeat::Continue,
         }
-        SuccessfulRepeat::Halt(format!(
-            "Stopping: the same successful tool call returned the identical result {count} times in this run; re-running steps whose results are already in the conversation adds no new information, so the run is cycling without making progress."
+    }
+
+    /// Ledger count at which a call is blocked (the Nth identical call is not
+    /// executed).
+    fn block_count(&self, escalation: RepeatEscalation) -> u32 {
+        self.call_threshold + escalation.gap()
+    }
+
+    /// Asked *before* a call executes: whether running it would only repeat a
+    /// result the model already holds.
+    ///
+    /// With staged escalation, a call whose last result has already recurred
+    /// `block_after_warn` times past the warning is answered with
+    /// [`CallGate::Block`] instead of running; the `blocks_before_halt`-th
+    /// block in the run answers [`CallGate::Halt`]. A call never seen, or whose
+    /// last result differed, is allowed. Without escalation this is always
+    /// [`CallGate::Allow`].
+    pub fn pre_call(&self, call_signature: &str) -> CallGate {
+        let Some(escalation) = self.escalation else {
+            return CallGate::Allow;
+        };
+        let Some(key) = self
+            .last_outcome
+            .lock()
+            .unwrap()
+            .get(&hash_of(call_signature))
+            .copied()
+        else {
+            return CallGate::Allow;
+        };
+        let count = self
+            .recurrences
+            .lock()
+            .unwrap()
+            .get(&key)
+            .copied()
+            .unwrap_or(0);
+        if count + 1 < self.block_count(escalation) {
+            return CallGate::Allow;
+        }
+        let mut blocks = self.blocks.lock().unwrap();
+        *blocks += 1;
+        if *blocks >= escalation.halt_block() {
+            return CallGate::Halt(format!(
+                "Stopping: the same successful tool call was blocked {blocks} times for returning the identical result {count} times; the model kept re-issuing it after being warned, so the run is stuck cycling without making progress."
+            ));
+        }
+        CallGate::Block(format!(
+            "Blocked: this exact call has already returned the identical result {count} times and was not executed again. Its result is already in the conversation. Reassess: use that result, or take a different action. Issuing it again will stop the run."
         ))
     }
 
-    /// Clears both streaks and the recurrence ledger, for example when a paused
-    /// run is resumed.
+    /// Jumps a call straight to the block stage: its next attempt with the
+    /// same result is blocked by [`pre_call`](Self::pre_call), without waiting
+    /// for the ledger to count up. A no-op without staged escalation.
+    pub fn escalate_to_block(&self, call_signature: &str, outcome_identity: &str) {
+        let Some(escalation) = self.escalation else {
+            return;
+        };
+        let key = ledger_key(call_signature, outcome_identity);
+        let mut recurrences = self.recurrences.lock().unwrap();
+        let count = recurrences.entry(key).or_insert(0);
+        *count = (*count).max(self.block_count(escalation) - 1);
+        drop(recurrences);
+        self.last_outcome
+            .lock()
+            .unwrap()
+            .insert(hash_of(call_signature), key);
+    }
+
+    /// Clears both streaks, the recurrence ledger and the block count, for
+    /// example when a paused run is resumed.
     pub fn reset(&self) {
+        self.reset_ledger();
+        *self.blocks.lock().unwrap() = 0;
+    }
+
+    /// Clears the streaks and the recurrence ledger but keeps the run-wide
+    /// block count: for a context eviction, where the model forgets the
+    /// results it repeated but has still already been blocked once.
+    pub fn reset_ledger(&self) {
         self.output.lock().unwrap().reset();
         self.calls.lock().unwrap().reset();
         self.recurrences.lock().unwrap().clear();
+        self.last_outcome.lock().unwrap().clear();
     }
+}
+
+fn hash_of(value: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn ledger_key(call_signature: &str, outcome_identity: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (call_signature, outcome_identity).hash(&mut hasher);
+    hasher.finish()
 }
