@@ -429,6 +429,48 @@ where
         .collect()
 }
 
+/// Flattens a direct-edge map into `(from, to)` string pairs.
+fn edge_pairs(edges: &HashMap<NodeId, Vec<NodeId>>) -> Vec<(String, String)> {
+    edges
+        .iter()
+        .flat_map(|(from, targets)| {
+            targets
+                .iter()
+                .map(move |to| (from.to_string(), to.to_string()))
+        })
+        .collect()
+}
+
+/// Flattens the branch map into `(from, [(label, target)])` conditional routes.
+fn conditional_routes<State>(
+    branches: &HashMap<NodeId, Branch<State>>,
+) -> Vec<(String, Vec<(String, String)>)> {
+    branches
+        .iter()
+        .map(|(from, branch)| {
+            let routes = branch
+                .routes
+                .iter()
+                .map(|(label, target)| (label.clone(), target.to_string()))
+                .collect();
+            (from.to_string(), routes)
+        })
+        .collect()
+}
+
+/// Flattens the barrier map into `(target, [predecessors])` fan-in edges.
+fn waiting_sets(waiting: &HashMap<NodeId, HashSet<NodeId>>) -> Vec<(String, Vec<String>)> {
+    waiting
+        .iter()
+        .map(|(target, preds)| {
+            (
+                target.to_string(),
+                preds.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect()
+}
+
 impl<State, Update> CompiledGraph<State, Update> {
     /// Extracts a behavior-free [`GraphTopology`] describing this graph's
     /// structure (id, nodes, direct edges, conditional routes, entry, finish
