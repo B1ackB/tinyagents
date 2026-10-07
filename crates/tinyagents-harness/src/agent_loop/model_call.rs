@@ -628,6 +628,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             ctx.emit(AgentEvent::FallbackSkipped {
                 model: current_name.clone(),
             });
+            // The substitute counts as tried, like every fallback taken in the
+            // loop below, so a repeated chain entry cannot select it twice.
+            visited.insert(name.clone());
             resolved = ResolvedModel {
                 name: name.clone(),
                 requested: Some(name.clone()),

@@ -380,3 +380,75 @@ async fn plain_auth_failure_is_retried_on_the_next_call() {
         .expect("backup finishes the run");
     assert_eq!(primary.attempts(), 2);
 }
+
+fn single_model_harness(model: &Arc<ScriptedOutcomes>) -> AgentHarness<()> {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("primary", model.clone());
+    harness.with_policy(RunPolicy {
+        retry: RetryPolicy::default()
+            .with_max_attempts(1)
+            .with_backoff_sleep(false),
+        ..RunPolicy::default()
+    });
+    harness
+}
+
+#[tokio::test]
+async fn a_written_off_model_is_still_tried_when_no_fallback_exists() {
+    let primary = ScriptedOutcomes::answering("still here");
+    let harness = single_model_harness(&primary);
+    let mut ctx = RunContext::new(RunConfig::new("advisory-skip"), ());
+    ctx.limits.skip_model_for_run("primary");
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("the skip hint is advisory");
+    assert_eq!(run.text(), Some("still here".to_string()));
+    assert_eq!(primary.attempts(), 1);
+}
+
+#[tokio::test]
+async fn a_written_off_model_is_still_tried_when_the_only_fallback_is_written_off() {
+    let primary = ScriptedOutcomes::answering("primary answers");
+    let backup = ScriptedOutcomes::answering("backup answers");
+    let harness = harness(&primary, &backup, 1);
+    let mut ctx = RunContext::new(RunConfig::new("advisory-skip-2"), ());
+    ctx.limits.skip_model_for_run("primary");
+    ctx.limits.skip_model_for_run("backup");
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("falls back to trying the resolved model");
+    assert_eq!(run.text(), Some("primary answers".to_string()));
+    assert_eq!(primary.attempts(), 1);
+    assert_eq!(backup.attempts(), 0);
+}
+
+#[tokio::test]
+async fn a_fallback_chosen_by_the_skip_hint_is_not_tried_twice() {
+    // Chain [a, b, c, b]: `a` is written off, `b` is substituted and fails, `c`
+    // fails; `b` must not be selected a second time.
+    let a = ScriptedOutcomes::answering("a");
+    let b = ScriptedOutcomes::failing(400, "bad request", false);
+    let c = ScriptedOutcomes::failing(400, "bad request", false);
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("a", a.clone());
+    harness.register_model("b", b.clone());
+    harness.register_model("c", c.clone());
+    harness.with_policy(RunPolicy {
+        retry: RetryPolicy::default()
+            .with_max_attempts(1)
+            .with_backoff_sleep(false),
+        fallback: Some(FallbackPolicy::new(["a", "b", "c", "b"])),
+        ..RunPolicy::default()
+    });
+    let mut ctx = RunContext::new(RunConfig::new("visited"), ());
+    ctx.limits.skip_model_for_run("a");
+    harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect_err("every candidate fails");
+    assert_eq!(a.attempts(), 0);
+    assert_eq!(b.attempts(), 1, "b must be tried once");
+    assert_eq!(c.attempts(), 1);
+}
