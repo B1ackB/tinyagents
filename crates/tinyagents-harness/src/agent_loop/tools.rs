@@ -446,7 +446,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.policy.invalid_args,
                 InvalidArgsPolicy::NormalizeThenReturnToolError
             ) && batch_is_canonical_parallel_safe(&self.tools, &tool_calls);
-        if should_execute_tools_concurrently(
+        // A fresh batch: votes left by an aborted earlier batch must not count,
+        // and admission positions restart at the batch's first call.
+        ctx.terminate_votes.clear();
+        ctx.batch_admissions = 0;
+        let deferred = if should_execute_tools_concurrently(
             tool_calls.len(),
             canonical_parallel_safe,
             self.middleware.tool_middleware_len(),
@@ -460,7 +464,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 tool_calls,
                 promoted_names,
             )
-            .await
+            .await?
         } else {
             self.execute_tools_serially(
                 state,
@@ -471,8 +475,60 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 tool_calls,
                 promoted_names,
             )
-            .await
+            .await?
+        };
+        self.settle_batch_termination(ctx, run, deferred.is_empty());
+        // The positions belong to this batch only; a later admission (a
+        // deferred call resumed inline) must not match them.
+        ctx.truncated_call_positions.clear();
+        Ok(deferred)
+    }
+
+    /// Ends the run when **every** call of the just-finished batch asked to
+    /// terminate (`ToolControl::terminate`; pi's `shouldTerminateToolBatch`).
+    ///
+    /// A batch where only some calls asked is not terminal: the others
+    /// returned results the model has yet to read, so the hint is dropped
+    /// (logged) and the loop goes on. A batch that deferred a call
+    /// (`all_answered == false`) is never terminal either — that call has no
+    /// answer yet. When the batch does end the run, the final response is the
+    /// **last** call's output in source order (results fold in call order in
+    /// both serial and concurrent mode, so this is deterministic).
+    ///
+    /// Always drains the batch's votes.
+    pub(super) fn settle_batch_termination(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        run: &mut AgentRun,
+        all_answered: bool,
+    ) {
+        let votes = std::mem::take(&mut ctx.terminate_votes);
+        let asked = votes.iter().filter(|vote| vote.is_some()).count();
+        if asked == 0 {
+            return;
         }
+        if !all_answered || asked != votes.len() {
+            tracing::debug!(
+                target: "tinyagents::agent_loop",
+                run_id = %ctx.run_id(),
+                terminating_calls = asked,
+                batch_calls = votes.len(),
+                all_answered,
+                "[agent_loop] tool terminate hint ignored: not every call in the batch asked to terminate"
+            );
+            return;
+        }
+        let Some(output) = votes.into_iter().next_back().flatten() else {
+            return;
+        };
+        tracing::debug!(
+            target: "tinyagents::agent_loop",
+            run_id = %ctx.run_id(),
+            batch_calls = asked,
+            "[agent_loop] every call in the batch asked to terminate; ending the run"
+        );
+        run.final_response = Some(ModelResponse::assistant(output));
+        ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
     }
 
     /// Serial admission for one call: cancellation/deadline/limit checks
@@ -501,6 +557,22 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Err(TinyAgentsError::Timeout(format!(
                 "run `{}` exceeded its wall-clock deadline",
                 ctx.run_id()
+            )));
+        }
+        // A call a length stop may have cut off is answered, not run, and spends
+        // no budget slot (see `RunPolicy::reject_truncated_tool_calls`).
+        let position = ctx.batch_admissions;
+        ctx.batch_admissions += 1;
+        if ctx.truncated_call_positions.contains(&position) {
+            tracing::debug!(
+                target: "tinyagents::agent_loop",
+                run_id = %ctx.run_id(),
+                tool = %call.name,
+                call_id = %call.id,
+                "[agent_loop] answering a possibly-truncated tool call with an error"
+            );
+            return Ok(ResolvedToolCall::Answered(tinytools::ToolResult::error(
+                truncated_tool_call_message(&call.name),
             )));
         }
         // The context's `LimitTracker` (synced with `RunPolicy::limits` at run
@@ -1174,12 +1246,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // `state_update`) is the tool-vocabulary half of A1: it is *data* the
         // tool returned, not a middleware decision, so it is translated into
         // the same `MiddlewareControl` request a `Middleware` would make
-        // rather than a separate mechanism. `return_direct` and `terminate`
-        // both mean "the model never gets another turn": this call's own
-        // output becomes the run's final response, which — unlike
+        // rather than a separate mechanism.
+        //
+        // `return_direct` means "the model never gets another turn": this
+        // call's own output becomes the run's final response, which — unlike
         // `MiddlewareControl::StopWithFinal` — `JumpTo(End)` alone cannot
         // express (it falls back to the *last assistant message*, which is
         // one turn too early here), so the final response is set directly.
+        //
+        // `terminate` is a *batch* decision (pi's `shouldTerminateToolBatch`):
+        // a call's own hint only records a vote here, and the batch driver
+        // ends the run in `settle_batch_termination` once every call of the
+        // batch has answered and **all** of them voted to terminate. A call
+        // that did not terminate may have returned something the model still
+        // has to read.
+        let mut terminate_vote: Option<String> = None;
         if let Some(control) = result.control.clone() {
             // `return_direct` is now a per-call override (`Option<bool>`):
             // `None` means "no opinion", so it falls back to the tool's own
@@ -1191,11 +1272,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     .map(|dispatch| dispatch.tool().return_direct())
                     .unwrap_or(false)
             });
-            if return_direct || control.terminate {
-                run.final_response = Some(ModelResponse::assistant(
-                    result.output_for_llm(prepared.options.prefer_markdown),
-                ));
+            if return_direct {
+                let output = result.output_for_llm(prepared.options.prefer_markdown);
+                run.final_response = Some(ModelResponse::assistant(output.clone()));
                 ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
+                terminate_vote = Some(output);
+            } else if control.terminate {
+                terminate_vote = Some(result.output_for_llm(prepared.options.prefer_markdown));
             } else if let Some(goto) = &control.goto {
                 match goto.as_str() {
                     "model" => ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::Model)),
@@ -1213,6 +1296,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 ctx.push_tool_state_update(update);
             }
         }
+
+        ctx.terminate_votes.push(terminate_vote);
 
         run.tool_calls += 1;
         if prepared.executed {
@@ -1541,6 +1626,39 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .await
     }
 
+    /// Answers **every** call of a length-truncated turn with a synthetic error
+    /// result instead of running it. Used when the structured-output call itself
+    /// was cut off, which no other path can answer; ordinary truncated calls are
+    /// answered per call at admission instead (see
+    /// [`RunPolicy::reject_truncated_tool_calls`][crate::runtime::RunPolicy::reject_truncated_tool_calls]).
+    ///
+    /// Each call is folded through [`Self::recover_tool_call`], so the
+    /// started/terminal pairing, `after_tool` hooks, and accounting match the
+    /// other recovery paths; no tool runs and no tool-call budget slot is
+    /// spent (the retry loop is bounded by `RunPolicy::truncated_tool_call_retries`).
+    pub(super) async fn fail_truncated_tool_calls(
+        &self,
+        state: &State,
+        ctx: &mut RunContext<Ctx>,
+        run: &mut AgentRun,
+        status: &mut HarnessRunStatus,
+        messages: &mut Vec<Message>,
+        calls: &[ToolCall],
+    ) -> Result<()> {
+        let mut follow_ups = Vec::new();
+        for call in calls {
+            let result = tinytools::ToolResult::error(truncated_tool_call_message(&call.name));
+            follow_ups.extend(
+                self.recover_tool_call(state, ctx, run, status, messages, call, result)
+                    .await?,
+            );
+        }
+        append_follow_ups(messages, follow_ups);
+        // Synthetic errors never terminate; drop the votes they recorded.
+        ctx.terminate_votes.clear();
+        Ok(())
+    }
+
     /// Executes a multi-call turn concurrently (`join_all`), so turn latency
     /// is the slowest tool instead of the sum. Only reachable when no
     /// tool-wrap middleware is registered (see the module docs); execution
@@ -1778,6 +1896,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         append_follow_ups(messages, follow_ups);
         Ok(deferred)
     }
+}
+
+/// The error a call from a length-truncated response is answered with.
+fn truncated_tool_call_message(tool_name: &str) -> String {
+    format!(
+        "Tool call `{tool_name}` was not executed: your response hit the output token limit \
+         mid-turn, so its arguments may be truncated. Re-issue the tool call with complete \
+         arguments (split large content into smaller calls if needed)."
+    )
 }
 
 /// Appends a batch's follow-up user messages (B2) after its last tool row,

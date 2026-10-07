@@ -211,6 +211,7 @@ async fn telegram_redelivery_with_new_thread_ts_stays_on_legacy_thread() {
             parent_thread_id: None,
             labels: None,
             personality_id: None,
+            working_dir: None,
         },
     )
     .unwrap();
