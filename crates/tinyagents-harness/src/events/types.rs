@@ -777,6 +777,17 @@ pub enum AgentEvent {
     ToolProgress {
         /// Identifier for the in-flight tool call.
         call_id: CallId,
+        /// Human-readable progress message.
+        message: String,
+    },
+
+    /// Progress with optional fraction and partial output fields.
+    ///
+    /// The original [`AgentEvent::ToolProgress`] shape remains unchanged so
+    /// downstream enum literals continue to compile.
+    ToolProgressDetail {
+        /// Identifier for the in-flight tool call.
+        call_id: CallId,
         /// Human-readable progress message; empty when the update carried only
         /// a fraction or partial output.
         #[serde(default)]
@@ -940,7 +951,9 @@ impl AgentEvent {
             AgentEvent::LimitReached { .. } => "limit.reached",
             AgentEvent::MemoryLoaded => "memory.loaded",
             AgentEvent::MemorySaved => "memory.saved",
-            AgentEvent::ToolProgress { .. } => "tool.progress",
+            AgentEvent::ToolProgress { .. } | AgentEvent::ToolProgressDetail { .. } => {
+                "tool.progress"
+            }
             AgentEvent::Custom { .. } => "custom",
             AgentEvent::MiddlewareFailed { .. } => "middleware.failed",
             AgentEvent::HandoffTransformApplied { .. } => "handoff.transform_applied",

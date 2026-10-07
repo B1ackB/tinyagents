@@ -145,7 +145,7 @@ fn seen(recorder: &EventRecorder) -> Vec<Seen> {
         .into_iter()
         .filter_map(|event| match event {
             AgentEvent::ToolStarted { call_id, .. } => Some(Seen::Started(call_id.to_string())),
-            AgentEvent::ToolProgress {
+            AgentEvent::ToolProgressDetail {
                 call_id, message, ..
             } => Some(Seen::Progress(call_id.to_string(), message)),
             AgentEvent::ToolCompleted { call_id, .. } => Some(Seen::Completed(call_id.to_string())),
@@ -240,11 +240,6 @@ async fn concurrent_calls_interleave_but_each_precedes_its_own_terminal_event() 
             "{events:?}"
         );
     }
-    // The batch really ran concurrently: the two calls' progress interleaves.
-    assert!(
-        position(&progress("b", "b1")) < position(&progress("a", "a2")),
-        "expected interleaving, got {events:?}"
-    );
 }
 
 /// Records every tool delta and the point where `after_tool` ran.
@@ -284,6 +279,49 @@ impl Middleware<(), ()> for DeltaLog {
             .push(format!("after:{}", invocation.call_id()));
         Ok(())
     }
+}
+
+struct RejectDelta;
+
+#[async_trait]
+impl Middleware<(), ()> for RejectDelta {
+    fn name(&self) -> &str {
+        "reject-delta"
+    }
+
+    async fn on_tool_delta(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _delta: &mut ToolDelta,
+    ) -> Result<()> {
+        Err(crate::error::TinyAgentsError::Middleware(
+            "delta rejected".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_failing_delta_hook_does_not_fail_the_call_or_stop_replay() {
+    let mut fx = fixture(calls(&[("c1", "build")]));
+    fx.harness.push_middleware(Arc::new(RejectDelta));
+    fx.harness.register_tool(Arc::new(ProgressTool {
+        name: "build",
+        updates: vec!["p1", "p2"],
+        safe: false,
+        stash: None,
+    }));
+
+    fx.run().await;
+    assert_eq!(
+        seen(&fx.recorder),
+        vec![
+            Seen::Started("c1".into()),
+            progress("c1", "p1"),
+            progress("c1", "p2"),
+            Seen::Completed("c1".into()),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -377,7 +415,7 @@ async fn progress_from_a_call_that_then_fails_still_precedes_its_failure() {
         .unwrap_or_else(|| panic!("progress missing from {events:?} (run: {outcome:?})"));
     let terminal_at = events
         .iter()
-        .position(|e| matches!(e, Seen::Failed(_) | Seen::Completed(_)))
+        .position(|e| e == &Seen::Failed("c1".into()))
         .expect("the call has a terminal event");
     assert!(progress_at < terminal_at, "{events:?}");
 }

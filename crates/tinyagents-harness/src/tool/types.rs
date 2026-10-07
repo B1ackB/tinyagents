@@ -35,7 +35,6 @@ use crate::store::namespaced::NamespacedStore;
 ///     .and_then(|any| any.downcast_ref::<ToolExecutionContext>());
 /// ```
 #[derive(Clone)]
-#[non_exhaustive]
 pub struct ToolExecutionContext {
     /// Run that invoked the tool.
     pub run_id: RunId,
@@ -63,10 +62,6 @@ pub struct ToolExecutionContext {
     /// Type-erased application state snapshot, when the host attached one
     /// with [`RunContext::with_state_view`]. Read it through [`Self::state`].
     pub state_view: Option<Arc<dyn Any + Send + Sync>>,
-    /// Where [`tinytools::ToolRunContext::report_progress`] sends this call's
-    /// updates. Set when the loop scoped a progress gate for this exact call;
-    /// `None` (updates are dropped) for a context built outside a loop.
-    pub progress: Option<tinytools::ProgressSink>,
 }
 
 impl ToolExecutionContext {
@@ -85,7 +80,6 @@ impl ToolExecutionContext {
             workspace: ctx.workspace.clone(),
             store: ctx.namespaced_store.clone(),
             state_view: ctx.state_view.clone(),
-            progress: super::progress::ToolProgressGate::current_sink_for(&call_id),
         }
     }
 
@@ -138,7 +132,7 @@ impl tinytools::ToolRunContext for ToolExecutionContext {
     }
 
     fn report_progress(&self, update: tinytools::ToolProgress) {
-        if let Some(sink) = &self.progress {
+        if let Some(sink) = super::progress::ToolProgressGate::current_sink_for(&self.call_id) {
             sink.report(update);
         }
     }

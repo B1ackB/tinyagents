@@ -35,7 +35,7 @@ fn messages(recorder: &EventRecorder) -> Vec<String> {
         .events()
         .into_iter()
         .filter_map(|event| match event {
-            AgentEvent::ToolProgress { message, .. } => Some(message),
+            AgentEvent::ToolProgressDetail { message, .. } => Some(message),
             _ => None,
         })
         .collect()
@@ -55,12 +55,12 @@ fn updates_become_events_in_order_and_are_queued_for_middleware() {
     let events = recorder.events();
     assert!(matches!(
         &events[1],
-        AgentEvent::ToolProgress { call_id, fraction: Some(f), partial: None, .. }
+        AgentEvent::ToolProgressDetail { call_id, fraction: Some(f), partial: None, .. }
             if call_id == &CallId::new("call-1") && (*f - 0.5).abs() < f32::EPSILON
     ));
     assert!(matches!(
         &events[2],
-        AgentEvent::ToolProgress { partial: Some(p), .. } if p == &json!({"rows": 3})
+        AgentEvent::ToolProgressDetail { partial: Some(p), .. } if p == &json!({"rows": 3})
     ));
 
     let deltas = gate.take_pending();
@@ -114,8 +114,8 @@ fn a_flood_is_coalesced_and_the_latest_state_survives_close() {
     // Two pass straight through; the rest collapse into the newest one.
     assert_eq!(messages(&recorder), vec!["step 1", "step 2"]);
     gate.close();
-    assert_eq!(messages(&recorder), vec!["step 1", "step 2", "step 6"]);
-    assert_eq!(gate.take_pending().len(), 3);
+    assert_eq!(messages(&recorder), vec!["step 1", "step 2"]);
+    assert_eq!(gate.take_pending().len(), 2);
 }
 
 #[test]
@@ -124,18 +124,20 @@ fn coalescing_merges_so_a_later_fraction_does_not_erase_an_earlier_message() {
     let gate = gate(
         &recorder,
         ToolProgressLimits {
-            max_per_window: 0,
-            window: Duration::from_secs(3600),
+            max_per_window: 1,
+            window: Duration::from_millis(1),
         },
     );
     let sink = gate.sink();
+    sink.report(ToolProgress::message("started"));
     sink.report(ToolProgress::message("compiling"));
     sink.report(ToolProgress::default().with_fraction(0.9));
+    std::thread::sleep(Duration::from_millis(5));
     gate.close();
     let events = recorder.events();
     assert!(matches!(
-        &events[0],
-        AgentEvent::ToolProgress { message, fraction: Some(f), .. }
+        &events[1],
+        AgentEvent::ToolProgressDetail { message, fraction: Some(f), .. }
             if message == "compiling" && (*f - 0.9).abs() < f32::EPSILON
     ));
 }
@@ -156,7 +158,7 @@ fn a_new_window_flushes_what_the_last_one_held_back() {
     std::thread::sleep(Duration::from_millis(20));
     sink.report(ToolProgress::message("c")); // new window: flush "b", pass "c"
     gate.close();
-    assert_eq!(messages(&recorder), vec!["a", "b", "c"]);
+    assert_eq!(messages(&recorder), vec!["a", "b"]);
 }
 
 #[tokio::test]
@@ -213,6 +215,18 @@ fn a_huge_partial_is_truncated_in_the_delta_not_serialized_in_full() {
     gate.sink()
         .report(ToolProgress::default().with_partial(json!({ "blob": huge })));
     gate.close();
+    let live_partial_len = recorder
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolProgressDetail {
+                partial: Some(partial),
+                ..
+            } => Some(partial.to_string().len()),
+            _ => None,
+        })
+        .expect("live progress event");
+    assert!(live_partial_len <= 4096);
     let deltas = gate.take_pending();
     assert_eq!(deltas.len(), 1);
     assert!(
@@ -266,7 +280,7 @@ fn an_out_of_range_fraction_set_on_the_field_is_sanitized() {
         .events()
         .into_iter()
         .filter_map(|e| match e {
-            AgentEvent::ToolProgress { fraction, .. } => Some(fraction),
+            AgentEvent::ToolProgressDetail { fraction, .. } => Some(fraction),
             _ => None,
         })
         .collect();

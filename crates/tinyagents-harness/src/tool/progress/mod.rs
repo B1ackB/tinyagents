@@ -75,69 +75,22 @@
 //! spawned task; the gate's `open` flag, not the task-local, is what silences
 //! it later.
 
-use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tinyinference_llm::tool::ToolDelta;
 use tinytools::{ProgressSink, ToolProgress};
 
 use crate::events::{AgentEvent, EventSink};
 use crate::ids::CallId;
+mod types;
 
-/// Most deltas kept for the middleware replay; older ones are dropped.
+use self::types::GateState;
+pub(crate) use self::types::{ToolProgressGate, ToolProgressLimits};
+
 const MAX_PENDING_DELTAS: usize = 64;
-/// Most bytes of a delta's `content`; longer renderings are truncated.
 const MAX_DELTA_CONTENT_BYTES: usize = 4096;
-
-/// How many progress events one call may emit before coalescing starts.
-///
-/// See the module docs ("Flooding"). The default admits 32 events per second,
-/// far above what a human-facing progress bar needs and far below what a tool
-/// looping over a file can produce.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ToolProgressLimits {
-    /// Events admitted per window before further updates are coalesced.
-    pub(crate) max_per_window: usize,
-    /// Length of the window.
-    pub(crate) window: Duration,
-}
-
-impl Default for ToolProgressLimits {
-    fn default() -> Self {
-        Self {
-            max_per_window: 32,
-            window: Duration::from_secs(1),
-        }
-    }
-}
-
-#[derive(Default)]
-struct GateState {
-    /// `true` once the call has settled; further updates are dropped.
-    closed: bool,
-    /// Deltas for events already emitted, awaiting the middleware replay
-    /// (bounded by [`MAX_PENDING_DELTAS`]).
-    pending: VecDeque<ToolDelta>,
-    /// Deltas evicted from `pending` because the replay queue was full.
-    evicted: usize,
-    window_start: Option<Instant>,
-    emitted_in_window: usize,
-    /// The newest coalesced update not yet emitted.
-    held: Option<ToolProgress>,
-}
-
-/// The per-call destination for a tool's progress updates. See the module docs.
-pub(crate) struct ToolProgressGate {
-    call_id: CallId,
-    tool_name: String,
-    events: EventSink,
-    limits: ToolProgressLimits,
-    /// Whether anything will read the replay queue (the run has middleware).
-    queue_deltas: bool,
-    state: Mutex<GateState>,
-}
 
 tokio::task_local! {
     static CURRENT: Arc<ToolProgressGate>;
@@ -207,7 +160,16 @@ impl ToolProgressGate {
             return;
         }
         if let Some(held) = state.held.take() {
-            self.emit(&mut state, held);
+            let window_expired = state
+                .window_start
+                .is_none_or(|start| start.elapsed() >= self.limits.window);
+            if window_expired {
+                state.window_start = Some(Instant::now());
+                state.emitted_in_window = 0;
+            }
+            if state.emitted_in_window < self.limits.max_per_window {
+                self.emit(&mut state, held);
+            }
         }
         state.closed = true;
     }
@@ -287,11 +249,16 @@ impl ToolProgressGate {
                 ..ToolDelta::default()
             });
         }
-        self.events.emit(AgentEvent::ToolProgress {
+        let message = update
+            .message
+            .map(|message| bounded_text(&message))
+            .unwrap_or_default();
+        let partial = update.partial.map(|partial| bounded_value(&partial));
+        self.events.emit(AgentEvent::ToolProgressDetail {
             call_id: self.call_id.clone(),
-            message: update.message.unwrap_or_default(),
+            message,
             fraction,
-            partial: update.partial,
+            partial,
         });
     }
 
@@ -349,6 +316,17 @@ fn truncate_at_char_boundary(text: &mut String, max: usize) {
         }
         text.truncate(end);
     }
+}
+
+fn bounded_text(text: &str) -> String {
+    let mut text = text.to_owned();
+    truncate_at_char_boundary(&mut text, MAX_DELTA_CONTENT_BYTES);
+    text
+}
+
+fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
+    let encoded = bounded_json(value);
+    serde_json::from_str(&encoded).unwrap_or(serde_json::Value::String(encoded))
 }
 
 /// Serializes `value`, stopping once [`MAX_DELTA_CONTENT_BYTES`] are written.
