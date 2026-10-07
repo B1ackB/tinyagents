@@ -1431,7 +1431,11 @@ fn absent_host_capabilities_fail_closed() {
     assert_eq!(error, SubagentError::MissingCapability("planner"));
 }
 
-fn admission_policy(parent: Option<usize>, total: Option<usize>, targets: Option<&[&str]>) -> SpawnAdmission {
+fn admission_policy(
+    parent: Option<usize>,
+    total: Option<usize>,
+    targets: Option<&[&str]>,
+) -> SpawnAdmission {
     SpawnAdmission::new(SpawnPolicy {
         max_children_per_parent: parent,
         max_total_per_root: total,
@@ -1489,8 +1493,11 @@ async fn driver_rejects_a_spawn_over_the_parent_cap_and_frees_the_slot_on_finish
 #[tokio::test]
 async fn driver_enforces_the_target_allowlist_and_fails_closed_without_a_target() {
     let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
-    let driver = driver(planner, executor, persistence)
-        .with_spawn_admission(admission_policy(None, None, Some(&["researcher"])));
+    let driver = driver(planner, executor, persistence).with_spawn_admission(admission_policy(
+        None,
+        None,
+        Some(&["researcher"]),
+    ));
 
     let missing = driver
         .run(sibling_request("no-target"), CancellationToken::new())
@@ -1552,8 +1559,11 @@ async fn driver_refunds_the_reservation_when_planning_fails_before_launch() {
 #[tokio::test]
 async fn driver_releases_the_live_slot_when_execution_fails() {
     let (planner, executor, persistence, _) = fakes(ExecutorMode::Error);
-    let driver = driver(planner, executor, persistence)
-        .with_spawn_admission(admission_policy(Some(1), None, None));
+    let driver = driver(planner, executor, persistence).with_spawn_admission(admission_policy(
+        Some(1),
+        None,
+        None,
+    ));
     for task in ["a", "b"] {
         let error = driver
             .run(sibling_request(task), CancellationToken::new())
@@ -1567,8 +1577,11 @@ async fn driver_releases_the_live_slot_when_execution_fails() {
 #[tokio::test]
 async fn driver_total_budget_is_spent_by_completed_children() {
     let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
-    let driver = driver(planner, executor, persistence)
-        .with_spawn_admission(admission_policy(None, Some(1), None));
+    let driver = driver(planner, executor, persistence).with_spawn_admission(admission_policy(
+        None,
+        Some(1),
+        None,
+    ));
 
     driver
         .run(sibling_request("one"), CancellationToken::new())

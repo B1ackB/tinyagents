@@ -78,3 +78,39 @@ returns a local cancelled outcome promptly, without cancelling the leader or
 creating an additional persistence action.
 An absent host seam is rejected at driver construction with a typed
 `MissingCapability` error; no partial lifecycle runs.
+
+## Spawn admission control
+
+`SpawnPolicy` bounds child fan-out; `SpawnAdmission` is the injected ledger
+that enforces it (no global state: clones share one ledger, and a host shares
+one instance across every tool/driver whose spawns should count together).
+
+| Field | Meaning | Released |
+| --- | --- | --- |
+| `max_children_per_parent` | children live at once under one parent run | at the child's terminal state |
+| `max_total_per_root` | children ever spawned under one root run (a tree-wide budget) | only if the spawn never happened |
+| `allowed_targets` | sub-agent names that may be spawned (`Some(vec![])` allows none) | n/a |
+
+Enforcement uses *reservation* semantics: `try_reserve` checks every limit and
+claims the slot under one lock, returning a `SpawnReservation` guard, so
+concurrent spawns cannot race past a cap. Dropping the guard releases the live
+slot; dropping it without `commit()` (the spawn failed before the child
+launched) also refunds the root budget. `SubAgentTool` (background and inline)
+reserves before creating the child and moves the guard into the child's task
+for its whole lifetime; `SubagentDriver::run` reserves after the cancellation
+and resume checks and before the planner runs, and commits just before the
+executor launches. Coalesced followers and cached terminal results never
+reserve; a resumed lifecycle takes a live slot but no new total budget.
+
+An over-limit `SubAgentTool` call returns a tool error worded as a limit signal
+("...treat this as a delegated-agent limit signal, not a completed answer"),
+like the depth-limit error; the driver returns `SubagentError::SpawnRejected`.
+Because the neutral `SubagentRequest` carries no agent identity, a driver host
+that configures `allowed_targets` must name each request with
+`SubagentRequest::with_target`; an unnamed request is refused (fail closed).
+
+Every limit defaults to `None` (unlimited), so nothing changes until a host opts
+in with `SubAgentTool::with_spawn_admission` /
+`SubagentDriver::with_spawn_admission`. Recommended guard-rail starting point:
+`max_children_per_parent: Some(5)` (OpenClaw's default) and a
+`max_total_per_root` of a few dozen.

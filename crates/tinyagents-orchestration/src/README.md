@@ -14,6 +14,9 @@ on orchestration policy.
   and cancelled jobs. `SubAgentJobsTool` queries them and
   `SubAgentMessageTool` sends messages to live children.
 - `subagent::SubAgentSession` reuses one child and its transcript across turns.
+- `subagent::SpawnPolicy` / `SpawnAdmission` bound child fan-out (per-parent
+  live cap, per-root total budget, target allowlist) with atomic reservation;
+  see `subagent/README.md`.
 - `subagent::SubagentDriver` coordinates durable resume, preparation,
   execution, pause, and terminal persistence through host-supplied traits.
 
