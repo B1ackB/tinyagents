@@ -195,10 +195,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
         self.state.forget_run(run_id);
-        {
-        let mut pending = lock(&self.pending);
-            pending.remove(&run_id);
-        }
+        lock(&self.pending).remove(&run_id);
         Ok(())
     }
 
@@ -234,10 +231,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if tool_calls.is_empty() {
             // A final answer (no tool calls) ends the loop; nothing to guard, and
             // there is no batch to track for the call guard.
-            {
-        let mut pending = lock(&self.pending);
-                pending.remove(&ctx.instance_id());
-            }
+            lock(&self.pending).remove(&ctx.instance_id());
             return Ok(());
         }
 
