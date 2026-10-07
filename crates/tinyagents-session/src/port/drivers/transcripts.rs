@@ -199,7 +199,9 @@ impl Replay {
 }
 
 fn normalized(rows: Vec<TranscriptMessage>) -> Vec<TranscriptMessage> {
-    rows.into_iter().map(TranscriptMessage::normalized).collect()
+    rows.into_iter()
+        .map(TranscriptMessage::normalized)
+        .collect()
 }
 
 /// Declares both collections, once per locator.
@@ -219,7 +221,10 @@ impl Declared {
                 docs.ensure_collection(
                     &CollectionSpec::new(INDEX)
                         .index(IndexSpec::new("by_thread", ["thread_id", "created_at"]))
-                        .index(IndexSpec::new("by_agent_name", ["agent_name", "created_at"]))
+                        .index(IndexSpec::new(
+                            "by_agent_name",
+                            ["agent_name", "created_at"],
+                        ))
                         .index(IndexSpec::new("by_agent_id", ["agent_id", "created_at"])),
                 )
                 .await
@@ -292,10 +297,7 @@ impl DriverTranscriptHistory {
         B: Fn(&Replay, &TranscriptMeta) -> anyhow::Result<Option<Entry>> + Send + 'static,
     {
         let inner = Arc::clone(&self.inner);
-        let outcome = run_on(&self.bridge, async move {
-            Ok(inner.commit(build).await)
-        })?;
-        outcome
+        run_on(&self.bridge, async move { Ok(inner.commit(build).await) })?
     }
 
     /// Seals this generation; later writes to it are refused.
@@ -343,9 +345,16 @@ impl HistoryInner {
         .sort(Sort::asc("seq"))
         .limit(500);
         for stored in self.docs.query_all(ENTRIES, &query).await? {
-            let seq = stored.doc.get("seq").and_then(Value::as_u64).ok_or_else(|| {
-                StorageError::serialization(format!("transcript entry {} has no seq", stored.id))
-            })?;
+            let seq = stored
+                .doc
+                .get("seq")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    StorageError::serialization(format!(
+                        "transcript entry {} has no seq",
+                        stored.id
+                    ))
+                })?;
             let entry: Entry = serde_json::from_value(stored.doc).map_err(|error| {
                 StorageError::serialization(format!(
                     "transcript entry {} is unreadable: {error}",
@@ -375,7 +384,12 @@ impl HistoryInner {
             }
             match self
                 .docs
-                .put(ENTRIES, &entry_id(&self.stem, seq), doc, Precondition::Absent)
+                .put(
+                    ENTRIES,
+                    &entry_id(&self.stem, seq),
+                    doc,
+                    Precondition::Absent,
+                )
                 .await
             {
                 Ok(_) => {
@@ -669,10 +683,7 @@ impl DriverTranscriptLocator {
 
     /// Reserves `stem` as a new generation: succeeds when nothing is written
     /// there and no live reservation holds it.
-    async fn reserve(
-        docs: &Arc<dyn DocumentStore>,
-        stem: &str,
-    ) -> anyhow::Result<()> {
+    async fn reserve(docs: &Arc<dyn DocumentStore>, stem: &str) -> anyhow::Result<()> {
         let written = docs
             .count(
                 ENTRIES,
@@ -860,10 +871,7 @@ impl TranscriptLocator for DriverTranscriptLocator {
         };
         reserved?;
         let predecessor_stem = session_stem(session);
-        if let Err(error) = self
-            .handle(&predecessor_stem, seed.clone())
-            .seal()
-        {
+        if let Err(error) = self.handle(&predecessor_stem, seed.clone()).seal() {
             let docs = Arc::clone(&self.docs);
             let id = doc_key(&[&stem]);
             if let Err(release) = run_on(&self.bridge, async move {

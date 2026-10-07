@@ -81,7 +81,9 @@ fn an_ordinary_turn_stores_only_its_new_rows() {
     history.append_turn(turn(&[], &first, &meta("t"))).unwrap();
     let mut second = first.clone();
     second.extend([message("user", "c"), message("assistant", "d")]);
-    history.append_turn(turn(&first, &second, &meta("t"))).unwrap();
+    history
+        .append_turn(turn(&first, &second, &meta("t")))
+        .unwrap();
     let compacted = vec![message("user", "summary")];
     history
         .append_turn(turn(&second, &compacted, &meta("t")))
@@ -159,7 +161,11 @@ fn tools_and_meta_follow_the_latest_turn() {
     later.turn_count = 2;
     history.append_turn(turn(&rows, &rows, &later)).unwrap();
     let read = history.read_session().unwrap().unwrap();
-    assert_eq!(read.tools, Some(tools), "a turn without tools keeps the last");
+    assert_eq!(
+        read.tools,
+        Some(tools),
+        "a turn without tools keeps the last"
+    );
     assert_eq!(read.meta.turn_count, 2);
 }
 
@@ -168,7 +174,11 @@ fn partials_stay_out_of_the_replay_and_a_clear_drops_them() {
     let docs = docs();
     let locator = locator(&docs);
     let handle = locator.handle("s", meta("t"));
-    assert!(!handle.record_partial(&TranscriptPartial::new(""), None).unwrap());
+    assert!(
+        !handle
+            .record_partial(&TranscriptPartial::new(""), None)
+            .unwrap()
+    );
     let rows = vec![message("user", "a")];
     let mut partial = TranscriptPartial::new("half");
     partial.reasoning_content = Some("thinking".into());
@@ -176,7 +186,11 @@ fn partials_stay_out_of_the_replay_and_a_clear_drops_them() {
     handle
         .append_turn_with_partial(turn(&[], &rows, &meta("t")), Some(&partial))
         .unwrap();
-    assert!(handle.record_partial(&TranscriptPartial::new("more"), Some("r2")).unwrap());
+    assert!(
+        handle
+            .record_partial(&TranscriptPartial::new("more"), Some("r2"))
+            .unwrap()
+    );
     let partials = handle.partials().unwrap();
     assert_eq!(partials.len(), 2);
     assert_eq!(partials[0], (partial, Some("req".to_string())));
@@ -195,10 +209,18 @@ fn partials_stay_out_of_the_replay_and_a_clear_drops_them() {
 fn a_partial_alone_makes_the_transcript_exist() {
     let docs = docs();
     let handle = locator(&docs).handle("s", meta("t"));
-    assert!(handle.record_partial(&TranscriptPartial::new("half"), None).unwrap());
+    assert!(
+        handle
+            .record_partial(&TranscriptPartial::new("half"), None)
+            .unwrap()
+    );
     let read = handle.read_session().unwrap().unwrap();
     assert!(read.messages.is_empty());
-    assert_eq!(read.meta.thread_id.as_deref(), Some("t"), "the seed is the meta");
+    assert_eq!(
+        read.meta.thread_id.as_deref(),
+        Some("t"),
+        "the seed is the meta"
+    );
 }
 
 #[test]
@@ -214,14 +236,16 @@ fn a_sealed_generation_refuses_writes() {
         history.append(message("user", "late")).unwrap_err(),
         history.replace(&[]).unwrap_err(),
         history.clear().unwrap_err(),
-        history
-            .append_turn(turn(&[], &[], &meta("t")))
-            .unwrap_err(),
+        history.append_turn(turn(&[], &[], &meta("t"))).unwrap_err(),
     ] {
         assert!(error.to_string().contains("sealed"), "{error}");
     }
     let handle = locator.handle(&session_stem(&session), meta("t"));
-    assert!(!handle.record_partial(&TranscriptPartial::new("x"), None).unwrap());
+    assert!(
+        !handle
+            .record_partial(&TranscriptPartial::new("x"), None)
+            .unwrap()
+    );
     handle.seal().unwrap();
     assert_eq!(
         entries(&docs, &session_stem(&session))
@@ -342,7 +366,10 @@ fn lookups_find_the_newest_written_root() {
             .append_interrupted_partial("t", Some("planner"), &TranscriptPartial::new("p"), None)
             .unwrap()
     );
-    assert_eq!(locator.handle("new", meta("t")).partials().unwrap().len(), 1);
+    assert_eq!(
+        locator.handle("new", meta("t")).partials().unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -351,8 +378,12 @@ fn a_thread_change_moves_the_transcript_in_the_index() {
     let locator = locator(&docs);
     let history = locator.open_stem("s", meta("first")).unwrap();
     let rows = vec![message("user", "a")];
-    history.append_turn(turn(&[], &rows, &meta("first"))).unwrap();
-    history.append_turn(turn(&rows, &rows, &meta("second"))).unwrap();
+    history
+        .append_turn(turn(&[], &rows, &meta("first")))
+        .unwrap();
+    history
+        .append_turn(turn(&rows, &rows, &meta("second")))
+        .unwrap();
     assert!(locator.root_for_thread("first").is_none());
     assert!(locator.root_for_thread("second").is_some());
 }
@@ -406,7 +437,9 @@ fn the_index_keeps_its_creation_time() {
     history.append_turn(turn(&[], &rows, &meta("t"))).unwrap();
     let read = Arc::clone(&docs);
     let first = on_bridge(async move { read.get(INDEX, &doc_key(&["s"])).await });
-    history.append_turn(turn(&rows, &rows, &meta("t2"))).unwrap();
+    history
+        .append_turn(turn(&rows, &rows, &meta("t2")))
+        .unwrap();
     let read = Arc::clone(&docs);
     let second = on_bridge(async move { read.get(INDEX, &doc_key(&["s"])).await });
     let (first, second) = (first.unwrap(), second.unwrap());

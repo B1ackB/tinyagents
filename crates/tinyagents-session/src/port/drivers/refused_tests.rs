@@ -16,7 +16,11 @@ async fn every_document_call_reports_the_refusal() {
     };
     assert_eq!(docs.capabilities(), Capabilities::default());
     assert_eq!(
-        kind(docs.ensure_collection(&CollectionSpec::new("c")).await.unwrap_err()),
+        kind(
+            docs.ensure_collection(&CollectionSpec::new("c"))
+                .await
+                .unwrap_err()
+        ),
         ErrorKind::Unavailable
     );
     assert!(docs.get("c", "i").await.is_err());

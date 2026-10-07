@@ -25,7 +25,9 @@ use tinystoragedrivers_core::{
 use tokio::sync::OnceCell;
 
 use super::super::TurnStates;
-use super::super::memory::{COMPLETED_RETENTION, completed_newest_first, is_terminal, newest_first};
+use super::super::memory::{
+    COMPLETED_RETENTION, completed_newest_first, is_terminal, newest_first,
+};
 use super::transcripts::doc_key;
 use crate::turn_state::{TurnLifecycle, TurnState};
 
@@ -307,7 +309,10 @@ impl TurnStates for DriverTurnStates {
         let key = id(thread_id, request_id);
         self.run(|inner| async move {
             inner.declared().await?;
-            inner.docs.delete(COLLECTION, &key, Precondition::None).await
+            inner
+                .docs
+                .delete(COLLECTION, &key, Precondition::None)
+                .await
         })
     }
 

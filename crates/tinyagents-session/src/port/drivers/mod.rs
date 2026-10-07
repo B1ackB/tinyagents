@@ -228,7 +228,11 @@ impl SessionStoreProvider for DriverSessionStores {
     }
 
     fn destination_key(&self) -> Option<String> {
-        Some(format!("{}://{:p}", self.backend.driver(), Arc::as_ptr(&self.backend)))
+        Some(format!(
+            "{}://{:p}",
+            self.backend.driver(),
+            Arc::as_ptr(&self.backend)
+        ))
     }
 }
 

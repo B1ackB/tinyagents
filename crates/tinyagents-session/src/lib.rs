@@ -108,13 +108,13 @@ pub use ops::{
     record_message_with_reasoning, record_session_end, record_session_start, record_tool_call,
     search_sessions, set_fts_snippet_bytes,
 };
-#[cfg(feature = "storage-drivers")]
-pub use port::{
-    DriverSessionStores, DriverTranscriptHistory, DriverTranscriptLocator, DriverTurnStates,
-};
 pub use port::{
     AgentStores, InMemorySessionStores, InMemoryTranscriptLocator, InMemoryTurnStates,
     SessionStoreProvider, TurnStates,
+};
+#[cfg(feature = "storage-drivers")]
+pub use port::{
+    DriverSessionStores, DriverTranscriptHistory, DriverTranscriptLocator, DriverTurnStates,
 };
 pub use retention::{
     RetentionReport, apply_retention, prune_run_events_before, prune_run_telemetry_before,

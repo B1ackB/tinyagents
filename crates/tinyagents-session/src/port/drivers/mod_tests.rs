@@ -50,7 +50,10 @@ fn stores_work_outside_any_runtime() {
 
 #[test]
 fn a_valid_agent_id_is_its_own_scope() {
-    assert_eq!(DriverSessionStores::scope_for("agent-7").as_str(), "agent-7");
+    assert_eq!(
+        DriverSessionStores::scope_for("agent-7").as_str(),
+        "agent-7"
+    );
 }
 
 #[test]
@@ -59,9 +62,17 @@ fn any_other_agent_id_maps_to_a_stable_hashed_scope() {
     assert!(spaced.as_str().starts_with("sha256:"));
     assert_eq!(spaced, DriverSessionStores::scope_for("has a space"));
     assert_ne!(spaced, DriverSessionStores::scope_for("has  a space"));
-    assert!(DriverSessionStores::scope_for("").as_str().starts_with("sha256:"));
+    assert!(
+        DriverSessionStores::scope_for("")
+            .as_str()
+            .starts_with("sha256:")
+    );
     let long = "a".repeat(300);
-    assert!(DriverSessionStores::scope_for(&long).as_str().starts_with("sha256:"));
+    assert!(
+        DriverSessionStores::scope_for(&long)
+            .as_str()
+            .starts_with("sha256:")
+    );
 }
 
 #[test]
@@ -129,7 +140,13 @@ fn recover_on_open_interrupts_turns_an_earlier_process_left() {
 
     let plain = DriverSessionStores::new(Arc::clone(&backend)).unwrap();
     assert_eq!(
-        plain.for_agent("a").turn_states.get("t").unwrap().unwrap().lifecycle,
+        plain
+            .for_agent("a")
+            .turn_states
+            .get("t")
+            .unwrap()
+            .unwrap()
+            .lifecycle,
         TurnLifecycle::Started,
         "without the option nothing is touched"
     );
@@ -197,7 +214,13 @@ async fn an_unbindable_scope_fails_closed() {
     assert!(error.contains("database is down"), "{error}");
     assert!(stores.turn_states.list().is_err());
     assert!(stores.kv.get("ns", "k").await.is_err());
-    assert!(stores.journal.append("s", serde_json::json!(1)).await.is_err());
+    assert!(
+        stores
+            .journal
+            .append("s", serde_json::json!(1))
+            .await
+            .is_err()
+    );
     assert!(stores.journal.len("s").await.is_err());
 
     let session = crate::transcript::SessionRef::scoped("t", "a");
@@ -217,6 +240,9 @@ async fn an_unbindable_scope_fails_closed() {
             .is_err()
     );
 
-    assert!(provider.agents.lock().unwrap().is_empty(), "refusals are not cached");
+    assert!(
+        provider.agents.lock().unwrap().is_empty(),
+        "refusals are not cached"
+    );
     provider.recover().unwrap();
 }

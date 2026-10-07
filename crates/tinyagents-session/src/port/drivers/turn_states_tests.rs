@@ -11,7 +11,7 @@ fn store() -> (DriverTurnStates, Arc<dyn DocumentStore>) {
 }
 
 fn started(thread: &str, request: &str, minute: u32) -> TurnState {
-    TurnState::started(thread, request, 8, &format!("2026-01-01T00:{minute:02}:00Z"))
+    TurnState::started(thread, request, 8, format!("2026-01-01T00:{minute:02}:00Z"))
 }
 
 fn completed(thread: &str, request: &str, minute: u32) -> TurnState {
@@ -25,7 +25,9 @@ fn completed(thread: &str, request: &str, minute: u32) -> TurnState {
 fn completed_turns_are_kept_up_to_the_retention_limit() {
     let (turns, _) = store();
     for minute in 0..(COMPLETED_RETENTION as u32 + 3) {
-        turns.put(&completed("t", &format!("r{minute:02}"), minute)).unwrap();
+        turns
+            .put(&completed("t", &format!("r{minute:02}"), minute))
+            .unwrap();
     }
     turns.put(&started("t", "live", 59)).unwrap();
     let kept = turns.list_thread("t").unwrap();
@@ -34,19 +36,29 @@ fn completed_turns_are_kept_up_to_the_retention_limit() {
         turns.get_turn("t", "r00").unwrap().is_none(),
         "the oldest completed turns go first"
     );
-    assert!(turns.get_turn("t", "live").unwrap().is_some(), "live turns stay");
+    assert!(
+        turns.get_turn("t", "live").unwrap().is_some(),
+        "live turns stay"
+    );
 }
 
 #[test]
 fn settling_prunes_too() {
     let (turns, _) = store();
     for minute in 0..COMPLETED_RETENTION as u32 {
-        turns.put(&completed("t", &format!("r{minute:02}"), minute)).unwrap();
+        turns
+            .put(&completed("t", &format!("r{minute:02}"), minute))
+            .unwrap();
     }
     turns.put(&started("t", "last", 58)).unwrap();
     assert!(
         turns
-            .settle_turn("t", "last", TurnLifecycle::Completed, "2026-01-01T01:00:00Z")
+            .settle_turn(
+                "t",
+                "last",
+                TurnLifecycle::Completed,
+                "2026-01-01T01:00:00Z"
+            )
             .unwrap()
     );
     assert_eq!(turns.list_thread("t").unwrap().len(), COMPLETED_RETENTION);
@@ -56,9 +68,15 @@ fn settling_prunes_too() {
 fn put_unless_completed_inserts_updates_and_then_holds() {
     let (turns, _) = store();
     let mut turn = started("t", "r", 0);
-    assert!(turns.put_unless_completed(&turn).unwrap(), "a new turn is written");
+    assert!(
+        turns.put_unless_completed(&turn).unwrap(),
+        "a new turn is written"
+    );
     turn.lifecycle = TurnLifecycle::Completed;
-    assert!(turns.put_unless_completed(&turn).unwrap(), "a live turn is updated");
+    assert!(
+        turns.put_unless_completed(&turn).unwrap(),
+        "a live turn is updated"
+    );
     assert!(
         !turns.put_unless_completed(&started("t", "r", 1)).unwrap(),
         "a completed turn is never overwritten conditionally"
@@ -151,8 +169,13 @@ fn an_unreadable_snapshot_is_an_error() {
     let raw = Arc::clone(&docs);
     bridge
         .run(async move {
-            raw.put(COLLECTION, &id("t", "bodiless"), json!({"thread_id": "t"}), Precondition::None)
-                .await
+            raw.put(
+                COLLECTION,
+                &id("t", "bodiless"),
+                json!({"thread_id": "t"}),
+                Precondition::None,
+            )
+            .await
         })
         .unwrap()
         .unwrap();

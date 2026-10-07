@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tinystoragedrivers_core::{
-    Blocking, Capabilities, CollectionSpec, DocumentStore, ErrorKind, Filter, Page, Precondition, Query,
-    Result, Sort, StorageError, StreamEntry, StreamStore, Version, Versioned, async_trait,
+    Blocking, Capabilities, CollectionSpec, DocumentStore, ErrorKind, Filter, Page, Precondition,
+    Query, Result, Sort, StorageError, StreamEntry, StreamStore, Version, Versioned, async_trait,
 };
 
 use super::super::AgentStores;
@@ -111,7 +111,12 @@ impl StreamStore for Refused {
         Err(self.error())
     }
 
-    async fn read_window(&self, _stream: &str, _from: u64, _limit: usize) -> Result<Vec<StreamEntry>> {
+    async fn read_window(
+        &self,
+        _stream: &str,
+        _from: u64,
+        _limit: usize,
+    ) -> Result<Vec<StreamEntry>> {
         Err(self.error())
     }
 
