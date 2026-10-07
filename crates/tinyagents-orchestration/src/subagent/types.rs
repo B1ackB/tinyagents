@@ -390,8 +390,6 @@ pub enum IncompleteKind {
     Timeout,
     /// A policy budget (calls, tokens) was exceeded.
     BudgetExceeded,
-    /// The child kept failing transiently and the retry policy gave up.
-    RetriesExhausted,
 }
 
 /// The visible status of one subagent run.
