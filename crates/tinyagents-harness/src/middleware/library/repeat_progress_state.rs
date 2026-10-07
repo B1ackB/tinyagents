@@ -2,13 +2,19 @@
 //! eviction observer.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::ModelRequest;
 use tinytools::{ToolContent, ToolResult as TaToolResult};
 
 use crate::no_progress::{RepeatMonitor, RepeatProgressConfig};
+
+/// Locks `mutex`, carrying on with whatever a panicking holder left behind: a
+/// loop guard must never take the run down or silently stop guarding.
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Warnings kept waiting for a later result; beyond this the newest are dropped.
 const MAX_DEFERRED_NOTES: usize = 4;
@@ -64,8 +70,6 @@ pub(super) struct RepeatState {
     /// Recorded results still verbatim in the current request before any
     /// reduction step ran; compared against the final request by the observer.
     pub(super) visible_before_reduction: Mutex<HashMap<u64, HashSet<String>>>,
-    /// `call_id` → how the guard answered the call without running it.
-    pub(super) refused: Mutex<HashMap<u64, HashMap<String, &'static str>>>,
     /// Warnings that did not fit on the result they arose with (one note per
     /// result), waiting for the next successful one.
     pub(super) deferred: Mutex<HashMap<u64, VecDeque<String>>>,
@@ -79,78 +83,57 @@ impl RepeatState {
             cleared_placeholder: placeholder.into(),
             recorded: Mutex::default(),
             visible_before_reduction: Mutex::default(),
-            refused: Mutex::default(),
             deferred: Mutex::default(),
         }
     }
 }
 
 impl RepeatState {
-    /// Runs `f` on the run's monitor, creating it on first use. `None` only if
-    /// the lock is poisoned, in which case the guard stays out of the way.
-    pub(super) fn with_monitor<R>(
-        &self,
-        run_id: u64,
-        f: impl FnOnce(&RepeatMonitor) -> R,
-    ) -> Option<R> {
-        let mut monitors = self.monitors.lock().ok()?;
+    /// Runs `f` on the run's monitor, creating it on first use.
+    pub(super) fn with_monitor<R>(&self, run_id: u64, f: impl FnOnce(&RepeatMonitor) -> R) -> R {
+        let mut monitors = lock(&self.monitors);
         let monitor = monitors
             .entry(run_id)
             .or_insert_with(|| RepeatMonitor::new(&self.config));
-        Some(f(monitor))
-    }
-}
-
-impl RepeatState {
-    /// Remembers that the call `call_id` was answered without running.
-    pub(super) fn mark_refused(&self, run_id: u64, call_id: &str, marker: &'static str) {
-        if let Ok(mut refused) = self.refused.lock() {
-            refused
-                .entry(run_id)
-                .or_default()
-                .insert(call_id.to_string(), marker);
-        }
+        f(monitor)
     }
 
-    /// Takes (and forgets) how `call_id` was answered, if the guard refused it.
-    pub(super) fn take_refused(&self, run_id: u64, call_id: &str) -> Option<&'static str> {
-        self.refused.lock().ok()?.get_mut(&run_id)?.remove(call_id)
-    }
-
-    /// Picks the single warning to put on this result from `fresh` (most
-    /// specific first) and the ones queued earlier, and queues the rest for
-    /// the next result. Identical notes collapse.
+    /// Picks the single warning to put on this result: this result's own
+    /// (`fresh`, most specific first). Its extras, and any earlier leftovers
+    /// when it has none, wait in a short queue for a later result. Identical
+    /// notes collapse. Queued notes name their subject, so a late one still
+    /// reads correctly on an unrelated result.
     pub(super) fn take_one_note(&self, run_id: u64, fresh: Vec<String>) -> Option<String> {
-        let Ok(mut deferred) = self.deferred.lock() else {
-            return fresh.into_iter().next();
-        };
+        let mut deferred = lock(&self.deferred);
         let queue = deferred.entry(run_id).or_default();
-        for note in fresh {
-            if !queue.contains(&note) {
-                queue.push_back(note);
+        let mut fresh = fresh.into_iter();
+        let chosen = fresh.next();
+        for extra in fresh {
+            if queue.len() < MAX_DEFERRED_NOTES && !queue.contains(&extra) {
+                queue.push_back(extra);
             }
         }
-        queue.truncate(MAX_DEFERRED_NOTES);
-        queue.pop_front()
+        match chosen {
+            Some(note) => {
+                queue.retain(|queued| *queued != note);
+                Some(note)
+            }
+            None => queue.pop_front(),
+        }
+    }
+
+    /// Forgets the warnings waiting for a later result (the context they were
+    /// about is gone).
+    pub(super) fn clear_deferred(&self, run_id: u64) {
+        lock(&self.deferred).remove(&run_id);
     }
 
     /// Drops everything held for a finished run.
     pub(super) fn forget_run(&self, run_id: u64) {
-        if let Ok(mut monitors) = self.monitors.lock() {
-            monitors.remove(&run_id);
-        }
-        if let Ok(mut recorded) = self.recorded.lock() {
-            recorded.remove(&run_id);
-        }
-        if let Ok(mut visible) = self.visible_before_reduction.lock() {
-            visible.remove(&run_id);
-        }
-        if let Ok(mut refused) = self.refused.lock() {
-            refused.remove(&run_id);
-        }
-        if let Ok(mut deferred) = self.deferred.lock() {
-            deferred.remove(&run_id);
-        }
+        lock(&self.monitors).remove(&run_id);
+        lock(&self.recorded).remove(&run_id);
+        lock(&self.visible_before_reduction).remove(&run_id);
+        lock(&self.deferred).remove(&run_id);
     }
 }
 
@@ -175,16 +158,9 @@ pub fn repeat_guard_marker(result: &TaToolResult) -> Option<&str> {
         .as_str()
 }
 
-/// Stamps `marker` into the result's metadata, keeping any existing object.
-pub(super) fn tag_result(result: &mut TaToolResult, marker: &str) {
-    match result.metadata.as_mut().and_then(|m| m.as_object_mut()) {
-        Some(object) => {
-            object.insert(REPEAT_GUARD_METADATA_KEY.to_string(), marker.into());
-        }
-        None => {
-            result.metadata = Some(serde_json::json!({ REPEAT_GUARD_METADATA_KEY: marker }));
-        }
-    }
+/// The metadata a refused call's result carries for `marker`.
+pub(super) fn guard_metadata(marker: &str) -> serde_json::Value {
+    serde_json::json!({ REPEAT_GUARD_METADATA_KEY: marker })
 }
 
 /// Appends a warning to the result the model is about to read, in the plain

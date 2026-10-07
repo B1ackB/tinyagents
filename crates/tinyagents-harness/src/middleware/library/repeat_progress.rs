@@ -22,7 +22,7 @@ use tinytools::ToolResult as TaToolResult;
 
 use super::repeat_progress_state::{
     PendingCallBatch, REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, RepeatState, append_note,
-    assistant_visible_text, tag_result, visible_tool_results,
+    assistant_visible_text, guard_metadata, lock, visible_tool_results,
 };
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 
@@ -176,7 +176,8 @@ impl RepeatProgressMiddleware {
     /// empty/last-model reply, and pause at the top of the next iteration (before
     /// the next model call), matching the repeated-failure breaker's halt path.
     fn halt(&self, summary: String) {
-        if let Ok(mut slot) = self.halt_summary.lock() {
+        {
+        let mut slot = lock(&self.halt_summary);
             *slot = Some(summary);
         }
         self.handle.send(SteeringCommand::Pause);
@@ -197,7 +198,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
         self.state.forget_run(run_id);
-        if let Ok(mut pending) = self.pending.lock() {
+        {
+        let mut pending = lock(&self.pending);
             pending.remove(&run_id);
         }
         Ok(())
@@ -212,19 +214,16 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
         let run_id = ctx.instance_id();
-        let visible = match self.state.recorded.lock() {
-            Ok(recorded) if recorded.get(&run_id).is_some_and(|ids| !ids.is_empty()) => {
-                visible_tool_results(
-                    request,
-                    recorded.get(&run_id).expect("checked above"),
-                    &self.state.cleared_placeholder,
-                )
+        let visible = {
+            let recorded = lock(&self.state.recorded);
+            match recorded.get(&run_id) {
+                Some(ids) if !ids.is_empty() => {
+                    visible_tool_results(request, ids, &self.state.cleared_placeholder)
+                }
+                _ => HashSet::new(),
             }
-            _ => HashSet::new(),
         };
-        if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
-            slot.insert(run_id, visible);
-        }
+        lock(&self.state.visible_before_reduction).insert(run_id, visible);
         Ok(())
     }
 
@@ -238,7 +237,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if tool_calls.is_empty() {
             // A final answer (no tool calls) ends the loop; nothing to guard, and
             // there is no batch to track for the call guard.
-            if let Ok(mut pending) = self.pending.lock() {
+            {
+        let mut pending = lock(&self.pending);
                 pending.remove(&ctx.instance_id());
             }
             return Ok(());
@@ -291,7 +291,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
 
         // Stage the batch for the repeat-CALL guard, evaluated once every result
         // is back (gated on success) in `after_tool`.
-        if let Ok(mut pending) = self.pending.lock() {
+        {
+        let mut pending = lock(&self.pending);
             pending.insert(
                 ctx.instance_id(),
                 PendingCallBatch {
@@ -368,9 +369,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
-            let Ok(mut pending) = self.pending.lock() else {
-                return Ok(());
-            };
+            let mut pending = lock(&self.pending);
             let Some(batch) = pending.get_mut(&run_id) else {
                 return Ok(());
             };
@@ -390,7 +389,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     recurrence = observation.verdict;
                     notes.extend(observation.notes);
                 }
-                if let Ok(mut recorded) = self.state.recorded.lock() {
+                {
+        let mut recorded = lock(&self.state.recorded);
                     recorded.entry(run_id).or_default().insert(call_id);
                 }
             }
@@ -484,10 +484,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
         request: &mut ModelRequest,
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
-        let before = match self.state.visible_before_reduction.lock() {
-            Ok(mut slot) => slot.remove(&run_id).unwrap_or_default(),
-            Err(_) => return Ok(()),
-        };
+        let before = lock(&self.state.visible_before_reduction)
+            .remove(&run_id)
+            .unwrap_or_default();
         if before.is_empty() {
             return Ok(());
         }
@@ -500,14 +499,12 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
             evicted,
             "[tinyagents::mw] repeat-progress ledger reset: recorded tool results left the context"
         );
-        if let Ok(mut monitors) = self.state.monitors.lock()
-            && let Some(monitor) = monitors.get_mut(&run_id)
-        {
+        if let Some(monitor) = lock(&self.state.monitors).get_mut(&run_id) {
             monitor.on_context_evicted();
         }
-        if let Ok(mut recorded) = self.state.recorded.lock() {
-            recorded.remove(&run_id);
-        }
+        lock(&self.state.recorded).remove(&run_id);
+        // Warnings held back were about results the model no longer has.
+        self.state.clear_deferred(run_id);
         Ok(())
     }
 }
