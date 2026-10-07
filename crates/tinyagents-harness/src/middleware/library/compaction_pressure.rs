@@ -50,11 +50,6 @@ pub(crate) enum CompactionRoute {
 }
 
 impl CompactionRoute {
-    /// Whether this route summarizes history.
-    pub(crate) fn compacts(self) -> bool {
-        matches!(self, Self::Compact | Self::CompactThenTruncate)
-    }
-
     /// Whether this route truncates tool results.
     pub(crate) fn truncates(self) -> bool {
         matches!(self, Self::TruncateToolResults | Self::CompactThenTruncate)

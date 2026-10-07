@@ -66,10 +66,12 @@ fn overflow_error() -> TinyAgentsError {
     TinyAgentsError::Model("context_length_exceeded".to_string())
 }
 
+type Responder = Box<dyn Fn(usize, &ModelRequest) -> Result<ModelResponse> + Send + Sync>;
+
 /// Records every request and answers with `respond(call_number, request)`.
 struct ScriptedBase {
     requests: Arc<Mutex<Vec<ModelRequest>>>,
-    respond: Box<dyn Fn(usize, &ModelRequest) -> Result<ModelResponse> + Send + Sync>,
+    respond: Responder,
 }
 
 impl ScriptedBase {

@@ -207,15 +207,9 @@ fn truncation_alone_is_chosen_only_when_it_comfortably_covers_the_overflow() {
 }
 
 #[test]
-fn route_flags_say_which_steps_run() {
-    assert!(!CompactionRoute::Fits.compacts() && !CompactionRoute::Fits.truncates());
-    assert!(
-        CompactionRoute::TruncateToolResults.truncates()
-            && !CompactionRoute::TruncateToolResults.compacts()
-    );
-    assert!(CompactionRoute::Compact.compacts() && !CompactionRoute::Compact.truncates());
-    assert!(
-        CompactionRoute::CompactThenTruncate.compacts()
-            && CompactionRoute::CompactThenTruncate.truncates()
-    );
+fn only_the_truncating_routes_truncate() {
+    assert!(!CompactionRoute::Fits.truncates());
+    assert!(CompactionRoute::TruncateToolResults.truncates());
+    assert!(!CompactionRoute::Compact.truncates());
+    assert!(CompactionRoute::CompactThenTruncate.truncates());
 }
