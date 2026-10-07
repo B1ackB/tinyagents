@@ -42,6 +42,7 @@ pub use invocation::{
     SubAgentSession, SubAgentTool, register_subagent_job_tools,
 };
 pub use persistence::SubagentPersistence;
+pub use planner::SubagentPlanner;
 pub use policy::{SubAgentBudget, SubAgentPolicy};
 pub use result_policy::{
     AppliedResult, ArtifactStore, ResultOverflow, ResultPolicy, truncate_head_tail,
@@ -50,12 +51,12 @@ pub use role::{
     SUBAGENT_JOBS_TOOL, SUBAGENT_MESSAGE_TOOL, SubagentRole, is_delegation_tool, restrict_tools,
     subagent_framing,
 };
-pub use planner::SubagentPlanner;
 pub use types::{
-    ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause, PreparedSubagent, SubagentError, SubagentExecution,
-    SubagentIncomplete, SubagentOutcome, SubagentPause, SubagentPausePersistenceDisposition,
-    SubagentPersistenceDisposition, SubagentRequest, SubagentRequestParts, SubagentResume,
-    SubagentRunResult, SubagentStatus, SubagentTaskKey, SubagentTerminalPersistenceDisposition,
+    ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause,
+    PreparedSubagent, SubagentError, SubagentExecution, SubagentIncomplete, SubagentOutcome,
+    SubagentPause, SubagentPausePersistenceDisposition, SubagentPersistenceDisposition,
+    SubagentRequest, SubagentRequestParts, SubagentResume, SubagentRunResult, SubagentStatus,
+    SubagentTaskKey, SubagentTerminalPersistenceDisposition,
 };
 
 #[cfg(test)]
