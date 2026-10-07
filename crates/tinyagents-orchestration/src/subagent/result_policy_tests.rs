@@ -10,7 +10,10 @@ fn truncate_keeps_head_and_tail_and_stays_within_the_cap_including_the_marker() 
     let (out, omitted) = truncate_head_tail(&text, 60);
     assert!(out.chars().count() <= 60, "{out}");
     assert!(out.starts_with("0123") && out.ends_with("6789"));
-    assert!(out.contains(&format!("[… {omitted} chars omitted …]")), "{out}");
+    assert!(
+        out.contains(&format!("[… {omitted} chars omitted …]")),
+        "{out}"
+    );
     assert!(omitted > 40);
 }
 

@@ -224,21 +224,38 @@ struct ToolThenFail(Arc<AtomicUsize>);
 
 #[async_trait::async_trait]
 impl ChatModel<()> for ToolThenFail {
-    async fn invoke(&self, state: &(), request: ModelRequest) -> tinyinference_llm::Result<ModelResponse> {
+    async fn invoke(
+        &self,
+        state: &(),
+        request: ModelRequest,
+    ) -> tinyinference_llm::Result<ModelResponse> {
         self.0.fetch_add(1, Ordering::SeqCst);
         if request.messages.len() <= 1 {
-            MockModel::with_tool_call("probe", json!({})).invoke(state, request).await
+            MockModel::with_tool_call("probe", json!({}))
+                .invoke(state, request)
+                .await
         } else {
-            Err(tinyinference_llm::Error::Model("connection reset by peer".into()))
+            Err(tinyinference_llm::Error::Model(
+                "connection reset by peer".into(),
+            ))
         }
     }
 }
 
-fn probe_harness(model: Arc<dyn ChatModel<()>>, hang: bool) -> (AgentHarness<(), ()>, Arc<std::sync::Mutex<Option<CancellationToken>>>) {
+fn probe_harness(
+    model: Arc<dyn ChatModel<()>>,
+    hang: bool,
+) -> (
+    AgentHarness<(), ()>,
+    Arc<std::sync::Mutex<Option<CancellationToken>>>,
+) {
     let token = Arc::new(std::sync::Mutex::new(None));
     let mut harness = AgentHarness::new();
     harness.register_model("child", model);
-    harness.register_tool_dispatch(Arc::new(ProbeTool { token: token.clone(), hang }));
+    harness.register_tool_dispatch(Arc::new(ProbeTool {
+        token: token.clone(),
+        hang,
+    }));
     harness.with_policy(RunPolicy {
         retry: RetryPolicy::default().with_max_attempts(1),
         ..RunPolicy::default()
@@ -260,13 +277,21 @@ async fn no_retry_once_a_tool_ran_unless_the_policy_allows_it() {
     let (harness, _) = probe_harness(Arc::new(ToolThenFail(calls.clone())), false);
     let tool = tool_over(harness).with_policy(retrying(3));
     assert!(call_inline(&tool).await.is_error);
-    assert_eq!(calls.load(Ordering::SeqCst), 2, "one attempt: tool call, then the failure");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "one attempt: tool call, then the failure"
+    );
 
     let calls = Arc::new(AtomicUsize::new(0));
     let (harness, _) = probe_harness(Arc::new(ToolThenFail(calls.clone())), false);
     let tool = tool_over(harness).with_policy(retrying(3).with_retry_after_tool_calls(true));
     assert!(call_inline(&tool).await.is_error);
-    assert_eq!(calls.load(Ordering::SeqCst), 6, "three attempts when allowed");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        6,
+        "three attempts when allowed"
+    );
 }
 
 #[tokio::test]
@@ -277,13 +302,22 @@ async fn timeout_cancels_the_childs_own_token() {
         .with_policy(SubAgentPolicy::default().with_timeout(Duration::from_millis(100)));
     let result = call_inline(&tool).await;
     assert_eq!(payload(&result)["incomplete_kind"], "timeout");
-    let token = token.lock().unwrap().clone().expect("the child ran its tool");
+    let token = token
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the child ran its tool");
     assert!(token.is_cancelled(), "the child observed cancellation");
 }
 
 async fn wait_terminal(tool: &SubAgentTool<(), ()>) -> SubAgentJob {
     for _ in 0..200 {
-        if let Some(job) = tool.job_registry().list().into_iter().find(|j| j.status.is_terminal()) {
+        if let Some(job) = tool
+            .job_registry()
+            .list()
+            .into_iter()
+            .find(|j| j.status.is_terminal())
+        {
             return job;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -312,11 +346,17 @@ async fn background_mode_retries_and_the_job_link_follows_the_final_attempt() {
     )
     .await
     .unwrap();
-    let first_run = payload(&queued)["subagent_run_id"].as_str().unwrap().to_owned();
+    let first_run = payload(&queued)["subagent_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let job = wait_terminal(&tool).await;
     assert_eq!(job.status, SubAgentJobStatus::Failed);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert_eq!(job.subagent_run_id.as_deref(), Some(format!("{first_run}-a2").as_str()));
+    assert_eq!(
+        job.subagent_run_id.as_deref(),
+        Some(format!("{first_run}-a2").as_str())
+    );
 }
 
 async fn sibling_run_ids(tool: &SubAgentTool<(), ()>) -> Vec<String> {
@@ -333,7 +373,12 @@ async fn sibling_run_ids(tool: &SubAgentTool<(), ()>) -> Vec<String> {
         )
         .await
         .unwrap();
-        ids.push(payload(&queued)["subagent_run_id"].as_str().unwrap().to_owned());
+        ids.push(
+            payload(&queued)["subagent_run_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
     ids
 }
@@ -363,19 +408,22 @@ impl ChatModel<()> for UsageModel {
 async fn a_token_overrun_keeps_the_output_applies_the_result_policy_and_is_incomplete() {
     let mut harness = AgentHarness::new();
     harness.register_model("child", Arc::new(UsageModel));
-    let tool = tool_over(harness)
-        .with_policy(
-            SubAgentPolicy::default()
-                .with_budget(crate::subagent::SubAgentBudget::unlimited().with_max_output_tokens(100)),
-        )
-        .with_result_policy(ResultPolicy::new().with_schema(json!({"type": "object"})));
+    let tool =
+        tool_over(harness)
+            .with_policy(SubAgentPolicy::default().with_budget(
+                crate::subagent::SubAgentBudget::unlimited().with_max_output_tokens(100),
+            ))
+            .with_result_policy(ResultPolicy::new().with_schema(json!({"type": "object"})));
     let result = call_inline(&tool).await;
     assert!(result.is_error);
     let payload = payload(&result);
     assert_eq!(payload["status"], "incomplete");
     assert_eq!(payload["incomplete_kind"], "budget_exceeded");
     assert_eq!(payload["output"], "long answer", "completed work is kept");
-    assert!(payload["schema_error"].is_string(), "the result policy still ran");
+    assert!(
+        payload["schema_error"].is_string(),
+        "the result policy still ran"
+    );
 }
 
 #[tokio::test]
@@ -386,7 +434,12 @@ async fn artifact_overflow_without_a_store_surfaces_artifact_error_on_the_job() 
             .with_overflow(crate::subagent::ResultOverflow::Artifact),
     );
     let payload = payload(&call_inline(&tool).await);
-    assert!(payload["artifact_error"].as_str().unwrap().contains("no artifact store"));
+    assert!(
+        payload["artifact_error"]
+            .as_str()
+            .unwrap()
+            .contains("no artifact store")
+    );
 }
 
 #[tokio::test]
@@ -401,5 +454,9 @@ async fn a_leaf_is_refused_with_actionable_wording_and_catches_its_own_tool_name
         .with_role(SubagentRole::Leaf);
     let result = call_inline(&tool).await;
     assert!(result.is_error);
-    assert!(result.output().contains("You are a leaf agent: do this work yourself"));
+    assert!(
+        result
+            .output()
+            .contains("You are a leaf agent: do this work yourself")
+    );
 }

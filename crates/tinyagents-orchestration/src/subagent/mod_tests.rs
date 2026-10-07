@@ -584,7 +584,7 @@ impl SubagentExecutor<String> for NestedExecutor {
                 },
                 artifacts: Vec::new(),
                 schema_error: None,
-            artifact_error: None,
+                artifact_error: None,
             });
         }
         Ok(SubagentOutcome {
