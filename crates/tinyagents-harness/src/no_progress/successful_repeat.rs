@@ -15,9 +15,8 @@
 
 use std::sync::Arc;
 
-use super::escalation::RepeatEscalation;
 use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
-use super::types::{CallGate, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
+use super::types::{CallGate, RepeatEscalation, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
 use super::util::{hash_of, hash_pair, lock};
 
 /// Distinct calls (or `(call, result)` pairs) the tracker keeps state for; a
@@ -76,6 +75,7 @@ impl SuccessfulRepeatTracker {
             last_outcome: std::sync::Mutex::new(std::collections::HashMap::new()),
             predictable: std::sync::Mutex::new(std::collections::HashSet::new()),
             blocks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            ops: std::sync::Mutex::new(()),
         }
     }
 
@@ -213,6 +213,7 @@ impl SuccessfulRepeatTracker {
         call_signature: &str,
         outcome_identity: &str,
     ) -> SuccessfulRepeat {
+        let _op = lock(&self.ops);
         let call = hash_of(call_signature);
         let key = hash_pair(call_signature, outcome_identity);
         let count = {
@@ -322,7 +323,13 @@ impl SuccessfulRepeatTracker {
             return CallGate::Allow;
         }
         let mut blocks = lock(&self.blocks);
-        let blocked = blocks.entry(call).or_insert(0);
+        // Bounded: past the cap an unseen call is blocked without a count.
+        let mut untracked = 0u32;
+        let blocked = if blocks.len() >= MAX_TRACKED_CALLS && !blocks.contains_key(&call) {
+            &mut untracked
+        } else {
+            blocks.entry(call).or_insert(0)
+        };
         *blocked = blocked.saturating_add(1);
         if *blocked >= escalation.halt_block() {
             return CallGate::Halt(format!(
@@ -356,7 +363,8 @@ impl SuccessfulRepeatTracker {
     /// Clears both streaks, the recurrence ledger and the block counts, for
     /// example when a paused run is resumed.
     pub fn reset(&self) {
-        self.reset_ledger();
+        let _op = lock(&self.ops);
+        self.clear_ledger();
         lock(&self.last_outcome).clear();
         lock(&self.blocks).clear();
     }
@@ -365,6 +373,13 @@ impl SuccessfulRepeatTracker {
     /// block counts: for a context eviction, where the model forgets the
     /// results it repeated but has still already been blocked once.
     pub fn reset_ledger(&self) {
+        let _op = lock(&self.ops);
+        self.clear_ledger();
+    }
+
+    /// Body of the ledger reset; the caller holds `ops`. `last_outcome` is
+    /// kept so a call that later returns something new still clears its blocks.
+    fn clear_ledger(&self) {
         lock(&self.output).reset();
         lock(&self.calls).reset();
         lock(&self.recurrences).clear();
