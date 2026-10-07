@@ -946,3 +946,65 @@ async fn first_event_window_bounds_a_stream_that_hangs_while_opening() {
     assert_eq!(model.calls(), 1);
     assert_eq!(began.elapsed(), 3 * SECOND);
 }
+
+/// Blanks every delta's text and reasoning (a redaction policy), and gives an
+/// empty delta some text of its own (a middleware that injects content).
+struct BlankOrInject;
+
+#[async_trait]
+impl crate::middleware::Middleware<(), ()> for BlankOrInject {
+    fn name(&self) -> &str {
+        "blank-or-inject"
+    }
+
+    async fn on_model_delta(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        delta: &mut tinyinference_llm::model::ModelDelta,
+    ) -> crate::error::Result<()> {
+        if delta.content.is_empty() && delta.reasoning.is_empty() {
+            delta.content = "injected".to_string();
+        } else {
+            delta.content.clear();
+            delta.reasoning.clear();
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn redacted_provider_output_still_counts_as_progress() {
+    // The provider keeps sending real text 800ms apart; the middleware blanks
+    // all of it, so no consumer sees anything, but the provider is not idle.
+    let model = ScriptedStreams::new(vec![slow_chunks(vec![started()], &["a", "b", "c", "d"])]);
+    let mut harness = harness_with(model.clone(), idle_1s(), 1);
+    harness.push_middleware(Arc::new(BlankOrInject));
+
+    run(&harness, RunConfig::new("redacted-progress"))
+        .await
+        .expect("a provider streaming redacted text is not idle");
+    assert_eq!(model.calls(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn text_injected_by_middleware_into_an_empty_delta_is_not_progress() {
+    // Empty provider deltas arrive 900ms apart; the middleware turns each into
+    // visible text, which is the middleware's output, not the provider's.
+    let mut script = vec![started(), delta("tok")];
+    for _ in 0..5 {
+        script.push(Step::Sleep(Duration::from_millis(900)));
+        script.push(delta(""));
+    }
+    script.push(Step::Hang);
+    let model = ScriptedStreams::new(vec![script]);
+    let mut harness = harness_with(model.clone(), idle_1s(), 1);
+    harness.push_middleware(Arc::new(BlankOrInject));
+
+    let began = Instant::now();
+    let err = run(&harness, RunConfig::new("injected-progress"))
+        .await
+        .expect_err("injected text must not keep a stalled stream alive");
+    assert!(matches!(err, TinyAgentsError::CallTimeout(_)), "{err:?}");
+    assert_eq!(began.elapsed(), SECOND);
+}
