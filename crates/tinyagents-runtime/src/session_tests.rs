@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tinyagents_session::transcript::{
     BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionRef,
-    SessionTranscript, TranscriptMessage, TranscriptMeta, append_background_message,
-    read_transcript, resolve_keyed_transcript_path, session_stem,
+    SessionTranscript, TranscriptLocator, TranscriptMessage, TranscriptMeta,
+    append_background_message, read_transcript, resolve_keyed_transcript_path, session_stem,
 };
 use tinyinference_llm::message::Message;
 use tokio::sync::Notify;
@@ -121,6 +121,18 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     .session(locator.clone(), session_ref.clone(), meta())
     .build()
     .unwrap();
+    session
+        .seed_history(
+            vec![
+                Message::user("remind me at 5"),
+                Message::assistant("Scheduled."),
+            ],
+            vec![
+                TranscriptMessage::user("remind me at 5"),
+                TranscriptMessage::assistant("Scheduled."),
+            ],
+        )
+        .unwrap();
 
     let turn = tokio::spawn(async move {
         session
@@ -158,9 +170,14 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     turn.await.unwrap().unwrap();
     assert_eq!(
         delivery.await.unwrap().unwrap(),
-        BackgroundAppendOutcome::Appended { generation: 0 }
+        BackgroundAppendOutcome::Appended { generation: 1 }
     );
-    let contents: Vec<String> = read_transcript(&path)
+    let head_path = resolve_keyed_transcript_path(
+        directory.path(),
+        &session_stem(&locator.head_generation(&session_ref)),
+    )
+    .unwrap();
+    let contents: Vec<String> = read_transcript(&head_path)
         .unwrap()
         .messages
         .into_iter()
