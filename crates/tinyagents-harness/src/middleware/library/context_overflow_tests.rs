@@ -570,9 +570,13 @@ async fn once_truncation_engages_it_stays_applied_for_the_run() {
 
 #[tokio::test]
 async fn truncating_mode_spares_the_results_the_model_just_asked_for() {
-    let mw = ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
+    let mw = ContextCompressionMiddleware::new(
+        SummarizationPolicy::default()
+            .with_context_window(8_000)
+            .with_threshold_fraction(0.5),
+    ).with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
-    messages.extend(call_and_result("c1", 10_000));
+    messages.extend(call_and_result("c1", 20_000));
     let mut c = ctx();
     let mut first = ModelRequest {
         messages: messages.clone(),
