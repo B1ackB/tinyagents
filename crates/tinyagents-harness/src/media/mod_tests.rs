@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use tinyinference_image::{MediaReference, MockImageGenerator};
-use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::ModelResponse;
 use tinyinference_llm::providers::MockModel;
 use tinyinference_llm::tool::ToolCall;
