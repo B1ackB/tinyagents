@@ -82,7 +82,7 @@ provider claims isolation and passes `session_store_isolation_conformance`.
 | transcripts | `session_transcripts`: one index document per stem (thread, agent, sub-agent flag, creation time); `session_transcript_entries`: an append-only log per stem |
 | turn states | `session_turn_states`: one document per `(thread, request)` |
 | key-value | `session_kv` through the harness `DriverStore` |
-| journal | streams `session_journal/<name>` through the harness `DriverAppendStore` |
+| journal | streams `16:session_journal/<name>` (the harness `DriverAppendStore` length-prefixes its prefix) |
 
 - **Transcript log.** Each write is one entry, numbered from 0 and claimed
   with an insert-only write. An ordinary turn stores only its new rows

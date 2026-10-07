@@ -14,7 +14,7 @@
 //! | transcripts | `session_transcripts` (one index document per stem) and `session_transcript_entries` (an append-only log per stem) |
 //! | turn states | `session_turn_states`, one document per turn |
 //! | key-value | `session_kv`, through the harness [`DriverStore`] |
-//! | journal | streams prefixed `session_journal/`, through the harness [`DriverAppendStore`] |
+//! | journal | streams `16:session_journal/<name>`, through the harness [`DriverAppendStore`] |
 //!
 //! # Sync seams
 //!

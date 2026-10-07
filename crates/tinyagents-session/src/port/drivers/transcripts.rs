@@ -62,14 +62,8 @@ const STALE_RESERVATION_MS: i64 = 30_000;
 /// an entry's `#<seq>` suffix.
 const MAX_KEY_LEN: usize = 400;
 
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 /// A document id for `parts`: length-prefixed so no two tuples collide, and
-/// hashed when it would exceed [`MAX_KEY_LEN`].
+/// replaced by its SHA-256 when it would exceed [`MAX_KEY_LEN`].
 pub(super) fn doc_key(parts: &[&str]) -> String {
     let joined: String = parts
         .iter()
@@ -79,7 +73,8 @@ pub(super) fn doc_key(parts: &[&str]) -> String {
     if joined.len() <= MAX_KEY_LEN {
         joined
     } else {
-        format!("h:{:016x}:{}", fnv1a(joined.as_bytes()), joined.len())
+        use sha2::{Digest, Sha256};
+        format!("h:{}", hex::encode(Sha256::digest(joined.as_bytes())))
     }
 }
 

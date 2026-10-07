@@ -393,7 +393,7 @@ fn ids_are_unambiguous_and_bounded() {
     assert_ne!(doc_key(&["a/b", "c"]), doc_key(&["a", "b/c"]));
     let long = "x".repeat(1_000);
     let hashed = doc_key(&[&long]);
-    assert!(hashed.starts_with("h:"));
+    assert!(hashed.starts_with("h:") && hashed.len() == 66, "{hashed}");
     assert!(entry_id(&long, 9).len() < tinystoragedrivers_core::MAX_ID_LEN);
     assert_eq!(entry_id("s", 7), "1:s#0000000007");
     assert!(is_subagent("parent__child"));
