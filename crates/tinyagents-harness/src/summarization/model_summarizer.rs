@@ -22,8 +22,8 @@ use tinyinference_llm::model::{ChatModel, ModelRequest};
 
 use super::types::ModelSummarizer;
 use super::{
-    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, SummaryRequest,
-    estimate_tokens, render_message_for_summary,
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryKind, SummaryRecord,
+    SummaryRequest, estimate_tokens, render_message_for_summary,
 };
 use crate::error::{Result, TinyAgentsError};
 use crate::token_estimation::estimate_slice_tokens;
