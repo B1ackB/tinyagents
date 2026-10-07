@@ -156,12 +156,14 @@ fn no_dangling_calls_classify_to_nothing() {
 
 #[test]
 fn a_missing_row_needs_verification_when_started_write_failures_may_continue() {
-    let classified =
-        classify_recovery_with(&[call("c1")], &[], MissingEffectRow::Uncertain);
+    let classified = classify_recovery_with(&[call("c1")], &[], MissingEffectRow::Uncertain);
     assert_eq!(classified[0].class, RecoveryClass::NeedsVerification);
     assert_eq!(classified[0].effect_status, None);
     // The default reading is unchanged.
-    assert_eq!(classify_recovery(&[call("c1")], &[])[0].class, RecoveryClass::Resume);
+    assert_eq!(
+        classify_recovery(&[call("c1")], &[])[0].class,
+        RecoveryClass::Resume
+    );
 }
 
 #[test]

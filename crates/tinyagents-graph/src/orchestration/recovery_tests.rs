@@ -224,18 +224,13 @@ fn builds_a_note_from_a_real_reconcile_sweep_and_never_relaunches() {
 fn a_failed_task_reports_the_reason_the_sweep_persisted_not_a_re_evaluation() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let store = InMemoryTaskStore::new();
-    let spec = OrchestrationTaskSpec::new(
-        "t",
-        OrchestrationTaskKind::SubAgent {
-            agent: "a".into(),
-        },
-    );
+    let spec =
+        OrchestrationTaskSpec::new("t", OrchestrationTaskKind::SubAgent { agent: "a".into() });
     store.insert(spec).unwrap();
     store.mark_running(&TaskId::new("t")).unwrap();
     let calls = AtomicUsize::new(0);
-    let drifting = |_: &OrchestrationTaskRecord| {
-        format!("reason-{}", calls.fetch_add(1, Ordering::SeqCst))
-    };
+    let drifting =
+        |_: &OrchestrationTaskRecord| format!("reason-{}", calls.fetch_add(1, Ordering::SeqCst));
     let report = reconcile_orphaned_tasks(&store, OrchestrationTaskFilter::default(), &drifting);
     let children = recovery_children(&report, &drifting);
     assert_eq!(children[0].interrupted_reason, "reason-0");

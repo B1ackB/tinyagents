@@ -105,7 +105,7 @@ async fn background_spawn_over_the_parent_cap_is_a_limit_signal() {
     // The slot returns when the child reaches a terminal state.
     let _started = started.acquire().await.unwrap();
     release.add_permits(1);
-    slots_settle_to(&tool, "parent", 0).await;
+    slots_settle_to(&tool, "run:parent", 0).await;
     let third = call(&tool, &parent, json!({"input": "c"})).await;
     assert!(!third.is_error, "{}", third.output());
     release.add_permits(1);
@@ -282,7 +282,7 @@ async fn a_panicking_background_child_releases_its_slot() {
     let parent = parent();
 
     assert!(!call(&tool, &parent, json!({"input": "a"})).await.is_error);
-    slots_settle_to(&tool, "parent", 0).await;
+    slots_settle_to(&tool, "run:parent", 0).await;
 
     let again = call(&tool, &parent, json!({"input": "b"})).await;
     assert!(!again.is_error, "{}", again.output());

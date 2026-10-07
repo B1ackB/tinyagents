@@ -256,7 +256,10 @@ fn a_thread_id_and_a_run_id_with_the_same_text_do_not_share_a_scope() {
     let mut threaded = admission.try_reserve(&turn("r", "x"), "w").unwrap();
     threaded.commit();
     // An unthreaded parent whose run id is "x" is a different scope.
-    assert_ne!(admission.scope_of(&turn("r", "x")), admission.scope_of(&cfg("x")));
+    assert_ne!(
+        admission.scope_of(&turn("r", "x")),
+        admission.scope_of(&cfg("x"))
+    );
     let _unthreaded = admission.try_reserve(&cfg("x"), "w").unwrap();
     assert_eq!(admission.active_children("thread:x"), 1);
     assert_eq!(admission.active_children("run:x"), 1);
