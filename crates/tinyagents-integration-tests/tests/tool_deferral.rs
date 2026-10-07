@@ -136,23 +136,8 @@ impl ChatModel<()> for RecordingModel {
 }
 
 fn tool_call(id: &str, name: &str, arguments: Value) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: Some(format!("msg-{id}")),
-            content: Vec::new(),
-            tool_calls: vec![ToolCall::new(id, name, arguments)],
-            usage: Some(Usage::new(1, 1)),
-            origin: None,
-        },
-        usage: Some(Usage::new(1, 1)),
-        finish_reason: Some("tool_calls".to_string()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(1, 1))
 }
 
 fn text(body: &str) -> ModelResponse {

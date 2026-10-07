@@ -27,43 +27,12 @@ use tinyinference_llm::usage::Usage;
 // ── Scripted response helpers ─────────────────────────────────────────────────
 
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: Some(format!("msg-{id}")),
-            content: Vec::new(),
-            tool_calls: vec![ToolCall::new(id, name, arguments)],
-            usage: Some(Usage::new(6, 2)),
-            origin: None,
-        },
-        usage: Some(Usage::new(6, 2)),
-        finish_reason: Some("tool_calls".into()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(6, 2))
 }
 
 fn text_response(text: &str) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: None,
-            content: vec![ContentBlock::Text(text.into())],
-            tool_calls: Vec::new(),
-            usage: Some(Usage::new(3, 1)),
-            origin: None,
-        },
-        usage: Some(Usage::new(3, 1)),
-        finish_reason: Some("stop".into()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::text_response(text).with_usage(Usage::new(3, 1))
 }
 
 /// Finds the single recorded [`AgentEvent::UnknownToolCall`], asserting the

@@ -587,3 +587,24 @@ async fn schema_driven_model_with_no_tools_returns_final_response_immediately() 
     assert!(response.tool_calls().is_empty());
     assert_eq!(response.text(), "no tools needed");
 }
+
+#[test]
+fn canned_responses_carry_their_finish_reason_and_content() {
+    use super::{text_response, tool_call_response};
+    use serde_json::json;
+    use tinyinference_llm::tool::ToolCall;
+    use tinyinference_llm::usage::Usage;
+
+    let text = text_response("done").with_usage(Usage::new(3, 2));
+    assert_eq!(text.text(), "done");
+    assert_eq!(text.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(text.usage, Some(Usage::new(3, 2)));
+    assert_eq!(text.message.usage, Some(Usage::new(3, 2)));
+
+    let call = tool_call_response(ToolCall::new("c1", "lookup", json!({"q": 1})));
+    assert_eq!(call.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(call.message.id.as_deref(), Some("msg-c1"));
+    assert!(call.message.content.is_empty());
+    assert_eq!(call.tool_calls().len(), 1);
+    assert_eq!(call.tool_calls()[0].name, "lookup");
+}

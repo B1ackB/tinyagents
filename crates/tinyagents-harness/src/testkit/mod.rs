@@ -23,6 +23,7 @@
 //! | [`DeterministicIds`] | Monotonic `"{prefix}-N"` id generator |
 //! | [`EventRecorder`] | Captures `AgentEvent`s from an `EventSink` |
 //! | [`Trajectory`] | Structural assertions over a sequence of events |
+//! | [`text_response`], [`tool_call_response`] | Canned model responses for scripted doubles |
 
 mod types;
 
@@ -44,6 +45,30 @@ use tinyinference_llm::tool::ToolCall;
 use tinytools::{Tool, ToolResult};
 
 pub use types::*;
+
+// ---------------------------------------------------------------------------
+// Canned responses
+// ---------------------------------------------------------------------------
+
+/// A plain-text assistant response that finished with `stop`.
+///
+/// Chain [`ModelResponse::with_usage`] for token counts.
+pub fn text_response(text: impl Into<String>) -> ModelResponse {
+    ModelResponse::assistant(text).with_finish_reason("stop")
+}
+
+/// An assistant response that makes exactly `call` and says nothing, finishing
+/// with `tool_calls`. The message id is `msg-{call id}`, so each scripted turn
+/// is distinguishable in a transcript.
+///
+/// Chain [`ModelResponse::with_usage`] for token counts.
+pub fn tool_call_response(call: ToolCall) -> ModelResponse {
+    let mut response = ModelResponse::assistant(String::new()).with_finish_reason("tool_calls");
+    response.message.id = Some(format!("msg-{}", call.id));
+    response.message.content = Vec::new();
+    response.message.tool_calls = vec![call];
+    response
+}
 
 // ---------------------------------------------------------------------------
 // StreamingMock

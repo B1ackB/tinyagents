@@ -645,70 +645,25 @@ pub fn list_agent_runs(
 ) -> Result<AgentRunListResponse> {
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-        if let Some(kind) = request.kind.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(kind.to_string()));
-            where_clauses.push(format!("kind = ?{}", values.len()));
-        }
-        if let Some(parent) = request
-            .parent_run_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(parent.to_string()));
-            where_clauses.push(format!("parent_run_id = ?{}", values.len()));
-        }
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM agent_runs {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         let offset = request.offset.unwrap_or(0) as i64;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, kind, parent_run_id, parent_thread_id, agent_id, status,
-                    prompt_ref, worker_thread_id,
-                    checkpoint_path, checkpoint_json, summary, error, metadata_json,
-                    started_at, updated_at, completed_at
-             FROM agent_runs {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), |row| map_agent_run_row(conn, row))?;
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
+        let (runs, count) = crate::paging::PagedQuery::default()
+            .eq_nonblank("status", request.status.as_deref())
+            .eq_nonblank("kind", request.kind.as_deref())
+            .eq_nonblank("parent_run_id", request.parent_run_id.as_deref())
+            .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
+            .page(limit, offset)?
+            .fetch(
+                conn,
+                "agent_runs",
+                "id, kind, parent_run_id, parent_thread_id, agent_id, status,
+                 prompt_ref, worker_thread_id,
+                 checkpoint_path, checkpoint_json, summary, error, metadata_json,
+                 started_at, updated_at, completed_at",
+                "updated_at DESC",
+                |row| map_agent_run_row(conn, row),
+            )?;
+        let count = count as usize;
         Ok(AgentRunListResponse { runs, count })
     })
 }
@@ -744,32 +699,57 @@ pub fn list_recent_run_events(
     })
 }
 
+/// Fetches one row by id inside its own connection, logging the lookup's
+/// entry and whether it found anything — the shared body of every public
+/// `get_*` in this module.
+fn get_logged<T>(
+    workspace_dir: &Path,
+    op: &str,
+    id: &str,
+    inner: impl FnOnce(&Connection, &str) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    tracing::debug!("{LOG_PREFIX} {op}.entry id={id}");
+    crate::store::with_connection(workspace_dir, |conn| {
+        init_run_ledger_schema(conn)?;
+        let found = inner(conn, id)?;
+        tracing::debug!("{LOG_PREFIX} {op}.exit id={id} found={}", found.is_some());
+        Ok(found)
+    })
+}
+
+/// Runs a `SELECT … WHERE id = ?1` and maps the row, or `None` when no row
+/// has that id — the shared body of every connection-scoped `*_inner` lookup.
+fn get_row_by_id<T>(
+    conn: &Connection,
+    sql: &str,
+    id: &str,
+    map: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Option<T>> {
+    Ok(conn.prepare(sql)?.query_row(params![id], map).optional()?)
+}
+
 /// Connection-scoped workflow-run lookup, so an upsert can read its own write
 /// back inside the same transaction.
 fn get_workflow_run_inner(conn: &Connection, id: &str) -> Result<Option<WorkflowRun>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, definition_id, parent_thread_id, input_json, phase_states_json,
                 child_run_ids_json, status, summary, started_at, updated_at, completed_at,
                 revision, lease_owner, lease_expires_at
          FROM workflow_runs WHERE id = ?1",
-    )?;
-    Ok(stmt
-        .query_row(params![id], map_workflow_run_row)
-        .optional()?)
+        id,
+        map_workflow_run_row,
+    )
 }
 
 /// Fetches a single [`WorkflowRun`] by id, or `None` if no row matches.
 pub fn get_workflow_run(workspace_dir: &Path, id: &str) -> Result<Option<WorkflowRun>> {
-    tracing::debug!("{LOG_PREFIX} get_workflow_run.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let run = get_workflow_run_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_workflow_run.exit id={id} found={}",
-            run.is_some()
-        );
-        Ok(run)
-    })
+    get_logged(
+        workspace_dir,
+        "get_workflow_run",
+        id,
+        get_workflow_run_inner,
+    )
 }
 
 /// List durable workflow runs, most-recently-updated first, with optional
@@ -789,68 +769,26 @@ pub fn list_workflow_runs(
     );
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(definition) = request
-            .definition_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(definition.to_string()));
-            where_clauses.push(format!("definition_id = ?{}", values.len()));
-        }
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM workflow_runs {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         // `offset` is `u64`; convert checked so a value > i64::MAX surfaces a
         // clear error instead of wrapping negative and corrupting pagination.
         let offset = i64::try_from(request.offset.unwrap_or(0))
             .storage_context("workflow run list offset exceeds i64::MAX")?;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, definition_id, parent_thread_id, input_json, phase_states_json,
-                    child_run_ids_json, status, summary, started_at, updated_at, completed_at,
-                    revision, lease_owner, lease_expires_at
-             FROM workflow_runs {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), map_workflow_run_row)?;
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
+        let (runs, count) = crate::paging::PagedQuery::default()
+            .eq_nonblank("definition_id", request.definition_id.as_deref())
+            .eq_nonblank("status", request.status.as_deref())
+            .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
+            .page(limit, offset)?
+            .fetch(
+                conn,
+                "workflow_runs",
+                "id, definition_id, parent_thread_id, input_json, phase_states_json,
+                 child_run_ids_json, status, summary, started_at, updated_at, completed_at,
+                 revision, lease_owner, lease_expires_at",
+                "updated_at DESC",
+                map_workflow_run_row,
+            )?;
+        let count = count as usize;
         tracing::debug!(
             "{LOG_PREFIX} list_workflow_runs.exit count={count} returned={}",
             runs.len()
@@ -911,16 +849,7 @@ pub fn upsert_agent_team(workspace_dir: &Path, upsert: AgentTeamUpsert) -> Resul
 
 /// Fetch a single team by id.
 pub fn get_agent_team(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeam>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let team = get_agent_team_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team.exit id={id} found={}",
-            team.is_some()
-        );
-        Ok(team)
-    })
+    get_logged(workspace_dir, "get_agent_team", id, get_agent_team_inner)
 }
 
 /// List teams, most-recently-updated first, with optional thread/status filters.
@@ -937,59 +866,24 @@ pub fn list_agent_teams(
     );
     crate::store::with_connection(workspace_dir, |conn| {
         init_run_ledger_schema(conn)?;
-        let mut where_clauses = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(thread) = request
-            .parent_thread_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        {
-            values.push(Box::new(thread.to_string()));
-            where_clauses.push(format!("parent_thread_id = ?{}", values.len()));
-        }
-        if let Some(status) = request.status.as_deref().filter(|s| !s.trim().is_empty()) {
-            values.push(Box::new(status.to_string()));
-            where_clauses.push(format!("status = ?{}", values.len()));
-        }
-
-        let where_sql = if where_clauses.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        let count_sql = format!("SELECT COUNT(*) FROM agent_teams {where_sql}");
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let count = conn.query_row(&count_sql, params_ref.as_slice(), |row| {
-            row.get::<_, i64>(0)
-        })? as usize;
-
         let limit = request.limit.unwrap_or(50).min(500) as i64;
         // `offset` is `u64`; convert checked so a value > i64::MAX surfaces a
         // clear error instead of wrapping negative and corrupting pagination.
         let offset = i64::try_from(request.offset.unwrap_or(0))
             .storage_context("agent team list offset exceeds i64::MAX")?;
-        values.push(Box::new(limit));
-        let limit_idx = values.len();
-        values.push(Box::new(offset));
-        let offset_idx = values.len();
-
-        let query_sql = format!(
-            "SELECT id, parent_thread_id, lead_agent_id, status, summary,
-                    created_at, updated_at, closed_at
-             FROM agent_teams {where_sql}
-             ORDER BY updated_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
-        );
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let mut stmt = conn.prepare(&query_sql)?;
-        let rows = stmt.query_map(params_ref.as_slice(), map_agent_team_row)?;
-        let mut teams = Vec::new();
-        for row in rows {
-            teams.push(row?);
-        }
+        let (teams, count) = crate::paging::PagedQuery::default()
+            .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
+            .eq_nonblank("status", request.status.as_deref())
+            .page(limit, offset)?
+            .fetch(
+                conn,
+                "agent_teams",
+                "id, parent_thread_id, lead_agent_id, status, summary,
+                 created_at, updated_at, closed_at",
+                "updated_at DESC",
+                map_agent_team_row,
+            )?;
+        let count = count as usize;
         tracing::debug!(
             "{LOG_PREFIX} list_agent_teams.exit count={count} returned={}",
             teams.len()
@@ -1057,16 +951,12 @@ pub fn upsert_agent_team_member(
 
 /// Fetch a single member by id.
 pub fn get_agent_team_member(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamMember>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team_member.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let member = get_agent_team_member_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team_member.exit id={id} found={}",
-            member.is_some()
-        );
-        Ok(member)
-    })
+    get_logged(
+        workspace_dir,
+        "get_agent_team_member",
+        id,
+        get_agent_team_member_inner,
+    )
 }
 
 /// List all members of a team, by creation order.
@@ -1182,16 +1072,12 @@ pub fn upsert_agent_team_task(
 
 /// Fetch a single task by id.
 pub fn get_agent_team_task(workspace_dir: &Path, id: &str) -> Result<Option<AgentTeamTask>> {
-    tracing::debug!("{LOG_PREFIX} get_agent_team_task.entry id={id}");
-    crate::store::with_connection(workspace_dir, |conn| {
-        init_run_ledger_schema(conn)?;
-        let task = get_agent_team_task_inner(conn, id)?;
-        tracing::debug!(
-            "{LOG_PREFIX} get_agent_team_task.exit id={id} found={}",
-            task.is_some()
-        );
-        Ok(task)
-    })
+    get_logged(
+        workspace_dir,
+        "get_agent_team_task",
+        id,
+        get_agent_team_task_inner,
+    )
 }
 
 /// List all tasks of a team, by `order_index` then creation order.
@@ -1673,42 +1559,42 @@ pub fn release_agent_team_task(workspace_dir: &Path, team_id: &str, task_id: &st
 /// Connection-scoped team lookup, so an upsert can read its own write back
 /// inside the same transaction.
 fn get_agent_team_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeam>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, parent_thread_id, lead_agent_id, status, summary,
                 created_at, updated_at, closed_at
          FROM agent_teams WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_row,
+    )
 }
 
 /// Connection-scoped member lookup, so an upsert can read its own write back
 /// inside the same transaction.
 fn get_agent_team_member_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeamMember>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, team_id, name, agent_id, member_status,
                 current_task_id, worker_thread_id, run_id, created_at, updated_at
          FROM agent_team_members WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_member_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_member_row,
+    )
 }
 
 /// Connection-scoped task lookup, so a claim/completion transaction can read
 /// its own write back inside the same transaction.
 fn get_agent_team_task_inner(conn: &Connection, id: &str) -> Result<Option<AgentTeamTask>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, team_id, title, objective, status, owner_member_id,
                 claimed_by_member_id, claim_token, depends_on_json, gate_status,
                 gate_reason, evidence_json, source_run_id, order_index,
                 created_at, updated_at
          FROM agent_team_tasks WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], map_agent_team_task_row)
-        .optional()
-        .map_err(Into::into)
+        id,
+        map_agent_team_task_row,
+    )
 }
 
 fn map_agent_team_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTeam> {
@@ -1763,16 +1649,16 @@ fn map_agent_team_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTea
 /// Connection-scoped agent-run lookup, so an upsert can read its own write
 /// back inside the same transaction.
 fn get_agent_run_inner(conn: &Connection, id: &str) -> Result<Option<AgentRun>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, kind, parent_run_id, parent_thread_id, agent_id, status,
                 prompt_ref, worker_thread_id,
                 checkpoint_path, checkpoint_json, summary, error, metadata_json,
                 started_at, updated_at, completed_at
          FROM agent_runs WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], |row| map_agent_run_row(conn, row))
-        .optional()
-        .map_err(Into::into)
+        id,
+        |row| map_agent_run_row(conn, row),
+    )
 }
 
 /// Connection-scoped telemetry lookup that errors when the row is absent —

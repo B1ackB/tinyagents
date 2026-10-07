@@ -340,19 +340,8 @@ fn io_err(context: &str, err: impl std::fmt::Display) -> TinyAgentsError {
 /// addressing/parent/pending-writes wiring of the default
 /// [`Checkpointer::get_tuple`].
 fn tuple_from_checkpoint<State>(checkpoint: Checkpoint<State>) -> CheckpointTuple<State> {
-    let config = CheckpointConfig {
-        thread_id: checkpoint.thread_id.clone(),
-        checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-        namespace: checkpoint.namespace.clone(),
-    };
-    let parent_config = checkpoint
-        .parent_checkpoint_id
-        .as_ref()
-        .map(|parent| CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(parent.clone()),
-            namespace: checkpoint.namespace.clone(),
-        });
+    let config = checkpoint.config();
+    let parent_config = checkpoint.parent_config();
     let pending_writes = checkpoint.pending_writes.clone();
     CheckpointTuple {
         config,
