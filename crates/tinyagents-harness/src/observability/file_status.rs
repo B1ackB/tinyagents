@@ -161,7 +161,7 @@ impl HarnessStatusStore for FileStatusStore {
         let _write_lock = self.write_lock.lock().await;
         let key = status_key(status.run_id.as_str());
         let run_id = status.run_id.as_str();
-        let legacy_value = if key != run_id && is_safe_status_key(run_id) {
+        let legacy_value = if key != run_id {
             self.kv.get(STATUS_NS, run_id).await?
         } else {
             None
@@ -225,7 +225,6 @@ impl HarnessStatusStore for FileStatusStore {
             return Ok(Some(status));
         }
         if key != run_id
-            && is_safe_status_key(run_id)
             && let Some(value) = self.kv.get(STATUS_NS, run_id).await?
             && let Ok(status) = serde_json::from_value::<HarnessRunStatus>(value)
             && status.run_id.as_str() == run_id

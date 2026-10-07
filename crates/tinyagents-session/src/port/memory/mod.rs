@@ -155,6 +155,7 @@ impl InMemoryTranscriptLocator {
         );
         let mut meta = seed;
         meta.session_id = Some(successor.session_id());
+        meta.parent_session_id = successor.parent_session_id();
         let predecessor = self
             .stems
             .lock()
@@ -201,6 +202,14 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         // generation allocation, not transcript reads. Reading without the gate prevents
         // a deadlock where read_session_transcript's open_stem would re-acquire it.
         if let Some(transcript) = self.read_session_transcript(session)
+        let stem = session_stem(session);
+        if let Some(transcript) = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(known, _, _)| known == &stem)
+            .map(|(_, _, history)| history.clone())
             && let Some(transcript) = transcript.read_session()?
         {
             anyhow::ensure!(
@@ -292,11 +301,9 @@ impl InMemoryTranscriptLocator {
         // Session stems reserve `__` for the parent/child separator. Check the
         // stem itself so bounded parent stems remain children even when the
         // parent prefix is not present in this locator's index.
-        let is_subagent = seed.parent_session_id.is_some()
-            || (seed.parent_session_id.is_none()
-                && stem.split_once("__").is_some_and(|(parent, _)| {
-                    !parent.is_empty() && stems.iter().any(|(known, _, _)| known == parent)
-                }));
+        let is_subagent = stem
+            .split_once("__")
+            .is_some_and(|(parent, child)| !parent.is_empty() && !child.is_empty());
         let history = Arc::new(InMemoryTranscriptHistory::new_with_gate(
             format!("{}/{stem}", self.label),
             seed,

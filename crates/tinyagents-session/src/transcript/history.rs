@@ -581,8 +581,7 @@ impl TranscriptLocator for FileTranscriptLocator {
                 let Ok(transcript) = read_transcript(&candidate) else {
                     continue;
                 };
-                let is_root = transcript.meta.parent_session_id.is_none();
-                if is_root
+                if transcript.meta.parent_session_id.is_none()
                     && (transcript.meta.agent_name == agent_name
                         || transcript.meta.agent_id.as_deref() == Some(agent_name))
                     && best
@@ -592,7 +591,12 @@ impl TranscriptLocator for FileTranscriptLocator {
                     best = Some((transcript.meta.updated, candidate));
                 }
             }
-            best.map(|(_, path)| path)
+            best.map(|(_, path)| path).or_else(|| {
+                crate::transcript::paths::find_latest_legacy_transcript(
+                    &self.workspace_dir,
+                    agent_name,
+                )
+            })
         })?;
         tracing::debug!(
             "[transcript-history] locator latest_for_agent agent={agent_name} path={}",
@@ -619,15 +623,17 @@ impl TranscriptLocator for FileTranscriptLocator {
         if partial.content.is_empty() {
             return Ok(false);
         }
-        // A partial belongs to the conversation's current head: a compaction
-        // seals generation `n` and opens `n+1`, and a sealed generation is
-        // never written again. Keep the initial root path so both successor
-        // resolution and the append happen under the same write locks.
+        // Bind the lock handle to the current head so partial writes share
+        // the generation and successor-reservation locks with head writers.
         let root_path = path;
         let path = head_generation_path(&root_path);
         let history =
             FileTranscriptHistory::opened_at(path.clone(), seed_meta_for_discovered(thread_id));
         history.with_write_locks(|| {
+            anyhow::ensure!(
+                head_generation_path(&root_path) == path,
+                "transcript head advanced during partial append; retry"
+            );
             crate::transcript::append_interrupted_partial(
                 &path,
                 &partial.content,
