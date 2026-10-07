@@ -127,6 +127,9 @@ pub struct LimitTracker {
     /// Idle-timeout strikes keyed by model name. The public scalar helpers
     /// remain for compatibility with callers that track one stream at a time.
     stream_idle_timeouts_by_model: HashMap<String, usize>,
+    /// Models the failover policy has written off for the rest of the run
+    /// (see [`crate::retry::FailoverReason::skips_model_for_run`]).
+    skipped_models: HashSet<String>,
     started_at: Instant,
 }
 
@@ -140,6 +143,7 @@ impl LimitTracker {
             tool_calls: 0,
             consecutive_stream_idle_timeouts: 0,
             stream_idle_timeouts_by_model: HashMap::new(),
+            skipped_models: HashSet::new(),
             started_at: Instant::now(),
         }
     }
@@ -188,6 +192,18 @@ impl LimitTracker {
             .get(model)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Marks `model` as unusable for the remainder of this run: later model
+    /// calls skip it in favour of the next fallback (the cross-call skip hint
+    /// recorded for [`crate::retry::FailoverReason::AuthPermanent`]).
+    pub fn skip_model_for_run(&mut self, model: &str) {
+        self.skipped_models.insert(model.to_owned());
+    }
+
+    /// Whether [`LimitTracker::skip_model_for_run`] was called for `model`.
+    pub fn is_model_skipped(&self, model: &str) -> bool {
+        self.skipped_models.contains(model)
     }
 
     /// Resets the wall-clock start to now, leaving the call counters and
