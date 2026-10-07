@@ -377,14 +377,17 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
             prepared,
             cancellation: child_token,
         };
+        let mut timed_out = false;
+        let mut token = execution.cancellation.clone();
         let executed = loop {
-            let token = execution.cancellation.clone();
+            token = execution.cancellation.clone();
             let run = self.executor.execute(execution);
             let result = match policy.timeout {
                 Some(limit) => match tokio::time::timeout(limit, run).await {
                     Ok(result) => result,
                     Err(_) => {
                         token.cancel();
+                        timed_out = true;
                         tracing::debug!(
                             "{LOG_PREFIX} timeout task_id={task_id} after_ms={}",
                             limit.as_millis()
@@ -433,7 +436,10 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                         actual: outcome.task_id,
                     });
                 }
-                if cancellation.is_cancelled() {
+                // The execution token is the lifecycle's own or a child of it;
+                // an executor that cancels it has cancelled the run, but the
+                // driver's own timeout cancel is not a cancellation.
+                if cancellation.is_cancelled() || (!timed_out && token.is_cancelled()) {
                     outcome.cancelled_preserving()
                 } else {
                     apply_outcome_policies(outcome, &policy, &result_policy).await
