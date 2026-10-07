@@ -112,6 +112,17 @@ fn child_of_cancelled_parent_starts_cancelled() {
     assert!(parent.child_token().is_cancelled());
 }
 
+#[test]
+fn child_of_cancelled_non_immediate_ancestor_starts_cancelled() {
+    let root = CancellationToken::new();
+    let parent = root.child_token();
+    root.cancel();
+
+    // The immediate parent may not yet have been visited by a cancellation
+    // traversal, but the new child must still observe the cancelled root.
+    assert!(parent.child_token().is_cancelled());
+}
+
 #[tokio::test]
 async fn child_cancelled_future_wakes_on_parent_cancel() {
     let parent = CancellationToken::new();

@@ -82,7 +82,7 @@ impl CancellationToken {
     /// tree cancel one sub-run independently while a parent cancel still
     /// unwinds every descendant.
     pub fn child_token(&self) -> Self {
-        let child = {
+        let (child, ancestor_cancelled) = {
             let _registration = self
                 .state
                 .registration_lock
@@ -104,17 +104,20 @@ impl CancellationToken {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             children.retain(|link| link.strong_count() > 0);
             children.push(Arc::downgrade(&child.state));
-            child
+            let mut ancestor = child.state.parent.clone();
+            let ancestor_cancelled = std::iter::from_fn(move || {
+                let current = ancestor.take()?;
+                ancestor = current.parent.clone();
+                Some(current)
+            })
+            .any(|ancestor| ancestor.cancelled.load(Ordering::Acquire));
+            (child, ancestor_cancelled)
         };
-        // Re-check every linked ancestor after registration. A cancellation
-        // may have drained an older ancestor before this child was linked;
-        // checking only the immediate parent would let that race escape.
-        if child
-            .state
-            .parent
-            .as_ref()
-            .is_some_and(|parent| parent.cancelled.load(Ordering::Acquire))
-        {
+        // Cancellation can be between two nodes in the lineage, so checking
+        // only the immediate parent would let a newly registered descendant
+        // escape cancelled. The full-chain check above is serialized with
+        // cancellation traversal; release the lock before cascading locally.
+        if ancestor_cancelled {
             child.cancel();
         }
         child
