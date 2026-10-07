@@ -23,8 +23,8 @@
 //! | `RateLimit`, `Overloaded`, `Timeout`, `Transport`, `EmptyResponse`, `Unknown` | `RetrySame` while the retry policy calls the error transient **and** attempts remain; then `Fallback` |
 //! | `Auth`, `Billing`, `ModelNotFound` | `Fallback` immediately (a retry cannot change the answer) |
 //! | `AuthPermanent` | `Fallback` immediately, and the model is skipped for the rest of the run ([`FailoverReason::skips_model_for_run`]) |
-//! | `Format` | `Surface` (another model will not fix a malformed request) — unless the failure is model-specific capability ([`is_model_specific_format`]), then `Fallback` |
-//! | `ContextOverflow` | `Surface` (compaction, not a different model, is the remedy) |
+//! | `Format` | `Fallback` (never retried on the same model). A 4xx is often *provider*-specific — OpenAI strict-schema, Gemini `Unknown name`, Anthropic `input_schema` — so another model may accept the request. Nothing is provably model-independent, so nothing surfaces here |
+//! | `ContextOverflow` | `Fallback` only to a candidate whose profile `max_input_tokens` is strictly larger than the current model's ([`FailoverState::larger_window_available`]); otherwise `Surface` (compaction is the remedy) |
 //!
 //! A custom [`RetryPolicy::retry_on`] predicate keeps authority over the
 //! *transient* reasons (it can veto a retry), but it cannot turn a permanent
@@ -55,7 +55,8 @@ pub enum FailoverReason {
     Overloaded,
     /// The call or the provider timed out.
     Timeout,
-    /// The request was rejected as malformed (`400`/`422`, schema errors).
+    /// The request was rejected (`4xx` without a more specific cause, adapter
+    /// validation). Often specific to the provider, so it falls back.
     Format,
     /// The request did not fit the model's context window.
     ContextOverflow,
@@ -88,9 +89,10 @@ pub struct FailoverState {
     pub retryable: bool,
     /// The retry policy still permits another attempt on this model.
     pub attempts_remaining: bool,
-    /// The failure is a capability/parameter the *model* lacks
-    /// ([`is_model_specific_format`]), so a different model may succeed.
-    pub model_specific: bool,
+    /// A fallback candidate with a strictly larger context window than the
+    /// current model exists. Consulted only for
+    /// [`FailoverReason::ContextOverflow`]; `false` by default.
+    pub larger_window_available: bool,
 }
 
 impl FailoverState {
@@ -101,7 +103,7 @@ impl FailoverState {
         Self {
             retryable: policy.is_retryable_error(error),
             attempts_remaining: policy.should_retry(attempt),
-            model_specific: is_model_specific_format(error),
+            larger_window_available: false,
         }
     }
 }
@@ -165,49 +167,17 @@ pub fn decide(reason: FailoverReason, state: FailoverState) -> FailoverDecision 
                 FailoverDecision::Fallback
             }
         }
-        Auth | AuthPermanent | Billing | ModelNotFound => FailoverDecision::Fallback,
-        Format if state.model_specific => FailoverDecision::Fallback,
-        Format | ContextOverflow => FailoverDecision::Surface,
+        Auth | AuthPermanent | Billing | ModelNotFound | Format => FailoverDecision::Fallback,
+        ContextOverflow if state.larger_window_available => FailoverDecision::Fallback,
+        ContextOverflow => FailoverDecision::Surface,
     }
 }
 
-/// `true` when `error` is a request rejection caused by something *this model*
-/// lacks (tool calling, image input, a sampling parameter) rather than by the
-/// request being malformed for every model. Only such a [`FailoverReason::Format`]
-/// failure is worth a fallback.
-pub fn is_model_specific_format(error: &TinyAgentsError) -> bool {
-    let message = match error {
-        TinyAgentsError::Provider(provider) => provider.message.as_str(),
-        TinyAgentsError::Model(message) => message.as_str(),
-        _ => return false,
-    };
-    let lower = message.to_ascii_lowercase();
-    [
-        "does not support",
-        "doesn't support",
-        "not supported",
-        "unsupported parameter",
-        "unsupported_parameter",
-        "unsupported value",
-        "unsupported_value",
-        "unsupported content",
-        "unknown parameter",
-        "unrecognized request argument",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-}
-
-/// Markers of a credential that will not recover on its own.
-const PERMANENT_AUTH_MARKERS: &[&str] = &[
-    "revoked",
-    "deactivated",
-    "disabled",
-    "suspended",
-    "terminated",
-    "banned",
-    "permanently",
-];
+/// Markers of a credential that will not recover on its own. Deliberately
+/// narrow: "disabled", "terminated" and the like also describe fixable or
+/// per-project/per-endpoint states (a key disabled for one project, an access
+/// policy on one endpoint), which must not write a model off for the run.
+const PERMANENT_AUTH_MARKERS: &[&str] = &["revoked", "deactivated", "suspended", "banned"];
 
 fn classify_text(
     status: Option<u16>,
@@ -261,7 +231,12 @@ fn classify_text(
     if status == Some(429) || failure == ProviderFailureClass::RateLimited {
         return RateLimit;
     }
-    if status == Some(408) || lower.contains("timed out") || lower.contains("timeout") {
+    // Text-only timeout detection must not fire on a 4xx body that merely names
+    // a `timeout` request parameter ("invalid value for 'timeout'").
+    let client_error = matches!(status, Some(400..=499)) && status != Some(408);
+    if status == Some(408)
+        || (!client_error && (lower.contains("timed out") || lower.contains("timeout")))
+    {
         return Timeout;
     }
     if matches!(status, Some(503 | 529))
