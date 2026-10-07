@@ -652,6 +652,7 @@ pub fn list_agent_runs(
             .eq_nonblank("kind", request.kind.as_deref())
             .eq_nonblank("parent_run_id", request.parent_run_id.as_deref())
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
+            .page(limit, offset)
             .fetch(
                 conn,
                 "agent_runs",
@@ -660,8 +661,6 @@ pub fn list_agent_runs(
                  checkpoint_path, checkpoint_json, summary, error, metadata_json,
                  started_at, updated_at, completed_at",
                 "updated_at DESC",
-                limit,
-                offset,
                 |row| map_agent_run_row(conn, row),
             )?;
         let count = count as usize;
@@ -779,6 +778,7 @@ pub fn list_workflow_runs(
             .eq_nonblank("definition_id", request.definition_id.as_deref())
             .eq_nonblank("status", request.status.as_deref())
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
+            .page(limit, offset)
             .fetch(
                 conn,
                 "workflow_runs",
@@ -786,8 +786,6 @@ pub fn list_workflow_runs(
                  child_run_ids_json, status, summary, started_at, updated_at, completed_at,
                  revision, lease_owner, lease_expires_at",
                 "updated_at DESC",
-                limit,
-                offset,
                 map_workflow_run_row,
             )?;
         let count = count as usize;
@@ -876,14 +874,13 @@ pub fn list_agent_teams(
         let (teams, count) = crate::paging::PagedQuery::default()
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
             .eq_nonblank("status", request.status.as_deref())
+            .page(limit, offset)
             .fetch(
                 conn,
                 "agent_teams",
                 "id, parent_thread_id, lead_agent_id, status, summary,
                  created_at, updated_at, closed_at",
                 "updated_at DESC",
-                limit,
-                offset,
                 map_agent_team_row,
             )?;
         let count = count as usize;

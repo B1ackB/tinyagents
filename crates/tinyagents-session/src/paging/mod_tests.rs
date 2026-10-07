@@ -15,9 +15,8 @@ fn table() -> Connection {
 
 fn ids(query: &mut PagedQuery, limit: i64, offset: i64) -> (Vec<i64>, u64) {
     query
-        .fetch(&table(), "items", "id", "rank DESC", limit, offset, |row| {
-            row.get(0)
-        })
+        .page(limit, offset)
+        .fetch(&table(), "items", "id", "rank DESC", |row| row.get(0))
         .unwrap()
 }
 

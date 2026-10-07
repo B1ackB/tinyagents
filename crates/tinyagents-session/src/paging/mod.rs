@@ -17,6 +17,8 @@ use tinyagents_harness::error::Result;
 pub(crate) struct PagedQuery {
     clauses: Vec<String>,
     values: Vec<Box<dyn ToSql>>,
+    limit: i64,
+    offset: i64,
 }
 
 impl PagedQuery {
@@ -50,8 +52,15 @@ impl PagedQuery {
         )
     }
 
+    /// Sets the page: at most `limit` rows, skipping the first `offset`.
+    pub(crate) fn page(&mut self, limit: i64, offset: i64) -> &mut Self {
+        self.limit = limit;
+        self.offset = offset;
+        self
+    }
+
     /// Counts every row of `from` matching the filters, then maps `columns`
-    /// for one page of them in `order_by` order. Returns the page and the
+    /// for the page of them in `order_by` order. Returns the page and the
     /// total count.
     pub(crate) fn fetch<T>(
         &mut self,
@@ -59,8 +68,6 @@ impl PagedQuery {
         from: &str,
         columns: &str,
         order_by: &str,
-        limit: i64,
-        offset: i64,
         map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     ) -> Result<(Vec<T>, u64)> {
         let where_sql = if self.clauses.is_empty() {
@@ -74,9 +81,9 @@ impl PagedQuery {
             |row| row.get::<_, i64>(0),
         )? as u64;
 
-        self.values.push(Box::new(limit));
+        self.values.push(Box::new(self.limit));
         let limit_idx = self.values.len();
-        self.values.push(Box::new(offset));
+        self.values.push(Box::new(self.offset));
         let offset_idx = self.values.len();
         let mut stmt = conn.prepare(&format!(
             "SELECT {columns}
