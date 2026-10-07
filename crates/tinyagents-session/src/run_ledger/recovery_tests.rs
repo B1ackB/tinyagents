@@ -115,6 +115,12 @@ fn overall_recovery_is_the_most_cautious_class() {
     ];
     let all = classify_recovery(&[call("a"), call("b"), call("c")], &effects);
     assert_eq!(overall_recovery(&all), RecoveryClass::NeedsVerification);
+    assert!(RecoveryClass::Resume < RecoveryClass::ResumeReportOnly);
+    assert!(RecoveryClass::ResumeReportOnly < RecoveryClass::AwaitingAnswer);
+    assert!(RecoveryClass::AwaitingAnswer < RecoveryClass::NeedsVerification);
+    let deferred = [effect("run-1", "d", ToolEffectStatus::Deferred)];
+    let awaiting = classify_recovery(&[call("d"), call("c")], &deferred);
+    assert_eq!(overall_recovery(&awaiting), RecoveryClass::AwaitingAnswer);
     assert_eq!(overall_recovery(&all[..1]), RecoveryClass::ResumeReportOnly);
     assert_eq!(overall_recovery(&all[2..]), RecoveryClass::Resume);
     assert_eq!(
