@@ -1,6 +1,6 @@
 //! Unit tests for [`PagedQuery`].
 
-use super::PagedQuery;
+use super::*;
 use rusqlite::Connection;
 
 fn table() -> Connection {
