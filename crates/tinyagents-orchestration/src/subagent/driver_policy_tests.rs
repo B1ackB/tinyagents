@@ -428,3 +428,66 @@ async fn the_default_plan_changes_nothing() {
     assert!(result.outcome.schema_error.is_none());
     assert_eq!(executor.seen_caps.lock().unwrap()[0], (None, None));
 }
+
+#[tokio::test]
+async fn call_caps_apply_to_every_retry_context() {
+    let executor = Executor::new(flaky(2, false));
+    let plan: Planned = Arc::new(|p| {
+        with_factory(
+            p.with_policy(
+                retry_policy(3).with_budget(
+                    SubAgentBudget::unlimited()
+                        .with_max_model_calls(4)
+                        .with_max_tool_calls(9),
+                ),
+            ),
+        )
+    });
+    driver(plan, executor.clone())
+        .run(request("t-retry-caps"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        *executor.seen_caps.lock().unwrap(),
+        vec![(Some(4), Some(9)); 3],
+        "the first attempt and both retries are capped"
+    );
+}
+
+#[tokio::test]
+async fn an_executor_that_cancels_its_token_is_not_retried() {
+    let executor = Executor::new(Arc::new(|_, e| {
+        e.cancellation.cancel();
+        Err(transient(false))
+    }));
+    let plan: Planned = Arc::new(|p| with_factory(p.with_policy(retry_policy(3))));
+    let _ = driver(plan, executor.clone())
+        .run(request("t-exec-cancel"), CancellationToken::new())
+        .await;
+    assert_eq!(executor.attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_over_budget_run_still_gets_the_result_policy() {
+    let executor = Executor::new(Arc::new(|_, e| {
+        let mut outcome = completed(&e.prepared.task_id, &"y".repeat(500));
+        outcome.usage.usage.output_tokens = 500;
+        Ok(outcome)
+    }));
+    let plan: Planned = Arc::new(|p| {
+        p.with_policy(
+            SubAgentPolicy::default()
+                .with_budget(SubAgentBudget::unlimited().with_max_output_tokens(100)),
+        )
+        .with_result_policy(ResultPolicy::new().with_max_chars(80))
+    });
+    let result = driver(plan, executor)
+        .run(request("t-over-trim"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(
+        result.outcome.status,
+        SubagentStatus::Incomplete(ref inc) if inc.kind == IncompleteKind::BudgetExceeded
+    ));
+    assert!(result.outcome.output.chars().count() <= 80);
+}
