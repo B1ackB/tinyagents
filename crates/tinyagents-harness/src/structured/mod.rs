@@ -401,7 +401,7 @@ impl StructuredExtractor {
             let truncated = response
                 .finish_reason
                 .as_deref()
-                .is_some_and(|reason| reason == "length");
+                .is_some_and(|reason| crate::finish_reason::is_length_stop(Some(reason)));
             return Err(TinyAgentsError::StructuredOutput(if truncated {
                 format!(
                     "schema '{}': the model returned no content because it hit its output limit \

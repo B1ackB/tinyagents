@@ -106,3 +106,25 @@ fn text_dialect_markup_outside_a_fenced_code_block_is_recovered() {
     assert_eq!(response.message.tool_calls.len(), 1);
     assert_eq!(response.message.tool_calls[0].name, "shell");
 }
+
+#[test]
+fn only_the_last_and_invalid_calls_are_possibly_truncated() {
+    use tinyinference_llm::tool::ToolCall;
+
+    let calls = vec![
+        ToolCall::new("n1", "a", serde_json::json!({})),
+        ToolCall::invalid("n2", "a", "{", "eof"),
+        ToolCall::new("n3", "a", serde_json::json!({})),
+        ToolCall::new("n3", "a", serde_json::json!({})),
+    ];
+    let mut positions: Vec<usize> = super::truncated_call_positions(&calls)
+        .into_iter()
+        .collect();
+    positions.sort();
+    assert_eq!(
+        positions,
+        vec![1, 3],
+        "positional: a duplicate id does not widen it"
+    );
+    assert!(super::truncated_call_positions(&[]).is_empty());
+}
