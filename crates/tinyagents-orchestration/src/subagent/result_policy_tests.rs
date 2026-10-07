@@ -26,7 +26,7 @@ fn truncate_is_a_noop_within_the_cap_and_counts_chars_not_bytes() {
 fn a_cap_smaller_than_the_marker_returns_only_the_marker() {
     let (out, omitted) = truncate_head_tail("0123456789", 4);
     assert_eq!(omitted, 10);
-    assert!(out.contains("10 chars omitted") && !out.contains('0') || out.contains("10"));
+    assert!(out.contains("10 chars omitted"));
 }
 
 #[tokio::test]
