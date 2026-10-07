@@ -34,8 +34,8 @@ A host switches by changing the import path and the two type names:
 | `ConversationMessagePatch` | `ThreadMessagePatch` |
 
 Every other name (`ConversationStore`, `ConversationThread`,
-`CreateConversationThread`, `ConversationPurgeStats`, `CrossThreadHit`, the
-and the free functions) is unchanged. The `bus` persistence subscriber was
+`CreateConversationThread`, `ConversationPurgeStats`, `CrossThreadHit`, and
+the free functions) is unchanged. The `bus` persistence subscriber was
 not carried over: hosts keep their own (OpenHuman's lives in
 `openhuman-core`'s `threads::store::bus`). A host that wants to keep
 its own spelling can import `ThreadMessage as ConversationMessage`.
