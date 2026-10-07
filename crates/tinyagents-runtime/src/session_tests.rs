@@ -9,6 +9,7 @@ use tinyagents_session::transcript::{
 };
 use tinyinference_llm::message::Message;
 use tokio::sync::Notify;
+use tokio::time::{Duration, timeout};
 
 fn meta() -> TranscriptMeta {
     TranscriptMeta {
@@ -153,7 +154,7 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let delivery_session = session_ref.clone();
     let delivery_started = Arc::new(Notify::new());
     let delivery_started_signal = delivery_started.clone();
-    let delivery = tokio::spawn(async move {
+    let mut delivery = tokio::spawn(async move {
         delivery_started_signal.notify_one();
         append_background_message(
             &delivery_locator,
@@ -164,7 +165,12 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
         .await
     });
     delivery_started.notified().await;
-    assert!(!delivery.is_finished(), "delivery must wait for the turn");
+    assert!(
+        timeout(Duration::from_millis(25), &mut delivery)
+            .await
+            .is_err(),
+        "delivery must wait for the turn"
+    );
 
     release.notify_one();
     turn.await.unwrap().unwrap();
