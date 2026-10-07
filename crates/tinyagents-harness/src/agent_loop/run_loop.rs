@@ -7,7 +7,7 @@
 
 use super::handoff_transform;
 use super::model_call::ModelCallBase;
-use super::tool_changes;
+use super::types::{MixedStructuredTurn, ResponseTurn, TruncationOutcome, TurnFlow, TurnRecovery};
 use super::*;
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
@@ -187,177 +187,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         ctx.limits
             .sync_call_limits(effective_model_calls, effective_tool_calls);
 
-        // Build the direct tool set once. Discovery can add typed declarations
-        // after a search, while the base declarations stay stable.
-        //
-        // Only *direct* tools go on the initial wire request. Deferred tools
-        // are indexed into the run's catalogue and reached through the
-        // `tool_search` bridge. Search matches are promoted on
-        // the next request; the bridge schemas follow the direct set.
-        // The same host allow-list gates both halves: deferral only ever
-        // subtracts from what the host admitted. `resolve_tool_allowlist`
-        // (not a raw read of `binding.allowed_tools`) is what applies I-9's
-        // fail-closed default, so an empty declared list denies every tool
-        // here exactly as it does for the direct set below.
+        // Build the tool surface once (see `tool_surface.rs`): the direct tool
+        // set plus the deferred catalogue behind the `tool_search` bridge. The
+        // host allow-list gates both halves; `resolve_tool_allowlist` (not a raw
+        // read of `binding.allowed_tools`) is what applies I-9's fail-closed
+        // default, so an empty declared list denies every tool.
         let allowed_tools = self.resolve_tool_allowlist(ctx)?;
         let host_allows = |name: &str| {
             allowed_tools
                 .as_ref()
                 .is_none_or(|allowed| allowed.contains(name))
         };
-        let mut tool_schemas = self
-            .tools
-            .schemas()
-            .into_iter()
-            .filter(|schema| host_allows(&schema.name))
-            .collect::<Vec<_>>();
-        // Composable toolset chain (gap B3, `AgentHarness::with_toolset`):
-        // additive to the registry's own `Direct` schemas above — a name the
-        // registry already advertises keeps the registry's declaration, so a
-        // registered tool always wins a collision. This run's toolset is
-        // consulted once here, matching the registry's own once-per-run
-        // schema build a few lines up (the comment above explains why: the
-        // resulting request tool list feeds the provider prompt cache, so
-        // rebuilding it every turn would defeat that cache). A caller that
-        // genuinely needs true per-turn variance can still call
-        // [`crate::tool::toolset::ToolSet::tools`] directly from a
-        // `before_model` middleware, which *does* run every turn.
-        if let Some(toolset) = &self.toolset {
-            let existing: std::collections::HashSet<&str> = tool_schemas
-                .iter()
-                .map(|schema| schema.name.as_str())
-                .collect();
-            let extra: Vec<_> = toolset
-                .tools(ctx)
-                .await?
-                .into_iter()
-                .filter(|tool| tool.exposure() == tinytools::ToolExposure::Direct)
-                .filter(|tool| host_allows(tool.name()))
-                .filter(|tool| !existing.contains(tool.name()))
-                .map(|tool| crate::tool::provider_schema(tool.as_ref()))
-                .collect();
-            tool_schemas.extend(extra);
-            // Keep the combined set name-sorted: every consumer of
-            // `tool_schemas` below (and the provider request it feeds) relies
-            // on the sort for wire-byte/prompt-cache stability.
-            tool_schemas.sort_by(|left, right| left.name.cmp(&right.name));
-        }
-        // Provider projection applies once, to the full combined set
-        // (registry + toolset), so a toolset-supplied schema reaches the
-        // wire cleaned exactly like a registered one.
-        if let Some(preparation) = &self.policy.tool_schemas {
-            tool_schemas = crate::tool::prepare_tool_schemas(&tool_schemas, preparation);
-        }
-        // Captured before the bridge schemas are appended below, so
-        // `ToolsAdvertised.direct` reports the actual `Direct`-exposure
-        // count. Otherwise it would silently include the intrinsic
-        // bridge schemas whenever discovery is enabled, double-counting
-        // relative to `deferred` and making `direct` mean different things
-        // depending on whether any tool happens to be deferred.
-        let direct_schema_count = tool_schemas.len();
-        let mut direct_tool_schemas = tool_schemas.clone();
-        // B6 (`docs/runtime-comparison/plan.md`): `declared_tool_schemas`
-        // tracks what the transcript has actually been told about the
-        // toolset chain's tools so far (folded or patched in, turn by turn,
-        // by the loop below), so a later turn's live toolset resolution can
-        // be diffed against it instead of against the wire list — the wire
-        // list also carries the bridge schemas captured into
-        // `bridge_schemas` next, which never change within a run and so are
-        // deliberately excluded from the diff.
-        //
-        // Starts empty rather than seeded from the merge above: nothing has
-        // been recorded on the transcript yet, so the loop's first-turn diff
-        // (below) always fires when a toolset is installed, declaring the
-        // full initial toolset-supplied set as one patch (turn 1 has no
-        // prior cached prefix to protect, so there is no cost to always
-        // recording it). This is what makes
-        // [`tinyinference_llm::message::replay_system_state`] able to
-        // reconstruct the *complete* effective tool set from the transcript
-        // alone, not just later deltas — the alternative (seeding from the
-        // merge above) would leave the initial toolset-only tools
-        // permanently undeclared on the wire-only `tool_schemas` snapshot
-        // computed here, which a replay can never see.
-        let mut declared_tool_schemas: Vec<ToolSchema> = Vec::new();
-        let mut bridge_schemas: Vec<ToolSchema> = Vec::new();
-        let deferred_catalog = self.deferred_catalog(&host_allows);
-        // A resumed transcript carries promoted declarations in SystemMessage
-        // patches. Only restore names still admitted into this run's catalogue.
-        let mut promoted_schemas: std::collections::BTreeMap<String, ToolSchema> =
-            tinyinference_llm::message::replay_system_state(messages)
-                .1
-                .into_iter()
-                .filter(|schema| deferred_catalog.get(&schema.name).is_some())
-                .map(|schema| (schema.name.clone(), schema))
-                .collect();
-        let mut promoted_names: std::collections::BTreeSet<String> =
-            promoted_schemas.keys().cloned().collect();
-        let mut recorded_promotions = promoted_names.clone();
-        if !deferred_catalog.is_empty() {
-            // A host-registered `tool_search` keeps its slot: the
-            // intrinsic bridge only fills a name nobody registered. Check the
-            // full registry (`self.tools.dispatch`), not just the direct set
-            // collected into `tool_schemas` above — a `Hidden` or `Deferred`
-            // registration under that name must also suppress the intrinsic
-            // schema, because admission's own collision rule
-            // (`self.tools.dispatch(&call.name).is_none()` in
-            // `answer_discovery_bridge`) checks the same full registry. Using
-            // a narrower rule here than admission uses would let this loop
-            // advertise an intrinsic schema that admission then treats as
-            // owned by the registered tool (or, for `Hidden`, refuses).
-            let mut bridge: Vec<_> =
-                crate::tool::discover::bridge_schemas(&deferred_catalog, &self.policy.discovery)
-                    .into_iter()
-                    .collect();
-            if let Some(preparation) = &self.policy.tool_schemas {
-                // The bridge schemas are generated here, after the direct set
-                // was prepared above, so they need the same provider
-                // projection (for example Gemini's `minimum`/`maximum`
-                // removal) applied individually or they reach the wire raw.
-                bridge = bridge
-                    .into_iter()
-                    .map(|schema| crate::tool::prepare_tool_schema(&schema, preparation))
-                    .collect();
-            }
-            for schema in bridge {
-                if self.tools.dispatch(&schema.name).is_none() {
-                    tool_schemas.push(schema.clone());
-                    bridge_schemas.push(schema);
-                }
-            }
-        }
-        // Fail closed on a structured-output schema whose name collides with a
-        // registered tool *or* the intrinsic discovery bridge. Under the
-        // tool-call strategy the schema is sent as an extra `function` entry,
-        // so a collision puts two identically-named functions in one request
-        // — which OpenAI rejects outright — and makes "was this the schema or
-        // the real tool?" unanswerable for every returned call. Two checks,
-        // because neither alone covers every name that ends up on the wire:
-        // `self.tools.names()` covers every registered tool (Direct, Deferred,
-        // Hidden), but not the intrinsic `tool_search` bridge,
-        // which has no registry entry; `tool_schemas` covers the bridge (and
-        // the Direct set) but never contains a Deferred tool's own name.
-        if let Some(name) = self
-            .policy
-            .default_response_format
-            .as_ref()
-            .and_then(|format| match format {
-                ResponseFormat::Auto { name, .. } | ResponseFormat::JsonSchema { name, .. } => {
-                    Some(name)
-                }
-                _ => None,
-            })
-            && (self
-                .tools
-                .names()
-                .iter()
-                .any(|registered| registered == name)
-                || tool_schemas.iter().any(|schema| &schema.name == name))
-        {
-            return Err(TinyAgentsError::Validation(format!(
-                "structured-output schema name `{name}` collides with a registered tool (or the \
-                 intrinsic discovery bridge) of the same name; rename one of them"
-            )));
-        }
+        let mut surface = self.build_tool_surface(ctx, messages, &host_allows).await?;
+        self.check_structured_schema_name(&surface.tool_schemas)?;
 
         status.mark_running(HarnessPhase::Middleware);
         self.middleware.run_before_agent(ctx, state).await?;
@@ -369,9 +211,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // output tool-call fallback can still narrow or grow what an
         // individual request actually sends.
         let record = ctx.emit(AgentEvent::ToolsAdvertised {
-            direct: direct_schema_count,
-            deferred: deferred_catalog.len(),
-            schema_bytes: crate::token_estimation::tool_schema_bytes(&tool_schemas),
+            direct: surface.direct_schema_count,
+            deferred: surface.deferred_catalog.len(),
+            schema_bytes: crate::token_estimation::tool_schema_bytes(&surface.tool_schemas),
         });
         status.set_last_event(record.id);
 
@@ -395,28 +237,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
         }
 
-        // Truncated-empty recovery state (see `RunPolicy::truncated_empty_retries`).
-        // These persist across the retry `continue` within a single logical turn:
-        // `boosted_max_tokens` overrides the next request's cap, `truncation_base`
-        // records the original cap so growth stays clamped at 4x, and the counter
-        // bounds how many times we re-issue the call.
-        let mut truncated_empty_retries_used: u32 = 0;
-        // "Stop deliberating" re-prompts once the retries above are spent
-        // (see `RunPolicy::truncated_empty_nudges`). Same per-turn scope.
-        let mut truncated_empty_nudges_used: u32 = 0;
-        let mut empty_response_retries_used: u32 = 0;
-        // Consecutive "you said tool_calls but sent none" re-prompts
-        // (see `RunPolicy::dropped_tool_call_nudges`).
-        let mut dropped_tool_call_nudges_used: u32 = 0;
-        // Consecutive re-prompts after a call written on a turn with no
-        // callable tool (bounded by the same `dropped_tool_call_nudges`).
-        let mut withheld_call_nudges_used: u32 = 0;
-        let mut boosted_max_tokens: Option<u32> = None;
-        let mut truncation_base: Option<u32> = None;
-        // Consecutive length-truncated tool turns answered with errors (see
-        // `RunPolicy::truncated_tool_call_retries`); reset by any tool turn
-        // that was not cut off, never by the truncated turn itself.
-        let mut truncated_tool_call_retries_used: u32 = 0;
+        // Per-turn recovery state (retry/nudge counters and the boosted output
+        // cap; see `TurnRecovery`). It persists across the retry `continue`
+        // within a single logical turn and is reset at each turn boundary.
+        let mut turn_recovery = TurnRecovery::default();
 
         // Output-validation retry state (see `RunPolicy::output_retry`, A3).
         // Scoped to the whole run rather than reset per turn: `max_attempts`
@@ -546,127 +370,25 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     self.preview_model_profile(&patch_request)
                 };
 
-            // B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
-            // re-consult the toolset chain (documented as "called once per
-            // turn", `ToolSet::tools`) and diff its live set against what
-            // this transcript has declared so far. A caller whose toolset
-            // never varies turn to turn sees no diff and pays nothing here —
-            // this only fires for a genuine mid-run change. Deliberately
-            // runs before the request/`ModelStarted` below, so the patch (if
-            // any) is part of *this* turn's request.
-            if let Some(toolset) = &self.toolset {
-                let mut live_schemas: Vec<ToolSchema> = self
-                    .tools
-                    .schemas()
-                    .into_iter()
-                    .filter(|schema| host_allows(&schema.name))
-                    .collect();
-                let existing: std::collections::HashSet<&str> = live_schemas
-                    .iter()
-                    .map(|schema| schema.name.as_str())
-                    .collect();
-                let extra: Vec<_> = toolset
-                    .tools(ctx)
-                    .await?
-                    .into_iter()
-                    .filter(|tool| tool.exposure() == tinytools::ToolExposure::Direct)
-                    .filter(|tool| host_allows(tool.name()))
-                    .filter(|tool| !existing.contains(tool.name()))
-                    .map(|tool| crate::tool::provider_schema(tool.as_ref()))
-                    .collect();
-                live_schemas.extend(extra);
-                live_schemas.sort_by(|left, right| left.name.cmp(&right.name));
-                if let Some(preparation) = &self.policy.tool_schemas {
-                    live_schemas = crate::tool::prepare_tool_schemas(&live_schemas, preparation);
-                }
-                if let Some(patch) =
-                    tool_changes::diff_tool_set(&declared_tool_schemas, &live_schemas)
-                {
-                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
-                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
-                    declared_tool_schemas = live_schemas.clone();
-                    direct_tool_schemas = live_schemas;
-                }
-            }
-
-            // Promote only names returned by a successful intrinsic search.
-            // The patch makes the declaration recoverable from the transcript;
-            // the provider receives its typed schema on this and later calls.
-            let newly_promoted: Vec<ToolSchema> = promoted_names
-                .difference(&recorded_promotions)
-                .filter_map(|name| deferred_catalog.get(name).cloned())
-                .collect();
-            if !newly_promoted.is_empty() {
-                if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
-                    let in_place = tool_changes::patch_inserts_in_place(patch_profile.as_ref());
-                    tool_changes::apply_tool_change_patch(messages, patch, in_place);
-                }
-                recorded_promotions.extend(newly_promoted.iter().map(|schema| schema.name.clone()));
-                promoted_schemas.extend(
-                    newly_promoted
-                        .into_iter()
-                        .map(|schema| (schema.name.clone(), schema)),
-                );
-            }
-            tool_schemas = direct_tool_schemas.clone();
-            tool_schemas.extend(
-                promoted_schemas
-                    .values()
-                    .filter(|schema| {
-                        !direct_tool_schemas
-                            .iter()
-                            .any(|direct| direct.name == schema.name)
-                    })
-                    .cloned(),
-            );
-            tool_schemas.extend(bridge_schemas.clone());
+            // B6: re-consult the toolset chain and declare any live change as a
+            // transcript patch, so it is part of *this* turn's request; then
+            // promote tools a successful `tool_search` returned and assemble
+            // the turn's wire list.
+            surface
+                .declare_toolset_changes(self, ctx, messages, &host_allows, patch_profile.as_ref())
+                .await?;
+            surface.promote_discovered(messages, patch_profile.as_ref());
+            surface.assemble_turn_schemas();
 
             // Build the request from the working transcript, tool schemas, and
-            // policy response format.  Go through `PromptBuilder` rather than
-            // constructing `ModelRequest` directly: a provider KV cache needs
-            // an explicit stable prefix, and the system instructions plus the
-            // name-sorted tool schemas are stable between discoveries.
-            status.mark_running(HarnessPhase::BuildingRequest);
-            let system_end = cacheable_system_prefix_end(messages, ctx.frozen_system_prefix_len);
-            let mut prompt = crate::prompt::PromptBuilder::new();
-            prompt.push_system_messages(&messages[..system_end]);
-            if !tool_schemas.is_empty() {
-                prompt.push_tools_segment("tools", tool_schemas.clone());
-            }
-            let mut request = prompt.build(messages[system_end..].to_vec());
-            mark_empty_frozen_prefix(&mut request, ctx.frozen_system_prefix_len);
-            // Provider adapters that maintain an external conversation (for
-            // example Claude Code's resumable CLI session) need the caller's
-            // logical thread id, not a hash of prompt text. Carry the harness
-            // thread through request metadata while preserving an explicit
-            // caller-supplied value.
-            if let Some(thread_id) = ctx.thread_id() {
-                if request.metadata.is_null() {
-                    request.metadata = serde_json::json!({
-                        "thread_id": thread_id.as_str(),
-                    });
-                } else if let Some(metadata) = request.metadata.as_object_mut() {
-                    metadata.entry("thread_id").or_insert_with(|| {
-                        serde_json::Value::String(thread_id.as_str().to_string())
-                    });
-                }
-            }
-            if let Some(format) = &self.policy.default_response_format {
-                request = request.with_response_format(format.clone());
-            }
-            if let Some(cap) = ctx.config.max_turn_output_tokens {
-                request.max_tokens =
-                    Some(request.max_tokens.map_or(cap, |current| current.min(cap)));
-            }
-            // Truncated-empty recovery: a prior attempt this turn exhausted its
-            // token budget on the (hidden) reasoning channel and returned no
-            // usable content, so re-issue the call with a larger cap. The boost
-            // deliberately wins over the per-turn cap above — that cap is what
-            // truncated the response — and was already clamped to 4x the
-            // original budget when it was computed below.
-            if let Some(boost) = boosted_max_tokens {
-                request.max_tokens = Some(boost);
-            }
+            // policy response format (see `model_turn.rs`).
+            let mut request = self.build_turn_request(
+                ctx,
+                status,
+                messages,
+                &surface.tool_schemas,
+                turn_recovery.boosted_max_tokens,
+            );
 
             // Known tool requirements must shape the hosted profile seen by
             // middleware. The later gate below still catches tools added by
@@ -866,196 +588,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 request.reasoning = Some(mapped.clone());
             }
 
-            // Resolve the structured-output plan against the resolved model.
-            // `Auto` consults the model profile to choose provider-native schema
-            // mode versus a tool-call fallback; an explicit `JsonSchema` always
-            // uses provider-native mode. The chosen strategy drives extraction of
-            // the final response below.
-            // Marks where any structured-output fallback tool gets pushed
-            // below, so it can be told apart afterward from what was already
-            // on `request.tools` — see `synthesized_tools`.
-            let tools_before_structured_plan = request.tools.len();
-            let structured_plan: Option<(StructuredStrategy, String, Value)> =
-                match request.response_format.clone() {
-                    Some(ResponseFormat::Auto { name, schema })
-                        if matches!(
-                            self.policy.structured_strategy_override,
-                            Some(crate::runtime::StructuredStrategyOverride::Prompted { .. })
-                        ) =>
-                    {
-                        let template = match &self.policy.structured_strategy_override {
-                            Some(crate::runtime::StructuredStrategyOverride::Prompted {
-                                template,
-                            }) => template.clone(),
-                            _ => unreachable!("guarded by the match arm above"),
-                        };
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        request.response_format = Some(ResponseFormat::Text);
-                        let instructions = template.clone().unwrap_or_else(|| {
-                            crate::structured::default_prompted_template().to_string()
-                        });
-                        let schema_text = serde_json::to_string_pretty(&schema).unwrap_or_default();
-                        crate::cache::prepend_system_message(
-                            &mut request,
-                            format!("{instructions}\n\nJSON Schema for `{name}`:\n{schema_text}"),
-                        );
-                        Some((StructuredStrategy::Prompted { template }, name, schema))
-                    }
-                    Some(ResponseFormat::Auto { name, schema })
-                        if matches!(
-                            self.policy.structured_strategy_override,
-                            Some(crate::runtime::StructuredStrategyOverride::ToolCallUnion { .. })
-                        ) =>
-                    {
-                        let variants = match &self.policy.structured_strategy_override {
-                            Some(crate::runtime::StructuredStrategyOverride::ToolCallUnion {
-                                variants,
-                            }) => variants.clone(),
-                            _ => unreachable!("guarded by the match arm above"),
-                        };
-                        request.response_format = Some(ResponseFormat::Text);
-                        for (variant_name, variant_schema) in &variants {
-                            let variant_schema = crate::tool::apply_profile_schema_transform(
-                                variant_schema,
-                                binding.model.profile(),
-                            );
-                            let schema_tool = ToolSchema {
-                                name: variant_name.clone(),
-                                description: format!("Return the result as `{variant_name}`."),
-                                parameters: variant_schema,
-                                format: tinyinference_llm::tool::ToolFormat::Json,
-                            };
-                            request.tools.push(match &self.policy.tool_schemas {
-                                Some(preparation) => {
-                                    crate::tool::prepare_tool_schema(&schema_tool, preparation)
-                                }
-                                None => schema_tool,
-                            });
-                        }
-                        let _ = schema;
-                        Some((StructuredStrategy::ToolCallUnion, name, Value::Null))
-                    }
-                    Some(ResponseFormat::Auto { name, schema }) => {
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        let strategy = StructuredStrategy::for_profile(binding.model.profile());
-                        match strategy {
-                            StructuredStrategy::ProviderSchema => {
-                                request.response_format =
-                                    Some(ResponseFormat::json_schema(name.clone(), schema.clone()));
-                            }
-                            StructuredStrategy::ToolCall => {
-                                request.response_format = Some(ResponseFormat::Text);
-                                let fallback_schema = ToolSchema {
-                                    name: name.clone(),
-                                    description: format!("Return the result as `{name}`."),
-                                    parameters: schema.clone(),
-                                    format: tinyinference_llm::tool::ToolFormat::Json,
-                                };
-                                // This schema is generated here, after the
-                                // direct and bridge schemas above were
-                                // prepared for the target provider, so it
-                                // needs the same projection or it reaches the
-                                // wire raw (see the `tool_schemas` and bridge
-                                // preparation above).
-                                request.tools.push(match &self.policy.tool_schemas {
-                                    Some(preparation) => crate::tool::prepare_tool_schema(
-                                        &fallback_schema,
-                                        preparation,
-                                    ),
-                                    None => fallback_schema,
-                                });
-                                // Force the schema tool **only** when it is the
-                                // sole tool available. Forcing it inside a
-                                // tool-using loop makes the model emit the
-                                // structured call on turn 1, which terminates
-                                // the loop before any registered tool can ever
-                                // run — the agent silently loses its tools, and
-                                // the symptom points nowhere near this code.
-                                // LangChain likewise binds a schema tool with a
-                                // forced `tool_choice` only in its terminal
-                                // wrapper, never in the tool-calling loop.
-                                // A final-call middleware can withdraw the
-                                // ordinary request tools before this planner
-                                // runs. In that case the synthetic schema tool
-                                // is the only remaining callable tool, even
-                                // though the run-level registry still contains
-                                // the withdrawn tools.
-                                if tool_schemas.is_empty()
-                                    || (tools_before_structured_plan == 0
-                                        && request.tool_choice == ToolChoice::None)
-                                {
-                                    request.tool_choice = ToolChoice::Tool(name.clone());
-                                } else {
-                                    tracing::debug!(
-                                        target: "tinyagents::agent_loop",
-                                        run_id = %ctx.run_id(),
-                                        schema_name = %name,
-                                        registered_tools = tool_schemas.len(),
-                                        "[agent_loop] structured tool offered but not forced; \
-                                         registered tools stay callable"
-                                    );
-                                }
-                            }
-                            // A profile whose `default_structured_mode` is
-                            // `Prompted` reaches this arm too (not only
-                            // through the dedicated
-                            // `structured_strategy_override` arm above): the
-                            // schema goes into the system segment instead of
-                            // a provider API field, mirroring the override
-                            // arm's construction.
-                            StructuredStrategy::Prompted { ref template } => {
-                                request.response_format = Some(ResponseFormat::Text);
-                                let instructions = template.clone().unwrap_or_else(|| {
-                                    crate::structured::default_prompted_template().to_string()
-                                });
-                                let schema_text =
-                                    serde_json::to_string_pretty(&schema).unwrap_or_default();
-                                crate::cache::prepend_system_message(
-                                    &mut request,
-                                    format!(
-                                        "{instructions}\n\nJSON Schema for `{name}`:\n{schema_text}"
-                                    ),
-                                );
-                            }
-                            // `for_profile` never returns `ToolCallUnion`;
-                            // that strategy is reached exclusively through
-                            // the dedicated `structured_strategy_override`
-                            // arm above.
-                            StructuredStrategy::ToolCallUnion => unreachable!(
-                                "StructuredStrategy::for_profile never returns ToolCallUnion"
-                            ),
-                        }
-                        Some((strategy, name, schema))
-                    }
-                    Some(ResponseFormat::JsonSchema { name, schema }) => {
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        request.response_format = Some(ResponseFormat::JsonSchema {
-                            name: name.clone(),
-                            schema: schema.clone(),
-                        });
-                        Some((StructuredStrategy::ProviderSchema, name, schema))
-                    }
-                    _ => None,
-                };
-
-            // Tool schemas minted by the structured-output plan above (the
-            // `ToolCall` / `ToolCallUnion` fallback tools), pushed onto
-            // `request.tools` after `tools_before_structured_plan` was
-            // recorded. A host that renders its own static tool catalogue
-            // composed it before this turn's structured-output planning ran,
-            // so it cannot have advertised these; `RunDialect::apply_to_request`
-            // appends their catalogue entries even in the host-rendered case.
-            let synthesized_tools: Vec<ToolSchema> =
-                request.tools[tools_before_structured_plan..].to_vec();
+            // Resolve the structured-output plan against the resolved model (see
+            // `structured_plan.rs`); the plan drives extraction of the final
+            // response below. `synthesized_tools` are the schema tools the plan
+            // pushed onto the request.
+            let (structured_plan, synthesized_tools) = self.plan_structured_output(
+                ctx,
+                &mut request,
+                binding.model.profile(),
+                surface.tool_schemas.len(),
+            );
 
             // What was offered is fixed here, before a text dialect strips
             // the schemas off the wire: recovery and the stream scrubber need
@@ -1113,59 +655,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 &synthesized_tools,
             );
 
-            // A host budget is acquired only for an explicit host-driven run.
-            // Do it after structured-output planning: a synthetic schema tool
-            // is part of the provider request and must be included in its
-            // estimate. The permit remains alive through response accounting,
-            // so cancellation or a provider error still releases it through
-            // Drop.
-            let host_budget = if let Some(host_run) =
-                crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?
-            {
-                if let Some(budget) = host_run.host.budget.clone() {
-                    let context_state = crate::host::ContextState {
-                        message_count: request.messages.len(),
-                        prompt_tokens: crate::token_estimation::estimate_slice_tokens(
-                            &request.messages,
-                        ),
-                        context_window_tokens: binding
-                            .model
-                            .profile()
-                            .and_then(|profile| profile.max_input_tokens),
-                        iterations: run.steps,
-                    };
-                    let hint = budget.compression_hint(&context_state);
-                    if hint.is_advised() {
-                        tracing::debug!(?hint, "[host] budget gate advised context compression");
-                        apply_host_budget_compression(ctx, &mut request.messages, hint)?;
-                    }
-                    let estimate = crate::host::CallEstimate::new(
-                        &model_name,
-                        crate::token_estimation::estimate_slice_tokens(&request.messages),
-                        request.max_tokens.unwrap_or_default() as u64,
-                    )
-                    .with_agent(host_run.agent_id.clone())
-                    .with_thread(
-                        ctx.thread_id()
-                            .cloned()
-                            .unwrap_or_else(|| ctx.run_id().as_str().into()),
-                    )
-                    .with_tool_count(offered_tool_count);
-                    let permit = ctx
-                        .bounded(self.call_budget(ctx), budget.acquire(&estimate), || {
-                            format!(
-                                "budget admission for run `{}` exceeded its remaining wall-clock deadline",
-                                ctx.run_id()
-                            )
-                        })
-                        .await?;
-                    Some((budget.clone(), permit))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            // A host budget is acquired only for an explicit host-driven run (see
+            // `host_budget.rs`), after structured-output planning so a synthetic
+            // schema tool is part of the estimate.
+            let host_budget = self
+                .admit_host_budget(
+                    ctx,
+                    run,
+                    &mut request,
+                    binding.model.profile(),
+                    &model_name,
+                    offered_tool_count,
+                )
+                .await?;
             let call_id = CallId::new(format!("{}-model-{}", ctx.run_id(), run.model_calls + 1));
             status.mark_running(HarnessPhase::Model);
             status.active_model_call = Some(call_id.clone());
@@ -1275,49 +777,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             // Account for the completed provider response before fallible
-            // response middleware. A middleware rejection must not erase
-            // usage already incurred, and the host admission permit covers
-            // provider work rather than post-processing.
-            run.model_calls += 1;
-            run.steps += 1;
-            status.model_calls = run.model_calls;
-            status.active_model_call = None;
-            ctx.active_model_call = None;
-            // A cache replay consumed no provider tokens, so folding its usage
-            // into the run's totals reports spend that never happened. The
-            // saving is surfaced through the cache-hit event instead of being
-            // buried in the spend total.
-            if let Some(usage) = response.usage {
-                if response.served_from_cache {
-                    tracing::debug!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        saved_input_tokens = usage.input_tokens,
-                        saved_output_tokens = usage.output_tokens,
-                        "[agent_loop] cache-served response; usage not billed to the run"
-                    );
-                } else {
-                    run.usage.record(usage);
-                    status.usage = run.usage;
-                    let record = ctx.emit(AgentEvent::UsageRecorded { usage });
-                    status.set_last_event(record.id);
-                }
-                if !response.served_from_cache
-                    && let Some((budget, _permit)) = &host_budget
-                    && let Err(error) = self.record_host_usage(ctx, budget, &usage).await
-                {
-                    let record = ctx.emit(AgentEvent::ModelFailed {
-                        call_id: call_id.clone(),
-                        model: model_name.clone(),
-                        started_at_ms: Some(model_started_at_ms),
-                        attempts: None,
-                        error: error.to_string(),
-                    });
-                    status.set_last_event(record.id);
-                    return Err(error);
-                }
-            }
+            // response middleware (see `model_turn.rs`). A middleware rejection
+            // must not erase usage already incurred, and the host admission
+            // permit covers provider work rather than post-processing.
+            self.account_model_response(
+                ctx,
+                run,
+                status,
+                &response,
+                &call_id,
+                &model_name,
+                model_started_at_ms,
+                &host_budget,
+            )
+            .await?;
             // The permit guards a provider call, not the tools it may request.
             // Keeping a parent permit while awaiting a sub-agent tool can
             // deadlock a one-slot gate: the child needs that same slot for its
@@ -1384,551 +857,87 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 };
             let structured_tool_hit = !structured_hits.is_empty();
 
-            // A length stop means the output cap cut the reply off somewhere:
-            // the LAST call of the response may carry truncated (yet parseable)
-            // arguments — native or recovered from text alike, since a text
-            // grammar can close an open `{`/`[` or run a payload to end-of-text
-            // — as may any call the provider flagged invalid (a repair could
-            // make it look whole). Answer those with an error instead of
-            // running them and let the model retry; every earlier call was
-            // finished before the cut and runs normally. The call is chosen by
-            // position, not id, so duplicate or empty provider ids fail closed.
-            // Bounded per logical turn. A run resumed in a fresh context
-            // restarts this budget.
-            let mut turn_had_truncated_calls = false;
-            ctx.truncated_call_positions.clear();
-            if self.policy.reject_truncated_tool_calls
-                && !tool_calls.is_empty()
-                && crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
+            let turn = ResponseTurn {
+                call_id: &call_id,
+                response: &response,
+                tool_calls: &tool_calls,
+                attempt_max_tokens,
+                recovery: &recovery,
+                tools_available: tools_available_this_turn,
+                text_dialect_calls_recoverable: forced_text_dialect
+                    || text_dialect_recovery_enabled,
+                has_structured_plan: structured_plan.is_some(),
+                structured_call_names: &structured_call_names,
+            };
+            // A length stop may have cut a tool call off mid-arguments: answer
+            // the suspect calls with an error rather than running them.
+            let turn_had_truncated_calls = match self
+                .reject_truncated_tool_calls(
+                    state,
+                    ctx,
+                    run,
+                    status,
+                    messages,
+                    &mut turn_recovery,
+                    &turn,
+                )
+                .await?
             {
-                let truncated_positions = truncated_call_positions(&tool_calls);
-                if !truncated_positions.is_empty() {
-                    if truncated_tool_call_retries_used >= self.policy.truncated_tool_call_retries {
-                        tracing::warn!(
-                            target: "tinyagents::agent_loop",
-                            run_id = %ctx.run_id(),
-                            call_id = %call_id,
-                            retries = truncated_tool_call_retries_used,
-                            "[agent_loop] length-truncated tool calls keep recurring; truncated-tool-call retry budget exhausted"
-                        );
-                        messages.pop();
-                        return Err(TinyAgentsError::LimitExceeded(format!(
-                            "run `{}` stopped: {truncated_tool_call_retries_used} consecutive \
-                             retries of a tool call truncated by the output token limit did not \
-                             produce a complete call (RunPolicy::truncated_tool_call_retries)",
-                            ctx.run_id()
-                        )));
-                    }
-                    truncated_tool_call_retries_used += 1;
-                    turn_had_truncated_calls = true;
-                    // Give the retry room to finish the call.
-                    boost_max_tokens(
-                        attempt_max_tokens,
-                        &mut truncation_base,
-                        &mut boosted_max_tokens,
-                    );
-                    tracing::info!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        calls = tool_calls.len(),
-                        rejected = truncated_positions.len(),
-                        attempt = truncated_tool_call_retries_used,
-                        max_tokens = ?boosted_max_tokens,
-                        finish_reason = ?response.finish_reason,
-                        "[agent_loop] length-truncated response; failing its possibly-incomplete tool calls instead of running them"
-                    );
-                    let record = ctx.emit(AgentEvent::ControlApplied {
-                        control: "truncated_tool_calls".to_string(),
-                        detail: format!(
-                            "model call `{call_id}` hit its output limit mid-turn; {} of {} tool \
-                             call(s) answered with an error, not run",
-                            truncated_positions.len(),
-                            tool_calls.len()
-                        ),
-                    });
-                    status.set_last_event(record.id);
-                    if truncated_positions
-                        .iter()
-                        .any(|&index| structured_call_names.contains(&tool_calls[index].name))
-                    {
-                        // The structured-output call itself was cut off: it
-                        // cannot be extracted as the answer, and the turn has
-                        // no other path that answers it. Fail the whole turn.
-                        status.mark_running(HarnessPhase::Tools);
-                        self.fail_truncated_tool_calls(
-                            state,
-                            ctx,
-                            run,
-                            status,
-                            messages,
-                            &tool_calls,
-                        )
-                        .await?;
-                        self.apply_queued_lane(
-                            ctx,
-                            status,
-                            messages,
-                            crate::run_queue::QueueLane::Steer,
-                        )
-                        .await;
-                        match self.apply_pending_control(ctx, run, status, messages)? {
-                            ControlEffect::None => {}
-                            ControlEffect::ContinueLoop => continue,
-                            ControlEffect::Exit(exit) => return Ok(exit),
-                        }
-                        continue;
-                    }
-                    // Admission answers these calls with the error, in call
-                    // order, as the batch runs (see `admit_tool_call`). The
-                    // batch holds the non-structured calls only, so translate
-                    // each position into the batch's own index space.
-                    let mut batch_index = 0;
-                    for (index, call) in tool_calls.iter().enumerate() {
-                        if structured_call_names.contains(&call.name) {
-                            continue;
-                        }
-                        if truncated_positions.contains(&index) {
-                            ctx.truncated_call_positions.insert(batch_index);
-                        }
-                        batch_index += 1;
-                    }
-                }
-            }
+                TruncationOutcome::Clean => false,
+                TruncationOutcome::CallsRejected => true,
+                TruncationOutcome::EndTurn(None) => continue,
+                TruncationOutcome::EndTurn(Some(exit)) => return Ok(exit),
+            };
 
             if structured_tool_hit && !real_tool_calls.is_empty() {
                 // A6: one turn asked to both answer (the structured-output
-                // schema call) and run further tools. `RunPolicy::end_strategy`
-                // decides what happens to the two, replacing the old
-                // ad-hoc "record and keep going" behavior with three named,
-                // documented outcomes (`EndStrategy`).
-                let record = ctx.emit(AgentEvent::ControlApplied {
-                    control: "structured_with_tool_calls".to_string(),
-                    detail: format!(
-                        "{:?} end_strategy handling {} real tool call(s) alongside a \
-                         structured-output call",
-                        self.policy.end_strategy,
-                        real_tool_calls.len()
-                    ),
-                });
-                status.set_last_event(record.id);
-
-                if matches!(self.policy.end_strategy, EndStrategy::Early) {
-                    // Finish immediately: the structured answer wins outright,
-                    // and the accompanying tool calls never run. Every
-                    // requested `tool_call_id` — structured hits and the
-                    // skipped real calls alike — still needs an answer or the
-                    // transcript is malformed for a future replay.
-                    if let Some((strategy, name, schema)) = &structured_plan {
-                        let extractor = self.build_structured_extractor(strategy, name, schema);
-                        match extractor.extract(&response) {
-                            Ok(output) => {
-                                run.structured = Some(output.value);
-                                run.structured_variant = output.variant;
-                            }
-                            Err(error) => tracing::debug!(
-                                target: "tinyagents::agent_loop",
-                                run_id = %ctx.run_id(),
-                                %error,
-                                "[agent_loop] structured extraction failed on a mixed turn \
-                                 under EndStrategy::Early"
-                            ),
-                        }
-                    }
-                    for call in &structured_hits {
-                        messages.push(Message::tool(
-                            call.id.clone(),
-                            "Structured output recorded.",
-                        ));
-                    }
-                    for call in &real_tool_calls {
-                        messages.push(Message::tool(
-                            call.id.clone(),
-                            "run stopped before this tool call was executed \
-                             (EndStrategy::Early: the structured answer ends the run first)",
-                        ));
-                    }
-                    run.final_response = Some(response);
-                    if self
-                        .continue_from_queue_at_finish(ctx, status, messages)
-                        .await
-                    {
-                        continue;
-                    }
-                    return Ok(LoopExit::Finished);
-                }
-
-                // A real call that a length stop cut off was answered with a
-                // "re-issue it" error, so finishing now would silently drop
-                // the action the model asked for. Such a turn takes the
-                // `Exhaustive` path below (answer not recorded, tools run,
-                // another turn) whatever the strategy; `Early` still wins
-                // outright because it discards the real calls by contract.
-                if matches!(self.policy.end_strategy, EndStrategy::Graceful)
-                    && !turn_had_truncated_calls
-                {
-                    // Record the answer now (it will not be asked for again),
-                    // but let the requested tools actually run before ending
-                    // the run — their side effects and results are not
-                    // silently dropped, unlike `Early`.
-                    if let Some((strategy, name, schema)) = &structured_plan {
-                        let extractor = self.build_structured_extractor(strategy, name, schema);
-                        match extractor.extract(&response) {
-                            Ok(output) => {
-                                run.structured = Some(output.value);
-                                run.structured_variant = output.variant;
-                            }
-                            Err(error) => tracing::debug!(
-                                target: "tinyagents::agent_loop",
-                                run_id = %ctx.run_id(),
-                                %error,
-                                "[agent_loop] structured extraction failed on a mixed turn \
-                                 under EndStrategy::Graceful"
-                            ),
-                        }
-                    }
-                    for call in &structured_hits {
-                        messages.push(Message::tool(
-                            call.id.clone(),
-                            "Structured output recorded.",
-                        ));
-                    }
-                    status.mark_running(HarnessPhase::Tools);
-                    let deferred = self
-                        .execute_tools_with_promotions(
-                            state,
-                            ctx,
-                            run,
-                            status,
-                            messages,
-                            real_tool_calls,
-                            &mut promoted_names,
-                        )
-                        .await?;
-                    if let Some(exit) = self
-                        .settle_deferred(state, ctx, run, status, messages, deferred)
-                        .await?
-                    {
-                        return Ok(exit);
-                    }
-                    if let ControlEffect::Exit(exit) =
-                        self.apply_pending_control(ctx, run, status, messages)?
-                    {
-                        return Ok(exit);
-                    }
-                    run.final_response = Some(response);
-                    if self
-                        .continue_from_queue_at_finish(ctx, status, messages)
-                        .await
-                    {
-                        continue;
-                    }
-                    return Ok(LoopExit::Finished);
-                }
-
-                // `EndStrategy::Exhaustive`: the output tool this turn is
-                // ignored outright (never recorded) — the run keeps going
-                // exactly as if only the real tool calls had been requested.
-                // It only finishes once a later turn's output-tool call has
-                // no accompanying function-tool calls.
-                debug_assert!(
-                    matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
-                        || turn_had_truncated_calls
-                );
-                let not_final_note = if matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
-                {
-                    "Structured output noted but not final yet; finish the remaining tool \
-                     calls first (EndStrategy::Exhaustive)."
-                } else {
-                    "Structured output noted but not final yet; a tool call in this turn was \
-                     cut off by the output token limit, so re-issue it and answer again."
+                // schema call) and run further tools; `end_strategy` decides.
+                let mixed = MixedStructuredTurn {
+                    response,
+                    structured_plan: structured_plan.as_ref(),
+                    structured_hits,
+                    real_tool_calls,
+                    turn_had_truncated_calls,
                 };
-                for call in &structured_hits {
-                    messages.push(Message::tool(call.id.clone(), not_final_note));
-                }
-
-                // A mixed turn (structured payload alongside real tool calls)
-                // is a resolved turn exactly like an ordinary tool-calling one
-                // (see the reset below at the non-mixed path): it must not
-                // leave a spent `dropped_tool_call_nudges_used` counter to
-                // leak into a later, unrelated dropped-call turn, which would
-                // otherwise receive fewer than the policy's configured number
-                // of consecutive re-prompts.
-                dropped_tool_call_nudges_used = 0;
-                withheld_call_nudges_used = 0;
-                empty_response_retries_used = 0;
-                // A turn whose call was cut off keeps its retry budget and
-                // boosted output cap for the retry.
-                if !turn_had_truncated_calls {
-                    truncated_tool_call_retries_used = 0;
-                    reset_truncated_empty_recovery(
-                        &mut truncated_empty_retries_used,
-                        &mut truncated_empty_nudges_used,
-                        &mut boosted_max_tokens,
-                        &mut truncation_base,
-                    );
-                }
-
-                status.mark_running(HarnessPhase::Tools);
-                let deferred = self
-                    .execute_tools_with_promotions(
+                match self
+                    .finish_mixed_structured_turn(
                         state,
                         ctx,
                         run,
                         status,
                         messages,
-                        real_tool_calls,
-                        &mut promoted_names,
+                        &mut turn_recovery,
+                        &mut surface.promoted_names,
+                        mixed,
                     )
-                    .await?;
-                if let Some(exit) = self
-                    .settle_deferred(state, ctx, run, status, messages, deferred)
                     .await?
                 {
-                    return Ok(exit);
+                    TurnFlow::NextTurn => continue,
+                    TurnFlow::Exit(exit) => return Ok(exit),
                 }
-
-                // Turn boundary (A4): same steer drain as the plain tool path.
-                self.apply_queued_lane(ctx, status, messages, crate::run_queue::QueueLane::Steer)
-                    .await;
-
-                // Safe checkpoint: a control requested from `after_tool` /
-                // `wrap_tool` is honored here, at the edge it was raised on.
-                match self.apply_pending_control(ctx, run, status, messages)? {
-                    ControlEffect::None => {}
-                    ControlEffect::ContinueLoop => continue,
-                    ControlEffect::Exit(exit) => return Ok(exit),
-                }
-                continue;
             }
 
             if real_tool_calls.is_empty() {
-                // A call written on a turn that could not take one (tools
-                // withdrawn for a concluding answer, or `ToolChoice::None`).
-                // It was scrubbed and not run; what is left is either nothing
-                // or a lead-in to a step that never happened, so it is not the
-                // answer the request asked for. Drop that row and ask once
-                // more, telling the model plainly that tools are gone.
-                // Replaying the bench request that leaked (DeepSeek V4, tools
-                // withdrawn), the unchanged request leaked 6 times in 8; with
-                // the row dropped and this re-prompt added it leaked 0 times
-                // in 12. Runs before the empty-reply retries: a bare re-send
-                // of the same transcript leaks the same way.
-                let withheld_calls = recovery.dropped.withheld();
-                if withheld_calls > 0
-                    && withheld_call_nudges_used < self.policy.dropped_tool_call_nudges
-                    && ctx.limits.remaining_model_calls() > 0
-                {
-                    withheld_call_nudges_used += 1;
-                    messages.pop();
-                    tracing::info!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        withheld_calls,
-                        attempt = withheld_call_nudges_used,
-                        "[agent_loop] re-prompting after a tool call on a turn with no callable tools"
-                    );
-                    ctx.emit(AgentEvent::ControlApplied {
-                        control: "withheld_tool_call".to_string(),
-                        detail: format!(
-                            "{withheld_calls} tool call(s) written while no tool was callable \
-                             in model call `{call_id}`; scrubbed, not run, re-prompted"
-                        ),
-                    });
-                    messages.push(Message::user(WITHHELD_TOOL_CALL_NUDGE));
-                    let record = ctx.emit(AgentEvent::RetryScheduled {
-                        call_id: call_id.clone(),
-                        attempt: withheld_call_nudges_used as usize,
-                    });
-                    status.set_last_event(record.id);
+                // Withheld-call, truncated-empty, empty-response and dropped-call
+                // recovery: when one schedules a retry or re-prompt, run another
+                // turn (see `response_recovery.rs` for the order of the checks).
+                if self.recover_unusable_response(
+                    ctx,
+                    run,
+                    status,
+                    messages,
+                    &mut turn_recovery,
+                    &turn,
+                ) {
                     continue;
                 }
-
-                // Truncated-empty recovery (runs before structured extraction,
-                // which would otherwise fail on the empty completion). A local
-                // reasoning model can burn the whole token budget on its hidden
-                // reasoning channel and return `finish_reason == "length"` with
-                // no visible text, no tool calls, and no structured output — a
-                // result useless to every caller. Retry the call (bumping the
-                // token budget when one was set) instead of surfacing the blank.
-                // A structured tool hit carries a real payload, so it is never
-                // treated as truncated-empty.
-                let truncated_empty = tool_calls.is_empty()
-                    && crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
-                    && response.text().trim().is_empty();
-                if truncated_empty
-                    && truncated_empty_retries_used < self.policy.truncated_empty_retries
-                    && ctx.limits.remaining_model_calls() > 0
-                {
-                    // Drop the useless empty assistant row appended above so the
-                    // retry re-sends the identical transcript.
-                    messages.pop();
-                    truncated_empty_retries_used += 1;
-                    // Grow the token budget when the request set one: double it,
-                    // clamped at 4x the original cap. An unset budget stays unset
-                    // (a plain retry is still worthwhile — the failure is
-                    // stochastic).
-                    boost_max_tokens(
-                        attempt_max_tokens,
-                        &mut truncation_base,
-                        &mut boosted_max_tokens,
-                    );
-                    let record = ctx.emit(AgentEvent::RetryScheduled {
-                        call_id: call_id.clone(),
-                        attempt: truncated_empty_retries_used as usize,
-                    });
-                    status.set_last_event(record.id);
-                    continue;
-                }
-
-                // The boosted retry is spent and the model still deliberated
-                // past its output budget. Re-sending the same transcript keeps
-                // failing the same way (a high-effort reasoning model thinks
-                // as long as it is allowed to), and finishing here hands the
-                // host a blank reply it can only close as if the work were
-                // done. Say plainly what happened and ask for the next step,
-                // then carry on with the loop. The boosted cap stays in force.
-                if truncated_empty
-                    && truncated_empty_nudges_used < self.policy.truncated_empty_nudges
-                    && ctx.limits.remaining_model_calls() > 0
-                {
-                    messages.pop();
-                    truncated_empty_nudges_used += 1;
-                    let nudge = if tools_available_this_turn {
-                        TRUNCATED_EMPTY_TOOL_NUDGE
-                    } else {
-                        TRUNCATED_EMPTY_ANSWER_NUDGE
-                    };
-                    tracing::info!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        attempt = truncated_empty_nudges_used,
-                        tools_available = tools_available_this_turn,
-                        max_tokens = ?boosted_max_tokens.or(attempt_max_tokens),
-                        "[agent_loop] truncated-empty retries spent; nudging model to act"
-                    );
-                    ctx.emit(AgentEvent::ControlApplied {
-                        control: "truncated_empty_nudge".to_string(),
-                        detail: format!(
-                            "model call `{call_id}` ran out of output tokens while reasoning \
-                             after {truncated_empty_retries_used} retry(ies); re-prompted to act"
-                        ),
-                    });
-                    messages.push(Message::user(nudge));
-                    let record = ctx.emit(AgentEvent::RetryScheduled {
-                        call_id: call_id.clone(),
-                        attempt: (truncated_empty_retries_used + truncated_empty_nudges_used)
-                            as usize,
-                    });
-                    status.set_last_event(record.id);
-                    continue;
-                }
-
-                // A provider can also finish normally after sending only a
-                // reasoning side channel (or no content at all). Retrying that
-                // unusable answer is opt-in because it incurs another provider
-                // call. Unlike a length-truncated reply, keep the same token
-                // cap: there is no evidence that output space ran out.
-                let nontruncated_empty = tool_calls.is_empty()
-                    && response.text().trim().is_empty()
-                    && response.continue_turn.is_none()
-                    && structured_plan.is_none()
-                    && run.structured.is_none()
-                    && !crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
-                    && response.finish_reason.as_deref() != Some("tool_calls")
-                    && !response.served_from_cache;
-                if nontruncated_empty
-                    && empty_response_retries_used < self.policy.empty_response_retries
-                    && ctx.limits.remaining_model_calls() > 0
-                {
-                    messages.pop();
-                    empty_response_retries_used += 1;
-                    tracing::info!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        attempt = empty_response_retries_used,
-                        finish_reason = ?response.finish_reason,
-                        content_blocks = response.message.content.len(),
-                        "[agent_loop] retrying completion without visible answer"
-                    );
-                    let record = ctx.emit(AgentEvent::RetryScheduled {
-                        call_id: call_id.clone(),
-                        attempt: empty_response_retries_used as usize,
-                    });
-                    status.set_last_event(record.id);
-                    continue;
-                }
-
-                // Dropped tool call: the provider says the model stopped to
-                // call a tool, but nothing arrived — structured or in text.
-                // A bounded re-prompt asks for the call itself. The assistant
-                // row stays on the transcript so the model sees what it did.
-                //
-                // A text dialect always finishes with `stop`, so its dropped
-                // call is a block a grammar recognised that became no call:
-                // one whose body did not decode (scrubbed, only the lead-in
-                // prose left), or one the model stopped inside without a
-                // closer. A `length` stop inside a block is truncation, not a
-                // forgotten closer, and is left to the truncation handling.
-                // Native models with text recovery on parse the same grammars
-                // out of their prose, so the same drop applies to them.
-                let malformed_blocks = recovery.dropped.malformed();
-                let unterminated_blocks =
-                    if crate::finish_reason::is_length_stop(response.finish_reason.as_deref()) {
-                        0
-                    } else {
-                        recovery.dropped.unterminated()
-                    };
-                let undecodable_text_call = (forced_text_dialect || text_dialect_recovery_enabled)
-                    && malformed_blocks + unterminated_blocks > 0;
-                if tool_calls.is_empty()
-                    && (response.finish_reason.as_deref() == Some("tool_calls")
-                        || undecodable_text_call)
-                    && tools_available_this_turn
-                    && dropped_tool_call_nudges_used < self.policy.dropped_tool_call_nudges
-                {
-                    dropped_tool_call_nudges_used += 1;
-                    let nudge = if undecodable_text_call {
-                        tracing::info!(
-                            target: "tinyagents::agent_loop",
-                            run_id = %ctx.run_id(),
-                            call_id = %call_id,
-                            malformed_blocks,
-                            unterminated_blocks,
-                            attempt = dropped_tool_call_nudges_used,
-                            "[agent_loop] nudging after undecodable text-dialect tool call"
-                        );
-                        UNDECODABLE_TOOL_CALL_NUDGE
-                    } else {
-                        DROPPED_TOOL_CALL_NUDGE
-                    };
-                    messages.push(Message::user(nudge));
-                    let record = ctx.emit(AgentEvent::RetryScheduled {
-                        call_id: call_id.clone(),
-                        attempt: dropped_tool_call_nudges_used as usize,
-                    });
-                    status.set_last_event(record.id);
-                    continue;
-                }
-                dropped_tool_call_nudges_used = 0;
-                withheld_call_nudges_used = 0;
-                empty_response_retries_used = 0;
 
                 // This turn resolved without scheduling a truncated-empty
                 // retry, so the recovery state must not leak into later turns:
                 // a stale `boosted_max_tokens` would override the caller's
                 // per-turn cap on every subsequent call, and a spent retry
                 // counter would deny recovery to a later turn that needs it.
-                truncated_tool_call_retries_used = 0;
-                reset_truncated_empty_recovery(
-                    &mut truncated_empty_retries_used,
-                    &mut truncated_empty_nudges_used,
-                    &mut boosted_max_tokens,
-                    &mut truncation_base,
-                );
+                turn_recovery.reset_after_final();
 
                 // The model says it is not finished (`ModelResponse::continue_turn`).
                 // Hand the floor back and ask for another reply instead of taking
@@ -2030,20 +1039,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // A tool-calling response is a resolved turn too: clear the
             // recovery state before the tools run so the next turn starts from
             // the caller's configured cap and a full retry budget.
-            dropped_tool_call_nudges_used = 0;
-            withheld_call_nudges_used = 0;
-            empty_response_retries_used = 0;
             // A turn whose call was cut off keeps its retry budget and boosted
             // output cap for the retry.
-            if !turn_had_truncated_calls {
-                truncated_tool_call_retries_used = 0;
-                reset_truncated_empty_recovery(
-                    &mut truncated_empty_retries_used,
-                    &mut truncated_empty_nudges_used,
-                    &mut boosted_max_tokens,
-                    &mut truncation_base,
-                );
-            }
+            turn_recovery.reset_after_tool_turn(turn_had_truncated_calls);
 
             // Execute requested tools: serial admission -> serial or
             // concurrent execution -> ordered fold. Multi-call turns run
@@ -2059,7 +1057,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     status,
                     messages,
                     real_tool_calls,
-                    &mut promoted_names,
+                    &mut surface.promoted_names,
                 )
                 .await?;
             // A2: a batch that deferred calls either resolves them inline
@@ -2100,352 +1098,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
     }
 
-    /// Takes the pending items of `lane` from the run's queue (per
-    /// [`RunPolicy::queue_mode`][crate::runtime::RunPolicy::queue_mode]),
-    /// appends them to the working transcript, and emits
-    /// [`AgentEvent::QueuedMessageApplied`] (A4). Returns whether anything
-    /// was applied. A run without a queue never applies anything.
-    async fn apply_queued_lane(
-        &self,
-        ctx: &mut RunContext<Ctx>,
-        status: &mut HarnessRunStatus,
-        messages: &mut Vec<Message>,
-        lane: crate::run_queue::QueueLane,
-    ) -> bool {
-        let Some(queue) = ctx.run_queue.clone() else {
-            return false;
-        };
-        let items = queue.take(lane, self.policy.queue_mode).await;
-        if items.is_empty() {
-            return false;
-        }
-        let count = items.len();
-        messages.extend(items);
-        let record = ctx.emit(AgentEvent::QueuedMessageApplied { lane, count });
-        status.set_last_event(record.id);
-        tracing::debug!(
-            target: "tinyagents::agent_loop",
-            run_id = %ctx.run_id(),
-            lane = lane.as_str(),
-            count,
-            "[agent_loop] applied queued messages to the transcript"
-        );
-        true
-    }
-
-    /// The natural-finish queue boundary (A4): the model produced a final
-    /// answer, so pending `Steer` items (first) or, when there are none,
-    /// `Followup` items are appended and the loop runs another turn instead
-    /// of returning. Returns whether the loop should continue. Only reached
-    /// from the paths where the *model* finished — a middleware stop, a
-    /// limit stop, a pause, or a deferral is terminal and leaves the queue
-    /// untouched for the host.
-    async fn continue_from_queue_at_finish(
-        &self,
-        ctx: &mut RunContext<Ctx>,
-        status: &mut HarnessRunStatus,
-        messages: &mut Vec<Message>,
-    ) -> bool {
-        if ctx.run_queue.is_none() {
-            return false;
-        }
-        self.apply_queued_lane(ctx, status, messages, crate::run_queue::QueueLane::Steer)
-            .await
-            || self
-                .apply_queued_lane(ctx, status, messages, crate::run_queue::QueueLane::Followup)
-                .await
-    }
-
-    /// Settles the calls a batch deferred (A2).
-    ///
-    /// Returns `Ok(None)` when nothing was deferred, or when a registered
-    /// [`crate::tool::DeferredToolHandler`] resolved every pending call and
-    /// the loop can continue. Returns `Ok(Some(LoopExit::Deferred))` when
-    /// the caller must resolve the requests — no handler, or an approved
-    /// call deferred a second time (surfaced rather than re-asked, so a
-    /// handler and a tool that never agree cannot spin).
-    async fn settle_deferred(
-        &self,
-        state: &State,
-        ctx: &mut RunContext<Ctx>,
-        run: &mut AgentRun,
-        status: &mut HarnessRunStatus,
-        messages: &mut Vec<Message>,
-        deferred: crate::tool::DeferredToolRequests,
-    ) -> Result<Option<LoopExit>> {
-        if deferred.is_empty() {
-            return Ok(None);
-        }
-        let Some(handler) = &self.deferred_tool_handler else {
-            return Ok(Some(LoopExit::Deferred(deferred)));
-        };
-        let results = handler.handle(&deferred).await?;
-        let pending: Vec<ToolCall> = deferred
-            .approvals
-            .iter()
-            .chain(deferred.calls.iter())
-            .cloned()
-            .collect();
-        let again = self
-            .apply_deferred_results(state, ctx, run, status, messages, pending, results)
-            .await?;
-        if again.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(LoopExit::Deferred(again)))
-    }
-
-    /// Applies host decisions to `pending` deferred calls (A2): every call
-    /// must be resolved (`Validation` error naming the missing ids
-    /// otherwise). Host-supplied results and denials are answered without
-    /// running a tool; approvals run the tool now through the ordinary
-    /// serial pipeline, with the model's or the approver's edited
-    /// arguments. Returns whatever the approved calls deferred *again*.
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_deferred_results(
-        &self,
-        state: &State,
-        ctx: &mut RunContext<Ctx>,
-        run: &mut AgentRun,
-        status: &mut HarnessRunStatus,
-        messages: &mut Vec<Message>,
-        pending: Vec<ToolCall>,
-        mut results: crate::tool::DeferredToolResults,
-    ) -> Result<crate::tool::DeferredToolRequests> {
-        let missing: Vec<&str> = pending
-            .iter()
-            .filter(|call| !results.resolves(&CallId::new(call.id.clone())))
-            .map(|call| call.id.as_str())
-            .collect();
-        if !missing.is_empty() {
-            return Err(TinyAgentsError::Validation(format!(
-                "cannot resume: deferred tool calls still unresolved: [{}]",
-                missing.join(", ")
-            )));
-        }
-        ctx.terminate_votes.clear();
-        // `terminate` is a whole-batch decision, so a resume may only end the
-        // run when the resumed calls *are* the original batch. Siblings that
-        // answered before the pause (and whose votes are gone) may not have
-        // asked to terminate, so a partial resume must not.
-        let original_batch_len = messages
-            .iter()
-            .rev()
-            .find_map(|message| match message {
-                Message::Assistant(assistant) => Some(assistant.tool_calls.len()),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let resumes_whole_batch = pending.len() == original_batch_len;
-        let mut deferred = crate::tool::DeferredToolRequests::default();
-        // Follow-up user messages (B2) trail the whole resumed batch, for
-        // the same provider-ordering reason as in `execute_tools`.
-        let mut follow_ups = Vec::new();
-        for mut call in pending {
-            let call_id = CallId::new(call.id.clone());
-            if let Some(outcome) = results.calls.remove(&call_id) {
-                follow_ups.extend(
-                    self.recover_tool_call(
-                        state,
-                        ctx,
-                        run,
-                        status,
-                        messages,
-                        &call,
-                        outcome.into_tool_result(),
-                    )
-                    .await?,
-                );
-                continue;
-            }
-            let decision = results
-                .approvals
-                .remove(&call_id)
-                .expect("every pending call was validated as resolved above");
-            match decision {
-                crate::tool::ToolApprovalDecision::Deny { message } => {
-                    let record = ctx.emit(AgentEvent::ToolDenied {
-                        call_id,
-                        message: message.clone(),
-                    });
-                    status.set_last_event(record.id);
-                    follow_ups.extend(
-                        self.recover_tool_call(
-                            state,
-                            ctx,
-                            run,
-                            status,
-                            messages,
-                            &call,
-                            tinytools::ToolResult::error(message),
-                        )
-                        .await?,
-                    );
-                }
-                decision => {
-                    if let crate::tool::ToolApprovalDecision::ApproveWithArgs(arguments) = decision
-                    {
-                        call.arguments = arguments;
-                    }
-                    let record = ctx.emit(AgentEvent::ToolApproved { call_id });
-                    status.set_last_event(record.id);
-                    ctx.mark_call_approved(call.id.clone());
-                    let mut approved_promotions = std::collections::BTreeSet::new();
-                    follow_ups.extend(
-                        self.execute_tool_serially(
-                            state,
-                            ctx,
-                            run,
-                            status,
-                            messages,
-                            call,
-                            &mut deferred,
-                            &mut approved_promotions,
-                        )
-                        .await?,
-                    );
-                }
-            }
-        }
-        super::tools::append_follow_ups(messages, follow_ups);
-        // Siblings answered before the pause already settled (and dropped)
-        // their own votes, so only a resume of the whole original batch can
-        // judge whether every call asked to terminate.
-        self.settle_batch_termination(ctx, run, deferred.is_empty() && resumes_whole_batch);
-        Ok(deferred)
-    }
-
-    /// Drains any pending [`MiddlewareControl`] and turns it into a loop
-    /// decision.
-    ///
-    /// Returns [`ControlEffect::None`] when nothing was requested (or the
-    /// pending request needed no loop-level action, e.g.
-    /// [`MiddlewareControl::UpdateState`]), [`ControlEffect::ContinueLoop`]
-    /// when the current turn must be abandoned in favor of a fresh iteration
-    /// (`JumpTo(Model)`), and [`ControlEffect::Exit`] when the run is done.
-    /// `Err` surfaces [`MiddlewareControl::Interrupt`]. Called at every safe
-    /// checkpoint — the top of an iteration, after the model call, and after
-    /// tool execution — so a control raised anywhere in a turn takes effect on
-    /// that turn.
-    fn apply_pending_control(
-        &self,
-        ctx: &mut RunContext<Ctx>,
-        run: &mut AgentRun,
-        status: &mut HarnessRunStatus,
-        messages: &mut Vec<Message>,
-    ) -> Result<ControlEffect> {
-        let Some(control) = ctx.take_control() else {
-            return Ok(ControlEffect::None);
-        };
-        // `UpdateState` is applied (queued, really — see `RunContext::
-        // push_state_update`) silently: it carries no loop-level decision, so
-        // audit-logging it as a `ControlApplied` event alongside jumps and
-        // stops would be noise. It still shows up wherever the host inspects
-        // `RunContext::take_state_updates`.
-        if let MiddlewareControl::UpdateState(update) = control {
-            ctx.push_state_update(update);
-            return Ok(ControlEffect::None);
-        }
-        let record = ctx.emit(AgentEvent::ControlApplied {
-            control: control.kind().to_string(),
-            detail: match &control {
-                MiddlewareControl::Continue => String::new(),
-                MiddlewareControl::JumpTo(target) => format!("{target:?}"),
-                MiddlewareControl::UpdateState(_) => unreachable!("handled above"),
-                MiddlewareControl::StopWithFinal(text) => text.clone(),
-                MiddlewareControl::Interrupt { node, message } => format!("{node}: {message}"),
-            },
-        });
-        status.set_last_event(record.id);
-        match control {
-            MiddlewareControl::Continue => Ok(ControlEffect::None),
-            MiddlewareControl::UpdateState(_) => unreachable!("handled above"),
-            MiddlewareControl::JumpTo(LoopTarget::Tools) => {
-                // Tool execution already runs whenever the turn produced real
-                // tool calls; there is nothing else to route to when it did
-                // not. Either way, this is a no-op at the loop level.
-                Ok(ControlEffect::None)
-            }
-            MiddlewareControl::JumpTo(LoopTarget::Model) => {
-                // Abandon whatever the rest of this turn would have done
-                // (typically: running tools the model just requested) and go
-                // straight to a fresh model call. Close out any tool calls on
-                // the last assistant row first so the transcript stays
-                // replayable (see the `StopWithFinal` arm below for why).
-                Self::close_unanswered_tool_calls(
-                    messages,
-                    "run jumped back to the model before this tool call was executed",
-                );
-                Ok(ControlEffect::ContinueLoop)
-            }
-            MiddlewareControl::JumpTo(LoopTarget::End) => {
-                Self::close_unanswered_tool_calls(
-                    messages,
-                    "run stopped before this tool call was executed",
-                );
-                if run.final_response.is_none() {
-                    let text = Self::last_assistant_text(messages);
-                    run.final_response = Some(ModelResponse::assistant(text));
-                }
-                Ok(ControlEffect::Exit(LoopExit::Finished))
-            }
-            MiddlewareControl::StopWithFinal(text) => {
-                // The most recently appended assistant row may carry
-                // `tool_calls` that were never answered — e.g. a middleware
-                // requesting `StopWithFinal` right after the model turn that
-                // requested them, before `execute_tools` ever ran. Left as
-                // is, `run.messages`/`messages` end with an assistant row
-                // whose tool calls have no matching tool message, which a
-                // provider rejects (400) if the transcript is ever replayed
-                // (M-1). Append a synthetic tool result for each unanswered
-                // call so the transcript stays replayable.
-                Self::close_unanswered_tool_calls(
-                    messages,
-                    "run stopped before this tool call was executed",
-                );
-                run.final_response = Some(ModelResponse::assistant(text));
-                Ok(ControlEffect::Exit(LoopExit::Finished))
-            }
-            MiddlewareControl::Interrupt { node, message } => {
-                Err(TinyAgentsError::Interrupted { node, message })
-            }
-        }
-    }
-
-    /// The text of the most recent assistant message, or empty when there is
-    /// none. Used to synthesize a final response for
-    /// [`MiddlewareControl::JumpTo`]`(`[`LoopTarget::End`]`)`, which (unlike
-    /// [`MiddlewareControl::StopWithFinal`]) carries no text of its own.
-    fn last_assistant_text(messages: &[Message]) -> String {
-        messages
-            .iter()
-            .rev()
-            .find(|message| matches!(message, Message::Assistant(_)))
-            .map(Message::text)
-            .unwrap_or_default()
-    }
-
-    /// Appends a synthetic [`Message::tool`] result for every tool call on
-    /// the last message that is still unanswered, so the transcript stays
-    /// replayable through a provider that requires every `tool_calls` entry
-    /// on an assistant message to have a matching tool result before the next
-    /// turn (M-1). A no-op when the last message is not an unanswered
-    /// assistant tool-call row.
-    fn close_unanswered_tool_calls(messages: &mut Vec<Message>, reason: &str) {
-        let Some(Message::Assistant(last)) = messages.last() else {
-            return;
-        };
-        if last.tool_calls.is_empty() {
-            return;
-        }
-        let synthetic: Vec<Message> = last
-            .tool_calls
-            .iter()
-            .map(|call| Message::tool(call.id.clone(), reason))
-            .collect();
-        messages.extend(synthetic);
-    }
-
     /// Builds the [`StructuredExtractor`] for a resolved `structured_plan`
     /// entry (A6).
     ///
@@ -2456,7 +1108,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// which this reaches back into rather than widening the tuple. Every
     /// other strategy builds the extractor directly from the tuple as
     /// before.
-    fn build_structured_extractor(
+    pub(super) fn build_structured_extractor(
         &self,
         strategy: &StructuredStrategy,
         name: &str,
@@ -2506,26 +1158,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return None;
         }
         Some((Arc::clone(cache), cache_key(request)))
-    }
-
-    /// Records realised provider usage without allowing host accounting I/O to
-    /// outlive a cancelled or deadline-expired run. The local run totals are
-    /// updated before this call, so a host-recording failure never erases spend
-    /// that the provider has already incurred.
-    async fn record_host_usage(
-        &self,
-        ctx: &RunContext<Ctx>,
-        budget: &Arc<dyn crate::host::BudgetGate>,
-        usage: &tinyinference_llm::usage::Usage,
-    ) -> Result<()> {
-        let recording = budget.record(usage);
-        ctx.bounded(self.call_budget(ctx), recording, || {
-            format!(
-                "budget usage recording for run `{}` exceeded its remaining wall-clock deadline",
-                ctx.run_id()
-            )
-        })
-        .await
     }
 }
 
@@ -2669,68 +1301,6 @@ pub(super) fn refresh_prompt_cache_fingerprint(request: &mut ModelRequest) {
     );
 }
 
-/// Applies a host budget hint before the provider sees the request.
-///
-/// This deliberately uses the harness's pairing-safe generic context reducer
-/// instead of a host-specific transcript rewrite. `Soft` preserves the most
-/// recent half of a multi-turn conversation (and all system messages) when it
-/// can make progress. `Hard` uses a token budget and refuses a request that
-/// cannot be reduced without discarding its whole conversational payload.
-/// Both outcomes are observable through the canonical `context.compressed`
-/// event so hosts can correlate a budget decision with the actual request.
-fn apply_host_budget_compression<Ctx>(
-    ctx: &mut RunContext<Ctx>,
-    messages: &mut Vec<Message>,
-    hint: crate::host::CompressionHint,
-) -> Result<()> {
-    use crate::host::CompressionHint;
-    use crate::summarization::{TrimStrategy, trim_messages};
-
-    let from_tokens = crate::token_estimation::estimate_slice_tokens(messages);
-    let non_system = messages
-        .iter()
-        .filter(|message| !matches!(message, Message::System(_)))
-        .count();
-    let reduced = match hint {
-        CompressionHint::None => return Ok(()),
-        // Preserve a recent working window without perturbing a short prompt.
-        CompressionHint::Soft if non_system < 3 => return Ok(()),
-        CompressionHint::Soft => {
-            trim_messages(messages, &TrimStrategy::KeepLast((non_system / 2).max(1)))
-        }
-        // A hard hint must create real headroom without ever treating system
-        // instructions as expendable. The token trimmer removes oldest
-        // conversational messages, preserves every system message verbatim,
-        // and clears an orphaned tool-result prefix after its owning assistant
-        // call was evicted.
-        CompressionHint::Hard => crate::summarization::trim_messages_to_token_budget_with(
-            messages,
-            crate::summarization::TokenTrimPolicy::strict((from_tokens / 2).max(1))
-                .preserve_system()
-                .drop_leading_orphan_tools(),
-            crate::token_estimation::estimate_message_tokens,
-        ),
-    };
-    let to_tokens = crate::token_estimation::estimate_slice_tokens(&reduced);
-    let has_conversation = reduced
-        .iter()
-        .any(|message| !matches!(message, Message::System(_)));
-    if to_tokens >= from_tokens || reduced.is_empty() || (hint.is_required() && !has_conversation) {
-        if hint.is_required() {
-            return Err(TinyAgentsError::Validation(
-                "host budget requires reducible conversational context before provider call".into(),
-            ));
-        }
-        return Ok(());
-    }
-    *messages = reduced;
-    ctx.emit(AgentEvent::Compressed {
-        from_tokens,
-        to_tokens,
-    });
-    Ok(())
-}
-
 /// Recovers text-dialect calls through `tinytools-agent`
 /// ([`super::dialect::recover_text_calls`]) while preserving every non-text
 /// provider content block (notably reasoning blocks).
@@ -2779,14 +1349,14 @@ fn recover_text_dialect_calls<Ctx>(
 /// The re-prompt sent when a model signalled a tool call it did not make.
 /// Deliberately terse and instruction-free beyond the one thing needed: the
 /// task and the tools are already in the transcript.
-const DROPPED_TOOL_CALL_NUDGE: &str = "Your previous turn indicated a tool call but none was \
+pub(super) const DROPPED_TOOL_CALL_NUDGE: &str = "Your previous turn indicated a tool call but none was \
      included. If you meant to call a tool, issue the actual tool call now; otherwise answer \
      directly.";
 
 /// The re-prompt sent when the model wrote a tool call on a turn that offered
 /// no callable tool. The call was scrubbed and not run; the wording names that
 /// plainly, because a model told only to "answer" keeps trying to act.
-const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but tools are not \
+pub(super) const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but tools are not \
      available for this reply, so it did not run. Do not write tool calls. Answer now in plain \
      text from the results already gathered, and state any remaining uncertainty.";
 
@@ -2796,21 +1366,21 @@ const WITHHELD_TOOL_CALL_NUDGE: &str = "Your previous reply was a tool call, but
 /// and asks for the smallest next step: a model told only to "continue"
 /// deliberates again, and one writing a large file in a single call runs out
 /// again.
-const TRUNCATED_EMPTY_TOOL_NUDGE: &str = "Your last reply ran out of output tokens while \
+pub(super) const TRUNCATED_EMPTY_TOOL_NUDGE: &str = "Your last reply ran out of output tokens while \
      reasoning and produced no tool call. Stop deliberating: make the next tool call now, and \
      write files incrementally in small pieces.";
 
 /// [`TRUNCATED_EMPTY_TOOL_NUDGE`] for a turn with no callable tool (tools
 /// withdrawn for a concluding answer, or `ToolChoice::None`): asking for a
 /// tool call there would only get a call that cannot run.
-const TRUNCATED_EMPTY_ANSWER_NUDGE: &str = "Your last reply ran out of output tokens while \
+pub(super) const TRUNCATED_EMPTY_ANSWER_NUDGE: &str = "Your last reply ran out of output tokens while \
      reasoning and produced no answer. Stop deliberating and write a short answer now from \
      what you already have.";
 
 /// The re-prompt sent when a text-dialect tool-call block could not be
 /// decoded: no tool ran, and the model should know why rather than assume
 /// its call went through.
-const UNDECODABLE_TOOL_CALL_NUDGE: &str = "Your previous turn contained a tool-call block that \
+pub(super) const UNDECODABLE_TOOL_CALL_NUDGE: &str = "Your previous turn contained a tool-call block that \
      could not be parsed, so no tool ran. Re-issue the call using exactly the format from the \
      tool protocol; otherwise answer directly.";
 
@@ -2864,31 +1434,12 @@ fn resolve_call_cap(config_cap: Option<usize>, policy_cap: usize) -> usize {
     }
 }
 
-/// Grows the next request's output cap after a length-truncated reply: double
-/// the cap last sent, clamped at 4x the original. An unset cap stays unset (a
-/// plain retry is still worthwhile — the failure is stochastic).
-fn boost_max_tokens(
-    attempt_max_tokens: Option<u32>,
-    truncation_base: &mut Option<u32>,
-    boosted_max_tokens: &mut Option<u32>,
-) {
-    if let Some(sent) = attempt_max_tokens {
-        let base = *truncation_base.get_or_insert(sent);
-        *boosted_max_tokens = Some(
-            boosted_max_tokens
-                .unwrap_or(sent)
-                .saturating_mul(2)
-                .min(base.saturating_mul(4)),
-        );
-    }
-}
-
 /// The positions of the calls of a length-stopped response that may be
 /// incomplete: the last call (the cut landed inside it, whether it came from
 /// the native tool channel or was recovered from text) and any call the
 /// provider flagged `invalid` (a repair could make it look whole). Every
 /// earlier call was finished before the cut.
-fn truncated_call_positions(calls: &[ToolCall]) -> std::collections::HashSet<usize> {
+pub(super) fn truncated_call_positions(calls: &[ToolCall]) -> std::collections::HashSet<usize> {
     let Some(last) = calls.len().checked_sub(1) else {
         return std::collections::HashSet::new();
     };
@@ -2898,23 +1449,6 @@ fn truncated_call_positions(calls: &[ToolCall]) -> std::collections::HashSet<usi
         .filter(|(index, call)| *index == last || call.invalid.is_some())
         .map(|(index, _)| index)
         .collect()
-}
-
-/// Clears the per-turn truncated-empty recovery state (see
-/// [`crate::runtime::RunPolicy::truncated_empty_retries`]).
-///
-/// The state is scoped to a single logical turn: the boosted token cap and the
-/// retry and nudge counters must not carry over into the turns that follow a recovered one.
-fn reset_truncated_empty_recovery(
-    retries_used: &mut u32,
-    nudges_used: &mut u32,
-    boosted_max_tokens: &mut Option<u32>,
-    truncation_base: &mut Option<u32>,
-) {
-    *retries_used = 0;
-    *nudges_used = 0;
-    *boosted_max_tokens = None;
-    *truncation_base = None;
 }
 
 #[cfg(test)]
