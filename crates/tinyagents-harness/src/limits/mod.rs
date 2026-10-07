@@ -26,6 +26,7 @@ mod types;
 
 pub use types::*;
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, TinyAgentsError};
@@ -123,6 +124,9 @@ pub struct LimitTracker {
     /// output event arrived (the agent loop also clears it when it switches to
     /// a fallback model, making it a per-model count). See [`LimitTracker::record_stream_idle_timeout`].
     consecutive_stream_idle_timeouts: usize,
+    /// Idle-timeout strikes keyed by model name. The public scalar helpers
+    /// remain for compatibility with callers that track one stream at a time.
+    stream_idle_timeouts_by_model: HashMap<String, usize>,
     started_at: Instant,
 }
 
@@ -135,6 +139,7 @@ impl LimitTracker {
             model_calls: 0,
             tool_calls: 0,
             consecutive_stream_idle_timeouts: 0,
+            stream_idle_timeouts_by_model: HashMap::new(),
             started_at: Instant::now(),
         }
     }
@@ -160,6 +165,29 @@ impl LimitTracker {
     /// Returns the current consecutive stream-idle-timeout count.
     pub fn consecutive_stream_idle_timeouts(&self) -> usize {
         self.consecutive_stream_idle_timeouts
+    }
+
+    /// Records an idle timeout for `model` and returns that model's strikes.
+    pub fn record_stream_idle_timeout_for(&mut self, model: &str) -> usize {
+        let strikes = self
+            .stream_idle_timeouts_by_model
+            .entry(model.to_owned())
+            .or_default();
+        *strikes += 1;
+        *strikes
+    }
+
+    /// Clears the idle-timeout strikes for `model` after visible output.
+    pub fn reset_stream_idle_timeouts_for(&mut self, model: &str) {
+        self.stream_idle_timeouts_by_model.remove(model);
+    }
+
+    /// Returns the idle-timeout strikes for `model`.
+    pub fn consecutive_stream_idle_timeouts_for(&self, model: &str) -> usize {
+        self.stream_idle_timeouts_by_model
+            .get(model)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Resets the wall-clock start to now, leaving the call counters and

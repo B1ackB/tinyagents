@@ -646,6 +646,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         request,
                         call_id,
                         &mut deltas_emitted,
+                        &current_name,
                         shape,
                     );
                     Self::with_call_budget(remaining, run_id.as_str(), "model call", bound, fut)
@@ -690,7 +691,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         // Only when the chain is exhausted does the run fail
                         // with the breaker's error.
                         if matches!(error, TinyAgentsError::CallTimeout(_))
-                            && let Some(tripped) = self.stream_idle_breaker_error(ctx)
+                            && let Some(tripped) =
+                                self.stream_idle_breaker_error(ctx, &current_name)
                         {
                             break Err(tripped);
                         }
@@ -833,9 +835,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             };
                             current_name = name;
                             model = next_model;
-                            // The idle-timeout count is per model: the
-                            // fallback gets a clean slate.
-                            ctx.limits.reset_stream_idle_timeouts();
+                            if streaming && deltas_emitted > 0 {
+                                // A fallback starts a fresh response under the
+                                // same call id. RetryScheduled is the existing
+                                // consumer-visible discard marker for partial
+                                // streaming attempts.
+                                ctx.emit(AgentEvent::RetryScheduled {
+                                    call_id: call_id.clone(),
+                                    attempt: attempt + 1,
+                                });
+                            }
                             continue;
                         }
                         None => return Err(error),
@@ -917,14 +926,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     ///
     /// [`TinyAgentsError::LimitExceeded`] is not retryable, so the caller
     /// stops retrying this model; the fallback chain is still consulted.
-    fn stream_idle_breaker_error(&self, ctx: &RunContext<Ctx>) -> Option<TinyAgentsError> {
+    fn stream_idle_breaker_error(
+        &self,
+        ctx: &RunContext<Ctx>,
+        model: &str,
+    ) -> Option<TinyAgentsError> {
         // A zero threshold would trip on the first timeout; treat it as off.
         let max = self
             .policy
             .limits
             .max_consecutive_stream_idle_timeouts
             .filter(|max| *max > 0)?;
-        let consecutive = ctx.limits.consecutive_stream_idle_timeouts();
+        let consecutive = ctx.limits.consecutive_stream_idle_timeouts_for(model);
         if consecutive < max {
             return None;
         }
@@ -1019,6 +1032,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         request: &ModelRequest,
         call_id: &CallId,
         deltas_emitted: &mut usize,
+        model_name: &str,
         shape: &super::dialect::CallShape,
     ) -> Result<ModelResponse> {
         let recovery = &shape.recovery;
@@ -1047,7 +1061,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 Ok(result) => result?,
                 Err(()) => {
                     let window_ms = first_event_timeout.map_or(0, |window| window.as_millis() as u64);
-                    ctx.limits.record_stream_idle_timeout();
+                    ctx.limits.record_stream_idle_timeout_for(model_name);
                     return Err(TinyAgentsError::CallTimeout(format!(
                         "model stream for run `{}` went idle waiting for the first output event: no event within {window_ms} ms",
                         ctx.run_id(),
@@ -1134,7 +1148,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
                 Err(()) => {
-                    let consecutive = ctx.limits.record_stream_idle_timeout();
+                    let consecutive = ctx.limits.record_stream_idle_timeout_for(model_name);
                     let phase = if saw_output {
                         "between output events"
                     } else {
@@ -1154,26 +1168,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     )));
                 }
             };
-            // `Started` (the stream opened) and usage updates say nothing
-            // about the model producing output, and a provider that accepts
-            // the connection and then goes quiet is exactly the wedge being
-            // detected. Only output-bearing events end the first-event phase,
-            // re-arm the idle deadline and clear the breaker's count.
-            let is_output = match &item {
-                ModelStreamItem::MessageDelta(delta) => {
-                    !delta.text.is_empty()
-                        || !delta.reasoning.is_empty()
-                        || delta.tool_call.is_some()
-                }
-                ModelStreamItem::ToolCallDelta(_) | ModelStreamItem::Completed(_) => true,
-                _ => false,
-            };
-            if is_output {
-                saw_output = true;
-                rearm = true;
-                ctx.limits.reset_stream_idle_timeouts();
-            }
-
             // Scrub tool-call markup from visible text before anything else
             // sees it; a delta the scrubber empties carries nothing to emit.
             if let (Some(scrubber), ModelStreamItem::MessageDelta(delta)) =
@@ -1241,6 +1235,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
             // Surface incremental message/tool-call fragments through events and
             // the `on_model_delta` middleware hook before merging them.
+            let mut transformed_delta_is_output = false;
             let message_delta = match &item {
                 ModelStreamItem::MessageDelta(delta) => Some(delta.clone()),
                 ModelStreamItem::ToolCallDelta(tool_delta) => Some(MessageDelta {
@@ -1279,6 +1274,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.middleware
                     .run_on_model_delta(ctx, state, &mut model_delta)
                     .await?;
+                transformed_delta_is_output = !model_delta.content.is_empty()
+                    || !model_delta.reasoning.is_empty()
+                    || model_delta.tool_call.is_some();
                 if model_delta.tool_call.is_some() {
                     stream_stall.reset();
                 } else if stream_stall.observe(&model_delta.content) {
@@ -1338,6 +1336,35 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     transformed_tools.push(&item);
                 }
                 *deltas_emitted += 1;
+            }
+
+            // Arm the watchdog only after scrubbing and leading-whitespace
+            // removal. Block-aware adapters do not necessarily emit the
+            // compatibility MessageDelta, so their non-empty payloads count
+            // as progress too.
+            let is_output = match &item {
+                ModelStreamItem::MessageDelta(_) => transformed_delta_is_output,
+                ModelStreamItem::ToolCallDelta(_) => true,
+                ModelStreamItem::BlockDelta { delta, .. } => match delta {
+                    tinyinference_llm::model::BlockDelta::Text(text)
+                    | tinyinference_llm::model::BlockDelta::Thinking(text)
+                    | tinyinference_llm::model::BlockDelta::ToolArgs(text) => !text.is_empty(),
+                },
+                ModelStreamItem::BlockEnd { block, .. } => match block {
+                    tinyinference_llm::message::ContentBlock::Text(text)
+                    | tinyinference_llm::message::ContentBlock::Thinking { text, .. }
+                    | tinyinference_llm::message::ContentBlock::RedactedThinking { data: text } => {
+                        !text.is_empty()
+                    }
+                    _ => true,
+                },
+                ModelStreamItem::Completed(_) => true,
+                _ => false,
+            };
+            if is_output {
+                saw_output = true;
+                rearm = true;
+                ctx.limits.reset_stream_idle_timeouts_for(model_name);
             }
 
             // Reconcile even when nothing ordinary streamed: a response that

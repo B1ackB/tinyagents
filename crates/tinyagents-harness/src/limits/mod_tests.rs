@@ -224,3 +224,14 @@ fn stream_idle_timeouts_count_consecutively_until_reset() {
     assert_eq!(tracker.consecutive_stream_idle_timeouts(), 0);
     assert_eq!(tracker.record_stream_idle_timeout(), 1);
 }
+
+#[test]
+fn stream_idle_timeouts_are_independent_per_model() {
+    let mut tracker = LimitTracker::new(RunLimits::default());
+    assert_eq!(tracker.record_stream_idle_timeout_for("primary"), 1);
+    assert_eq!(tracker.record_stream_idle_timeout_for("backup"), 1);
+    assert_eq!(tracker.record_stream_idle_timeout_for("primary"), 2);
+    tracker.reset_stream_idle_timeouts_for("primary");
+    assert_eq!(tracker.consecutive_stream_idle_timeouts_for("primary"), 0);
+    assert_eq!(tracker.consecutive_stream_idle_timeouts_for("backup"), 1);
+}
