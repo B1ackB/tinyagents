@@ -86,6 +86,7 @@ pub(crate) enum Finished {
 ///
 /// Subagent retry compounds with the harness's own per-call model retry: each
 /// subagent attempt may itself retry model calls first.
+#[allow(clippy::too_many_arguments)] // one internal call site per mode; a params struct would only rename them
 pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync + 'static>(
     subagent: &SubAgent<State, Ctx>,
     policy: &SubAgentPolicy,
