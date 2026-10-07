@@ -715,8 +715,7 @@ where
             let mut out = Vec::with_capacity(records.len());
             for checkpoint in records {
                 let config = checkpoint.config();
-                let parent_config =
-                    checkpoint.parent_config();
+                let parent_config = checkpoint.parent_config();
                 let pending_writes = writes
                     .get(&checkpoint.checkpoint_id)
                     .cloned()

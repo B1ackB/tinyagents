@@ -339,8 +339,7 @@ where
             return Ok(None);
         };
         let resolved = checkpoint.config();
-        let parent_config =
-            checkpoint.parent_config();
+        let parent_config = checkpoint.parent_config();
         let pending_writes = self.resolved_writes(&resolved, &checkpoint).await?;
         Ok(Some(CheckpointTuple {
             config: resolved,
