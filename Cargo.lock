@@ -1887,6 +1887,7 @@ dependencies = [
  "thiserror",
  "tinyagents-harness",
  "tinystoragedrivers-core",
+ "tinystoragedrivers-sqlite",
  "tinytools-agent",
  "tokio",
  "tracing",
@@ -1993,6 +1994,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "tinystoragedrivers-sqlite"
+version = "0.3.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "tinystoragedrivers-core",
  "tokio",
 ]
 
