@@ -859,3 +859,62 @@ async fn fallback_from_a_plain_request_model_override_retargets_request_model() 
     assert_eq!(run.text(), Some("from c".to_string()));
     assert_eq!(c.requests()[0].model, Some("c".to_string()));
 }
+
+/// A `before_model_control` hook that ends the run before dispatch.
+struct EndBeforeCall;
+
+#[async_trait]
+impl Middleware<()> for EndBeforeCall {
+    fn name(&self) -> &str {
+        "end-before-call"
+    }
+
+    async fn before_model_control(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _request: &mut ModelRequest,
+    ) -> crate::error::Result<crate::context::MiddlewareControl> {
+        Ok(crate::context::MiddlewareControl::JumpTo(
+            crate::context::LoopTarget::End,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_switch_whose_call_is_cancelled_by_control_reports_no_outcome() {
+    let (mut harness, a, b) = two_models(
+        ScriptedModel::replies(vec!["from a"]),
+        ScriptedModel::replies(vec!["from b"]),
+    );
+    harness.push_middleware(Arc::new(EndBeforeCall));
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("b"));
+    let recorder = EventRecorder::new();
+
+    let _ = harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await;
+
+    assert!(a.requests().is_empty() && b.requests().is_empty());
+    assert_eq!(switch_outcomes(&recorder), Vec::<bool>::new());
+}
+
+#[tokio::test]
+async fn fallback_keeps_an_absent_request_model_absent() {
+    let (a, b) = (
+        AlwaysFails::new(),
+        Arc::new(ScriptedModel::replies(vec!["from b"])),
+    );
+    let harness = failover_harness(&["a", "b"], vec![("a", a.clone()), ("b", b.clone())]);
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    let recorder = EventRecorder::new();
+
+    harness
+        .invoke_in_context(&(), context(&handle, &recorder), vec![Message::user("hi")])
+        .await
+        .expect("b answers after a fails");
+
+    // A registry alias is not a provider model id: do not invent one.
+    assert_eq!(b.requests()[0].model, None);
+}
