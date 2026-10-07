@@ -213,6 +213,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
         self.tool_middlewares.len()
     }
 
+    /// Whether every registered [`ToolMiddleware`] tolerates overlapping
+    /// invocations ([`ToolMiddleware::concurrent_safe`]); vacuously `true`
+    /// when none is registered.
+    pub fn tool_middleware_concurrent_safe(&self) -> bool {
+        self.tool_middlewares.iter().all(|mw| mw.concurrent_safe())
+    }
+
     /// Returns the number of registered middleware.
     pub fn len(&self) -> usize {
         self.middlewares.len()
@@ -533,7 +540,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
     /// The tool-wrap counterpart of [`Self::run_wrapped_model`].
     pub async fn run_wrapped_tool(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
         base: &dyn ToolBaseCall<State, Ctx>,
@@ -620,7 +627,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
     /// [`ModelHandler::run`].
     pub async fn run(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
     ) -> Result<MiddlewareToolOutcome> {

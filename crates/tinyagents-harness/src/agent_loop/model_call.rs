@@ -1868,7 +1868,7 @@ pub(super) struct ToolCallBase<State: Send + Sync, Ctx: Send + Sync> {
 impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCallBase<State, Ctx> {
     fn call<'a>(
         &'a self,
-        ctx: &'a mut RunContext<Ctx>,
+        ctx: &'a RunContext<Ctx>,
         state: &'a State,
         call: ToolCall,
     ) -> BoxToolFuture<'a> {
