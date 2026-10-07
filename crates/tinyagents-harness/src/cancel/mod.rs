@@ -99,9 +99,15 @@ impl CancellationToken {
             children.retain(|link| link.strong_count() > 0);
             children.push(Arc::downgrade(&child.state));
         }
-        // Re-check after linking: a `cancel` racing the registration either
-        // saw the link (and cancels the child) or is observed here.
-        if self.is_cancelled() {
+        // Re-check every linked ancestor after registration. A cancellation
+        // may have drained an older ancestor before this child was linked;
+        // checking only the immediate parent would let that race escape.
+        if child
+            .state
+            .ancestors
+            .iter()
+            .any(|ancestor| ancestor.cancelled.load(Ordering::Acquire))
+        {
             child.cancel();
         }
         child

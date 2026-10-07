@@ -408,6 +408,8 @@ fn stamp_link_metadata(
         map.insert("subagent_job_id".into(), json!(job_id));
         if let Some(tool_call_id) = tool_call_id {
             map.insert("parent_tool_call_id".into(), json!(tool_call_id));
+        } else {
+            map.remove("parent_tool_call_id");
         }
     }
 }
