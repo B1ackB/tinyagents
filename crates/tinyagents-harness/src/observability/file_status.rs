@@ -155,7 +155,7 @@ impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
         let key = status_key(status.run_id.as_str());
         let run_id = status.run_id.as_str();
-        let legacy_value = if key != run_id && is_safe_status_key(run_id) {
+        let legacy_value = if key != run_id {
             self.kv.get(STATUS_NS, run_id).await?
         } else {
             None
