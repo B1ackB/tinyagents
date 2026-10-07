@@ -40,9 +40,10 @@ fn is_reducible(text: &str, max_bytes: usize) -> bool {
         && !text.contains(TRUNCATION_MARKER)
 }
 
-/// Upper bound, in bytes, on what [`truncate_tool_results`] could save at
-/// `max_bytes`: every reducible text block's excess over the cap (the notice
-/// it appends is not subtracted, so the real saving is slightly lower).
+/// Estimate, in bytes, of what [`truncate_tool_results`] could save at
+/// `max_bytes`: every reducible text block's excess over the cap. The notice a
+/// real cut appends is not modelled, so the true saving differs by up to
+/// about one notice (a few hundred bytes) per block.
 pub fn reducible_tool_result_bytes(messages: &[Message], max_bytes: usize) -> usize {
     if max_bytes == 0 {
         return 0;

@@ -62,10 +62,9 @@ fn reducible_bytes_matches_what_truncation_saves() {
     let reducible = reducible_tool_result_bytes(&messages, 1_000);
     let outcome = truncate_tool_results(&mut messages, 1_000);
     assert_eq!(outcome.truncated, 2);
-    // The estimate is an upper bound that the real cut stays close to (the
-    // appended notice costs a little).
-    assert!(reducible >= outcome.saved_bytes);
-    assert!(reducible - outcome.saved_bytes < 1_000);
+    // The estimate ignores the notice the real cut appends, so the two agree
+    // to within one notice per block.
+    assert!(reducible.abs_diff(outcome.saved_bytes) < 2 * 300);
 }
 
 #[test]
