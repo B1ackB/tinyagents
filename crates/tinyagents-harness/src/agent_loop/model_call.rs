@@ -935,7 +935,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             None
         } else {
             self.models.get(&requested).filter(|candidate| {
-                model_eligible(candidate.as_ref(), request.required_capabilities.as_ref(), false)
+                model_eligible(
+                    candidate.as_ref(),
+                    request.required_capabilities.as_ref(),
+                    false,
+                )
             })
         };
         match eligible {
