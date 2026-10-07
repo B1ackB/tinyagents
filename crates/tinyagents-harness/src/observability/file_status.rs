@@ -15,6 +15,7 @@ use crate::events::HarnessRunStatus;
 use crate::ids::{ExecutionStatus, RunId};
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::store::{FileStore, Store};
 
@@ -104,6 +105,7 @@ pub fn secrets_from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Ve
 /// prompts or payloads.
 pub struct FileStatusStore {
     kv: Arc<dyn Store>,
+    write_lock: Arc<AsyncMutex<()>>,
 }
 
 impl FileStatusStore {
@@ -116,7 +118,10 @@ impl FileStatusStore {
     /// status store. Records keep the [`FileStore`]-safe key encoding, so
     /// they read back identically whichever store holds them.
     pub fn over(kv: Arc<dyn Store>) -> Self {
-        Self { kv }
+        Self {
+            kv,
+            write_lock: Arc::new(AsyncMutex::new(())),
+        }
     }
 
     /// Enumerate every persisted status snapshot (best-effort per record: a
@@ -153,9 +158,10 @@ impl FileStatusStore {
 #[async_trait]
 impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
+        let _write_lock = self.write_lock.lock().await;
         let key = status_key(status.run_id.as_str());
         let run_id = status.run_id.as_str();
-        let legacy_value = if key != run_id {
+        let legacy_value = if key != run_id && is_safe_status_key(run_id) {
             self.kv.get(STATUS_NS, run_id).await?
         } else {
             None
@@ -182,7 +188,9 @@ impl HarnessStatusStore for FileStatusStore {
                 let Some(next) = self.kv.get(STATUS_NS, &destination).await? else {
                     break;
                 };
-                let next: HarnessRunStatus = serde_json::from_value(next)?;
+                let Ok(next) = serde_json::from_value::<HarnessRunStatus>(next) else {
+                    break;
+                };
                 if next.run_id == status.run_id {
                     break;
                 }
@@ -210,27 +218,21 @@ impl HarnessStatusStore for FileStatusStore {
 
     async fn get_status(&self, run_id: &str) -> Result<Option<HarnessRunStatus>> {
         let key = status_key(run_id);
-        let value = match self.kv.get(STATUS_NS, &key).await? {
-            Some(value) => Some(value),
-            None if key != run_id => self.kv.get(STATUS_NS, run_id).await?,
-            None => None,
-        };
-        match value {
-            Some(value) => {
-                let status: HarnessRunStatus = serde_json::from_value(value)?;
-                if status.run_id.as_str() == run_id {
-                    return Ok(Some(status));
-                }
-                if key != run_id
-                    && let Some(legacy) = self.kv.get(STATUS_NS, run_id).await?
-                {
-                    let legacy: HarnessRunStatus = serde_json::from_value(legacy)?;
-                    return Ok((legacy.run_id.as_str() == run_id).then_some(legacy));
-                }
-                Ok(None)
-            }
-            None => Ok(None),
+        if let Some(value) = self.kv.get(STATUS_NS, &key).await?
+            && let Ok(status) = serde_json::from_value::<HarnessRunStatus>(value)
+            && status.run_id.as_str() == run_id
+        {
+            return Ok(Some(status));
         }
+        if key != run_id
+            && is_safe_status_key(run_id)
+            && let Some(value) = self.kv.get(STATUS_NS, run_id).await?
+            && let Ok(status) = serde_json::from_value::<HarnessRunStatus>(value)
+            && status.run_id.as_str() == run_id
+        {
+            return Ok(Some(status));
+        }
+        Ok(None)
     }
 
     async fn list_by_thread(&self, thread_id: &str) -> Result<Vec<HarnessRunStatus>> {

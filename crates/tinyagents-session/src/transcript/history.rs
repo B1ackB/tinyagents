@@ -581,11 +581,8 @@ impl TranscriptLocator for FileTranscriptLocator {
                 let Ok(transcript) = read_transcript(&candidate) else {
                     continue;
                 };
-                let is_root_stem = candidate
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| !stem.contains("__"));
-                if is_root_stem
+                let is_root = transcript.meta.parent_session_id.is_none();
+                if is_root
                     && (transcript.meta.agent_name == agent_name
                         || transcript.meta.agent_id.as_deref() == Some(agent_name))
                     && best
@@ -633,9 +630,6 @@ impl TranscriptLocator for FileTranscriptLocator {
         );
         history.with_write_locks(|| {
             let path = head_generation_path(&root_path);
-            if path != root_path {
-                return Ok(false);
-            }
             crate::transcript::append_interrupted_partial(
                 &path,
                 &partial.content,

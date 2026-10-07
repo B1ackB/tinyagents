@@ -155,7 +155,6 @@ impl InMemoryTranscriptLocator {
         );
         let mut meta = seed;
         meta.session_id = Some(successor.session_id());
-        meta.parent_session_id = successor.parent_session_id();
         let predecessor = self
             .stems
             .lock()
@@ -166,7 +165,7 @@ impl InMemoryTranscriptLocator {
         if let Some(predecessor) = &predecessor {
             predecessor.seal();
         }
-        match TranscriptLocator::open_session(self, &successor, meta) {
+        match self.open_stem_locked(&stem, meta) {
             Ok(handle) => Ok((successor, handle)),
             Err(error) => {
                 if let Some(predecessor) = &predecessor {
@@ -258,6 +257,30 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         stem: &str,
         seed: TranscriptMeta,
     ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.open_stem_locked(stem, seed)
+    }
+
+    fn append_interrupted_partial(
+        &self,
+        thread_id: &str,
+        agent_id: Option<&str>,
+        partial: &TranscriptPartial,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.append_interrupted_partial_locked(thread_id, agent_id, partial, request_id)
+    }
+}
+
+impl InMemoryTranscriptLocator {
+    fn open_stem_locked(
+        &self,
+        stem: &str,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
         let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, _, history)) = stems.iter().find(|(known, _, _)| known == stem) {
             history.set_seed_if_unwritten(seed);
@@ -266,9 +289,11 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         // Session stems reserve `__` for the parent/child separator. Check the
         // stem itself so bounded parent stems remain children even when the
         // parent prefix is not present in this locator's index.
-        let is_subagent = stem.split_once("__").is_some_and(|(parent, _)| {
-            !parent.is_empty() && stems.iter().any(|(known, _, _)| known == parent)
-        });
+        let is_subagent = seed.parent_session_id.is_some()
+            || (seed.parent_session_id.is_none()
+                && stem.split_once("__").is_some_and(|(parent, _)| {
+                    !parent.is_empty() && stems.iter().any(|(known, _, _)| known == parent)
+                }));
         let history = Arc::new(InMemoryTranscriptHistory::new_with_gate(
             format!("{}/{stem}", self.label),
             seed,
@@ -278,7 +303,7 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         Ok(history)
     }
 
-    fn append_interrupted_partial(
+    fn append_interrupted_partial_locked(
         &self,
         thread_id: &str,
         agent_id: Option<&str>,
@@ -296,7 +321,8 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         if thread_id.is_empty() {
             return Ok(false);
         }
-        let Some((_meta, history)) = self.written_roots().into_iter().find(|(meta, _)| {
+        let roots = self.written_roots();
+        let Some((_meta, history)) = roots.into_iter().find(|(meta, _)| {
             meta.thread_id.as_deref() == Some(thread_id)
                 && agent_id.is_none_or(|agent| meta.agent_id.as_deref() == Some(agent))
         }) else {

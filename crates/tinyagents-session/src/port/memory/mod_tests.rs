@@ -55,7 +55,7 @@ fn an_agent_gets_the_same_stores_every_time() {
 }
 
 #[test]
-fn clearing_in_memory_history_preserves_display_partials() {
+fn clearing_in_memory_history_clears_display_partials() {
     let history = InMemoryTranscriptHistory::new("clear-partial", test_meta("clear-partial"));
     history.record_partial(
         TranscriptPartial::new("half an answer"),
@@ -65,8 +65,7 @@ fn clearing_in_memory_history_preserves_display_partials() {
     TranscriptHistory::clear(&history).unwrap();
 
     assert!(TranscriptHistory::messages(&history).unwrap().is_empty());
-    assert_eq!(history.partials().len(), 1);
-    assert_eq!(history.partials()[0].0.content, "half an answer");
+    assert!(history.partials().is_empty());
 }
 
 #[test]
