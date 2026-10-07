@@ -625,16 +625,29 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.label
     }
 
-    /// Implements pi's overflow → compact → retry recovery
-    /// (`docs/runtime-comparison/pi.md` §4.5): the wrapped model call runs
-    /// once; if it fails with an error
-    /// [`Self::overflow_classifier`][ContextCompressionMiddleware] classifies
-    /// as a provider context-window overflow, this compacts the transcript
-    /// once (recorded with [`CompactionReason::Overflow`]) and retries the
-    /// *same* turn exactly once more. A second overflow (or a decline from
-    /// the `before_compaction` hook) propagates the error instead of retrying
-    /// again, so a pathological transcript that cannot be shrunk under the
-    /// window cannot loop forever.
+    /// Overflow recovery v2 (pi's overflow → compact → retry, extended): runs
+    /// the wrapped model call and, when it reports a context overflow, shrinks
+    /// the request and retries the *same* turn, up to
+    /// [`with_max_overflow_attempts`][ContextCompressionMiddleware::with_max_overflow_attempts]
+    /// times (default [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`][crate::middleware::DEFAULT_MAX_OVERFLOW_ATTEMPTS]).
+    ///
+    /// An overflow is either an error
+    /// [`Self::overflow_classifier`][ContextCompressionMiddleware] classifies,
+    /// or a *successful* response whose usage / stop shows the window was
+    /// exceeded (see [`ResponseOverflowDetection`]).
+    ///
+    /// Each attempt takes the cheapest step that can help: with
+    /// [`with_tool_result_truncation`][ContextCompressionMiddleware::with_tool_result_truncation]
+    /// configured, oversized tool results are cut first (no model call spent
+    /// on a summary); otherwise, or when that cannot cover the overflow, the
+    /// transcript is compacted ([`CompactionReason::Overflow`]). Every attempt
+    /// must produce a smaller request than the one before; one that cannot
+    /// (nothing safe to cut, the `before_compaction` hook declined, the
+    /// summary is no smaller) ends recovery and the original error — or
+    /// response — is returned, so a transcript that cannot be shrunk under the
+    /// window cannot loop. The transcript itself is never rewritten: the
+    /// shrunk request is a rewrite, and compactions extend the run's
+    /// fingerprint-chained fold exactly as `before_model` compactions do.
     async fn wrap_model(
         &self,
         ctx: &mut RunContext<Ctx>,
@@ -642,16 +655,68 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         request: ModelRequest,
         next: ModelHandler<'_, State, Ctx>,
     ) -> Result<MiddlewareModelOutcome> {
-        let first_error = match next.run(ctx, state, request.clone()).await {
-            Ok(outcome) => return Ok(outcome),
-            Err(error) => error,
-        };
+        // `base` holds the compactions so far and is never truncated, so a
+        // later compaction summarizes full tool results; `truncate` is applied
+        // on top of it when sending.
+        let mut base = request;
+        let mut truncate: Option<usize> = None;
+        let mut attempts = 0u32;
+        loop {
+            let outgoing = Self::outgoing_request(&base, truncate);
+            let result = next.run(ctx, state, outgoing).await;
+            let Some(overflow) = self.classify_outcome(&result, &base) else {
+                return result;
+            };
+            if attempts >= self.max_overflow_attempts {
+                return result;
+            }
+            attempts += 1;
+            let route = self.overflow_route(&base, truncate.is_some(), &overflow);
+            tracing::info!(
+                attempt = attempts,
+                max = self.max_overflow_attempts,
+                route = route.as_str(),
+                requested = ?overflow.requested,
+                limit = ?overflow.limit,
+                "[context_compression] context overflow reported; recovering"
+            );
+            let cap = self.tool_result_truncation;
+            if route == CompactionRoute::TruncateToolResults
+                && let Some(cap) = cap
+                && self.announce_truncation(ctx, &base, cap)
+            {
+                truncate = Some(cap);
+                continue;
+            }
+            match self.compact_for_overflow(ctx, &base, overflow).await {
+                Some(shrunk) => {
+                    base = shrunk;
+                    if route.truncates()
+                        && let Some(cap) = cap
+                        && truncate.is_none()
+                        && self.announce_truncation(ctx, &base, cap)
+                    {
+                        truncate = Some(cap);
+                    }
+                }
+                None => {
+                    // Nothing to compact: cutting the tool results may still
+                    // be enough, so it is the last resort for a mixed route.
+                    if route.truncates()
+                        && truncate.is_none()
+                        && let Some(cap) = cap
+                        && self.announce_truncation(ctx, &base, cap)
+                    {
+                        truncate = Some(cap);
+                        continue;
+                    }
+                    return result;
+                }
+            }
+        }
+    }
+}
 
-        let Some(overflow) = self.overflow_classifier.classify(&first_error) else {
-            return Err(first_error);
-        };
-
-@@BODY@@
 /// Inserts `summary` into `to_keep` right after any leading system messages,
 /// so a system prompt stays first (preserving both its instruction priority
 /// and the cacheable prefix) and the summary sits chronologically between it
