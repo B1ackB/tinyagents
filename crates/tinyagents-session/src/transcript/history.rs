@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::transcript::types::TranscriptMessage;
@@ -539,7 +539,7 @@ impl TranscriptLocator for FileTranscriptLocator {
         Some(
             self.workspace_dir
                 .canonicalize()
-                .unwrap_or_else(|_| self.workspace_dir.clone())
+                .unwrap_or_else(|_| absolute_normalized_path(&self.workspace_dir))
                 .to_string_lossy()
                 .into_owned(),
         )
@@ -657,6 +657,33 @@ impl TranscriptLocator for FileTranscriptLocator {
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
         begin_file_generation_with_baseline(&self.workspace_dir, session, seed, Some(baseline))
     }
+}
+
+/// Return a stable absolute key even before the workspace has been created.
+/// `canonicalize` cannot resolve a path with a missing component, but the
+/// in-process turn lock still needs equivalent relative and absolute paths to
+/// identify the same destination.
+fn absolute_normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 fn begin_file_generation_with_baseline(
