@@ -34,20 +34,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tinystoragedrivers_core::{
     Blocking, CollectionSpec, DocumentStore, DocumentStoreExt, ErrorKind, Filter, IndexSpec,
-    Precondition, Query, Sort, StorageError,
+    Precondition, Query, Sort, StorageError, Version,
 };
 use tokio::sync::{Mutex, OnceCell};
 
 use super::super::memory::MAX_GENERATIONS;
 use crate::transcript::{
     SessionRef, SessionTranscript, TranscriptHistory, TranscriptLocator, TranscriptMessage,
-    TranscriptMeta, TranscriptPartial, TranscriptRead, TranscriptTurn, session_stem,
+    TranscriptMeta, TranscriptPartial, TranscriptRead, TranscriptTurn, TurnUsage,
+    same_transcript_messages, session_stem, stamped_rows,
 };
 
 /// One document per transcript stem: the lookup fields.
 pub(super) const INDEX: &str = "session_transcripts";
 /// One document per write to a transcript: its append-only log.
 pub(super) const ENTRIES: &str = "session_transcript_entries";
+
+/// Entries read per driver round trip while replaying a log.
+const PAGE: usize = 500;
 
 /// Insert attempts before a contended write gives up.
 const CAS_ATTEMPTS: usize = 64;
@@ -296,8 +300,25 @@ impl DriverTranscriptHistory {
     }
 
     /// Seals this generation; later writes to it are refused.
-    fn seal(&self) -> anyhow::Result<()> {
-        self.commit(|replay, _| {
+    ///
+    /// With a `baseline`, the seal is conditional on the transcript still
+    /// holding exactly those messages, checked against the same replay the
+    /// seal is claimed on: a turn another writer committed after the caller
+    /// read the baseline makes the seal fail instead of being dropped from
+    /// the successor.
+    fn seal(&self, baseline: Option<Vec<TranscriptMessage>>) -> anyhow::Result<()> {
+        self.commit(move |replay, _| {
+            if let Some(baseline) = &baseline {
+                let current: &[TranscriptMessage] = if replay.written {
+                    &replay.messages
+                } else {
+                    &[]
+                };
+                anyhow::ensure!(
+                    same_transcript_messages(current, baseline),
+                    "transcript baseline is stale; reload the session before creating a generation"
+                );
+            }
             Ok((!replay.sealed).then(|| Entry {
                 seal: true,
                 ..Entry::default()
@@ -338,7 +359,9 @@ impl HistoryInner {
             Filter::eq("stem", self.stem.as_str()).and(Filter::gte("seq", replay.next_seq)),
         )
         .sort(Sort::asc("seq"))
-        .limit(500);
+        .limit(PAGE);
+        // `query_all` follows the cursors: `PAGE` bounds one round trip, not
+        // the replay.
         for stored in self.docs.query_all(ENTRIES, &query).await? {
             let seq = stored
                 .doc
@@ -389,7 +412,18 @@ impl HistoryInner {
             {
                 Ok(_) => {
                     replay.apply(seq, entry);
-                    self.index(&mut replay).await?;
+                    // The entry is durable: report the write as done. A
+                    // failed index refresh only delays lookups by thread or
+                    // agent until this handle's next write retries it.
+                    if let Err(error) = self.index(&mut replay).await {
+                        tracing::warn!(
+                            target: "tinyagents_session::port::drivers",
+                            stem = %self.stem,
+                            seq,
+                            %error,
+                            "[session-store] transcript index refresh failed; retried on the next write"
+                        );
+                    }
                     return Ok(true);
                 }
                 Err(error) if error.kind() == ErrorKind::Conflict => {}
@@ -404,6 +438,11 @@ impl HistoryInner {
 
     /// Refreshes this stem's [`INDEX`] document when its lookup fields
     /// changed.
+    ///
+    /// Fenced by log position: the document records the entry it was built
+    /// from (`indexed_seq`), and a handle whose replay is older than that
+    /// leaves it alone, so a delayed writer never puts back stale lookup
+    /// fields. The write itself is a compare-and-swap on the version read.
     async fn index(&self, replay: &mut Replay) -> Result<(), StorageError> {
         if !replay.written {
             return Ok(());
@@ -420,18 +459,44 @@ impl HistoryInner {
         if replay.indexed.as_ref() == Some(&fields) {
             return Ok(());
         }
+        let seq = replay.next_seq.saturating_sub(1);
         let id = doc_key(&[&self.stem]);
-        let created_at = self
-            .docs
-            .get(INDEX, &id)
-            .await?
-            .and_then(|found| found.doc.get("created_at").cloned())
-            .unwrap_or_else(|| json!(now_rfc3339()));
-        let mut doc = fields.clone();
-        doc["created_at"] = created_at;
-        self.docs.put(INDEX, &id, doc, Precondition::None).await?;
-        replay.indexed = Some(fields);
-        Ok(())
+        for _ in 0..CAS_ATTEMPTS {
+            let existing = self.docs.get(INDEX, &id).await?;
+            let newer = existing.as_ref().is_some_and(|found| {
+                found.doc.get("written") == Some(&json!(true))
+                    && found
+                        .doc
+                        .get("indexed_seq")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|indexed| indexed > seq)
+            });
+            if newer {
+                return Ok(());
+            }
+            let created_at = existing
+                .as_ref()
+                .and_then(|found| found.doc.get("created_at").cloned())
+                .unwrap_or_else(|| json!(now_rfc3339()));
+            let precondition = existing
+                .as_ref()
+                .map_or(Precondition::Absent, |found| found.unchanged());
+            let mut doc = fields.clone();
+            doc["created_at"] = created_at;
+            doc["indexed_seq"] = json!(seq);
+            match self.docs.put(INDEX, &id, doc, precondition).await {
+                Ok(_) => {
+                    replay.indexed = Some(fields);
+                    return Ok(());
+                }
+                Err(error) if error.kind() == ErrorKind::Conflict => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StorageError::conflict(format!(
+            "transcript index for {} kept changing under {CAS_ATTEMPTS} attempts",
+            self.stem
+        )))
     }
 }
 
@@ -454,18 +519,35 @@ impl TranscriptRead for DriverTranscriptHistory {
     }
 }
 
-/// The entry recording a turn whose logical messages are now `next`: only
-/// the new rows when `next` extends what is stored, all of them otherwise.
+/// The entry recording a turn whose logical messages are now `next`.
+///
+/// Mirrors the JSONL writer: the turn's `prev` must be what is stored
+/// (otherwise the caller's view is stale and the write is refused rather than
+/// allowed to replace newer rows), an extension stores only its new rows and
+/// anything else stores the whole set, and the written rows carry the turn's
+/// usage and request id exactly as a transcript file records them.
 fn turn_entry(replay: &Replay, turn: &TurnRecord) -> anyhow::Result<Option<Entry>> {
     anyhow::ensure!(!replay.sealed, "transcript generation is sealed");
-    let stored = &replay.messages;
-    let extends = replay.written
-        && turn.next.len() >= stored.len()
-        && turn.next[..stored.len()] == stored[..];
-    let (set, extend) = if extends {
-        (None, Some(turn.next[stored.len()..].to_vec()))
+    let stored: &[TranscriptMessage] = if replay.written {
+        &replay.messages
     } else {
-        (Some(turn.next.clone()), None)
+        &[]
+    };
+    anyhow::ensure!(
+        !replay.written || same_transcript_messages(stored, &turn.prev),
+        "transcript baseline is stale; reload the session before persisting"
+    );
+    let common = stored
+        .iter()
+        .zip(&turn.next)
+        .take_while(|(left, right)| left.same_row_as(right))
+        .count();
+    let usage = turn.turn_usage.as_ref();
+    let request_id = turn.request_id.as_deref();
+    let (set, extend) = if replay.written && common == stored.len() {
+        (None, Some(stamped_rows(&turn.next[common..], usage, request_id)))
+    } else {
+        (Some(stamped_rows(&turn.next, usage, request_id)), None)
     };
     Ok(Some(Entry {
         written: true,
@@ -481,8 +563,10 @@ fn turn_entry(replay: &Replay, turn: &TurnRecord) -> anyhow::Result<Option<Entry
 
 /// An owned [`TranscriptTurn`], so it can cross onto the bridge.
 struct TurnRecord {
+    prev: Vec<TranscriptMessage>,
     next: Vec<TranscriptMessage>,
     meta: TranscriptMeta,
+    turn_usage: Option<TurnUsage>,
     tools: Option<Value>,
     request_id: Option<String>,
     partial: Option<StoredPartial>,
@@ -491,8 +575,10 @@ struct TurnRecord {
 impl TurnRecord {
     fn new(turn: &TranscriptTurn<'_>, partial: Option<&TranscriptPartial>) -> Self {
         Self {
+            prev: normalized(turn.prev.to_vec()),
             next: normalized(turn.next.to_vec()),
             meta: turn.meta.clone(),
+            turn_usage: turn.turn_usage.cloned(),
             tools: turn.tools.cloned(),
             request_id: turn.request_id.map(str::to_string),
             partial: partial
@@ -678,7 +764,7 @@ impl DriverTranscriptLocator {
 
     /// Reserves `stem` as a new generation: succeeds when nothing is written
     /// there and no live reservation holds it.
-    async fn reserve(docs: &Arc<dyn DocumentStore>, stem: &str) -> anyhow::Result<()> {
+    async fn reserve(docs: &Arc<dyn DocumentStore>, stem: &str) -> anyhow::Result<Version> {
         let written = docs
             .count(
                 ENTRIES,
@@ -709,7 +795,7 @@ impl DriverTranscriptLocator {
             }
         };
         match docs.put(INDEX, &id, reservation, precondition).await {
-            Ok(_) => Ok(()),
+            Ok(version) => Ok(version),
             Err(error) if error.kind() == ErrorKind::Conflict => {
                 anyhow::bail!("session generation already exists or is reserved")
             }
@@ -847,38 +933,50 @@ impl TranscriptLocator for DriverTranscriptLocator {
         session: &SessionRef,
         seed: TranscriptMeta,
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        self.begin_generation_checked(session, seed, None)
+    }
+
+    /// [`Self::begin_generation`], sealing only if the predecessor still
+    /// holds exactly `baseline` — checked as part of the seal itself, so a
+    /// turn committed in between cannot be lost from the successor.
+    fn begin_generation_from_baseline(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+        baseline: &[TranscriptMessage],
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        self.begin_generation_checked(session, seed, Some(normalized(baseline.to_vec())))
+    }
+}
+
+impl DriverTranscriptLocator {
+    fn begin_generation_checked(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+        baseline: Option<Vec<TranscriptMessage>>,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
         let successor = session.next_generation();
         anyhow::ensure!(
             successor.generation <= MAX_GENERATIONS,
             "session generation limit reached"
         );
         let stem = session_stem(&successor);
-        let reserved = {
+        let reservation = {
             let stem = stem.clone();
-            run_on(&self.bridge, {
-                let docs = Arc::clone(&self.docs);
-                let declared = Arc::clone(&self.declared);
-                async move {
-                    declared.ensure(&docs).await?;
-                    Ok(Self::reserve(&docs, &stem).await)
-                }
-            })?
-        };
-        reserved?;
-        let predecessor_stem = session_stem(session);
-        if let Err(error) = self.handle(&predecessor_stem, seed.clone()).seal() {
             let docs = Arc::clone(&self.docs);
-            let id = doc_key(&[&stem]);
-            if let Err(release) = run_on(&self.bridge, async move {
-                docs.delete(INDEX, &id, Precondition::None).await
-            }) {
-                tracing::warn!(
-                    target: "tinyagents_session::port::drivers",
-                    stem = %stem,
-                    error = %release,
-                    "[session-store] could not release a generation reservation"
-                );
-            }
+            let declared = Arc::clone(&self.declared);
+            run_on(&self.bridge, async move {
+                declared.ensure(&docs).await?;
+                Ok(Self::reserve(&docs, &stem).await)
+            })??
+        };
+        let predecessor_stem = session_stem(session);
+        if let Err(error) = self
+            .handle(&predecessor_stem, seed.clone())
+            .seal(baseline)
+        {
+            self.release(&stem, reservation);
             return Err(error);
         }
         let mut meta = seed;
@@ -886,6 +984,31 @@ impl TranscriptLocator for DriverTranscriptLocator {
         meta.parent_session_id = successor.parent_session_id();
         let handle = self.handle(&stem, meta);
         Ok((successor, Arc::new(handle)))
+    }
+
+    /// Drops the reservation of `stem` this call made, at the version it
+    /// wrote: if another process has since taken it over or written the
+    /// successor, the document is theirs and stays.
+    fn release(&self, stem: &str, reservation: Version) {
+        let docs = Arc::clone(&self.docs);
+        let id = doc_key(&[stem]);
+        let released = run_on(&self.bridge, async move {
+            match docs
+                .delete(INDEX, &id, Precondition::Version(reservation))
+                .await
+            {
+                Err(error) if error.kind() == ErrorKind::Conflict => Ok(false),
+                other => other,
+            }
+        });
+        if let Err(error) = released {
+            tracing::warn!(
+                target: "tinyagents_session::port::drivers",
+                stem,
+                %error,
+                "[session-store] could not release a generation reservation"
+            );
+        }
     }
 }
 

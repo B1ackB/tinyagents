@@ -246,7 +246,7 @@ fn a_sealed_generation_refuses_writes() {
             .record_partial(&TranscriptPartial::new("x"), None)
             .unwrap()
     );
-    handle.seal().unwrap();
+    handle.seal(None).unwrap();
     assert_eq!(
         entries(&docs, &session_stem(&session))
             .iter()
