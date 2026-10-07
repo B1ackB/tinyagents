@@ -151,6 +151,6 @@ produce a distinct error class and should not be retried.
 
 ## Nested tool calls
 
-`RunLimits::max_nested_depth` (default 3) caps how deep tools may call tools through
+`RunLimits::max_nested_depth` (default 0: nested calls disabled, opt in with `with_max_nested_depth`) caps how deep tools may call tools through
 `ToolExecutionContext::call_tool`; nested calls also count against
 `max_tool_calls` together with model-issued calls. See [nested-tool-calls.md](nested-tool-calls.md).
