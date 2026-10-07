@@ -22,7 +22,11 @@ fn boost_doubles_the_last_sent_cap_and_clamps_at_four_times_the_base() {
     recovery.boost_max_tokens(Some(2000));
     assert_eq!(recovery.boosted_max_tokens, Some(4000));
     recovery.boost_max_tokens(Some(4000));
-    assert_eq!(recovery.boosted_max_tokens, Some(4000), "clamped at 4x base");
+    assert_eq!(
+        recovery.boosted_max_tokens,
+        Some(4000),
+        "clamped at 4x base"
+    );
     assert_eq!(recovery.truncation_base, Some(1000));
 }
 

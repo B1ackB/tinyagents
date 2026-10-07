@@ -1386,7 +1386,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             {
                 let truncated_positions = truncated_call_positions(&tool_calls);
                 if !truncated_positions.is_empty() {
-                    if turn_recovery.truncated_tool_call_retries_used >= self.policy.truncated_tool_call_retries {
+                    if turn_recovery.truncated_tool_call_retries_used
+                        >= self.policy.truncated_tool_call_retries
+                    {
                         tracing::warn!(
                             target: "tinyagents::agent_loop",
                             run_id = %ctx.run_id(),
@@ -1396,10 +1398,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         );
                         messages.pop();
                         return Err(TinyAgentsError::LimitExceeded(format!(
-                            "run `{}` stopped: {turn_recovery.truncated_tool_call_retries_used} consecutive \
+                            "run `{}` stopped: {} consecutive \
                              retries of a tool call truncated by the output token limit did not \
                              produce a complete call (RunPolicy::truncated_tool_call_retries)",
-                            ctx.run_id()
+                            ctx.run_id(),
+                            turn_recovery.truncated_tool_call_retries_used
                         )));
                     }
                     turn_recovery.truncated_tool_call_retries_used += 1;
@@ -1629,7 +1632,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // A mixed turn (structured payload alongside real tool calls)
                 // is a resolved turn exactly like an ordinary tool-calling one
                 // (see the reset below at the non-mixed path): it must not
-                // leave a spent `turn_recovery.dropped_tool_call_nudges_used` counter to
+                // leave a spent `dropped_tool_call_nudges_used` counter to
                 // leak into a later, unrelated dropped-call turn, which would
                 // otherwise receive fewer than the policy's configured number
                 // of consecutive re-prompts.
@@ -1684,7 +1687,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // of the same transcript leaks the same way.
                 let withheld_calls = recovery.dropped.withheld();
                 if withheld_calls > 0
-                    && turn_recovery.withheld_call_nudges_used < self.policy.dropped_tool_call_nudges
+                    && turn_recovery.withheld_call_nudges_used
+                        < self.policy.dropped_tool_call_nudges
                     && ctx.limits.remaining_model_calls() > 0
                 {
                     turn_recovery.withheld_call_nudges_used += 1;
@@ -1726,7 +1730,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
                     && response.text().trim().is_empty();
                 if truncated_empty
-                    && turn_recovery.truncated_empty_retries_used < self.policy.truncated_empty_retries
+                    && turn_recovery.truncated_empty_retries_used
+                        < self.policy.truncated_empty_retries
                     && ctx.limits.remaining_model_calls() > 0
                 {
                     // Drop the useless empty assistant row appended above so the
@@ -1754,7 +1759,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // done. Say plainly what happened and ask for the next step,
                 // then carry on with the loop. The boosted cap stays in force.
                 if truncated_empty
-                    && turn_recovery.truncated_empty_nudges_used < self.policy.truncated_empty_nudges
+                    && turn_recovery.truncated_empty_nudges_used
+                        < self.policy.truncated_empty_nudges
                     && ctx.limits.remaining_model_calls() > 0
                 {
                     messages.pop();
@@ -1777,13 +1783,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         control: "truncated_empty_nudge".to_string(),
                         detail: format!(
                             "model call `{call_id}` ran out of output tokens while reasoning \
-                             after {turn_recovery.truncated_empty_retries_used} retry(ies); re-prompted to act"
+                             after {} retry(ies); re-prompted to act",
+                            turn_recovery.truncated_empty_retries_used
                         ),
                     });
                     messages.push(Message::user(nudge));
                     let record = ctx.emit(AgentEvent::RetryScheduled {
                         call_id: call_id.clone(),
-                        attempt: (turn_recovery.truncated_empty_retries_used + turn_recovery.truncated_empty_nudges_used)
+                        attempt: (turn_recovery.truncated_empty_retries_used
+                            + turn_recovery.truncated_empty_nudges_used)
                             as usize,
                     });
                     status.set_last_event(record.id);
@@ -1804,7 +1812,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && response.finish_reason.as_deref() != Some("tool_calls")
                     && !response.served_from_cache;
                 if nontruncated_empty
-                    && turn_recovery.empty_response_retries_used < self.policy.empty_response_retries
+                    && turn_recovery.empty_response_retries_used
+                        < self.policy.empty_response_retries
                     && ctx.limits.remaining_model_calls() > 0
                 {
                     messages.pop();
@@ -1852,7 +1861,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     && (response.finish_reason.as_deref() == Some("tool_calls")
                         || undecodable_text_call)
                     && tools_available_this_turn
-                    && turn_recovery.dropped_tool_call_nudges_used < self.policy.dropped_tool_call_nudges
+                    && turn_recovery.dropped_tool_call_nudges_used
+                        < self.policy.dropped_tool_call_nudges
                 {
                     turn_recovery.dropped_tool_call_nudges_used += 1;
                     let nudge = if undecodable_text_call {
@@ -1880,7 +1890,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
                 // This turn resolved without scheduling a truncated-empty
                 // retry, so the recovery state must not leak into later turns:
-                // a stale `turn_recovery.boosted_max_tokens` would override the caller's
+                // a stale `boosted_max_tokens` would override the caller's
                 // per-turn cap on every subsequent call, and a spent retry
                 // counter would deny recovery to a later turn that needs it.
                 turn_recovery.reset_after_final();
