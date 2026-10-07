@@ -172,22 +172,27 @@ impl Inner {
 
     /// Drops `thread_id`'s completed turns beyond the newest
     /// [`COMPLETED_RETENTION`].
+    ///
+    /// Each delete is conditional on the version the listing saw: a turn
+    /// rewritten in the meantime is someone else's newer state and stays.
     async fn prune_completed(&self, thread_id: &str) -> Result<(), StorageError> {
-        let mut completed: Vec<TurnState> = self
-            .thread(thread_id)
+        let mut completed: Vec<Versioned<TurnState>> = self
+            .query(Filter::eq("thread_id", thread_id))
             .await?
             .into_iter()
-            .filter(|turn| turn.lifecycle == TurnLifecycle::Completed)
+            .filter(|stored| stored.doc.lifecycle == TurnLifecycle::Completed)
             .collect();
-        completed.sort_by(completed_newest_first);
+        completed.sort_by(|a, b| completed_newest_first(&a.doc, &b.doc));
         for stale in completed.iter().skip(COMPLETED_RETENTION) {
-            self.docs
-                .delete(
-                    COLLECTION,
-                    &id(&stale.thread_id, &stale.request_id),
-                    Precondition::None,
-                )
-                .await?;
+            match self
+                .docs
+                .delete(COLLECTION, &stale.id, stale.unchanged())
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if is_race(&error) => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }

@@ -459,3 +459,114 @@ fn handles_describe_themselves() {
         Some("memory://test/transcripts")
     );
 }
+
+#[test]
+fn a_stale_turn_is_refused_instead_of_replacing_newer_rows() {
+    let docs = docs();
+    let locator = locator(&docs);
+    let one = locator.open_stem("s", meta("t")).unwrap();
+    let two = locator.open_stem("s", meta("t")).unwrap();
+    let a = vec![message("user", "a")];
+    one.append_turn(turn(&[], &a, &meta("t"))).unwrap();
+    let mut ab = a.clone();
+    ab.push(message("assistant", "b"));
+    one.append_turn(turn(&a, &ab, &meta("t"))).unwrap();
+    // `two` still believes the transcript is `a`.
+    let mut ac = a.clone();
+    ac.push(message("assistant", "c"));
+    let error = two.append_turn(turn(&a, &ac, &meta("t"))).unwrap_err();
+    assert!(error.to_string().contains("stale"), "{error}");
+    let contents: Vec<String> = two
+        .messages()
+        .unwrap()
+        .into_iter()
+        .map(|row| row.content)
+        .collect();
+    assert_eq!(contents, ["a", "b"], "the newer rows survive");
+}
+
+#[test]
+fn a_turn_keeps_its_usage_and_request_id() {
+    let docs = docs();
+    let history = locator(&docs).open_stem("s", meta("t")).unwrap();
+    let rows = vec![message("user", "q"), message("assistant", "a")];
+    let usage: crate::transcript::TurnUsage =
+        serde_json::from_value(json!({ "input_tokens": 7, "output_tokens": 3 })).unwrap();
+    history
+        .append_turn(TranscriptTurn {
+            turn_usage: Some(&usage),
+            request_id: Some("req-1"),
+            ..turn(&[], &rows, &meta("t"))
+        })
+        .unwrap();
+    let read = history.messages().unwrap();
+    assert!(read.iter().all(|row| row.request_id.as_deref() == Some("req-1")));
+    assert!(read[1].turn_usage.is_some(), "the assistant row carries the usage");
+    assert!(read[0].turn_usage.is_none());
+
+    // The next turn, built from the rows as read back, extends them.
+    let mut next = read.clone();
+    next.push(message("user", "again"));
+    history
+        .append_turn(TranscriptTurn {
+            request_id: Some("req-2"),
+            ..turn(&read, &next, &meta("t"))
+        })
+        .unwrap();
+    let log = entries(&docs, "s");
+    assert_eq!(log[1]["extend"].as_array().unwrap().len(), 1);
+    let read = history.messages().unwrap();
+    assert_eq!(read[0].request_id.as_deref(), Some("req-1"), "old rows keep theirs");
+    assert_eq!(read[2].request_id.as_deref(), Some("req-2"));
+}
+
+#[test]
+fn a_stale_baseline_fails_the_seal_and_frees_the_successor() {
+    let docs = docs();
+    let locator = locator(&docs);
+    let session = SessionRef::scoped("t", "planner");
+    let history = locator.open_session(&session, meta("t")).unwrap();
+    let a = vec![message("user", "a")];
+    history.append_turn(turn(&[], &a, &meta("t"))).unwrap();
+    let mut ab = a.clone();
+    ab.push(message("assistant", "b"));
+    history.append_turn(turn(&a, &ab, &meta("t"))).unwrap();
+
+    let error = locator
+        .begin_generation_from_baseline(&session, meta("t"), &a)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("stale"), "{error}");
+    let mut abc = ab.clone();
+    abc.push(message("user", "c"));
+    history
+        .append_turn(turn(&ab, &abc, &meta("t")))
+        .expect("the predecessor was not sealed");
+
+    let (successor, _) = locator
+        .begin_generation_from_baseline(&session, meta("t"), &abc)
+        .expect("the released reservation is free again");
+    assert_eq!(successor.generation, 1);
+}
+
+#[test]
+fn a_stale_handle_never_rewinds_the_index() {
+    let docs = docs();
+    let locator = locator(&docs);
+    let rows = vec![message("user", "a")];
+    let old = locator.handle("s", meta("old"));
+    old.append_turn(turn(&[], &rows, &meta("old"))).unwrap();
+    let new = locator.open_stem("s", meta("new")).unwrap();
+    new.append_turn(turn(&rows, &rows, &meta("new"))).unwrap();
+
+    // `old` re-indexes from a replay that predates `new`'s entry.
+    let inner = Arc::clone(&old.inner);
+    on_bridge(async move {
+        let mut replay = inner.replay.lock().await;
+        replay.indexed = None;
+        replay.next_seq = 1;
+        inner.index(&mut replay).await
+    });
+    assert!(locator.root_for_thread("new").is_some());
+    assert!(locator.root_for_thread("old").is_none());
+}

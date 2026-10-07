@@ -76,6 +76,24 @@ fn any_other_agent_id_maps_to_a_stable_hashed_scope() {
 }
 
 #[test]
+fn a_raw_id_can_never_name_a_hashed_scope() {
+    let hashed = DriverSessionStores::scope_for("has a space");
+    let impostor = DriverSessionStores::scope_for(hashed.as_str());
+    assert_ne!(impostor, hashed, "ids in the reserved prefix are hashed too");
+    assert!(impostor.as_str().starts_with("sha256:"));
+}
+
+#[test]
+fn two_backends_never_share_a_destination() {
+    let one = memory().for_agent("a");
+    let two = memory().for_agent("a");
+    assert_ne!(
+        one.transcripts.destination_key(),
+        two.transcripts.destination_key()
+    );
+}
+
+#[test]
 fn an_agent_gets_the_same_stores_every_time() {
     let provider = memory();
     let first = provider.for_agent("a");

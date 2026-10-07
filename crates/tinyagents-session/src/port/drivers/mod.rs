@@ -26,8 +26,9 @@
 //! # Scopes
 //!
 //! An agent id that is a valid [`Scope`] is used as is. Any other id (empty,
-//! over-long, or holding whitespace) maps to `sha256:<hex>` of the id, so
-//! every agent still gets a scope of its own and the mapping never changes.
+//! over-long, holding whitespace) and any id that itself starts with
+//! `sha256:` maps to `sha256:<hex>` of the id, so every agent gets a scope of
+//! its own, no raw id can name a hashed scope, and the mapping never changes.
 
 mod refused;
 mod transcripts;
@@ -44,6 +45,10 @@ use super::{AgentStores, SessionStoreProvider};
 
 pub use transcripts::{DriverTranscriptHistory, DriverTranscriptLocator};
 pub use turn_states::DriverTurnStates;
+
+/// Prefix of the scopes agent ids are hashed into. Reserved: an agent id
+/// starting with it is hashed too, so it cannot name another agent's scope.
+const HASHED_SCOPE: &str = "sha256:";
 
 /// Collection holding each agent's key-value records.
 const KV_COLLECTION: &str = "session_kv";
@@ -108,11 +113,14 @@ impl DriverSessionStores {
 
     /// The scope agent `agent_id` is stored under.
     pub fn scope_for(agent_id: &str) -> Scope {
-        Scope::new(agent_id).unwrap_or_else(|_| {
-            let digest = Sha256::digest(agent_id.as_bytes());
-            Scope::new(format!("sha256:{}", hex::encode(digest)))
-                .expect("a sha256 hex scope is always valid")
-        })
+        if !agent_id.starts_with(HASHED_SCOPE)
+            && let Ok(scope) = Scope::new(agent_id)
+        {
+            return scope;
+        }
+        let digest = Sha256::digest(agent_id.as_bytes());
+        Scope::new(format!("{HASHED_SCOPE}{}", hex::encode(digest)))
+            .expect("a sha256 hex scope is always valid")
     }
 
     /// The stores of `agent_id`, or the error that kept the backend from
@@ -132,29 +140,9 @@ impl DriverSessionStores {
         }
         let scoped = self.backend.for_scope(&Self::scope_for(agent_id))?;
         let stores = self.build(&scoped);
-        if self.recover_on_open
-            && self
-                .recovered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(agent_id.to_string())
-        {
-            let now = chrono::Utc::now().to_rfc3339();
-            match stores.turn_states.mark_all_interrupted(&now) {
-                Ok(count) if count > 0 => tracing::info!(
-                    target: "tinyagents_session::port::drivers",
-                    agent_id,
-                    count,
-                    "[session-store] marked turns left in flight interrupted"
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    target: "tinyagents_session::port::drivers",
-                    agent_id,
-                    %error,
-                    "[session-store] could not recover in-flight turns"
-                ),
-            }
+        if self.recover_on_open && !self.recover_agent(agent_id, &stores) {
+            // Not cached, so the next open tries the recovery again.
+            return Ok(stores);
         }
         Ok(self
             .agents
@@ -165,9 +153,57 @@ impl DriverSessionStores {
             .clone())
     }
 
+    /// Interrupts `agent_id`'s in-flight turns unless this provider already
+    /// did; returns whether the agent is now recovered.
+    ///
+    /// The `recovered` lock is held across the sweep, so a concurrent first
+    /// open of the same agent waits for it instead of handing out stores a
+    /// still-running sweep could interrupt a new turn on. The agent is
+    /// recorded only once the sweep succeeds.
+    fn recover_agent(&self, agent_id: &str, stores: &AgentStores) -> bool {
+        let mut recovered = self
+            .recovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if recovered.contains(agent_id) {
+            return true;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        match stores.turn_states.mark_all_interrupted(&now) {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        target: "tinyagents_session::port::drivers",
+                        agent_id,
+                        count,
+                        "[session-store] marked turns left in flight interrupted"
+                    );
+                }
+                recovered.insert(agent_id.to_string());
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "tinyagents_session::port::drivers",
+                    agent_id,
+                    %error,
+                    "[session-store] could not recover in-flight turns; retried on the next open"
+                );
+                false
+            }
+        }
+    }
+
     fn build(&self, scoped: &ScopedStorage) -> AgentStores {
         let docs = Arc::clone(scoped.documents());
-        let label = format!("{}://{}", scoped.driver(), scoped.scope());
+        // The backend's address keeps two backends with the same driver and
+        // scope from claiming one destination.
+        let label = format!(
+            "{}://{:p}/{}",
+            scoped.driver(),
+            Arc::as_ptr(&self.backend),
+            scoped.scope()
+        );
         AgentStores {
             transcripts: Arc::new(DriverTranscriptLocator::new(
                 Arc::clone(&docs),
