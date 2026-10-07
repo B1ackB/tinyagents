@@ -1523,13 +1523,37 @@ async fn driver_enforces_the_target_allowlist_and_fails_closed_without_a_target(
 }
 
 #[tokio::test]
-async fn driver_total_budget_is_refunded_when_the_spawn_fails() {
-    let (planner, executor, persistence, _) = fakes(ExecutorMode::Error);
-    let driver = driver(planner, executor, persistence)
+async fn driver_refunds_the_reservation_when_planning_fails_before_launch() {
+    let (_, executor, persistence, actions) = fakes(ExecutorMode::Completed);
+    let planner = Arc::new(FakePlanner {
+        calls: Mutex::new(0),
+        saw_resume: Mutex::new(false),
+        seen_resumes: Mutex::new(Vec::new()),
+        reject: true,
+        actions,
+    });
+    let driver = driver(planner, executor.clone(), persistence)
         .with_spawn_admission(admission_policy(Some(1), Some(1), None));
 
-    // The executor fails, so no child ever completed: the budget stays whole
-    // and the next attempt is admitted (and fails the same way), not rejected.
+    // Planning fails, so no child was ever launched: the budget stays whole and
+    // the next attempt is admitted (and fails the same way), not rejected.
+    for task in ["a", "b"] {
+        let error = driver
+            .run(sibling_request(task), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, SubagentError::Planning(_)), "{error}");
+    }
+    assert_eq!(driver.spawn_admission().active_children("shared-parent"), 0);
+    assert_eq!(driver.spawn_admission().spawned_in_root("shared-parent"), 0);
+    assert_eq!(*executor.calls.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn driver_releases_the_live_slot_when_execution_fails() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Error);
+    let driver = driver(planner, executor, persistence)
+        .with_spawn_admission(admission_policy(Some(1), None, None));
     for task in ["a", "b"] {
         let error = driver
             .run(sibling_request(task), CancellationToken::new())
