@@ -323,7 +323,13 @@ impl SuccessfulRepeatTracker {
             return CallGate::Allow;
         }
         let mut blocks = lock(&self.blocks);
-        let blocked = blocks.entry(call).or_insert(0);
+        // Bounded: past the cap an unseen call is blocked without a count.
+        let mut untracked = 0u32;
+        let blocked = if blocks.len() >= MAX_TRACKED_CALLS && !blocks.contains_key(&call) {
+            &mut untracked
+        } else {
+            blocks.entry(call).or_insert(0)
+        };
         *blocked = blocked.saturating_add(1);
         if *blocked >= escalation.halt_block() {
             return CallGate::Halt(format!(
