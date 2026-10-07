@@ -240,6 +240,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             ControlEffect::ContinueLoop => return Ok(TurnFlow::NextTurn),
             ControlEffect::Exit(exit) => return Ok(TurnFlow::Exit(exit)),
         }
-        return Ok(TurnFlow::NextTurn);
+        Ok(TurnFlow::NextTurn)
     }
 }
