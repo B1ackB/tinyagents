@@ -61,18 +61,20 @@
 //! `as_str()` gives a stable telemetry label.
 
 mod classified;
+mod escalation;
 mod fingerprint;
 mod stream_text;
 mod successful_repeat;
 mod types;
 
 pub use classified::{ClassifiedFailure, ClassifiedFailureTracker};
+pub use escalation::{DEFAULT_BLOCK_AFTER_WARN, DEFAULT_BLOCKS_BEFORE_HALT, RepeatEscalation};
 pub use fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer, normalize_volatile};
 pub use stream_text::StreamTextStallDetector;
 pub use successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
 use types::LadderState;
 pub use types::{
-    NoProgress, NoProgressTracker, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
+    CallGate, NoProgress, NoProgressTracker, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
 };
 
 use std::sync::{Arc, Mutex};

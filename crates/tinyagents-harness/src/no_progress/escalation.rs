@@ -48,3 +48,7 @@ impl RepeatEscalation {
         self.blocks_before_halt.max(1)
     }
 }
+
+#[cfg(test)]
+#[path = "escalation_tests.rs"]
+mod tests;
