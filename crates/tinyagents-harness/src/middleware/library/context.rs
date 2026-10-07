@@ -11,14 +11,15 @@ use crate::middleware::AgentRun;
 use crate::middleware::types::CompactionPressure;
 use crate::middleware::{
     CompressionFailurePolicy, ContextCompressionMiddleware, DEFAULT_CACHE_GUARD_EVENT_CAP,
-    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_MAX_OVERFLOW_ATTEMPTS, DEFAULT_THRASH_COOLDOWN_CALLS, DEFAULT_THRASH_STRIKES,
-    MessageTrimMiddleware, MicrocompactMiddleware, PromptCacheGuardMiddleware,
+    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_MAX_OVERFLOW_ATTEMPTS, DEFAULT_THRASH_COOLDOWN_CALLS,
+    DEFAULT_THRASH_STRIKES, MessageTrimMiddleware, MicrocompactMiddleware,
+    PromptCacheGuardMiddleware,
 };
 use crate::summarization::{
     CompactionContext, CompactionDecision, CompactionReason, CompactionRecord, ConcatSummarizer,
-    OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,
-    TrimStrategy, checkpoint_body, checkpoint_message, find_cut_point, is_checkpoint,
-    summarize_with_split, trim_messages,
+    OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer,
+    SummaryPlacement, SummaryRecord, TrimStrategy, checkpoint_body, checkpoint_message,
+    find_cut_point, is_checkpoint, summarize_with_split, trim_messages,
 };
 
 // ── MessageTrimMiddleware ─────────────────────────────────────────────────────
@@ -112,7 +113,10 @@ impl ContextCompressionMiddleware {
     /// zero-output `length` stop with the window full. Both need a known
     /// context window ([`SummarizationPolicy::context_window`], or the
     /// response's own `usage.context_window_tokens`).
-    pub fn with_response_overflow_detection(mut self, detection: ResponseOverflowDetection) -> Self {
+    pub fn with_response_overflow_detection(
+        mut self,
+        detection: ResponseOverflowDetection,
+    ) -> Self {
         self.response_overflow = detection;
         self
     }
@@ -741,7 +745,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 truncate = Some(cap);
                 continue;
             }
-            match self.compact_for_overflow(ctx, &base, overflow, attempts > 1).await {
+            match self
+                .compact_for_overflow(ctx, &base, overflow, attempts > 1)
+                .await
+            {
                 Some(shrunk) => {
                     base = shrunk;
                     if route.truncates()
