@@ -118,3 +118,20 @@ fn older_truncation_with_no_assistant_message_cuts_nothing() {
         0
     );
 }
+
+#[test]
+fn a_cap_below_the_notice_floor_is_normalized_for_the_estimate_too() {
+    // Blocks no larger than the effective floor are neither cut nor counted.
+    let floor = TRAILER_RESERVED + 1;
+    let mut messages = vec![
+        Message::tool("c1", big(floor)),
+        Message::tool("c2", big(floor)),
+    ];
+    let before = messages.clone();
+    assert_eq!(reducible_tool_result_bytes(&messages, 10), 0);
+    assert_eq!(truncate_tool_results(&mut messages, 10).truncated, 0);
+    assert_eq!(messages, before);
+    // A block above the floor is counted against the floor, not the raw cap.
+    let big_block = vec![Message::tool("c3", big(floor + 1_000))];
+    assert_eq!(reducible_tool_result_bytes(&big_block, 10), 1_000);
+}

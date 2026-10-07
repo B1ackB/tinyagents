@@ -504,6 +504,54 @@ async fn when_truncation_cannot_cover_the_overflow_it_follows_the_compaction() {
     assert!(tool_text_len(requests.last().unwrap()) < 3_000);
 }
 
+/// A summary of a fixed size.
+struct SizedSummarizer(usize);
+
+#[async_trait]
+impl Summarizer for SizedSummarizer {
+    async fn summarize(&self, _messages: &[Message]) -> Result<SummaryRecord> {
+        Ok(record(&"s".repeat(self.0)))
+    }
+}
+
+#[tokio::test]
+async fn a_compaction_is_judged_against_the_truncated_request_actually_sent() {
+    // Truncation engages first (the retry carries a 200-byte result). A later
+    // compaction whose summary is smaller than the raw 40 KB result but larger
+    // than what is now sent would grow the outgoing request: it is refused.
+    let base = ScriptedBase::new(|_, _| Err(TinyAgentsError::Model(OVERFLOW_BY_2900.to_string())));
+    let stack = stack_of(
+        ContextCompressionMiddleware::with_summarizer(
+            roomy_policy(),
+            Box::new(SizedSummarizer(12_000)),
+        )
+        .with_tool_result_truncation(200),
+    );
+    let recorder = Arc::new(RecordingListener::new());
+    let mut c = ctx();
+    c.events.subscribe(recorder.clone());
+    let mut messages = long_transcript();
+    messages.extend(call_and_result("c1", 40_000));
+    let result = stack
+        .run_wrapped_model(
+            &mut c,
+            &(),
+            ModelRequest {
+                messages,
+                ..Default::default()
+            },
+            &base,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(compacted_count(&recorder), 0, "no growing compaction");
+    // The first request is the raw one; every retry after truncation engaged
+    // carries the cut result.
+    for request in base.requests.lock().unwrap().iter().skip(1) {
+        assert!(tool_text_len(request) < 3_000);
+    }
+}
+
 // ── preemptive route (before_model) ───────────────────────────────────────────
 
 fn truncating_policy() -> SummarizationPolicy {
