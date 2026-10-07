@@ -91,7 +91,7 @@ impl ToolMiddleware<()> for ProbeWrap {
 
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<()>,
+        ctx: &RunContext<()>,
         state: &(),
         call: ToolCall,
         next: ToolHandler<'_, (), ()>,

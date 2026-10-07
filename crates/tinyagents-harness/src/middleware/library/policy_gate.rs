@@ -266,7 +266,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolMiddleware<State, Ctx>
 
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
         next: ToolHandler<'_, State, Ctx>,
@@ -335,7 +335,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolMiddleware<State, Ctx>
 
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<Ctx>,
+        ctx: &RunContext<Ctx>,
         state: &State,
         call: ToolCall,
         next: ToolHandler<'_, State, Ctx>,

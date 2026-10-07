@@ -658,7 +658,7 @@ impl ToolMiddleware<()> for StampToolWrap {
     }
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<()>,
+        ctx: &RunContext<()>,
         state: &(),
         call: ToolCall,
         next: ToolHandler<'_, (), ()>,
@@ -682,7 +682,7 @@ impl ToolMiddleware<()> for UnboundToolWrap {
     }
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext<()>,
+        ctx: &RunContext<()>,
         state: &(),
         mut call: ToolCall,
         next: ToolHandler<'_, (), ()>,

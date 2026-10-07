@@ -78,7 +78,7 @@ impl ToolMiddleware<(), ()> for ToolShortCircuit {
 
     async fn wrap_tool(
         &self,
-        _ctx: &mut RunContext<()>,
+        _ctx: &RunContext<()>,
         _state: &(),
         call: ToolCall,
         _next: ToolHandler<'_, (), ()>,

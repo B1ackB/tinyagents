@@ -1823,7 +1823,7 @@ impl ToolMiddleware<()> for ShortCircuitTool {
 
     async fn wrap_tool(
         &self,
-        _ctx: &mut RunContext,
+        _ctx: &RunContext,
         _state: &(),
         _call: ToolCall,
         _next: ToolHandler<'_, (), ()>,
@@ -1845,7 +1845,7 @@ impl ToolMiddleware<()> for MutateAfterTool {
 
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext,
+        ctx: &RunContext,
         state: &(),
         call: ToolCall,
         next: ToolHandler<'_, (), ()>,
@@ -1871,7 +1871,7 @@ impl ToolMiddleware<()> for RetryTool {
 
     async fn wrap_tool(
         &self,
-        ctx: &mut RunContext,
+        ctx: &RunContext,
         state: &(),
         call: ToolCall,
         next: ToolHandler<'_, (), ()>,

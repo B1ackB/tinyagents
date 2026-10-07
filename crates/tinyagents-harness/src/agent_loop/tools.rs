@@ -1338,7 +1338,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     }
 
     /// Executes requested tools one at a time (the historical semantics; used
-    /// for single-call turns and whenever tool-wrap middleware is registered).
+    /// for single-call turns, non-parallel-safe batches, and when a registered wrap is not
+    /// `concurrent_safe`).
     #[allow(clippy::too_many_arguments)]
     async fn execute_tools_serially(
         &self,
