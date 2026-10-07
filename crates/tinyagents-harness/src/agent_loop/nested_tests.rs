@@ -1412,7 +1412,7 @@ async fn concurrency_unsafe_nested_tools_do_not_overlap_across_concurrent_parent
         count: 1,
         outcomes: Arc::clone(&outcomes),
     }));
-    harness.register_tool(Arc::clone(&target));
+    harness.register_tool(target.clone());
     run(&harness, &EventRecorder::new()).await.unwrap();
     assert_eq!(outcomes.lock().unwrap().len(), 2);
     assert_eq!(target.peak(), 1, "two parents share one run-wide gate");
