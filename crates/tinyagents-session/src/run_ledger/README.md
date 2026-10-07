@@ -77,7 +77,7 @@ crate root as `session::run_ledger::`.
   | Effect record | Class | Meaning |
   | --- | --- | --- |
   | none | `Resume` | the call never began; continue normally |
-  | `completed`, `failed` | `ResumeReportOnly` | outcome is recorded; report it, do not re-execute |
+  | `completed`, `failed` | `ResumeReportOnly` | status is recorded (the result/error itself may not be persisted); report it, do not re-execute |
   | `deferred` | `AwaitingAnswer` | the call paused for approval/a result; resume by answering the deferral, never re-execute |
   | `started` only, `interrupted` | `NeedsVerification` | may have committed; verify real-world state, never blindly re-run |
 

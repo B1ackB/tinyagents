@@ -99,7 +99,7 @@ driver resolves the scope from its `SubagentTaskKey` (`thread_id`, else
 
 | Field | Bounds (per scope) | Released |
 | --- | --- | --- |
-| `max_children_per_parent` | children live at once | at the child's terminal state |
+| `max_children_per_parent` | children live at once | at the child's terminal state; the driver releases when its lifecycle call returns, so a child paused awaiting input holds no slot until it is resumed |
 | `max_total_per_root` | children ever spawned (a conversation-wide budget) | only if the spawn never happened |
 | `allowed_targets` | sub-agent names that may be spawned (`Some(vec![])` allows none) | n/a |
 

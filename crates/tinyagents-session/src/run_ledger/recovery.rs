@@ -38,7 +38,11 @@ pub enum RecoveryClass {
     /// Continue normally: the call never began, so no side effect is in doubt.
     Resume,
     /// Continue, but only to *report*: the call settled (`Completed`/`Failed`)
-    /// so its outcome is recorded. Surface that outcome; do not re-execute it.
+    /// so its *status* is recorded. Report that status; do not re-execute it.
+    /// The ledger keeps the status (and an optional summary), not the tool
+    /// result itself, so the result may not have reached the transcript if the
+    /// crash fell between settling and appending it: the host must not assume
+    /// a result is available to replay.
     ResumeReportOnly,
     /// The call paused itself (`Deferred`: approval or a deferred result) and
     /// is waiting on an answer. Resume by *answering the deferral*; never
@@ -86,11 +90,11 @@ fn classify_status(status: Option<ToolEffectStatus>) -> (RecoveryClass, &'static
         ),
         Some(ToolEffectStatus::Completed) => (
             RecoveryClass::ResumeReportOnly,
-            "completed: outcome is recorded, report it and do not re-execute",
+            "completed: status is recorded (the result itself may not be), report it and do not re-execute",
         ),
         Some(ToolEffectStatus::Failed) => (
             RecoveryClass::ResumeReportOnly,
-            "failed: outcome is recorded, report it and do not re-execute",
+            "failed: status is recorded (the error itself may not be), report it and do not re-execute",
         ),
         Some(ToolEffectStatus::Started) => (
             RecoveryClass::NeedsVerification,
