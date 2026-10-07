@@ -19,6 +19,20 @@ A sibling tracker, [`SuccessfulRepeatTracker`], covers the complementary shape
 — a model that keeps *succeeding* at the same no-op call (or cycles through a
 short repeating sequence) without making progress.
 
+The successful-repeat side escalates in stages: the first threshold **warns**
+(a note for the host to attach to the tool result), a call that keeps
+repeating is **blocked** before it executes ([`SuccessfulRepeatTracker::pre_call`]
+-> [`CallGate`]), and a second block *of the same call* **halts** (blocks are
+counted per call signature and cleared when the call returns a new result).
+A block predicts that the call would return what it returned last, so a host
+calls `invalidate_predictions_except` (through `RepeatMonitor::record_call`'s
+`read_only` flag) after a state-changing call. [`RepeatEscalation`]
+sets the gaps; a tracker built with `new` and no escalation halts at the first
+threshold, as it always did. Two warning-only detectors ([`PingPongDetector`],
+[`ArgumentChurnDetector`]) and a [`PostCompactionGuard`] sit beside it, and
+[`RepeatMonitor`] composes all of them for one run behind
+[`RepeatProgressConfig`].
+
 All trackers are free of harness types (no `RunContext`, no `Message`) so they
 can be unit-tested in isolation. The agent loop drives
 `StreamTextStallDetector` on visible streaming output and ends the model call
@@ -86,6 +100,21 @@ hook" section in `mod.rs` for that contract.
 - [`SuccessfulRepeatTracker`] / [`SuccessfulRepeat`] — the successful-repeat
   counterpart: `record_output`, `record_call_batch`, `record_call_outcome`,
   and `reset`.
+- [`RepeatEscalation`] / [`CallGate`] — staged escalation settings (defaults:
+  block 2 repeats after the warning, halt on the 2nd block) and the
+  before-execution verdict (`Allow` / `Block` / `Halt`);
+  `SuccessfulRepeat::Warn` is the first-stage verdict.
+- [`PingPongDetector`] (warn at 6 alternating calls) and
+  [`ArgumentChurnDetector`] (3 variants x 3 calls, one result) — warning-only.
+- [`PostCompactionGuard`] — warning-only: remembers the last 3 calls that were
+  already repeating (2+ identical results) before a compaction and flags a
+  repeat of one within the next 3 calls. A single re-read of evicted content
+  is correct and is never warned about or blocked.
+- [`RepeatMonitor`] / [`RepeatProgressConfig`] — one run's composed repeat
+  accounting; `RepeatProgressConfig::immediate_halt()` is the legacy preset.
+  `SuccessfulRepeat`, `CallGate` and `RepeatProgressConfig` are
+  `#[non_exhaustive]`; configure the latter with its `with_*` builders.
+
 - [`StreamTextStallDetector`] — consumes visible text fragments during one
   model call and flags a long run of similarly opened sentences before the
   provider stream finishes.
@@ -93,12 +122,30 @@ hook" section in `mod.rs` for that contract.
   [`DEFAULT_REPEAT_OUTPUT_THRESHOLD`], [`DEFAULT_REPEAT_CALL_THRESHOLD`] (all
   re-exported from `crate`).
 
+## Marker on guard-answered results
+
+`RepeatProgressMiddleware` answers a blocked call (and the halting call) without
+running the tool. Those results carry `"tinyagents.repeat_guard": "blocked"` or
+`"halted"` in `ToolResult::metadata` (`REPEAT_GUARD_METADATA_KEY`,
+`REPEAT_GUARD_BLOCKED`, `REPEAT_GUARD_HALTED`; read it with
+`repeat_guard_marker(&result)`). Metadata never reaches the model. A host's
+repeated-failure middleware should skip results where the marker is present.
+The marker is queued at refusal time (`RunContext::set_refusal_metadata`) and
+stamped by the loop when it builds the error result, so it is present for
+every `after_tool` hook, whatever its registration order. They are the
+guard's answer, not the tool failing, and counting them would double-escalate.
+
 ## Files
 
 | File | Role |
 | --- | --- |
 | `mod.rs` | The identical/any-failure escalation ladder (`NoProgressTracker::record`), argument fingerprinting, and the nudge/halt message builders. |
 | `successful_repeat.rs` | The successful-repeat streak tracker (`SuccessfulRepeatTracker`) and its private `Streak` helper. |
+| `escalation.rs` | `RepeatEscalation`: the block/halt gaps for staged escalation. |
+| `loop_patterns.rs` | Warning-only `PingPongDetector` and `ArgumentChurnDetector`. |
+| `post_compaction.rs` | `PostCompactionGuard`. |
+| `util.rs` | Shared hashing and poison-tolerant locking helpers. |
+| `monitor.rs` | `RepeatMonitor` and `RepeatProgressConfig`: the per-run composition a middleware drives. |
 | `stream_text/` | Chunk-independent streamed-text stall detector and focused tests. |
 | `types.rs` | Public and crate-private type definitions shared by both trackers. |
 | `test.rs` | Unit tests for the escalation ladder. |

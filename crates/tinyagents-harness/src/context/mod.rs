@@ -327,6 +327,7 @@ impl<Ctx> RunContext<Ctx> {
             active_model_call: None,
             deferred_results: None,
             approved_calls: std::collections::HashSet::new(),
+            refusal_metadata: std::collections::HashMap::new(),
             child_ordinal: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tool_effect_ledger: None,
             tool_effect_ledger_failure: crate::tool::LedgerFailure::default(),
@@ -367,6 +368,24 @@ impl<Ctx> RunContext<Ctx> {
     /// human already decided on.
     pub fn is_call_approved(&self, call_id: &str) -> bool {
         self.approved_calls.contains(call_id)
+    }
+
+    /// Asks the loop to stamp `metadata` on the error result that answers
+    /// `call_id` when a `before_tool` hook refuses the call (by returning
+    /// `ToolFailed`/`ModelRetry`). The metadata is in place before any
+    /// `after_tool` hook sees the result, whatever its position in the stack.
+    /// Unused when the call is not refused.
+    pub fn set_refusal_metadata(
+        &mut self,
+        call_id: impl Into<String>,
+        metadata: serde_json::Value,
+    ) {
+        self.refusal_metadata.insert(call_id.into(), metadata);
+    }
+
+    /// Takes the metadata queued for the refused call `call_id`.
+    pub(crate) fn take_refusal_metadata(&mut self, call_id: &str) -> Option<serde_json::Value> {
+        self.refusal_metadata.remove(call_id)
     }
 
     /// Marks `call_id` as approved for this run (A2).

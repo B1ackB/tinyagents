@@ -198,6 +198,8 @@ Each built-in must document:
 - interaction with provider prompt/KV-cache layout
 - interaction with retries and fallbacks
 
+The repeat-progress guard (`RepeatProgressMiddleware`) is documented in [repeat-progress.md](repeat-progress.md).
+
 ## Tool policy enforcement
 
 `ToolPolicyMiddleware` (`crates/tinyagents-harness/src/middleware/library/`) enforces the

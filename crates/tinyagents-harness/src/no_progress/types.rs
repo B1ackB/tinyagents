@@ -159,11 +159,32 @@ pub struct NoProgressTracker {
 
 /// Verdict returned after recording a successful-repeat signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SuccessfulRepeat {
     /// The signature changed, is exempt, failed, or remains below its threshold.
     Continue,
+    /// Staged escalation only: the repeat just reached its first threshold.
+    /// The message is a short note for the host to attach to the tool result
+    /// the model is about to read, telling it to change approach. Reported once
+    /// per signature.
+    Warn(String),
     /// The same successful action has repeated enough times to be considered
     /// stuck. The message is suitable for steering or a halt summary.
+    Halt(String),
+}
+
+/// Verdict from [`SuccessfulRepeatTracker::pre_call`], asked *before* a call
+/// executes. Only staged escalation ever answers anything but `Allow`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CallGate {
+    /// Run the call.
+    Allow,
+    /// Do not run the call: answer it with this error text asking the model to
+    /// reassess.
+    Block(String),
+    /// The call's second block: do not run it and halt the run with this
+    /// summary.
     Halt(String),
 }
 
@@ -199,4 +220,17 @@ pub struct SuccessfulRepeatTracker {
     pub(super) calls: Mutex<Streak>,
     /// Hash of `(call signature, outcome signature)` → times recorded this run.
     pub(super) recurrences: Mutex<HashMap<u64, u32>>,
+    /// Staged escalation settings; `None` halts at the first threshold.
+    pub(super) escalation: Option<super::escalation::RepeatEscalation>,
+    /// Call-signature hash → ledger key of the outcome that call returned
+    /// last, so [`SuccessfulRepeatTracker::pre_call`] can tell how often the
+    /// next attempt would repeat a result without executing it.
+    pub(super) last_outcome: Mutex<HashMap<u64, u64>>,
+    /// Calls whose `last_outcome` may still be predicted. Invalidation removes
+    /// calls from here but keeps `last_outcome`, so a later new result is still
+    /// recognised as progress.
+    pub(super) predictable: Mutex<std::collections::HashSet<u64>>,
+    /// Call-signature hash → times that call was blocked (survives context
+    /// eviction; cleared when the call returns a new result).
+    pub(super) blocks: Mutex<HashMap<u64, u32>>,
 }

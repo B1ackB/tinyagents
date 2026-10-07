@@ -514,6 +514,10 @@ pub struct RunContext<Ctx = ()> {
     /// deferred a second time by the same gate. Read with
     /// [`RunContext::is_call_approved`].
     pub(crate) approved_calls: std::collections::HashSet<String>,
+    /// Host-only metadata a `before_tool` hook asked to stamp on the result
+    /// that answers a call it refused, keyed by call id. See
+    /// [`RunContext::set_refusal_metadata`].
+    pub(crate) refusal_metadata: std::collections::HashMap<String, serde_json::Value>,
     /// Monotonic, per-context (not process-global) counter handed out by
     /// [`RunContext::next_child_ordinal`], used to derive deterministic child
     /// run ids (e.g. [`crate::subagent::SubAgent`]'s `{name}-d{depth}-{parent

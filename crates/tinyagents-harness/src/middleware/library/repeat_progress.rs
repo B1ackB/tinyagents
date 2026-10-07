@@ -9,17 +9,21 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::context::RunContext;
-use crate::error::Result as TaResult;
+use crate::error::{Result as TaResult, TinyAgentsError};
 use crate::middleware::{Middleware, ToolInvocationIdentity};
 use crate::no_progress::{
-    OutcomeFingerprinter, SuccessfulRepeat, SuccessfulRepeatTracker, VolatileSpanNormalizer,
+    CallGate, OutcomeFingerprinter, RepeatProgressConfig, SuccessfulRepeat, VolatileSpanNormalizer,
     fingerprint_arguments,
 };
 use crate::steering::{SteeringCommand, SteeringHandle};
-use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
+use tinyinference_llm::tool::ToolCall;
 use tinytools::ToolResult as TaToolResult;
 
+use super::repeat_progress_state::{
+    PendingCallBatch, REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, RepeatState, append_note,
+    assistant_visible_text, guard_metadata, lock, visible_tool_results,
+};
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 
 /// Shared slot a guard writes its root-cause halt summary into when it trips, so
@@ -30,89 +34,13 @@ pub type HaltSummarySlot = Arc<Mutex<Option<String>>>;
 /// polling/wait tool), so an identical repeat is progress rather than a loop.
 pub type RepeatExemption = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Extract the assistant's visible text (concatenated [`ContentBlock::Text`]
-/// blocks) from a model response message, for the repeat-output signature.
-fn assistant_visible_text(message: &tinyinference_llm::message::AssistantMessage) -> String {
-    let mut out = String::new();
-    for block in &message.content {
-        if let ContentBlock::Text(t) = block {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(t);
-        }
-    }
-    out
-}
-
-/// Per-batch state the repeat-CALL guard needs but can only fully evaluate once
-/// every tool result in the assistant's batch has come back: the canonical
-/// `(tool, args)` signature captured at `after_model`, plus the running
-/// success/remaining accounting folded in at each `after_tool`.
-#[derive(Default)]
-struct PendingCallBatch {
-    /// Canonical `(tool, args)` signature of the batch, from `after_model`.
-    call_sig: String,
-    /// Tool results still outstanding for this batch.
-    remaining: usize,
-    /// `true` while every result so far in the batch has succeeded.
-    all_ok: bool,
-    /// `true` when every call in the batch is a polling/wait exemption.
-    exempt: bool,
-    /// `call_id` → per-call `(tool, argument fingerprint)` signature for the
-    /// recurrence ledger. Polling/wait calls are left out.
-    call_sigs: HashMap<String, VecDeque<String>>,
-    /// `true` once a result in this batch has already halted the run, so the
-    /// batch does not pause it a second time.
-    halted: bool,
-}
-
-/// Tracker state shared between [`RepeatProgressMiddleware`] and its
-/// [`RepeatEvictionObserver`].
-struct RepeatState {
-    tracker: Mutex<HashMap<u64, SuccessfulRepeatTracker>>,
-    /// The body a cleared tool result carries.
-    cleared_placeholder: String,
-    /// `call_id`s of the results fed to the recurrence ledger since its last reset.
-    recorded: Mutex<HashMap<u64, HashSet<String>>>,
-    /// Recorded results still verbatim in the current request before any
-    /// reduction step ran; compared against the final request by the observer.
-    visible_before_reduction: Mutex<HashMap<u64, HashSet<String>>>,
-}
-
-impl RepeatState {
-    fn new(placeholder: impl Into<String>) -> Self {
-        Self {
-            tracker: Mutex::default(),
-            cleared_placeholder: placeholder.into(),
-            recorded: Mutex::default(),
-            visible_before_reduction: Mutex::default(),
-        }
-    }
-}
-
-/// The `ids` whose tool result is still in `request` with its body intact.
-fn visible_tool_results(
-    request: &ModelRequest,
-    ids: &HashSet<String>,
-    placeholder: &str,
-) -> HashSet<String> {
-    request
-        .messages
-        .iter()
-        .filter_map(|message| match message {
-            Message::Tool(tool)
-                if ids.contains(&tool.tool_call_id) && message.text() != placeholder =>
-            {
-                Some(tool.tool_call_id.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
+/// Whether a tool cannot change state (a pure read). Hosts supply it from the
+/// tools' declared policy (`ToolPolicy::read_only`); see
+/// [`RepeatProgressMiddleware::with_read_only`].
+pub type ReadOnlyCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Host adapter for the crate's successful-repeat tracker (#4088 / #4095).
-/// [`SuccessfulRepeatTracker`] owns the generic streak accounting; this adapter
+/// [`SuccessfulRepeatTracker`](crate::no_progress::SuccessfulRepeatTracker) owns the generic streak accounting; this adapter
 /// builds canonical tool signatures, applies the host's polling-tool
 /// exemption ([`RepeatExemption`]), and maps a crate halt verdict into the shared halt summary and
 /// steering pause:
@@ -132,6 +60,26 @@ fn visible_tool_results(
 ///   re-read whose output changed does not count. A result that compaction
 ///   later evicts stops counting; see [`RepeatEvictionObserver`].
 ///
+/// Escalation is **staged** by default (see [`RepeatProgressConfig`]): each
+/// first threshold only *warns*, appending a `[repeat notice]` to the tool
+/// result; an identical call that keeps repeating is then **blocked** in
+/// `before_tool` (answered with an error result, never executed); a second
+/// block *of the same call* halts as described below. Ping-pong and
+/// argument-churn patterns only warn, as does a repeat of calls that were
+/// already repeating right before a context compaction. At most one warning
+/// lands on a result; the rest wait for the next one.
+/// [`RepeatProgressConfig::immediate_halt`] restores halting at the first
+/// threshold.
+///
+/// A block is a *prediction* that the call would return what it returned last
+/// time. Without [`with_read_only`](Self::with_read_only) every tool is treated
+/// as possibly state-changing, so any other successful call discards the
+/// prediction and a repeat only blocks while it is the most recent call
+/// (A, A, A, ...). With it, reads do not discard predictions, so A, B, A, B
+/// cycles of reads block too. The results the guard answers itself carry
+/// `REPEAT_GUARD_METADATA_KEY` in their metadata so a host can keep them out
+/// of failure accounting.
+///
 /// Polling/wait tools (per the [`RepeatExemption`]) are exempt from all three:
 /// their contract is to be re-invoked identically, so an all-poll batch resets
 /// the streaks instead of recording. On a trip it writes the legacy root-cause
@@ -145,7 +93,9 @@ pub struct RepeatProgressMiddleware {
     handle: SteeringHandle,
     halt_summary: HaltSummarySlot,
     exempt: RepeatExemption,
-    state: Arc<RepeatState>,
+    /// Tools known not to change state; see [`Self::with_read_only`].
+    read_only: ReadOnlyCheck,
+    pub(super) state: Arc<RepeatState>,
     /// Reduces a tool result to the identity the recurrence ledger keys on.
     fingerprinter: Arc<dyn OutcomeFingerprinter>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
@@ -165,7 +115,11 @@ impl RepeatProgressMiddleware {
             handle,
             halt_summary,
             exempt,
-            state: Arc::new(RepeatState::new(DEFAULT_CLEARED_PLACEHOLDER)),
+            read_only: Arc::new(|_| false),
+            state: Arc::new(RepeatState::new(
+                DEFAULT_CLEARED_PLACEHOLDER,
+                RepeatProgressConfig::default(),
+            )),
             fingerprinter: Arc::new(VolatileSpanNormalizer),
             pending: Mutex::default(),
         }
@@ -183,7 +137,29 @@ impl RepeatProgressMiddleware {
     /// Override the placeholder body treated as an evicted tool result. Must be
     /// called before [`eviction_observer`](Self::eviction_observer).
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.state = Arc::new(RepeatState::new(placeholder));
+        let config = self.state.config.clone();
+        self.state = Arc::new(RepeatState::new(placeholder, config));
+        self
+    }
+
+    /// Names the tools that cannot change state (pure reads), typically from
+    /// their declared `ToolPolicy::read_only`. A successful call to any other
+    /// tool discards the guard's prediction of what *other* calls would return,
+    /// so a read repeated after an edit is never blocked. Defaults to "no tool
+    /// is read-only", the conservative reading.
+    pub fn with_read_only(mut self, read_only: ReadOnlyCheck) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Replaces the thresholds and escalation settings (see
+    /// [`RepeatProgressConfig`]). The default stages escalation (warn, block,
+    /// halt); pass [`RepeatProgressConfig::immediate_halt`] for the historical
+    /// halt at the first threshold. Must be called before
+    /// [`eviction_observer`](Self::eviction_observer).
+    pub fn with_config(mut self, config: RepeatProgressConfig) -> Self {
+        let placeholder = self.state.cleared_placeholder.clone();
+        self.state = Arc::new(RepeatState::new(placeholder, config));
         self
     }
 
@@ -200,9 +176,7 @@ impl RepeatProgressMiddleware {
     /// empty/last-model reply, and pause at the top of the next iteration (before
     /// the next model call), matching the repeated-failure breaker's halt path.
     fn halt(&self, summary: String) {
-        if let Ok(mut slot) = self.halt_summary.lock() {
-            *slot = Some(summary);
-        }
+        *lock(&self.halt_summary) = Some(summary);
         self.handle.send(SteeringCommand::Pause);
     }
 }
@@ -220,18 +194,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         _run: &mut crate::middleware::AgentRun,
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
-        if let Ok(mut trackers) = self.state.tracker.lock() {
-            trackers.remove(&run_id);
-        }
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(&run_id);
-        }
-        if let Ok(mut recorded) = self.state.recorded.lock() {
-            recorded.remove(&run_id);
-        }
-        if let Ok(mut visible) = self.state.visible_before_reduction.lock() {
-            visible.remove(&run_id);
-        }
+        self.state.forget_run(run_id);
+        lock(&self.pending).remove(&run_id);
         Ok(())
     }
 
@@ -244,19 +208,16 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // Registered ahead of the reduction steps, so this is the request as the
         // loop built it. The observer compares the same ids after they ran.
         let run_id = ctx.instance_id();
-        let visible = match self.state.recorded.lock() {
-            Ok(recorded) if recorded.get(&run_id).is_some_and(|ids| !ids.is_empty()) => {
-                visible_tool_results(
-                    request,
-                    recorded.get(&run_id).expect("checked above"),
-                    &self.state.cleared_placeholder,
-                )
+        let visible = {
+            let recorded = lock(&self.state.recorded);
+            match recorded.get(&run_id) {
+                Some(ids) if !ids.is_empty() => {
+                    visible_tool_results(request, ids, &self.state.cleared_placeholder)
+                }
+                _ => HashSet::new(),
             }
-            _ => HashSet::new(),
         };
-        if let Ok(mut slot) = self.state.visible_before_reduction.lock() {
-            slot.insert(run_id, visible);
-        }
+        lock(&self.state.visible_before_reduction).insert(run_id, visible);
         Ok(())
     }
 
@@ -270,9 +231,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         if tool_calls.is_empty() {
             // A final answer (no tool calls) ends the loop; nothing to guard, and
             // there is no batch to track for the call guard.
-            if let Ok(mut pending) = self.pending.lock() {
-                pending.remove(&ctx.instance_id());
-            }
+            lock(&self.pending).remove(&ctx.instance_id());
             return Ok(());
         }
 
@@ -304,15 +263,11 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             .map(|call| {
                 (
                     call.id.clone(),
-                    format!(
-                        "{}\u{1}{}",
-                        call.name,
-                        fingerprint_arguments(&call.arguments)
-                    ),
+                    (call.name.clone(), fingerprint_arguments(&call.arguments)),
                 )
             })
             .fold(
-                HashMap::<String, VecDeque<String>>::new(),
+                HashMap::<String, VecDeque<(String, String)>>::new(),
                 |mut calls, (id, sig)| {
                     calls.entry(id).or_default().push_back(sig);
                     calls
@@ -321,16 +276,14 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
 
         // Stage output with the crate tracker. Its halt verdict is intentionally
         // deferred until the matching tool batch is confirmed successful.
-        if let Ok(mut trackers) = self.state.tracker.lock() {
-            let _ = trackers
-                .entry(ctx.instance_id())
-                .or_default()
-                .record_output(&output_sig, all_exempt);
-        }
+        self.state.with_monitor(ctx.instance_id(), |monitor| {
+            monitor.record_output(&output_sig, all_exempt)
+        });
 
         // Stage the batch for the repeat-CALL guard, evaluated once every result
         // is back (gated on success) in `after_tool`.
-        if let Ok(mut pending) = self.pending.lock() {
+        {
+            let mut pending = lock(&self.pending);
             pending.insert(
                 ctx.instance_id(),
                 PendingCallBatch {
@@ -346,6 +299,53 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         Ok(())
     }
 
+    async fn before_tool(
+        &self,
+        ctx: &mut RunContext<C>,
+        _state: &(),
+        call: &mut ToolCall,
+    ) -> TaResult<()> {
+        if (self.exempt)(&call.name) {
+            return Ok(());
+        }
+        let arguments = fingerprint_arguments(&call.arguments);
+        let run_id = ctx.instance_id();
+        let gate = self
+            .state
+            .with_monitor(run_id, |monitor| monitor.pre_call(&call.name, &arguments));
+        match gate {
+            CallGate::Allow => Ok(()),
+            // Refusing admission answers the call with this text as an error
+            // result and never runs the tool (see `agent_loop::tools`).
+            CallGate::Block(text) => {
+                tracing::warn!(
+                    tool = call.name,
+                    "[tinyagents::mw] repeat-progress blocked a repeated call"
+                );
+                // Stamped now, so every `after_tool` in the stack sees it
+                // (`after_tool` hooks run in reverse registration order).
+                ctx.set_refusal_metadata(call.id.clone(), guard_metadata(REPEAT_GUARD_BLOCKED));
+                Err(TinyAgentsError::ToolFailed(text))
+            }
+            CallGate::Halt(summary) => {
+                tracing::warn!(
+                    tool = call.name,
+                    "[tinyagents::mw] repeat-progress halted the run after repeated blocks"
+                );
+                ctx.set_refusal_metadata(call.id.clone(), guard_metadata(REPEAT_GUARD_HALTED));
+                // Later refusals and results in this batch must not pause the
+                // run again.
+                let first = lock(&self.pending)
+                    .get_mut(&run_id)
+                    .is_none_or(|batch| !std::mem::replace(&mut batch.halted, true));
+                if first {
+                    self.halt(summary.clone());
+                }
+                Err(TinyAgentsError::ToolFailed(summary))
+            }
+        }
+    }
+
     async fn after_tool(
         &self,
         ctx: &mut RunContext<C>,
@@ -355,76 +355,91 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
+        let run_id = ctx.instance_id();
         // Fingerprint outside the mutexes below: it scans the whole result.
         let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
+        let mut notes = Vec::new();
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
-            let Ok(mut pending) = self.pending.lock() else {
-                return Ok(());
-            };
-            let Some(batch) = pending.get_mut(&ctx.instance_id()) else {
+            let mut pending = lock(&self.pending);
+            let Some(batch) = pending.get_mut(&run_id) else {
                 return Ok(());
             };
             let already_halted = batch.halted;
             let mut recurrence = SuccessfulRepeat::Continue;
             if result.is_error {
                 batch.all_ok = false;
-            } else if let Some(sig) = batch
+            } else if let Some((tool, arguments)) = batch
                 .call_sigs
                 .get_mut(&call_id)
                 .and_then(VecDeque::pop_front)
             {
-                if let Ok(mut trackers) = self.state.tracker.lock() {
-                    recurrence = trackers
-                        .entry(ctx.instance_id())
-                        .or_default()
-                        .record_call_identity(&sig, identity.as_deref().unwrap_or_default());
-                }
-                if let Ok(mut recorded) = self.state.recorded.lock() {
-                    recorded
-                        .entry(ctx.instance_id())
-                        .or_default()
-                        .insert(call_id);
-                }
+                let identity = identity.as_deref().unwrap_or_default();
+                let observation = self.state.with_monitor(run_id, |monitor| {
+                    monitor.record_call(&tool, &arguments, identity, (self.read_only)(&tool))
+                });
+                recurrence = observation.verdict;
+                notes.extend(observation.notes);
+                lock(&self.state.recorded)
+                    .entry(run_id)
+                    .or_default()
+                    .insert(call_id);
+            } else {
+                // An exempt (polling/wait) call succeeded: it stays out of the
+                // repeat accounting, but it may have changed state, so results
+                // predicted before it are no longer safe to block on.
+                let read_only = (self.read_only)(tool_name);
+                self.state
+                    .with_monitor(run_id, |monitor| monitor.note_untracked_success(read_only));
             }
             if matches!(recurrence, SuccessfulRepeat::Halt(_)) {
                 batch.halted = true;
             }
             batch.remaining = batch.remaining.saturating_sub(1);
             let completed = if batch.remaining == 0 {
-                pending.remove(&ctx.instance_id())
+                pending.remove(&run_id)
             } else {
                 None
             };
             (already_halted, recurrence, completed)
         };
+        let batch_verdict = completed
+            .map(|batch| {
+                self.state.with_monitor(run_id, |monitor| {
+                    monitor.record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
+                })
+            })
+            .unwrap_or(SuccessfulRepeat::Continue);
+        // The per-call recurrence note is the more specific one: when it fires,
+        // the batch streak that coincides with it adds nothing.
+        let mut candidates = Vec::new();
+        if let (SuccessfulRepeat::Warn(note), _) | (_, SuccessfulRepeat::Warn(note)) =
+            (&recurrence, &batch_verdict)
+        {
+            candidates.push(note.clone());
+        }
+        candidates.extend(notes);
+        if !result.is_error {
+            // One warning per result: the rest wait for the next one.
+            let note = self.state.take_one_note(run_id, candidates);
+            if let Some(note) = note {
+                tracing::debug!(
+                    tool = tool_name,
+                    "[tinyagents::mw] repeat-progress appended a warning to the tool result"
+                );
+                append_note(result, &note);
+            }
+        }
         if already_halted {
             // An earlier result in this batch paused the run; keep the streak
             // accounting current without pausing again.
-            if let Some(batch) = completed
-                && let Ok(mut trackers) = self.state.tracker.lock()
-            {
-                let _ = trackers
-                    .entry(ctx.instance_id())
-                    .or_default()
-                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt);
-            }
             return Ok(());
         }
-
-        let batch_verdict = completed.and_then(|batch| {
-            self.state.tracker.lock().ok().map(|mut trackers| {
-                trackers
-                    .entry(ctx.instance_id())
-                    .or_default()
-                    .record_call_batch(&batch.call_sig, batch.all_ok, batch.exempt)
-            })
-        });
         // When both fire on the same result, the batch summary wins: it is the
         // more specific description of an adjacent repeat.
         let summary = match (batch_verdict, recurrence) {
-            (Some(SuccessfulRepeat::Halt(summary)), _) => summary,
+            (SuccessfulRepeat::Halt(summary), _) => summary,
             (_, SuccessfulRepeat::Halt(summary)) => summary,
             _ => return Ok(()),
         };
@@ -466,10 +481,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
         request: &mut ModelRequest,
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
-        let before = match self.state.visible_before_reduction.lock() {
-            Ok(mut slot) => slot.remove(&run_id).unwrap_or_default(),
-            Err(_) => return Ok(()),
-        };
+        let before = lock(&self.state.visible_before_reduction)
+            .remove(&run_id)
+            .unwrap_or_default();
         if before.is_empty() {
             return Ok(());
         }
@@ -482,14 +496,12 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatEvictionObserver {
             evicted,
             "[tinyagents::mw] repeat-progress ledger reset: recorded tool results left the context"
         );
-        if let Ok(mut trackers) = self.state.tracker.lock()
-            && let Some(tracker) = trackers.get_mut(&run_id)
-        {
-            tracker.reset();
+        if let Some(monitor) = lock(&self.state.monitors).get_mut(&run_id) {
+            monitor.on_context_evicted();
         }
-        if let Ok(mut recorded) = self.state.recorded.lock() {
-            recorded.remove(&run_id);
-        }
+        lock(&self.state.recorded).remove(&run_id);
+        // Warnings held back were about results the model no longer has.
+        self.state.clear_deferred(run_id);
         Ok(())
     }
 }

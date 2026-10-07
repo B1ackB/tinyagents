@@ -28,8 +28,12 @@ fn exempt() -> RepeatExemption {
     Arc::new(|tool| tool == "wait_subagent")
 }
 
+/// These tests pin the halt mechanics at the first threshold, so they run with
+/// the escalation stages off; `repeat_escalation_tests.rs` covers the staged
+/// default.
 fn new_mw(handle: SteeringHandle, summary: HaltSummarySlot) -> RepeatProgressMiddleware {
     RepeatProgressMiddleware::new(handle, summary, exempt())
+        .with_config(crate::no_progress::RepeatProgressConfig::immediate_halt())
 }
 
 fn drain_pause_count(handle: &SteeringHandle) -> usize {

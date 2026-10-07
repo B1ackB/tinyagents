@@ -243,6 +243,7 @@ Feature details:
 - [Tool exposure, discovery, and schema budgets](tool-discovery.md)
 - [Tool dialects](tool-dialect.md)
 - [Middleware feature](middleware.md)
+- [Repeat-progress guard](repeat-progress.md)
 - [Sub-agent and orchestrator steering](subagent-steering.md)
 - [Structured output feature](structured-output.md)
 - [Limits, retry, fallback, and rate limiting](limits-retry.md)

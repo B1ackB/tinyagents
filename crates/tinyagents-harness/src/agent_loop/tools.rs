@@ -633,10 +633,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     DeferredRequest::external(call.clone(), "call_deferred", Some(metadata)),
                 )),
                 TinyAgentsError::ToolFailed(message) => Ok(ResolvedToolCall::Answered(
-                    tinytools::ToolResult::failed(message),
+                    with_refusal_metadata(ctx, &call.id, tinytools::ToolResult::failed(message)),
                 )),
                 TinyAgentsError::ModelRetry(message) => Ok(ResolvedToolCall::Answered(
-                    tinytools::ToolResult::retry(message),
+                    with_refusal_metadata(ctx, &call.id, tinytools::ToolResult::retry(message)),
                 )),
                 other => Err(other),
             };
@@ -2438,3 +2438,16 @@ pub(super) fn timeout_result(
 #[cfg(test)]
 #[path = "tools_canonical_result_tests.rs"]
 mod canonical_result_tests;
+
+/// Stamps the metadata a refusing `before_tool` hook queued for `call_id`
+/// ([`RunContext::set_refusal_metadata`]) onto the result that answers it.
+fn with_refusal_metadata<Ctx: Send + Sync>(
+    ctx: &mut RunContext<Ctx>,
+    call_id: &str,
+    mut result: tinytools::ToolResult,
+) -> tinytools::ToolResult {
+    if let Some(metadata) = ctx.take_refusal_metadata(call_id) {
+        result.metadata = Some(metadata);
+    }
+    result
+}
