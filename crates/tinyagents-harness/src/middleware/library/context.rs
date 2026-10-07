@@ -1576,8 +1576,10 @@ impl PromptCacheGuardMiddleware {
     /// fewer is not reported. Defaults to
     /// [`DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS`][crate::cache::DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS].
     pub fn with_cache_miss_noise_floor(self, tokens: u64) -> Self {
-        *self.cache_misses.lock().expect("cache misses mutex poisoned") =
-            crate::cache::PromptCacheTracker::new(tokens);
+        *self
+            .cache_misses
+            .lock()
+            .expect("cache misses mutex poisoned") = crate::cache::PromptCacheTracker::new(tokens);
         self
     }
 
@@ -1698,7 +1700,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         response: &mut ModelResponse,
     ) -> Result<()> {
         // A replayed response consumed no provider cache.
-        let Some(usage) = response.usage.as_ref().filter(|_| !response.served_from_cache) else {
+        let Some(usage) = response
+            .usage
+            .as_ref()
+            .filter(|_| !response.served_from_cache)
+        else {
             return Ok(());
         };
         let key = Self::cache_key(ctx);

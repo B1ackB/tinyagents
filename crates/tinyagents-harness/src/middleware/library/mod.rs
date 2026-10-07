@@ -150,6 +150,9 @@ mod image_trim_test;
 #[path = "policy_gate_tests.rs"]
 mod policy_gate_test;
 #[cfg(test)]
+#[path = "prompt_cache_miss_tests.rs"]
+mod prompt_cache_miss_test;
+#[cfg(test)]
 #[path = "repeat_escalation_loop_tests.rs"]
 mod repeat_escalation_loop_test;
 #[cfg(test)]

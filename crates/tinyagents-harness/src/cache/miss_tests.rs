@@ -97,7 +97,10 @@ fn a_response_without_input_tokens_is_not_a_baseline() {
     let mut t = tracker();
     t.observe("t", &usage(10_000, 9_000));
     assert_eq!(t.observe("t", &usage(0, 0)), None);
-    assert!(t.observe("t", &usage(12_000, 0)).is_some(), "the old baseline stands");
+    assert!(
+        t.observe("t", &usage(12_000, 0)).is_some(),
+        "the old baseline stands"
+    );
 }
 
 #[test]
