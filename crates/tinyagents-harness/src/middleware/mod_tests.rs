@@ -1955,6 +1955,40 @@ async fn wrap_tool_retries_next_until_success() {
     assert_eq!(stack.tool_middleware_len(), 1);
 }
 
+/// Wrap middleware that opts out of overlapping invocations.
+struct SerialOnlyTool;
+
+#[async_trait]
+impl ToolMiddleware<()> for SerialOnlyTool {
+    fn name(&self) -> &str {
+        "serial_only_tool"
+    }
+
+    fn concurrent_safe(&self) -> bool {
+        false
+    }
+
+    async fn wrap_tool(
+        &self,
+        ctx: &RunContext,
+        state: &(),
+        call: ToolCall,
+        next: ToolHandler<'_, (), ()>,
+    ) -> Result<MiddlewareToolOutcome> {
+        next.run(ctx, state, call).await
+    }
+}
+
+#[test]
+fn tool_middleware_concurrent_safe_is_the_conjunction_of_every_wrap() {
+    let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
+    assert!(stack.tool_middleware_concurrent_safe(), "vacuously true");
+    stack.push_tool_middleware(Arc::new(MutateAfterTool));
+    assert!(stack.tool_middleware_concurrent_safe(), "default is true");
+    stack.push_tool_middleware(Arc::new(SerialOnlyTool));
+    assert!(!stack.tool_middleware_concurrent_safe());
+}
+
 #[tokio::test]
 async fn agent_run_text_reflects_final_response() {
     let mut run = AgentRun::new();
