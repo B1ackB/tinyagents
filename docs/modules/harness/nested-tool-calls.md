@@ -1,5 +1,13 @@
 # Nested tool calls (C9)
 
+> **Opt-in; off by default.** `RunLimits::max_nested_depth` defaults to `0`, so
+> `call_tool` fails with `nested tool calls are disabled (max_nested_depth = 0)`.
+> Enable it with `with_max_nested_depth(n)` **only after** every `before_tool`
+> enforcement your host registers (allowlists, policy gates, approval gates,
+> plan mode, host hook middlewares) also implements
+> `Middleware::check_nested_tool`. `before_tool` never runs for nested calls, so
+> an enforcement without that method is bypassed by `call_tool`.
+
 A tool that needs another tool's result calls it through the harness instead of
 reaching into the registry:
 
@@ -75,7 +83,8 @@ result.
 
 ## Depth
 
-`RunLimits::max_nested_depth` (default `3`, `with_max_nested_depth`). A call the
+`RunLimits::max_nested_depth` (default `0` = disabled; `with_max_nested_depth(n)`
+enables up to `n` levels, `3` is a reasonable choice). A call the
 model issued is level 0; what its tool calls is level 1; and so on. A call whose
 level exceeds the cap fails with `nested call '<name>' exceeds
 max_nested_depth (<n>)`. This is distinct from `max_depth`, the sub-agent
@@ -115,6 +124,20 @@ object.
 
 ## What does not apply
 
+- **Per-call approvals by id.** A nested id (`<parent>/<n>`) never inherits an
+  approval granted for a model call with the same id: `HumanApprovalMiddleware`
+  ignores `is_call_approved` for nested calls. Approval callbacks
+  (`ApprovalFn`, `ApprovalOutcomeFn`) receive only the `ToolCall`; a nested call
+  is recognizable by its id format `<parent>/<n>` (the `ToolCallRequest` a host
+  security gate sees carries an explicit `parent_call_id`).
+- **`RepeatProgressMiddleware` and observe/redaction middleware.** They key on
+  `before_tool`/`after_tool`, so the repeat guard never counts nested calls and
+  middleware that redacts or scrubs tool arguments and results (credential
+  scrubbing, observe redaction) does not run on them. With payload capture on
+  (`PayloadCapture::tool_io`), a nested call's arguments reach the nested
+  `ToolStarted`/`ToolCompleted` events and the effect ledger's idempotency key
+  unredacted. Keep capture off, or redact in an event listener, when nested
+  arguments may be sensitive.
 - **`before_tool` / `after_tool` proper.** They take `&mut RunContext`, which a
   tool future (holding `&RunContext`) cannot lend, so they never run for nested
   calls. Enforcement belongs in `check_nested_tool` or a

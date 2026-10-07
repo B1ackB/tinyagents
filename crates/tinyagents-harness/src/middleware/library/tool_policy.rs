@@ -562,9 +562,17 @@ impl HumanApprovalMiddleware {
     /// tool-admission path turns into a deferral / a denial answer.
     ///
     /// A call the resume path already approved is always allowed, so the
-    /// same gate cannot defer it a second time.
-    fn decide<Ctx>(&self, ctx: &RunContext<Ctx>, call: &ToolCall) -> Result<MiddlewareControl> {
-        if !self.flagged.contains(&call.name) || ctx.is_call_approved(&call.id) {
+    /// same gate cannot defer it a second time. A `nested` call (see
+    /// [`Middleware::check_nested_tool`]) never inherits an approval granted by
+    /// id: nested ids (`<parent>/<n>`) are minted by the harness, so an
+    /// approval recorded for a model call with the same id was not for them.
+    fn decide<Ctx>(
+        &self,
+        ctx: &RunContext<Ctx>,
+        call: &ToolCall,
+        nested: bool,
+    ) -> Result<MiddlewareControl> {
+        if !self.flagged.contains(&call.name) || (!nested && ctx.is_call_approved(&call.id)) {
             return Ok(MiddlewareControl::Continue);
         }
         if let Some(outcome) = &self.outcome {
@@ -607,7 +615,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for HumanAppro
         _state: &State,
         call: &mut ToolCall,
     ) -> Result<()> {
-        match self.decide(ctx, call)? {
+        match self.decide(ctx, call, false)? {
             MiddlewareControl::Interrupt { node, message } => {
                 Err(TinyAgentsError::Interrupted { node, message })
             }
@@ -635,7 +643,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for HumanAppro
         _state: &State,
         call: &mut ToolCall,
     ) -> Result<MiddlewareControl> {
-        self.decide(ctx, call)
+        self.decide(ctx, call, false)
     }
 
     /// A flagged nested call is decided by the same callbacks as a model-issued
@@ -647,7 +655,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for HumanAppro
         _state: &State,
         call: &ToolCall,
     ) -> Result<()> {
-        match self.decide(ctx, call) {
+        match self.decide(ctx, call, true) {
             Ok(MiddlewareControl::Continue) => Ok(()),
             Ok(_) | Err(TinyAgentsError::ApprovalRequired { .. }) => {
                 Err(TinyAgentsError::ToolFailed(format!(

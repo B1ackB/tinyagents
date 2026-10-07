@@ -278,8 +278,8 @@ fn a_released_nested_slot_can_be_reserved_again() {
 }
 
 #[test]
-fn max_nested_depth_defaults_to_three() {
-    assert_eq!(RunLimits::default().max_nested_depth, 3);
+fn max_nested_depth_defaults_to_zero_so_nested_calls_are_opt_in() {
+    assert_eq!(RunLimits::default().max_nested_depth, 0);
     assert_eq!(
         RunLimits::default()
             .with_max_nested_depth(5)

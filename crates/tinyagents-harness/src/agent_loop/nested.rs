@@ -459,8 +459,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             execution,
         )
         .await;
-        guard.settle();
-        let duration_ms = crate::ids::now_ms().saturating_sub(started_at_ms);
+        // The guard stays armed through every await below (ledger write,
+        // observers): a parent dropped there still closes the call. It is
+        // disarmed only immediately before the terminal event is emitted.
 
         match outcome {
             Ok((result, control)) => {
@@ -479,6 +480,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     .await;
                 let output = result.output_for_llm(options.prefer_markdown);
                 let output_bytes = output.len() as u64;
+                let duration_ms = crate::ids::now_ms().saturating_sub(started_at_ms);
+                guard.settle();
                 ctx.emit(AgentEvent::ToolCompleted {
                     call_id,
                     tool_name: name.to_string(),
@@ -507,6 +510,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 };
                 self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Failed)
                     .await;
+                guard.settle();
                 (false, Err(self.fail_nested(ctx, &prepared, parent, error)))
             }
         }
@@ -543,6 +547,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     ) -> Result<Admitted<State, Ctx>> {
         let name = call.name.clone();
         let max_depth = self.policy.limits.max_nested_depth;
+        if max_depth == 0 {
+            return Err(TinyAgentsError::ToolFailed(
+                "nested tool calls are disabled (max_nested_depth = 0)".to_string(),
+            ));
+        }
         if level > max_depth {
             return Err(TinyAgentsError::ToolFailed(format!(
                 "nested call '{name}' exceeds max_nested_depth ({max_depth})"

@@ -218,6 +218,11 @@ impl ToolMiddleware<()> for DenySecret {
     }
 }
 
+/// Nested calls are opt-in; these tests opt in to the documented example depth.
+fn enabled() -> RunLimits {
+    RunLimits::default().with_max_nested_depth(3)
+}
+
 fn response(calls: Vec<ToolCall>) -> ModelResponse {
     let mut calls = calls.into_iter();
     let mut response = tool_call_response(calls.next().expect("at least one call"));
@@ -306,7 +311,7 @@ async fn a_nested_call_runs_the_tool_and_returns_its_result() {
     let leaf = Leaf::new("leaf");
     let caller = Caller::new("caller", vec![("leaf", json!({"n": 1}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
 
@@ -324,7 +329,7 @@ async fn a_nested_call_is_denied_by_policy_middleware() {
     let secret = Leaf::new("secret");
     let caller = Caller::new("caller", vec![("secret", json!({}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(secret.clone());
     harness.register_tool(Arc::new(caller));
     harness.push_tool_middleware(Arc::new(DenySecret));
@@ -344,7 +349,7 @@ async fn a_nested_call_that_needs_approval_fails_without_deferring_the_parent() 
     let gated = Leaf::approval_gated("delete");
     let caller = Caller::new("caller", vec![("delete", json!({}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(gated.clone());
     harness.register_tool(Arc::new(caller));
 
@@ -384,7 +389,7 @@ async fn nested_calls_count_against_max_tool_calls_and_trip_it() {
     // One parent call + two nested calls fit; the third nested call trips.
     let mut harness = harness_with(
         vec![parent_call("p1", "caller")],
-        RunLimits::default().with_max_tool_calls(3),
+        enabled().with_max_tool_calls(3),
     );
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
@@ -416,7 +421,7 @@ async fn concurrent_parents_share_one_nested_budget() {
     // of the four nested calls through, however the two parents interleave.
     let mut harness = harness_with(
         vec![parent_call("pa", "alpha"), parent_call("pb", "beta")],
-        RunLimits::default().with_max_tool_calls(5),
+        enabled().with_max_tool_calls(5),
     );
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(a));
@@ -443,7 +448,7 @@ async fn nesting_deeper_than_max_nested_depth_is_refused() {
     let refusal = Arc::new(Mutex::new(None));
     let mut harness = harness_with(
         vec![parent_call("p1", "relay")],
-        RunLimits::default().with_max_nested_depth(2),
+        enabled().with_max_nested_depth(2),
     );
     harness.register_tool(Arc::new(Relay {
         reached: Arc::clone(&reached),
@@ -464,9 +469,9 @@ async fn nesting_deeper_than_max_nested_depth_is_refused() {
 }
 
 #[tokio::test]
-async fn default_depth_cap_allows_three_levels() {
+async fn a_depth_cap_of_three_allows_three_levels() {
     let reached = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = harness_with(vec![parent_call("p1", "relay")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "relay")], enabled());
     harness.register_tool(Arc::new(Relay {
         reached: Arc::clone(&reached),
         refusal: Arc::default(),
@@ -482,7 +487,7 @@ async fn default_depth_cap_allows_three_levels() {
 #[tokio::test]
 async fn nested_events_carry_the_parent_call_id() {
     let caller = Caller::new("caller", vec![("leaf", json!({})), ("leaf", json!({}))]);
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
 
@@ -528,7 +533,7 @@ async fn nested_calls_are_summarised_in_parent_metadata_not_the_transcript() {
         "caller",
         vec![("leaf", json!({"n": 7})), ("missing", json!({}))],
     );
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
 
@@ -577,7 +582,7 @@ async fn the_nested_summary_is_capped_and_truncates_long_arguments() {
     let caller = Caller::new("caller", script);
     let mut harness = harness_with(
         vec![parent_call("p1", "caller")],
-        RunLimits::default().with_max_tool_calls(100),
+        enabled().with_max_tool_calls(100),
     );
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
@@ -599,7 +604,7 @@ async fn a_cancelled_run_refuses_nested_calls() {
     let mut caller = Caller::new("caller", vec![("leaf", json!({}))]);
     caller.cancel_first = true;
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
 
@@ -615,7 +620,7 @@ async fn a_cancelled_run_refuses_nested_calls() {
 async fn an_unknown_nested_tool_names_the_tool() {
     let caller = Caller::new("caller", vec![("ghost", json!({}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Arc::new(caller));
 
     run(&harness, &EventRecorder::new())
@@ -635,7 +640,7 @@ async fn invalid_nested_arguments_are_refused_before_the_tool_runs() {
     let leaf = Leaf::new("leaf");
     let caller = Caller::new("caller", vec![("leaf", json!({"n": "not-an-integer"}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
 
@@ -657,7 +662,7 @@ async fn a_refusal_propagated_with_question_mark_reaches_the_model_as_a_tool_fai
     let gated = Leaf::approval_gated("delete");
     let mut caller = Caller::new("caller", vec![("delete", json!({}))]);
     caller.propagate = true;
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(gated);
     harness.register_tool(Arc::new(caller));
 
@@ -694,7 +699,7 @@ async fn repeated_nested_calls_do_not_trip_the_repeat_guard() {
     );
     let mut harness = harness_with(
         vec![parent_call("p1", "caller")],
-        RunLimits::default().with_max_tool_calls(20),
+        enabled().with_max_tool_calls(20),
     );
     harness.push_middleware(Arc::new(guard));
     harness.register_tool(leaf.clone());
@@ -739,7 +744,7 @@ where
     let target = leaf.name;
     let caller = Caller::new("caller", vec![(target, json!({}))]);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
     configure(&mut harness);
@@ -856,7 +861,7 @@ async fn a_refused_nested_call_releases_its_budget_slot() {
         vec![parent_call("p1", "caller")],
         // Parent + room for exactly one nested call, which would be spent by
         // the first (refused) attempt if the slot were not released.
-        RunLimits::default().with_max_tool_calls(2),
+        enabled().with_max_tool_calls(2),
     );
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
@@ -892,7 +897,7 @@ impl crate::middleware::Middleware<(), ()> for Observer {
 async fn middleware_observes_each_nested_result() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let caller = Caller::new("caller", vec![("leaf", json!({})), ("ghost", json!({}))]);
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
     harness.push_middleware(Arc::new(Observer(Arc::clone(&seen))));
@@ -936,7 +941,7 @@ impl crate::tool::ToolEffectLedger for Ledger {
 async fn each_nested_call_gets_its_own_effect_ledger_row() {
     let ledger = Arc::new(Ledger::default());
     let caller = Caller::new("caller", vec![("leaf", json!({}))]);
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Leaf::new("leaf"));
     harness.register_tool(Arc::new(caller));
 
@@ -996,7 +1001,7 @@ fn every_start_has_one_terminal_event(recorder: &EventRecorder) {
 #[tokio::test(start_paused = true)]
 async fn a_parent_that_times_out_mid_nested_call_still_closes_the_nested_call() {
     let caller = Caller::new("caller", vec![("slow", json!({}))]);
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.with_tool_timeout_settings(crate::tool::ToolTimeoutSettings::new(50, 1, 10_000, 0));
     harness.register_tool(Arc::new(Slow));
     harness.register_tool(Arc::new(caller));
@@ -1049,7 +1054,7 @@ impl Tool for Impatient {
 
 #[tokio::test(start_paused = true)]
 async fn a_tool_that_abandons_a_nested_call_cancels_it() {
-    let mut harness = harness_with(vec![parent_call("p1", "impatient")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "impatient")], enabled());
     harness.register_tool(Arc::new(Slow));
     harness.register_tool(Arc::new(Impatient));
 
@@ -1068,7 +1073,7 @@ async fn a_parent_cannot_loop_on_free_refusals() {
     let script: Vec<(&'static str, Value)> = (0..10).map(|_| ("ghost", json!({}))).collect();
     let caller = Caller::new("caller", script);
     let outcomes = caller.outcomes();
-    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
     harness.register_tool(Arc::new(caller));
 
     run(&harness, &EventRecorder::new()).await.unwrap();
@@ -1085,7 +1090,7 @@ async fn a_parent_cannot_loop_on_free_refusals() {
 
 #[tokio::test]
 async fn parent_call_id_is_the_immediate_parent_at_depth_two() {
-    let mut harness = harness_with(vec![parent_call("p1", "relay")], RunLimits::default());
+    let mut harness = harness_with(vec![parent_call("p1", "relay")], enabled());
     harness.register_tool(Arc::new(Relay {
         reached: Arc::default(),
         refusal: Arc::default(),
@@ -1097,4 +1102,89 @@ async fn parent_call_id_is_the_immediate_parent_at_depth_two() {
     let parents: Vec<_> = started(&recorder);
     assert!(parents.contains(&("p1/1/1".to_string(), Some("p1/1".to_string()))));
     assert!(parents.contains(&("p1/1".to_string(), Some("p1".to_string()))));
+}
+
+#[tokio::test]
+async fn nested_calls_are_disabled_by_default() {
+    let leaf = Leaf::new("leaf");
+    let caller = Caller::new("caller", vec![("leaf", json!({}))]);
+    let outcomes = caller.outcomes();
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], RunLimits::default());
+    harness.register_tool(leaf.clone());
+    harness.register_tool(Arc::new(caller));
+
+    let recorder = EventRecorder::new();
+    run(&harness, &recorder).await.expect("run succeeds");
+
+    assert_eq!(
+        outcomes.lock().unwrap()[0].as_ref().unwrap_err(),
+        "permanent tool failure: nested tool calls are disabled (max_nested_depth = 0)"
+    );
+    assert_eq!(leaf.runs(), 0);
+    assert_eq!(nested_started(&recorder), 0);
+}
+
+#[tokio::test]
+async fn approving_a_nested_id_does_not_admit_the_nested_call() {
+    use crate::middleware::library::HumanApprovalMiddleware;
+
+    let leaf = Leaf::new("leaf");
+    let caller = Caller::new("caller", vec![("leaf", json!({}))]);
+    let outcomes = caller.outcomes();
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.register_tool(leaf.clone());
+    harness.register_tool(Arc::new(caller));
+    harness.push_middleware(Arc::new(HumanApprovalMiddleware::new(["leaf"])));
+
+    // A human approved a model call whose id happens to equal the nested id.
+    let mut ctx = RunContext::new(RunConfig::new("nested"), ());
+    ctx.approved_calls.insert("p1/1".to_string());
+    harness
+        .invoke_in_context(&(), ctx, vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert!(
+        outcomes.lock().unwrap()[0]
+            .as_ref()
+            .unwrap_err()
+            .contains("requires approval"),
+        "per-call approvals are never inherited by nested ids"
+    );
+    assert_eq!(leaf.runs(), 0);
+}
+
+/// Never finishes observing a nested result.
+struct HangingObserver;
+
+#[async_trait]
+impl crate::middleware::Middleware<(), ()> for HangingObserver {
+    fn name(&self) -> &str {
+        "hanging_observer"
+    }
+    async fn observe_nested_result(
+        &self,
+        _ctx: &RunContext<()>,
+        _state: &(),
+        _call: &ToolCall,
+        _result: &ToolResult,
+    ) {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_parent_dropped_while_a_nested_result_is_observed_still_closes_the_call() {
+    let caller = Caller::new("caller", vec![("leaf", json!({}))]);
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.with_tool_timeout_settings(crate::tool::ToolTimeoutSettings::new(50, 1, 10_000, 0));
+    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(Arc::new(caller));
+    harness.push_middleware(Arc::new(HangingObserver));
+
+    let recorder = EventRecorder::new();
+    run(&harness, &recorder).await.expect("run succeeds");
+
+    assert_eq!(nested_started(&recorder), 1);
+    every_start_has_one_terminal_event(&recorder);
 }

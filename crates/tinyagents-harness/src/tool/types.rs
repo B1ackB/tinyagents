@@ -129,6 +129,11 @@ impl ToolExecutionContext {
     /// implements `check_nested_tool`. See
     /// `docs/modules/harness/nested-tool-calls.md`.
     ///
+    /// Nested calls are **disabled by default**: until the host sets
+    /// `RunLimits::max_nested_depth` above `0` this returns "nested tool calls
+    /// are disabled". Enable only once every `before_tool` enforcement also
+    /// implements `check_nested_tool`.
+    ///
     /// # Errors
     ///
     /// - No harness runner is installed (the tool runs outside the agent
