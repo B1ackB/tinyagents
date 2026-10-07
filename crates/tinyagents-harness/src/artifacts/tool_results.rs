@@ -221,7 +221,7 @@ const MIN_ENVELOPE_ALLOWANCE_BYTES: usize = 512;
 pub(super) const TRAILER_RESERVED: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BudgetOutcome {
+pub(super) struct BudgetOutcome {
     original_bytes: usize,
     final_bytes: usize,
     truncated: bool,
