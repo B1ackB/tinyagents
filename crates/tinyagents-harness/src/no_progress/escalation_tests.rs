@@ -256,8 +256,8 @@ fn prediction_state_is_not_retained_without_escalation() {
     for n in 0..50 {
         tracker.record_call_outcome(&format!("read\u{1}{n}"), "result");
     }
-    assert!(lock(&tracker.last_outcome).is_empty());
-    assert!(lock(&tracker.predictable).is_empty());
+    assert!(crate::no_progress::util::lock(&tracker.last_outcome).is_empty());
+    assert!(crate::no_progress::util::lock(&tracker.predictable).is_empty());
 }
 
 #[test]
