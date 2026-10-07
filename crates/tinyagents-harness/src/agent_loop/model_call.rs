@@ -950,10 +950,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // `larger_than` (context-overflow failover): the candidate must
             // *declare* a window strictly above the given one.
             let too_small = larger_than.is_some_and(|floor| {
-                !next_model
+                next_model
                     .profile()
                     .and_then(|profile| profile.max_input_tokens)
-                    .is_some_and(|window| window > floor)
+                    .is_none_or(|window| window <= floor)
             });
             if written_off || too_small || !model_eligible(next_model.as_ref(), required, false) {
                 visited.insert(name.clone());
