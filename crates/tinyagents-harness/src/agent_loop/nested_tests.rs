@@ -1017,9 +1017,17 @@ async fn execution_time_deferrals_count_toward_the_refusal_cap() {
     run(&harness, &EventRecorder::new()).await.unwrap();
 
     let outcomes = outcomes.lock().unwrap();
-    assert!(outcomes[7].as_ref().unwrap_err().contains("requires approval"));
+    assert!(
+        outcomes[7]
+            .as_ref()
+            .unwrap_err()
+            .contains("requires approval")
+    );
     let blocked = outcomes[8].as_ref().unwrap_err();
-    assert!(blocked.contains("already had 8 nested calls refused"), "{blocked}");
+    assert!(
+        blocked.contains("already had 8 nested calls refused"),
+        "{blocked}"
+    );
 }
 
 /// A middleware that records the nested results it observes.

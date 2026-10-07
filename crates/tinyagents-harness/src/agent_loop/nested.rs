@@ -564,10 +564,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // That counts toward the refusal cap like an admission refusal.
                 let deferred = matches!(
                     error,
-                    TinyAgentsError::ApprovalRequired { .. }
-                        | TinyAgentsError::CallDeferred { .. }
+                    TinyAgentsError::ApprovalRequired { .. } | TinyAgentsError::CallDeferred { .. }
                 );
-                let error = if deferred { approval_error(name) } else { error };
+                let error = if deferred {
+                    approval_error(name)
+                } else {
+                    error
+                };
                 self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Failed)
                     .await;
                 guard.settle();
