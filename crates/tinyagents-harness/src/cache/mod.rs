@@ -61,10 +61,10 @@ pub use key::{
     PROMPT_CACHE_KEY_OPTION, apply_prompt_cache_breakpoints, cache_key, credential_fingerprint,
     model_cache_identity, prompt_cache_key, scoped_cache_key,
 };
+pub use miss::{DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS, PromptCacheMiss, PromptCacheTracker};
 pub use singleflight::SingleFlight;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteResponseCache;
-pub use miss::{DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS, PromptCacheMiss, PromptCacheTracker};
 pub use types::*;
 
 #[cfg(test)]
