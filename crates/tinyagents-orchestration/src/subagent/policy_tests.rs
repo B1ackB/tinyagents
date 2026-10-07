@@ -18,7 +18,12 @@ fn retrying() -> SubAgentPolicy {
 
 #[test]
 fn default_policy_never_retries() {
-    assert!(!may_retry(&SubAgentPolicy::default(), 0, &transient(), false));
+    assert!(!may_retry(
+        &SubAgentPolicy::default(),
+        0,
+        &transient(),
+        false
+    ));
 }
 
 #[test]

@@ -156,7 +156,9 @@ impl SubagentExecutor<String> for FakeExecutor {
             ExecutorMode::Completed
             | ExecutorMode::WaitForCancellation
             | ExecutorMode::CancelAfterExecution => SubagentStatus::Completed,
-            ExecutorMode::Incomplete => SubagentStatus::Incomplete(SubagentIncomplete::new("budget exhausted")),
+            ExecutorMode::Incomplete => {
+                SubagentStatus::Incomplete(SubagentIncomplete::new("budget exhausted"))
+            }
             ExecutorMode::Pause => SubagentStatus::AwaitingInput(SubagentPause {
                 reason: "need approval".into(),
                 resume: SubagentResume::default(),
@@ -578,7 +580,7 @@ impl SubagentExecutor<String> for NestedExecutor {
                     ..UsageTotals::default()
                 },
                 artifacts: Vec::new(),
-            schema_error: None,
+                schema_error: None,
             });
         }
         Ok(SubagentOutcome {

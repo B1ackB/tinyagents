@@ -414,7 +414,9 @@ fn subagent_status_follows_a_legacy_incomplete_marker() {
 #[test]
 fn subagent_status_follows_a_typed_incomplete_result() {
     assert_eq!(
-        status_for_delegation_result(r#"{"job_id":"j","status":"incomplete","incomplete_kind":"timeout"}"#),
+        status_for_delegation_result(
+            r#"{"job_id":"j","status":"incomplete","incomplete_kind":"timeout"}"#
+        ),
         SubagentStatus::Incomplete
     );
     assert_eq!(

@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tinyagents_harness::CancellationToken;
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::retry::RetryPolicy;
-use tinyagents_harness::CancellationToken;
 use tinyagents_runtime::ToolSnapshot;
 use tinyinference_llm::message::Message;
 
@@ -36,8 +36,9 @@ impl SubagentPlanner<String> for Planner {
     }
 }
 
-type Behaviour =
-    Arc<dyn Fn(u32, &SubagentExecution<String>) -> Result<SubagentOutcome, SubagentError> + Send + Sync>;
+type Behaviour = Arc<
+    dyn Fn(u32, &SubagentExecution<String>) -> Result<SubagentOutcome, SubagentError> + Send + Sync,
+>;
 
 struct Executor {
     attempts: AtomicU32,
@@ -224,7 +225,11 @@ async fn timeout_cancels_the_child_and_ends_incomplete_without_cancelling_the_li
         "the child was cancelled"
     );
     assert!(!lifecycle.is_cancelled(), "the caller's token is untouched");
-    assert_eq!(executor.attempts.load(Ordering::SeqCst), 1, "timeouts are not retried");
+    assert_eq!(
+        executor.attempts.load(Ordering::SeqCst),
+        1,
+        "timeouts are not retried"
+    );
 }
 
 #[tokio::test]
@@ -247,7 +252,13 @@ async fn does_not_retry_after_tools_ran_unless_allowed() {
         .run(request("t-side-effects"), CancellationToken::new())
         .await
         .unwrap_err();
-    assert!(matches!(err, SubagentError::Transient { tools_ran: true, .. }));
+    assert!(matches!(
+        err,
+        SubagentError::Transient {
+            tools_ran: true,
+            ..
+        }
+    ));
     assert_eq!(executor.attempts.load(Ordering::SeqCst), 1);
 
     let executor = Executor::new(flaky(1, true));
@@ -263,7 +274,9 @@ async fn does_not_retry_after_tools_ran_unless_allowed() {
 
 #[tokio::test]
 async fn unclassified_failures_and_missing_factories_are_never_retried() {
-    let executor = Executor::new(Arc::new(|_, _| Err(SubagentError::Execution("boom".into()))));
+    let executor = Executor::new(Arc::new(|_, _| {
+        Err(SubagentError::Execution("boom".into()))
+    }));
     let plan: Planned = Arc::new(|p| with_factory(p.with_policy(retry_policy(3))));
     driver(plan, executor.clone())
         .run(request("t-exec"), CancellationToken::new())
@@ -277,7 +290,11 @@ async fn unclassified_failures_and_missing_factories_are_never_retried() {
         .run(request("t-nofactory"), CancellationToken::new())
         .await
         .unwrap_err();
-    assert_eq!(executor.attempts.load(Ordering::SeqCst), 1, "no factory, no retry");
+    assert_eq!(
+        executor.attempts.load(Ordering::SeqCst),
+        1,
+        "no factory, no retry"
+    );
 }
 
 #[tokio::test]
@@ -285,8 +302,11 @@ async fn call_budget_tightens_the_child_run_config() {
     let executor = Executor::new(ok_with("x"));
     let plan: Planned = Arc::new(|p| {
         p.with_policy(
-            SubAgentPolicy::default()
-                .with_budget(SubAgentBudget::unlimited().with_max_model_calls(4).with_max_tool_calls(9)),
+            SubAgentPolicy::default().with_budget(
+                SubAgentBudget::unlimited()
+                    .with_max_model_calls(4)
+                    .with_max_tool_calls(9),
+            ),
         )
     });
     driver(plan, executor.clone())
@@ -305,7 +325,8 @@ async fn token_budget_overshoot_ends_incomplete_with_a_typed_kind() {
     }));
     let plan: Planned = Arc::new(|p| {
         p.with_policy(
-            SubAgentPolicy::default().with_budget(SubAgentBudget::unlimited().with_max_output_tokens(100)),
+            SubAgentPolicy::default()
+                .with_budget(SubAgentBudget::unlimited().with_max_output_tokens(100)),
         )
     });
     let result = driver(plan, executor)
@@ -343,7 +364,9 @@ async fn leaf_role_strips_delegation_tools_and_ceiling_blocks_widening() {
         .unwrap();
         p.with_role(SubagentRole::Leaf)
             .with_delegation_tools(vec!["delegate_coder".into()])
-            .with_tool_ceiling(ToolSnapshot::new(vec![spec("read"), spec(SUBAGENT_JOBS_TOOL)]).unwrap())
+            .with_tool_ceiling(
+                ToolSnapshot::new(vec![spec("read"), spec(SUBAGENT_JOBS_TOOL)]).unwrap(),
+            )
     });
     driver(plan, executor.clone())
         .run(request("t-role"), CancellationToken::new())

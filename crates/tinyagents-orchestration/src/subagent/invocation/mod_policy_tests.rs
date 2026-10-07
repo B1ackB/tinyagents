@@ -8,9 +8,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::test::BlockedModel;
-use crate::subagent::{
-    IncompleteKind, ResultPolicy, SubAgentPolicy, SubagentRole,
-};
+use crate::subagent::{IncompleteKind, ResultPolicy, SubAgentPolicy, SubagentRole};
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::ids::CallId;
 use tinyagents_harness::retry::RetryPolicy;
@@ -78,7 +76,9 @@ struct FailingModel(Arc<AtomicUsize>);
 impl ChatModel<()> for FailingModel {
     async fn invoke(&self, _: &(), _: ModelRequest) -> tinyinference_llm::Result<ModelResponse> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Err(tinyinference_llm::Error::Model("connection reset by peer".into()))
+        Err(tinyinference_llm::Error::Model(
+            "connection reset by peer".into(),
+        ))
     }
 }
 
@@ -90,11 +90,13 @@ async fn failing_calls(max_attempts: usize) -> usize {
         retry: RetryPolicy::default().with_max_attempts(1),
         ..RunPolicy::default()
     });
-    let tool = tool_over(harness).with_policy(SubAgentPolicy::default().with_retry(
-        RetryPolicy::default()
-            .with_max_attempts(max_attempts)
-            .with_backoff_sleep(false),
-    ));
+    let tool = tool_over(harness).with_policy(
+        SubAgentPolicy::default().with_retry(
+            RetryPolicy::default()
+                .with_max_attempts(max_attempts)
+                .with_backoff_sleep(false),
+        ),
+    );
     let result = call_inline(&tool).await;
     assert!(result.is_error);
     calls.load(Ordering::SeqCst)
@@ -116,11 +118,24 @@ async fn result_policy_trims_the_job_output_and_reports_schema_errors() {
             .with_schema(json!({"type": "object"})),
     );
     let result = call_inline(&tool).await;
-    assert!(!result.is_error, "a schema mismatch is reported, not failed");
+    assert!(
+        !result.is_error,
+        "a schema mismatch is reported, not failed"
+    );
     let payload = payload(&result);
     assert_eq!(payload["status"], "completed");
-    assert!(payload["output"].as_str().unwrap().contains("6 chars omitted"));
-    assert!(payload["schema_error"].as_str().unwrap().contains("not valid JSON"));
+    assert!(
+        payload["output"]
+            .as_str()
+            .unwrap()
+            .contains("6 chars omitted")
+    );
+    assert!(
+        payload["schema_error"]
+            .as_str()
+            .unwrap()
+            .contains("not valid JSON")
+    );
 }
 
 #[tokio::test]
@@ -134,7 +149,9 @@ async fn default_policies_leave_the_output_untouched() {
 #[tokio::test]
 async fn a_leaf_refuses_to_spawn_when_its_harness_exposes_delegation_tools() {
     let mut harness = constant("x");
-    harness.register_tool_dispatch(Arc::new(crate::subagent::SubAgentJobsTool::new(SubAgentJobRegistry::new())));
+    harness.register_tool_dispatch(Arc::new(crate::subagent::SubAgentJobsTool::new(
+        SubAgentJobRegistry::new(),
+    )));
     let tool = tool_over(harness).with_role(SubagentRole::Leaf);
     let result = call_inline(&tool).await;
     assert!(result.is_error);
@@ -147,5 +164,8 @@ async fn a_leaf_refuses_to_spawn_when_its_harness_exposes_delegation_tools() {
 
 #[test]
 fn incomplete_kind_serializes_as_snake_case() {
-    assert_eq!(serde_json::to_value(IncompleteKind::BudgetExceeded).unwrap(), "budget_exceeded");
+    assert_eq!(
+        serde_json::to_value(IncompleteKind::BudgetExceeded).unwrap(),
+        "budget_exceeded"
+    );
 }

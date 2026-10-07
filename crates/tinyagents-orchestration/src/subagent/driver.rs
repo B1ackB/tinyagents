@@ -6,15 +6,13 @@ use std::{
 
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
+use super::policy::{AttemptSource, apply_outcome_policies, may_retry};
+use super::{IncompleteKind, SpawnAdmission, SpawnRejection, SubagentIncomplete, restrict_tools};
 use super::{
     PersistedSubagentPause, SubagentError, SubagentExecution, SubagentExecutor, SubagentOutcome,
     SubagentPausePersistenceDisposition, SubagentPersistence, SubagentPersistenceDisposition,
     SubagentPlanner, SubagentRequest, SubagentRunResult, SubagentStatus, SubagentTaskKey,
     SubagentTerminalPersistenceDisposition,
-};
-use super::policy::{AttemptSource, apply_outcome_policies, may_retry};
-use super::{
-    IncompleteKind, SpawnAdmission, SpawnRejection, SubagentIncomplete, restrict_tools,
 };
 use tinyagents_harness::error::TinyAgentsError;
 
@@ -394,10 +392,8 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                         );
                         break Ok(SubagentOutcome::incomplete(
                             task_id.clone(),
-                            SubagentIncomplete::new(format!(
-                                "subagent timed out after {limit:?}"
-                            ))
-                            .with_kind(IncompleteKind::Timeout),
+                            SubagentIncomplete::new(format!("subagent timed out after {limit:?}"))
+                                .with_kind(IncompleteKind::Timeout),
                         ));
                     }
                 },
