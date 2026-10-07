@@ -152,6 +152,10 @@ pub(super) struct NestedState {
     refused: AtomicUsize,
     summaries: std::sync::Mutex<Vec<NestedSummary>>,
     dropped_summaries: AtomicUsize,
+    /// Held while a nested call that is not concurrency-safe executes, so a
+    /// parent that awaits several `call_tool` futures at once cannot overlap
+    /// tools (or wrap middleware) that opted out of concurrency.
+    serial: tokio::sync::Mutex<()>,
 }
 
 impl NestedState {
@@ -197,7 +201,9 @@ impl NestedState {
 ///
 /// Dropping it refunds the slot, so a call dropped mid-admission (its parent
 /// timed out or was cancelled, which drops the whole in-flight set) cannot
-/// leak it; [`Self::keep`] is called once the call is classified as refused.
+/// leak it. [`Self::keep`] leaves it spent for a call classified as refused;
+/// [`Self::release`] refunds it as soon as the call is admitted, so a slow
+/// running call does not hold a slot against its siblings.
 struct RefusalSlot<'a> {
     shared: &'a NestedState,
     armed: bool,
@@ -207,6 +213,20 @@ impl RefusalSlot<'_> {
     /// The call was refused: the slot stays spent.
     fn keep(&mut self) {
         self.armed = false;
+    }
+
+    /// The call was admitted: refund the slot now.
+    fn release(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.shared.refund_refusal();
+        }
+    }
+
+    /// A call that was already admitted turned out to need approval or a
+    /// deferral at execution time: count it as a refusal after the fact.
+    fn count_late_refusal(&self) {
+        self.shared.refused.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -326,15 +346,11 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
                 self.level + 1,
                 &name,
                 arguments,
+                &mut slot,
             );
             tokio::pin!(run);
             tokio::select! {
-                (refused, outcome) = &mut run => {
-                    if refused {
-                        slot.keep();
-                    }
-                    Some(outcome)
-                }
+                outcome = &mut run => Some(outcome),
                 () = reply.cancellation() => None,
             }
         };
@@ -465,17 +481,22 @@ impl Drop for StartedNested {
     }
 }
 
-type Admitted<State, Ctx> = (Arc<dyn crate::tool::ToolDispatch<State, Ctx>>, ToolCall);
+type Admitted<'a, State, Ctx> = (
+    Arc<dyn crate::tool::ToolDispatch<State, Ctx>>,
+    ToolCall,
+    BudgetSlot<'a>,
+);
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Admits and executes one nested call of `parent`, as nesting `level`.
     ///
-    /// Returns whether the call was *refused* before it ran (it counts toward
-    /// [`MAX_NESTED_REFUSALS`]) alongside the outcome. The nested counterpart
+    /// `slot` is the caller's refusal reservation: kept if the call is refused
+    /// (it counts toward [`MAX_NESTED_REFUSALS`]), refunded once it is
+    /// admitted, and counted again if it then defers at execution time. The nested counterpart
     /// of `admit_tool_call` + the execution half of `execute_tool_serially`;
     /// see the module docs for what it shares with the model-issued path.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_nested_tool(
+    async fn run_nested_tool(
         &self,
         state: &State,
         ctx: &RunContext<Ctx>,
@@ -484,9 +505,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         level: usize,
         name: &str,
         arguments: Value,
-    ) -> (bool, Result<tinytools::ToolResult>) {
+        slot: &mut RefusalSlot<'_>,
+    ) -> Result<tinytools::ToolResult> {
         let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
-        let (dispatch, call) = match self.admit_nested(state, ctx, parent, level, call).await {
+        let (dispatch, call, mut budget) = match self.admit_nested(state, ctx, parent, level, call).await {
             Ok(admitted) => admitted,
             Err(error) => {
                 tracing::debug!(
@@ -497,9 +519,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     %error,
                     "[nested_tools] nested call refused at admission"
                 );
-                return (true, Err(error));
+                slot.keep();
+                return Err(error);
             }
         };
+        // Admitted: the call no longer counts as a refusal-in-flight.
+        slot.release();
 
         let options = dispatch.call_options(&call.arguments);
         let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
@@ -534,11 +559,22 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .record_tool_effect_started(ctx, &call.arguments, &prepared)
             .await
         {
+            // `budget` releases the reserved slot on this return.
             guard.settle();
-            ctx.limits.release_nested_tool_call();
-            // Not an admission refusal: the refusal slot is refunded.
-            return (false, Err(self.fail_nested(ctx, &prepared, parent, error)));
+            return Err(self.fail_nested(ctx, &prepared, parent, error));
         }
+        // Tools (and wrap middleware) that opted out of concurrency must not
+        // overlap when one parent awaits several nested calls at once.
+        let serialize = !dispatch.tool().injected_arguments().is_empty()
+            || !dispatch.tool().is_concurrency_safe(&call.arguments)
+            || !self.middleware.tool_middleware_concurrent_safe();
+        let _serial = if serialize {
+            Some(slot.shared.serial.lock().await)
+        } else {
+            None
+        };
+        // Execution starts now; from here the call is spent even if dropped.
+        budget.armed = false;
         let base = ToolCallBase {
             harness: self,
             dispatch,
@@ -599,7 +635,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     metadata: result.metadata.clone(),
                     parent_call_id: Some(parent.clone()),
                 });
-                (false, Ok(result))
+                Ok(result)
             }
             Err(error) => {
                 // A tool the nested call reached may itself ask to be deferred;
@@ -617,10 +653,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Failed)
                     .await;
                 guard.settle();
-                (
-                    deferred,
-                    Err(self.fail_nested(ctx, &prepared, parent, error)),
-                )
+                if deferred {
+                    slot.count_late_refusal();
+                }
+                Err(self.fail_nested(ctx, &prepared, parent, error))
             }
         }
     }
@@ -646,14 +682,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
     /// Depth, cancellation, deadline and budget checks, then admission. Holds
     /// a budget slot on success; releases it on a refusal.
-    async fn admit_nested(
+    async fn admit_nested<'a>(
         &self,
         state: &State,
-        ctx: &RunContext<Ctx>,
+        ctx: &'a RunContext<Ctx>,
         parent: &CallId,
         level: usize,
         call: ToolCall,
-    ) -> Result<Admitted<State, Ctx>> {
+    ) -> Result<Admitted<'a, State, Ctx>> {
         let name = call.name.clone();
         let max_depth = self.policy.limits.max_nested_depth;
         if max_depth == 0 {
@@ -684,15 +720,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             });
             return Err(error);
         }
-        // Released on a refusal and when this future is dropped mid-admission;
-        // kept once the call is admitted, because it then runs.
-        let mut slot = BudgetSlot {
+        // Released on a refusal and whenever the call is dropped before its
+        // execution starts (the caller disarms it at that point).
+        let slot = BudgetSlot {
             limits: &ctx.limits,
             armed: true,
         };
-        let admitted = self.admit_nested_tool(state, ctx, parent, call).await?;
-        slot.armed = false;
-        Ok(admitted)
+        let (dispatch, call) = self.admit_nested_tool(state, ctx, parent, call).await?;
+        Ok((dispatch, call, slot))
     }
 
     /// Lookup, argument preparation and validation, the approval refusal,
@@ -703,7 +738,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         ctx: &RunContext<Ctx>,
         parent: &CallId,
         mut call: ToolCall,
-    ) -> Result<Admitted<State, Ctx>> {
+    ) -> Result<(Arc<dyn crate::tool::ToolDispatch<State, Ctx>>, ToolCall)> {
         let name = call.name.clone();
         let allowed_tools = self.resolve_tool_allowlist(ctx)?;
         let is_allowed = allowed_tools
