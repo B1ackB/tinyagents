@@ -73,8 +73,9 @@ let backend: Arc<dyn StorageBackend> = Arc::new(SqliteStorage::open(path)?);
 let provider = DriverSessionStores::new(backend)?.recover_on_open(true);
 ```
 
-Each agent id becomes a storage `Scope` (an id that is not a valid scope
-maps to `sha256:<hex>` of itself), and the driver enforces scopes, so the
+Each agent id becomes a storage `Scope`. An id that is not a valid scope,
+or that starts with the reserved `sha256:` prefix, maps to `sha256:<hex>` of
+itself, so no raw id can name a hashed scope, and the driver enforces scopes, so the
 provider claims isolation and passes `session_store_isolation_conformance`.
 
 | Store | Backend shape |
@@ -89,19 +90,32 @@ provider claims isolation and passes `session_store_isolation_conformance`.
   (`extend`); a first write or a compaction stores the whole set (`set`). Two
   writers on one transcript (two processes on one database) serialize: the
   loser re-reads and decides again, which is also how a write racing a seal is
-  refused.
+  refused. As in the JSONL writer, a turn whose `prev` is not what is stored
+  is refused as stale rather than allowed to replace newer rows, and the
+  written rows carry the turn's usage, request id and step stamps, built by
+  the writer's own code (`transcript::stamped_rows`).
+- **Index.** Each index document records the log entry it was built from
+  (`indexed_seq`). A handle with an older replay leaves it alone, and the
+  update is a compare-and-swap. A failed index refresh never fails the write
+  that preceded it; the next write retries it.
 - **Generations.** `begin_generation` reserves the successor in the index
   before sealing the predecessor, so two compactions cannot both open it. A
   reservation left unwritten for 30 seconds (its process stopped mid-way) may
   be taken over, so a sealed head never strands the conversation.
-- **Turn states.** Conditional writes, settling and the interruption sweep
-  are compare-and-swap on the document version.
+  `begin_generation_from_baseline` checks the baseline inside the seal
+  itself, so a turn committed after the caller read it fails the compaction
+  instead of vanishing from the successor. A failed seal releases the
+  reservation only at the version this call wrote.
+- **Turn states.** Conditional writes, settling, the interruption sweep and
+  retention pruning are all conditional on the document version.
 - **Sync seams.** Transcript and turn-state calls run on a
   `tinystoragedrivers` `Blocking` bridge (one dedicated runtime thread), so
   they work from any caller, inside a runtime or not.
 - **Recovery.** A backend cannot list its scopes, so `recover` covers the
   agents this provider has opened. `recover_on_open(true)` also interrupts an
-  agent's in-flight turns the first time it is opened. Use it only when a
+  agent's in-flight turns the first time it is opened. The agent counts as
+  recovered only once the sweep succeeds, and a concurrent first open waits
+  for that sweep. Use it only when a
   single process owns the database (the desktop app).
 - **Failing closed.** If the backend cannot bind an agent's scope, `for_agent`
   returns stores that refuse every call with that error and does not cache
