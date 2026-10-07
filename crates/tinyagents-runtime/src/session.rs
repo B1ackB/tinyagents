@@ -661,6 +661,9 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         self.history = committed.history.clone();
         self.persisted = raw;
         self.committed_turns += 1;
+        // Post-commit hooks may deliver another background message into this
+        // session. Do not hold the non-reentrant turn lock while they run.
+        drop(_turn_lock);
         // The receipt is constructed only after append and state replacement.
         // Its hook and the completed terminal are owned by one task: errors or
         // cancellation cannot relabel the successful durable transition, and

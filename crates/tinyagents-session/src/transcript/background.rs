@@ -181,6 +181,7 @@ fn stale(options: &BackgroundAppend, head: u32) -> Option<BackgroundAppendOutcom
 /// and an interrupted row would be skipped by the model-context reader — the
 /// opposite of what a delivery is for.
 fn validate(message: &TranscriptMessage, options: &BackgroundAppend) -> anyhow::Result<()> {
+    let message = message.clone().normalized();
     anyhow::ensure!(
         !options.idempotency_key.trim().is_empty(),
         "background append needs a non-empty idempotency key"
@@ -191,9 +192,11 @@ fn validate(message: &TranscriptMessage, options: &BackgroundAppend) -> anyhow::
         message.role
     );
     anyhow::ensure!(
-        message.tool_calls.is_empty()
-            && message.tool_call_id.is_none()
-            && message.parts.is_none()
+        !normalized.is_typed()
+            && message
+                .turn_usage
+                .as_ref()
+                .is_none_or(|usage| usage.tool_calls.is_empty())
             && !message.interrupted
             && message.tool_failure.is_none(),
         "background append only writes plain, complete assistant messages"
