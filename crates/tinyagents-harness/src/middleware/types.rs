@@ -710,6 +710,11 @@ pub trait ToolMiddleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync
     /// resource): if *any* registered wrap returns `false`, the harness runs
     /// every multi-call batch serially, in call order, exactly as before the
     /// wrap onion became concurrent.
+    ///
+    /// In concurrent mode every `ToolStarted` event is emitted at admission,
+    /// before any wrap runs, so never infer the "current call" from event
+    /// order; use the `call` argument and the `call_id` on the wrap's
+    /// `MiddlewareStarted`/`MiddlewareCompleted` events.
     fn concurrent_safe(&self) -> bool {
         true
     }

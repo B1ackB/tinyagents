@@ -5,6 +5,22 @@ the real tool. Until this change it took `&mut RunContext`, so a harness with
 any registered wrap ran every multi-call batch **serially**. It now takes a
 shared `&RunContext`, and the wrap onion runs inside each concurrent call.
 
+## Breaking changes (migration entry)
+
+No CHANGELOG exists in this repo; breaking changes are recorded here.
+
+| Item | Before | After |
+| --- | --- | --- |
+| `ToolMiddleware::wrap_tool` | `ctx: &mut RunContext<Ctx>` | `ctx: &RunContext<Ctx>` |
+| `ToolHandler::run` | `ctx: &mut RunContext<Ctx>` | `ctx: &RunContext<Ctx>` |
+| `ToolBaseCall::call` | `ctx: &'a mut RunContext<Ctx>` | `ctx: &'a RunContext<Ctx>` |
+| `MiddlewareStack::run_wrapped_tool` | `ctx: &mut RunContext<Ctx>` | `ctx: &RunContext<Ctx>` |
+| `AgentEvent::MiddlewareStarted` / `MiddlewareCompleted` | `{ name }` | `{ name, call_id: Option<CallId> }` (serde default, omitted when `None`) |
+| `ToolMiddleware::concurrent_safe` | n/a | new, defaults to `true` |
+
+Struct-literal constructions and exhaustive patterns of the two events need
+`call_id` (or `..`). Details and migration steps follow.
+
 ## Breaking signature change
 
 ```rust
@@ -54,7 +70,12 @@ registered wraps no longer matter on their own.
   call order.
 - `MiddlewareStarted` / `MiddlewareCompleted` are emitted per call and stay
   balanced, including when a wrap errors or short-circuits. Events from
-  different calls interleave, so correlate by call, not by adjacency.
+  different calls interleave, so correlate by call, not by adjacency: the
+  tool-wrap onion tags both events with `call_id: Some(<tool call id>)` (the
+  other middleware hooks leave it `None`).
+- In concurrent mode every `ToolStarted` is emitted at admission, **before**
+  any wrap runs, so never infer "the current call" from event order; use the
+  `call` argument of `wrap_tool` and the `call_id` on the events.
 - A short-circuit or `Err` in one call's wrap does not touch its siblings;
   they run to completion. A fatal `Err` still fails the turn at the first such
   call in call order (siblings get their terminal events). An
@@ -73,3 +94,15 @@ lock held across `next.run`, a strictly ordered log, a single-slot resource).
 If **any** registered wrap returns `false`, every multi-call batch runs
 serially in call order, exactly as before. The stack exposes the aggregate as
 `MiddlewareStack::tool_middleware_concurrent_safe()`.
+
+## Approval prompts stay one at a time
+
+The library `ApprovalGateMiddleware` and `ToolPolicyGateMiddleware` hold a
+per-middleware `tokio::sync::Mutex<()>` around `ApprovalResolver::resolve`. A
+host that routes one prompt per chat thread therefore never sees two prompts
+collide, even though the batch's calls overlap. Only the interactive part is
+serialised: calls that need no approval (`requires_approval == false`, or a
+policy `Allow`/`Deny`) never take the lock, and an approved call runs its tool
+outside it. A host that calls `ToolPolicyGate::evaluate` directly (instead of
+the middleware) owns that serialisation itself. These middleware do **not**
+set `concurrent_safe() == false`.
