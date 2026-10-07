@@ -365,6 +365,7 @@ impl SuccessfulRepeatTracker {
     pub fn reset(&self) {
         let _op = lock(&self.ops);
         self.clear_ledger();
+        lock(&self.last_outcome).clear();
         lock(&self.blocks).clear();
     }
 
@@ -376,10 +377,9 @@ impl SuccessfulRepeatTracker {
         self.clear_ledger();
     }
 
-    /// Body of the resets; the caller holds `ops`. Remembered results go too
-    /// (the model no longer sees them), which also frees prediction capacity.
+    /// Body of the ledger reset; the caller holds `ops`. `last_outcome` is
+    /// kept so a call that later returns something new still clears its blocks.
     fn clear_ledger(&self) {
-        lock(&self.last_outcome).clear();
         lock(&self.output).reset();
         lock(&self.calls).reset();
         lock(&self.recurrences).clear();

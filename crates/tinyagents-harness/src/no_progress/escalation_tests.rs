@@ -269,15 +269,3 @@ fn invalidating_all_predictions_stops_blocks_until_the_call_returns_again() {
     tracker.invalidate_all_predictions();
     assert!(matches!(tracker.pre_call(CALL), CallGate::Allow));
 }
-
-#[test]
-fn a_ledger_reset_frees_prediction_capacity_but_keeps_blocks() {
-    let tracker = staged();
-    for _ in 0..4 {
-        record(&tracker);
-    }
-    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
-    tracker.reset_ledger();
-    assert!(crate::no_progress::util::lock(&tracker.last_outcome).is_empty());
-    assert_eq!(crate::no_progress::util::lock(&tracker.blocks).len(), 1);
-}
