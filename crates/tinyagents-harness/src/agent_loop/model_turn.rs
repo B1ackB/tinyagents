@@ -92,6 +92,27 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         status.model_calls = run.model_calls;
         status.active_model_call = None;
         ctx.active_model_call = None;
+        // Responses a wrap middleware discarded and re-requested were billed
+        // too: account them before the call that replaced them.
+        for usage in ctx.take_discarded_usage() {
+            run.usage.record(usage);
+            status.usage = run.usage;
+            let record = ctx.emit(AgentEvent::UsageRecorded { usage });
+            status.set_last_event(record.id);
+            if let Some((budget, _permit)) = &host_budget
+                && let Err(error) = self.record_host_usage(ctx, budget, &usage).await
+            {
+                let record = ctx.emit(AgentEvent::ModelFailed {
+                    call_id: call_id.clone(),
+                    model: model_name.to_string(),
+                    started_at_ms: Some(model_started_at_ms),
+                    attempts: None,
+                    error: error.to_string(),
+                });
+                status.set_last_event(record.id);
+                return Err(error);
+            }
+        }
         // A cache replay consumed no provider tokens, so folding its usage
         // into the run's totals reports spend that never happened. The
         // saving is surfaced through the cache-hit event instead of being

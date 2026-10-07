@@ -734,13 +734,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         loop {
             let outgoing = Self::outgoing_request(&base, truncate);
             let result = next.run(ctx, state, outgoing).await;
-            let Some(overflow) = self.classify_outcome(&result, &base) else {
+            let Some(overflow) = self.classify_outcome(ctx, &result, &base) else {
                 return result;
             };
             if attempts >= self.max_overflow_attempts {
                 return result;
             }
             attempts += 1;
+            self.account_discarded(ctx, &result);
             let route = self.overflow_route(&base, truncate.is_some(), &overflow);
             tracing::info!(
                 attempt = attempts,

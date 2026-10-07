@@ -1829,6 +1829,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
             // failure: a wrap middleware may answer in place of the failed
             // attempt, and that answer attempted no call.
             self.shape.recovery.dropped.reset();
+            ctx.call_streamed = self.shape.streaming;
             let result = self
                 .harness
                 .invoke_model_with_retry(state, ctx, &request, &self.call_id, binding, &self.shape)

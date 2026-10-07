@@ -549,6 +549,18 @@ impl<Ctx> RunContext<Ctx> {
         self
     }
 
+    /// Records the usage of a provider response a wrap middleware is about to
+    /// discard and re-request. The provider billed it, so the agent loop adds
+    /// it to the run's usage (and the host budget) when it accounts for the
+    /// call that replaces it.
+    pub fn record_discarded_usage(&mut self, usage: tinyinference_llm::usage::Usage) {
+        self.discarded_usage.push(usage);
+    }
+
+    pub(crate) fn take_discarded_usage(&mut self) -> Vec<tinyinference_llm::usage::Usage> {
+        std::mem::take(&mut self.discarded_usage)
+    }
+
     fn with_streaming(mut self, streaming: bool) -> Self {
         self.streaming = streaming;
         self

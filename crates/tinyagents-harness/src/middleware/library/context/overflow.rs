@@ -280,30 +280,72 @@ impl ContextCompressionMiddleware {
     /// Whether a model call's result reports a context overflow: an error the
     /// classifier recognizes, or a successful response whose usage / stop
     /// shows the window was exceeded (see [`ResponseOverflowDetection`]).
-    pub(super) fn classify_outcome(
+    pub(super) fn classify_outcome<Ctx: Send + Sync>(
         &self,
+        ctx: &RunContext<Ctx>,
         result: &Result<MiddlewareModelOutcome>,
         base: &ModelRequest,
     ) -> Option<OverflowInfo> {
         match result {
             Err(error) => self.overflow_classifier.classify(error),
-            // A replayed cached response says nothing about this request.
-            Ok(MiddlewareModelOutcome::Response(response)) if !response.served_from_cache => {
-                let window = response
+            // A replayed cached response says nothing about this request, and
+            // a streamed one has already delivered its output: discarding it
+            // would stream the answer twice.
+            Ok(MiddlewareModelOutcome::Response(response))
+                if !response.served_from_cache && !ctx.call_streamed =>
+            {
+                let reported = response
                     .usage
                     .as_ref()
-                    .and_then(|usage| usage.context_window_tokens)
-                    .or(self.policy.context_window);
-                detect_response_overflow(
+                    .and_then(|usage| usage.context_window_tokens);
+                let window = reported.or(self.policy.context_window);
+                let info = detect_response_overflow(
                     self.response_overflow,
                     response.usage.as_ref(),
                     response.finish_reason.as_deref(),
                     window,
                     base.max_tokens,
-                )
+                );
+                if info.is_some() && reported.is_none() {
+                    tracing::warn!(
+                        window = ?window,
+                        "[context_compression] response overflow judged against the policy's context \
+                         window; the provider reported none"
+                    );
+                }
+                info
             }
             Ok(_) => None,
         }
+    }
+
+    /// Hands a discarded successful response's usage to the run so the spend
+    /// is still accounted, and marks the discard on the event stream.
+    pub(super) fn account_discarded<Ctx: Send + Sync>(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        result: &Result<MiddlewareModelOutcome>,
+    ) {
+        let Ok(MiddlewareModelOutcome::Response(response)) = result else {
+            return;
+        };
+        let Some(usage) = response.usage else {
+            return;
+        };
+        ctx.record_discarded_usage(usage);
+        ctx.emit(AgentEvent::Custom {
+            call_id: ctx.active_model_call.clone(),
+            payload: serde_json::json!({
+                "type": "overflow_discarded_response",
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            }),
+        });
+        tracing::info!(
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            "[context_compression] discarding a response that reported a context overflow; usage accounted"
+        );
     }
 
     /// The cheapest route for an overflow `overflow` reported against `base`.
