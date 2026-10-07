@@ -327,7 +327,7 @@ impl SteeringHandle {
     /// The model a [`SteeringCommand::SwitchModel`] selected for this run, if
     /// any. Read by the agent loop before it resolves a model binding; the
     /// loop validates the name against its registry and calls
-    /// [`SteeringHandle::reject_model_override`] when it cannot honour it.
+    /// `SteeringHandle::reject_model_override` when it cannot honour it.
     pub fn model_override(&self) -> Option<String> {
         self.lock_model_override().clone()
     }
