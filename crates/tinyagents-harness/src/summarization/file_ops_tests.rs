@@ -225,3 +225,49 @@ fn search_tools_contribute_no_files() {
     ])]);
     assert!(ops.is_empty());
 }
+
+#[test]
+fn a_path_that_looks_like_the_omitted_marker_stays_a_path() {
+    let mut ops = FileOperations::default();
+    ops.add_read("…and 5 more");
+    let (body, parsed) = split_file_sections(&append_file_sections("s", &ops));
+    assert_eq!(body, "s");
+    assert_eq!(parsed.read_only().len(), 1);
+    assert_eq!(parsed.read_omitted, 0);
+}
+
+#[test]
+fn distinct_paths_never_share_an_identity() {
+    let mut ops = FileOperations::default();
+    for path in ["a\nb", "a?b", "<x", "&lt;x"] {
+        ops.add_read(path);
+    }
+    assert_eq!(ops.read_only().len(), 4);
+}
+
+#[test]
+fn text_without_a_trailer_comes_back_unchanged() {
+    let text = "summary\n\n";
+    let (body, ops) = split_file_sections(text);
+    assert_eq!(body, text);
+    assert!(ops.is_empty());
+}
+
+#[test]
+fn section_delimiters_in_prose_are_not_parsed() {
+    let text = "intro <read-files>\nnotes\n</read-files> outro";
+    let (body, ops) = split_file_sections(text);
+    assert_eq!(body, text);
+    assert!(ops.is_empty());
+}
+
+#[test]
+fn huge_omitted_counts_saturate() {
+    let max = usize::MAX;
+    let text = format!("s\n\n<read-files>\n…and {max} more\n…and {max} more\n</read-files>");
+    let (_, ops) = split_file_sections(&text);
+    assert_eq!(ops.read_omitted, usize::MAX);
+    let mut merged = ops.clone();
+    merged.merge(&ops);
+    assert_eq!(merged.read_omitted, usize::MAX);
+}
