@@ -155,7 +155,7 @@ pub(super) struct NestedState {
     /// Held while a nested call that is not concurrency-safe executes, so a
     /// parent that awaits several `call_tool` futures at once cannot overlap
     /// tools (or wrap middleware) that opted out of concurrency.
-    serial: tokio::sync::Mutex<()>,
+    serial: tokio::sync::RwLock<()>,
 }
 
 impl NestedState {
@@ -193,6 +193,22 @@ impl NestedState {
                 Ok(_) => return,
                 Err(actual) => current = actual,
             }
+        }
+    }
+}
+
+/// A shared or exclusive hold on a serialization gate.
+enum NestedGuard<'a> {
+    Shared(tokio::sync::RwLockReadGuard<'a, ()>),
+    Exclusive(tokio::sync::RwLockWriteGuard<'a, ()>),
+}
+
+impl<'a> NestedGuard<'a> {
+    async fn acquire(gate: &'a tokio::sync::RwLock<()>, exclusive: bool) -> Self {
+        if exclusive {
+            Self::Exclusive(gate.write().await)
+        } else {
+            Self::Shared(gate.read().await)
         }
     }
 }
@@ -544,6 +560,23 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             };
         // Admitted: the call no longer counts as a refusal-in-flight.
         slot.release();
+        // Nested rows are not in the transcript, so `reconcile_tool_effects`
+        // never sees them. Nested ids are unique within a run, so a row still
+        // `Started` for this id is evidence an earlier process attempted the
+        // call and died: never run a non-replayable tool on top of it (the
+        // ledger's `started` upsert would erase that evidence).
+        if let Some(ledger) = ctx.tool_effect_ledger.clone()
+            && dispatch.tool().policy().runtime.replay != tinytools::ToolReplay::Safe
+        {
+            let unresolved = ledger.unresolved(ctx.run_id().as_str()).await?;
+            if unresolved.iter().any(|effect| effect.call_id == call_id.as_str()) {
+                slot.count_late_refusal();
+                return Err(TinyAgentsError::ToolFailed(format!(
+                    "nested call '{name}' refused: an earlier attempt of '{call_id}' never \
+                     settled and the tool is not replay-safe"
+                )));
+            }
+        }
 
         let options = dispatch.call_options(&call.arguments);
         let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
@@ -590,15 +623,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // Two layers: this parent's own fan-out, then every concurrent parent
         // of the run. A call already under the run gate (an ancestor took it)
         // must not retake it, or a chain of unsafe tools would deadlock.
-        let _serial = if serialize {
-            Some(slot.shared.serial.lock().await)
-        } else {
+        // Shared for concurrency-safe calls, exclusive otherwise: a safe call
+        // must not overlap an unsafe sibling either.
+        let _serial = NestedGuard::acquire(&slot.shared.serial, serialize).await;
+        let gate = if gate_held {
             None
-        };
-        let gate = if serialize && !gate_held {
-            Some(ctx.nested_serial.lock().await)
         } else {
-            None
+            Some(NestedGuard::acquire(&ctx.nested_serial, serialize).await)
         };
         // Execution starts now; from here the call is spent even if dropped.
         budget.armed = false;
