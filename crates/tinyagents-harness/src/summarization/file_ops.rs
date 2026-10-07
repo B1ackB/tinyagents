@@ -297,7 +297,8 @@ pub fn append_file_sections(summary: &str, ops: &FileOperations) -> String {
 /// `text`, returning the remaining body and the operations they listed
 /// (including the `…and K more` counts). Only the trailer is parsed — the
 /// `<modified-files>` section last, the `<read-files>` section before it, each
-/// set off by a blank line — so delimiters in the summary prose are left alone.
+/// set off by a blank line, with trailing whitespace after it tolerated — so
+/// delimiters in the summary prose are left alone.
 /// Text without such a trailer comes back byte-for-byte unchanged with an empty
 /// set.
 pub fn split_file_sections(text: &str) -> (String, FileOperations) {
@@ -307,7 +308,7 @@ pub fn split_file_sections(text: &str) -> (String, FileOperations) {
         (MODIFIED_OPEN, MODIFIED_CLOSE, true),
         (READ_OPEN, READ_CLOSE, false),
     ] {
-        let Some(head) = body.strip_suffix(close) else {
+        let Some(head) = body.trim_end().strip_suffix(close) else {
             continue;
         };
         let Some(start) = head.rfind(open) else {

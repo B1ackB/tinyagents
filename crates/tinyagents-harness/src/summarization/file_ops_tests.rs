@@ -299,3 +299,15 @@ fn a_later_touch_of_a_carried_path_moves_it_instead_of_duplicating() {
     assert_eq!(ops.modified().len(), 1);
     assert!(ops.read_only().is_empty(), "the read became a modification");
 }
+
+#[test]
+fn trailing_whitespace_after_a_trailer_is_tolerated() {
+    let mut ops = FileOperations::default();
+    ops.add_read("a.rs");
+    ops.add_modified("b.rs");
+    let text = format!("{}\n \n", append_file_sections("s", &ops));
+    let (body, parsed) = split_file_sections(&text);
+    assert_eq!(body, "s");
+    assert_eq!(parsed.read_only(), vec!["a.rs"]);
+    assert_eq!(parsed.modified(), vec!["b.rs"]);
+}
