@@ -13,13 +13,25 @@
 //!   the child reaches a terminal state (the background task owns the guard
 //!   for exactly the child's lifetime, panics and aborts included).
 //!
+//! # Scope: what the caps bound
+//!
+//! Run ids are minted fresh per turn by most hosts, yet background children
+//! outlive the turn that spawned them, so a cap keyed on a run id would reset
+//! every turn. Limits are therefore keyed on a stable **scope key** resolved
+//! from the *parent's* [`RunConfig`]: its `thread_id` (the conversation) when
+//! it has one, else its `run_id`. Hosts override the rule with
+//! [`SpawnAdmission::with_scope_key`] (for example to map every agent of one
+//! tenant, or every descendant of one root, to a single key).
+//!
 //! # Limits
 //!
-//! - `max_children_per_parent`: children *live at once* under one parent run.
-//!   The slot is released at the child's terminal state.
-//! - `max_total_per_root`: children *ever spawned* under one root run — a
-//!   fan-out budget for the whole tree, so it is not released when a child
-//!   finishes (only when its spawn never happened).
+//! - `max_children_per_parent`: children *live at once* that were spawned from
+//!   one scope. The slot is released at the child's terminal state.
+//! - `max_total_per_root`: children *ever spawned* from one scope — a spawn
+//!   budget for the conversation, so it is not released when a child finishes
+//!   (only when its spawn never happened). Nested agents resolve to their own
+//!   scope under the default rule; a tree-wide budget needs a resolver that
+//!   maps descendants to the root's key.
 //! - `allowed_targets`: sub-agent names that may be spawned. `None` allows
 //!   every target; `Some(vec![])` allows none.
 //!
@@ -31,11 +43,17 @@
 //! State lives in the [`SpawnAdmission`] value, never in a global: clones share
 //! one ledger, and a host shares one instance across every tool/driver whose
 //! spawns should count against the same limits.
+//!
+//! Only [`SubAgentTool`](super::SubAgentTool) and
+//! [`SubagentDriver`](super::SubagentDriver) enforce admission. Calling
+//! `SubAgent::invoke_in_parent` / `invoke_hosted_in_parent` directly bypasses
+//! it; hosts that expose those paths must reserve themselves.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tinyagents_harness::context::RunConfig;
 use serde::{Deserialize, Serialize};
 
 const LOG_PREFIX: &str = "[subagent-admission]";
@@ -43,10 +61,10 @@ const LOG_PREFIX: &str = "[subagent-admission]";
 /// Declarative spawn limits. See the module docs for each field's semantics.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnPolicy {
-    /// Maximum children live at once under one parent run.
+    /// Maximum children live at once per spawn scope (see the module docs).
     #[serde(default)]
     pub max_children_per_parent: Option<usize>,
-    /// Maximum children ever spawned under one root run.
+    /// Maximum children ever spawned per spawn scope (see the module docs).
     #[serde(default)]
     pub max_total_per_root: Option<usize>,
     /// Sub-agent names that may be spawned; `None` allows every target.
@@ -60,19 +78,19 @@ pub struct SpawnPolicy {
 pub enum SpawnRejection {
     /// The target is not in [`SpawnPolicy::allowed_targets`].
     TargetNotAllowed {
-        /// The refused target name.
+        /// The refused target name; empty when the spawn named no target.
         target: String,
     },
-    /// The parent already has [`SpawnPolicy::max_children_per_parent`] live children.
+    /// The scope already has [`SpawnPolicy::max_children_per_parent`] live children.
     MaxChildrenPerParent {
         /// Live children at refusal time.
         active: usize,
         /// The configured cap.
         max: usize,
     },
-    /// The root already spawned [`SpawnPolicy::max_total_per_root`] children.
+    /// The scope already spawned [`SpawnPolicy::max_total_per_root`] children.
     MaxTotalPerRoot {
-        /// Children spawned under the root at refusal time.
+        /// Children spawned in the scope at refusal time.
         spawned: usize,
         /// The configured cap.
         max: usize,
@@ -82,6 +100,10 @@ pub enum SpawnRejection {
 impl std::fmt::Display for SpawnRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TargetNotAllowed { target } if target.is_empty() => write!(
+                f,
+                "the spawn policy restricts targets but this spawn named none"
+            ),
             Self::TargetNotAllowed { target } => {
                 write!(f, "spawning `{target}` is not allowed by the spawn policy")
             }
@@ -91,7 +113,7 @@ impl std::fmt::Display for SpawnRejection {
             ),
             Self::MaxTotalPerRoot { spawned, max } => write!(
                 f,
-                "this run tree reached its total child budget ({spawned}/{max})"
+                "this conversation reached its total child budget ({spawned}/{max})"
             ),
         }
     }
@@ -101,10 +123,10 @@ impl std::error::Error for SpawnRejection {}
 
 #[derive(Default, Debug)]
 struct Ledger {
-    /// Live (reserved or committed, not yet dropped) children per parent run.
-    active_per_parent: HashMap<String, usize>,
-    /// Children spawned per root run.
-    spawned_per_root: HashMap<String, usize>,
+    /// Live (reserved or committed, not yet dropped) children per scope.
+    active_per_scope: HashMap<String, usize>,
+    /// Children spawned per scope.
+    spawned_per_scope: HashMap<String, usize>,
 }
 
 fn decrement(map: &mut HashMap<String, usize>, key: &str) {
@@ -119,10 +141,36 @@ fn decrement(map: &mut HashMap<String, usize>, key: &str) {
 /// Shared, injectable admission ledger enforcing one [`SpawnPolicy`].
 ///
 /// Cloning shares the ledger.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone)]
 pub struct SpawnAdmission {
     policy: Arc<SpawnPolicy>,
     ledger: Arc<Mutex<Ledger>>,
+    scope_key: ScopeKeyFn,
+}
+
+type ScopeKeyFn = Arc<dyn Fn(&RunConfig) -> String + Send + Sync>;
+
+/// Default scope rule: the parent's conversation (`thread_id`), else its run id.
+fn default_scope_key(parent: &RunConfig) -> String {
+    match &parent.thread_id {
+        Some(thread) => thread.as_str().to_owned(),
+        None => parent.run_id.as_str().to_owned(),
+    }
+}
+
+impl Default for SpawnAdmission {
+    fn default() -> Self {
+        Self::new(SpawnPolicy::default())
+    }
+}
+
+impl std::fmt::Debug for SpawnAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnAdmission")
+            .field("policy", &self.policy)
+            .field("ledger", &self.ledger)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SpawnAdmission {
@@ -131,7 +179,25 @@ impl SpawnAdmission {
         Self {
             policy: Arc::new(policy),
             ledger: Arc::default(),
+            scope_key: Arc::new(default_scope_key),
         }
+    }
+
+    /// Replaces the scope rule (default: the parent's `thread_id`, else its
+    /// `run_id`). `resolve` receives the *parent's* config and returns the key
+    /// both counters are kept under. Set it before sharing or cloning the
+    /// ledger; counts already taken under the old rule are not migrated.
+    pub fn with_scope_key(
+        mut self,
+        resolve: impl Fn(&RunConfig) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.scope_key = Arc::new(resolve);
+        self
+    }
+
+    /// The scope key `parent` resolves to under this ledger's rule.
+    pub fn scope_of(&self, parent: &RunConfig) -> String {
+        (self.scope_key)(parent)
     }
 
     /// The policy this ledger enforces.
@@ -139,22 +205,22 @@ impl SpawnAdmission {
         &self.policy
     }
 
-    /// Live children currently holding a slot under `parent_run_id`.
-    pub fn active_children(&self, parent_run_id: &str) -> usize {
+    /// Live children currently holding a slot in `scope`.
+    pub fn active_children(&self, scope: &str) -> usize {
         self.ledger
             .lock()
-            .active_per_parent
-            .get(parent_run_id)
+            .active_per_scope
+            .get(scope)
             .copied()
             .unwrap_or(0)
     }
 
-    /// Children spawned so far under `root_run_id`.
-    pub fn spawned_in_root(&self, root_run_id: &str) -> usize {
+    /// Children spawned so far in `scope`.
+    pub fn spawned_in_scope(&self, scope: &str) -> usize {
         self.ledger
             .lock()
-            .spawned_per_root
-            .get(root_run_id)
+            .spawned_per_scope
+            .get(scope)
             .copied()
             .unwrap_or(0)
     }
@@ -202,7 +268,7 @@ impl SpawnAdmission {
         let mut ledger = self.ledger.lock();
         if counts_toward_total && let Some(max) = self.policy.max_total_per_root {
             let spawned = ledger
-                .spawned_per_root
+                .spawned_per_scope
                 .get(root_run_id)
                 .copied()
                 .unwrap_or(0);
@@ -216,7 +282,7 @@ impl SpawnAdmission {
         }
         if let Some(max) = self.policy.max_children_per_parent {
             let active = ledger
-                .active_per_parent
+                .active_per_scope
                 .get(parent_run_id)
                 .copied()
                 .unwrap_or(0);
@@ -229,12 +295,12 @@ impl SpawnAdmission {
             }
         }
         *ledger
-            .active_per_parent
+            .active_per_scope
             .entry(parent_run_id.to_owned())
             .or_default() += 1;
         if counts_toward_total {
             *ledger
-                .spawned_per_root
+                .spawned_per_scope
                 .entry(root_run_id.to_owned())
                 .or_default() += 1;
         }
@@ -279,9 +345,9 @@ impl SpawnReservation {
 impl Drop for SpawnReservation {
     fn drop(&mut self) {
         let mut ledger = self.admission.ledger.lock();
-        decrement(&mut ledger.active_per_parent, &self.parent_run_id);
+        decrement(&mut ledger.active_per_scope, &self.parent_run_id);
         if self.counts_toward_total && !self.committed {
-            decrement(&mut ledger.spawned_per_root, &self.root_run_id);
+            decrement(&mut ledger.spawned_per_scope, &self.root_run_id);
         }
         tracing::debug!(
             "{LOG_PREFIX} released parent={} committed={}",
