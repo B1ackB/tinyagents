@@ -71,9 +71,9 @@ macro_rules! run_stack_hook {
                 continue;
             }
             let name = $mw.name().to_string();
-            $ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            $ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
             let result = $call.await;
-            $ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            $ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone(), call_id: None });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -302,9 +302,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
             }
             ctx.model_profile = resolve_profile(provider, ctx, request).await?;
             let name = mw.name().to_string();
-            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
             let result = mw.before_model_control(ctx, state, request).await;
-            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone(), call_id: None });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -388,9 +388,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
                 continue;
             }
             let name = mw.name().to_string();
-            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
             let result = mw.before_tool_control(ctx, state, call).await;
-            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone() });
+            ctx.emit(AgentEvent::MiddlewareCompleted { name: name.clone(), call_id: None });
             match result {
                 Ok(control) => {
                     if winning.is_none() && !matches!(control, MiddlewareControl::Continue) {
@@ -577,9 +577,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHandler<'_, State, Ctx> {
                     status,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
                 let outcome = head.wrap_agent(ctx, state, request, run, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id: None });
                 outcome
             }
             None => base.call(ctx, state, request, run, status).await,
@@ -607,12 +607,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelHandler<'_, State, Ctx> {
                     base: self.base,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
                 // Emit `Completed` whether the wrap layer succeeds or errors, so
                 // a failing layer never leaves a dangling `Started` in the event
                 // stream (the onion's balance invariant).
                 let outcome = head.wrap_model(ctx, state, request, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id: None });
                 outcome
             }
             None => Ok(MiddlewareModelOutcome::Response(
@@ -638,11 +638,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
                     base: self.base,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone() });
+                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
                 // Balance `Started` with `Completed` even when the wrap layer
                 // errors (see `ModelHandler::run`).
                 let outcome = head.wrap_tool(ctx, state, call, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name });
+                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id: None });
                 outcome
             }
             None => Ok(MiddlewareToolOutcome::Result(
