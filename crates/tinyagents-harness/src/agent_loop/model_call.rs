@@ -1168,6 +1168,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     )));
                 }
             };
+            // Liveness is judged on what the provider sent, not on what is
+            // left once the scrubber and delta middleware have rewritten it:
+            // a model writing a long tool call as text has every delta
+            // consumed by the scrubber, yet it is plainly producing tokens.
+            // A delta with no payload (empty text, no reasoning, no call)
+            // proves nothing and never counts.
+            let raw_delta_is_output = matches!(
+                &item,
+                ModelStreamItem::MessageDelta(delta)
+                    if !delta.text.is_empty()
+                        || !delta.reasoning.is_empty()
+                        || delta.tool_call.is_some()
+            );
             // Scrub tool-call markup from visible text before anything else
             // sees it; a delta the scrubber empties carries nothing to emit.
             if let (Some(scrubber), ModelStreamItem::MessageDelta(delta)) =
@@ -1177,6 +1190,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 delta.text = scrubber.feed(&delta.text);
                 if delta.text.is_empty() && delta.reasoning.is_empty() && delta.tool_call.is_none()
                 {
+                    // Consumed by the scrubber, but still provider output.
+                    saw_output = true;
+                    rearm = true;
+                    ctx.limits.reset_stream_idle_timeouts_for(model_name);
                     continue;
                 }
             }
@@ -1338,12 +1355,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 *deltas_emitted += 1;
             }
 
-            // Arm the watchdog only after scrubbing and leading-whitespace
-            // removal. Block-aware adapters do not necessarily emit the
-            // compatibility MessageDelta, so their non-empty payloads count
-            // as progress too.
+            // Arm the watchdog on provider output: a non-empty raw delta
+            // (measured before scrubbing and leading-whitespace removal, see
+            // `raw_delta_is_output`) or a post-middleware payload. Block-aware
+            // adapters do not necessarily emit the compatibility
+            // MessageDelta, so their non-empty payloads count as progress too.
             let is_output = match &item {
-                ModelStreamItem::MessageDelta(_) => transformed_delta_is_output,
+                ModelStreamItem::MessageDelta(_) => {
+                    raw_delta_is_output || transformed_delta_is_output
+                }
                 ModelStreamItem::ToolCallDelta(_) => true,
                 ModelStreamItem::BlockDelta { delta, .. } => match delta {
                     tinyinference_llm::model::BlockDelta::Text(text)

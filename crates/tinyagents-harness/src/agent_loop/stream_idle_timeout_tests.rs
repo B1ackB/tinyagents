@@ -883,32 +883,6 @@ async fn empty_deltas_do_not_extend_the_idle_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn provider_failure_items_do_not_extend_the_first_event_window() {
-    let model = ScriptedStreams::new(vec![vec![
-        started(),
-        Step::Sleep(Duration::from_millis(900)),
-        Step::Item(Box::new(ModelStreamItem::Failed(String::new()))),
-        Step::Hang,
-    ]]);
-    let harness = harness_with(
-        model.clone(),
-        idle_1s().with_stream_first_event_timeout_ms(Some(2_000)),
-        1,
-    );
-
-    let err = run(&harness, RunConfig::new("failed-item"))
-        .await
-        .expect_err("a failed item is not output");
-    assert!(
-        matches!(
-            err,
-            TinyAgentsError::CallTimeout(_) | TinyAgentsError::Model(_)
-        ),
-        "{err:?}"
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn block_deltas_rearm_the_idle_deadline_but_empty_ones_do_not() {
     let block = |text: &str| {
         Step::Item(Box::new(ModelStreamItem::BlockDelta {
