@@ -115,7 +115,7 @@ into a `FailoverReason` and applies `decide(reason, state)`:
 | `RateLimit`, `Overloaded`, `Timeout`, `Transport`, `EmptyResponse`, `Unknown` | retry the same model while the retry policy allows, then fall back |
 | `Auth`, `Billing`, `ModelNotFound` | fall back immediately (a retry cannot change the answer) |
 | `AuthPermanent` (revoked / deactivated / suspended / banned) | fall back immediately and skip the model for the rest of the run |
-| `Format` (4xx, adapter validation, a 404 not naming a model) | fall back, never retried on the same model (4xx rejections are often provider-specific) |
+| `Format` (non-specific 4xx, adapter validation, a 404 not naming a model) | fall back, never retried on the same model (4xx rejections are often provider-specific) |
 | `ContextOverflow` | fall back only to a candidate with a strictly larger declared `max_input_tokens`; otherwise surface (compaction handles it) |
 
 Host impact: a context overflow no longer walks the whole chain (only strictly
