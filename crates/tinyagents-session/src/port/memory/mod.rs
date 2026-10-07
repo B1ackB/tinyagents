@@ -201,7 +201,6 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         // Validate baseline before acquiring the generation gate lock; the gate protects
         // generation allocation, not transcript reads. Reading without the gate prevents
         // a deadlock where read_session_transcript's open_stem would re-acquire it.
-        if let Some(transcript) = self.read_session_transcript(session)
         let stem = session_stem(session);
         if let Some(transcript) = self
             .stems
