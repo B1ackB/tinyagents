@@ -1,7 +1,11 @@
 use super::*;
 
 fn spec(name: &str) -> tinytools::ToolSpec {
-    tinytools::ToolSpec::new(name, "d", serde_json::json!({}))
+    tinytools::ToolSpec {
+        name: name.into(),
+        description: "d".into(),
+        parameters: serde_json::json!({}),
+    }
 }
 
 fn snapshot(names: &[&str]) -> ToolSnapshot {

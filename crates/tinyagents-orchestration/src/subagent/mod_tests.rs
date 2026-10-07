@@ -456,13 +456,13 @@ impl SubagentPlanner<String> for MismatchedPlanner {
         request: SubagentRequest<String>,
     ) -> Result<PreparedSubagent<String>, SubagentError> {
         let request = request.into_parts();
-        Ok(PreparedSubagent {
-            task_id: "other-task".into(),
-            agent_key: "resolved-agent".into(),
-            input: vec![Message::user(request.input)],
-            tools: ToolSnapshot::new(vec![]).unwrap(),
-            run_context: request.run_context,
-        })
+        Ok(PreparedSubagent::new(
+            "other-task",
+            "resolved-agent",
+            vec![Message::user(request.input)],
+            ToolSnapshot::new(vec![]).unwrap(),
+            request.run_context,
+        ))
     }
 }
 

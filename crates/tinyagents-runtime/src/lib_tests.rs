@@ -4193,7 +4193,11 @@ mod prefix_refresh_tests;
 
 #[test]
 fn tool_snapshot_retaining_keeps_matching_declarations_and_exactness() {
-    let spec = |name: &str| tinytools::ToolSpec::new(name, "d", serde_json::json!({}));
+    let spec = |name: &str| ToolSpec {
+        name: name.into(),
+        description: "d".into(),
+        parameters: serde_json::json!({}),
+    };
     let snapshot = ToolSnapshot::new(vec![spec("keep"), spec("drop")])
         .unwrap()
         .exact();
