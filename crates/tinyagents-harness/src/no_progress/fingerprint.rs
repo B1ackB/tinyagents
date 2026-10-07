@@ -56,6 +56,19 @@ fn accept_all(_: &str, _: &Match<'_>) -> bool {
     true
 }
 
+/// Keeps UUIDs that identify returned entities, such as `event_id`, in the
+/// outcome identity. Request and correlation identifiers remain volatile.
+fn uuid_context(text: &str, found: &Match<'_>) -> bool {
+    let before = text[..found.start()].to_ascii_lowercase();
+    let field_prefix = before
+        .trim_end_matches(|character: char| character.is_ascii_whitespace())
+        .trim_end_matches(['"', '\'']);
+    !field_prefix.ends_with("event_id\":")
+        && !field_prefix.ends_with("eventid\":")
+        && !field_prefix.ends_with("event_id:")
+        && !field_prefix.ends_with("eventid:")
+}
+
 /// Rejects a match glued to a preceding `.`, e.g. the tail of `1.2.3s` or
 /// `1.1759752896`, which is part of a dotted number rather than a standalone
 /// value.
@@ -101,15 +114,18 @@ fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
 /// the outcome identity. Log prose still falls through to normalization.
 fn iso_timestamp_context(text: &str, found: &Match<'_>) -> bool {
     let before = text[..found.start()].to_ascii_lowercase();
+    let field_prefix = before
+        .trim_end_matches(|character: char| character.is_ascii_whitespace())
+        .trim_end_matches('"');
     ![
-        "event_at\": ",
-        "eventat\": ",
-        "created_at\": ",
-        "updated_at\": ",
-        "timestamp\": ",
+        "event_at\":",
+        "eventat\":",
+        "created_at\":",
+        "updated_at\":",
+        "timestamp\":",
     ]
     .iter()
-    .any(|field| before.ends_with(field))
+    .any(|field| field_prefix.ends_with(field))
 }
 
 /// Accepts clock-shaped values only when their surrounding syntax indicates a
@@ -156,6 +172,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         ),
         rule(
             r#"(?i)(?-u:\b)(?:request|trace|correlation|session|run|call|invocation|operation|message|event)(?:[_ -]?(?:id|uuid))?\s*["']?\s*(?:[:=]\s*|\s+)["']?\s*(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
+            "<uuid>",
+            uuid_context,
+        ),
+        rule(
+            r#"(?i)(?-u:\b)req\s*["']?\s*(?:[:=]\s*|\s+)["']?(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
             "<uuid>",
             accept_all,
         ),

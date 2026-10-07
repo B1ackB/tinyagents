@@ -146,6 +146,10 @@ fn uuids_are_normalized_but_long_hex_ids_are_content() {
         r#"{"job_id":"123e4567-e89b-12d3-a456-426614174000","status":"ready"}"#,
         r#"{"job_id":"00000000-1111-2222-3333-444444444444","status":"ready"}"#,
     );
+    differ(
+        r#"{"event_id":"123e4567-e89b-12d3-a456-426614174000","status":"ready"}"#,
+        r#"{"event_id":"00000000-1111-2222-3333-444444444444","status":"ready"}"#,
+    );
     // A commit id or checksum is usually the answer, not noise around it.
     differ(
         "Created commit 0123456789abcdef0123456789abcdef01234567",
