@@ -108,9 +108,10 @@ impl FileOpExtractor for DefaultFileOpExtractor {
         for arg in PATH_ARGS {
             match call.arguments.get(arg) {
                 Some(serde_json::Value::String(path)) => record(path),
-                Some(serde_json::Value::Array(paths)) => {
-                    paths.iter().filter_map(|p| p.as_str()).for_each(&mut record)
-                }
+                Some(serde_json::Value::Array(paths)) => paths
+                    .iter()
+                    .filter_map(|p| p.as_str())
+                    .for_each(&mut record),
                 _ => {}
             }
         }

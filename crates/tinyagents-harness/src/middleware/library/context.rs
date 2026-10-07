@@ -17,9 +17,9 @@ use crate::middleware::{
 };
 use crate::summarization::{
     CompactionContext, CompactionDecision, CompactionReason, CompactionRecord, ConcatSummarizer,
-    DefaultFileOpExtractor, FileOpExtractor, OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer,
-    SummaryPlacement, SummaryRecord, TrimStrategy, checkpoint_body, checkpoint_message,
-    find_cut_point, is_checkpoint, trim_messages,
+    DefaultFileOpExtractor, FileOpExtractor, OverflowClassifier, ResponseOverflowDetection,
+    SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord, TrimStrategy,
+    checkpoint_body, checkpoint_message, find_cut_point, is_checkpoint, trim_messages,
 };
 
 // ── MessageTrimMiddleware ─────────────────────────────────────────────────────
@@ -600,8 +600,9 @@ impl ContextCompressionMiddleware {
             "[context_compression] compacting"
         );
         let started = std::time::Instant::now();
-        let record = match self.summarize_batch(&to_summarize, &to_keep, previous_summary)
-        .await
+        let record = match self
+            .summarize_batch(&to_summarize, &to_keep, previous_summary)
+            .await
         {
             Ok(record) => record,
             Err(err) => {

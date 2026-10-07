@@ -25,7 +25,10 @@ fn common_path_argument_names_are_recognized() {
         ToolCall::new("3", "view", json!({"file_path": "c.rs"})),
         ToolCall::new("4", "read_many", json!({"paths": ["d.rs", "e.rs"]})),
     ])]);
-    assert_eq!(ops.read_only(), vec!["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+    assert_eq!(
+        ops.read_only(),
+        vec!["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]
+    );
     assert!(ops.modified().is_empty());
 }
 
@@ -67,7 +70,11 @@ fn an_extractor_can_be_plugged_in() {
         }
     }
     let ops = extract_file_operations(
-        &[calls(vec![ToolCall::new("1", "open_doc", json!({"doc": "x.md"}))])],
+        &[calls(vec![ToolCall::new(
+            "1",
+            "open_doc",
+            json!({"doc": "x.md"}),
+        )])],
         &Custom,
     );
     assert_eq!(ops.modified(), vec!["x.md"]);

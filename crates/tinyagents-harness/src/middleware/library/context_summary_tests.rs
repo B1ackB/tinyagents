@@ -117,7 +117,10 @@ fn transcript_with_file_calls() -> Vec<Message> {
 async fn a_summary_lists_the_files_its_tool_calls_touched() {
     let mw = middleware(&Recording::default());
     let text = compact(&mw, transcript_with_file_calls()).await;
-    assert!(text.contains("<read-files>\nsrc/a.rs\n</read-files>"), "{text}");
+    assert!(
+        text.contains("<read-files>\nsrc/a.rs\n</read-files>"),
+        "{text}"
+    );
     assert!(
         text.contains("<modified-files>\nsrc/b.rs\n</modified-files>"),
         "{text}"
@@ -141,7 +144,10 @@ async fn the_extractor_is_pluggable() {
     }
     let mw = middleware(&Recording::default()).with_file_op_extractor(Everything);
     let text = compact(&mw, transcript_with_file_calls()).await;
-    assert!(text.contains("<modified-files>\nedit_file\nread_file\n</modified-files>"), "{text}");
+    assert!(
+        text.contains("<modified-files>\nedit_file\nread_file\n</modified-files>"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -161,11 +167,19 @@ async fn file_lists_accumulate_across_compactions_and_stay_out_of_the_summarizer
     next.extend(messages.split_off(5));
     let second = compact(&mw, next).await;
 
-    assert!(second.contains("src/a.rs") && second.contains("src/b.rs"), "{second}");
+    assert!(
+        second.contains("src/a.rs") && second.contains("src/b.rs"),
+        "{second}"
+    );
     assert!(second.contains("src/c.rs"), "{second}");
     assert_eq!(second.matches("<read-files>").count(), 1, "{second}");
     let seen = summarizer.seen.lock().unwrap();
-    let previous = seen.last().unwrap().previous_summary.as_deref().unwrap_or("");
+    let previous = seen
+        .last()
+        .unwrap()
+        .previous_summary
+        .as_deref()
+        .unwrap_or("");
     assert!(!previous.contains("<read-files>"), "{previous}");
 }
 
@@ -189,7 +203,10 @@ async fn a_cut_inside_a_turn_summarizes_the_turn_prefix_separately() {
     assert_eq!(seen[0].messages.len(), 2);
     assert_eq!(seen[1].messages.len(), 2);
     assert!(text.contains("HISTORY"), "{text}");
-    assert!(text.contains("**Turn Context (split turn):**\n\nPREFIX"), "{text}");
+    assert!(
+        text.contains("**Turn Context (split turn):**\n\nPREFIX"),
+        "{text}"
+    );
 }
 
 #[tokio::test]

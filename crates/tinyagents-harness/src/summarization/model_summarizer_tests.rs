@@ -362,7 +362,10 @@ async fn pending_work_is_handed_on_as_in_progress_not_stale() {
 
 #[tokio::test]
 async fn a_turn_prefix_request_uses_its_own_prompt() {
-    let model = Arc::new(ScriptedModel::replies(vec!["Asked: fix the bug.", "## Goal\nx"]));
+    let model = Arc::new(ScriptedModel::replies(vec![
+        "Asked: fix the bug.",
+        "## Goal\nx",
+    ]));
     let summarizer = ModelSummarizer::new(model.clone(), "m");
 
     summarizer
@@ -377,10 +380,21 @@ async fn a_turn_prefix_request_uses_its_own_prompt() {
     let requests = model.requests();
     let prefix_system = requests[0].messages[0].text();
     let prefix_user = requests[0].messages[1].text();
-    assert!(prefix_system.contains("beginning of a turn"), "{prefix_system}");
+    assert!(
+        prefix_system.contains("beginning of a turn"),
+        "{prefix_system}"
+    );
     assert!(prefix_user.contains("<transcript>"));
     assert!(prefix_user.contains("beginning of a turn"));
     // The ordinary prompt is untouched.
-    assert!(!requests[1].messages[0].text().contains("beginning of a turn"));
-    assert!(!requests[1].messages[1].text().contains("beginning of a turn"));
+    assert!(
+        !requests[1].messages[0]
+            .text()
+            .contains("beginning of a turn")
+    );
+    assert!(
+        !requests[1].messages[1]
+            .text()
+            .contains("beginning of a turn")
+    );
 }

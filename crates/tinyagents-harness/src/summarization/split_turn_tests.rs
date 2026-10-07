@@ -27,14 +27,13 @@ impl Summarizer for Recording {
             .await
     }
 
-    async fn summarize_request(&self, request: &SummaryRequest) -> crate::error::Result<SummaryRecord> {
+    async fn summarize_request(
+        &self,
+        request: &SummaryRequest,
+    ) -> crate::error::Result<SummaryRecord> {
         self.seen.lock().unwrap().push(request.clone());
         Ok(SummaryRecord {
-            summary: Message::system(format!(
-                "{:?}:{}",
-                request.kind,
-                request.messages[0].text()
-            )),
+            summary: Message::system(format!("{:?}:{}", request.kind, request.messages[0].text())),
             provenance: CompressionProvenance {
                 source_ids: vec![format!("{}", request.messages.len())],
                 original_token_estimate: 10,

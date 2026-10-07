@@ -70,9 +70,14 @@ pub async fn summarize_split_turn(
         prefix = prefix.len(),
         "[summarize] cut splits a turn; summarizing the turn prefix separately"
     );
-    let history =
-        summarize_with_split(summarizer, history, max_turn_tokens, previous_summary, estimator)
-            .await?;
+    let history = summarize_with_split(
+        summarizer,
+        history,
+        max_turn_tokens,
+        previous_summary,
+        estimator,
+    )
+    .await?;
     let prefix = summarizer
         .summarize_request(&SummaryRequest::turn_prefix(prefix.to_vec()))
         .await?;
