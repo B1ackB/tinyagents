@@ -452,3 +452,35 @@ async fn a_fallback_chosen_by_the_skip_hint_is_not_tried_twice() {
     assert_eq!(b.attempts(), 1, "b must be tried once");
     assert_eq!(c.attempts(), 1);
 }
+
+#[tokio::test]
+async fn fallback_selection_walks_past_every_model_written_off_earlier_in_the_run() {
+    // Chain [a, b, c] with `a` and `b` both written off (as an earlier call's
+    // permanent auth failures would leave them): the substitute for `a` must
+    // be `c`, not the written-off `b`.
+    let a = ScriptedOutcomes::answering("a");
+    let b = ScriptedOutcomes::answering("b");
+    let c = ScriptedOutcomes::answering("c answers");
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model("a", a.clone());
+    harness.register_model("b", b.clone());
+    harness.register_model("c", c.clone());
+    harness.with_policy(RunPolicy {
+        retry: RetryPolicy::default()
+            .with_max_attempts(1)
+            .with_backoff_sleep(false),
+        fallback: Some(FallbackPolicy::new(["a", "b", "c"])),
+        ..RunPolicy::default()
+    });
+    let mut ctx = RunContext::new(RunConfig::new("walk-past"), ());
+    ctx.limits.skip_model_for_run("a");
+    ctx.limits.skip_model_for_run("b");
+    let run = harness
+        .invoke_in_context(&(), ctx, vec![Message::user("hi")])
+        .await
+        .expect("c answers");
+    assert_eq!(run.text(), Some("c answers".to_string()));
+    assert_eq!(a.attempts(), 0);
+    assert_eq!(b.attempts(), 0, "a written-off fallback is never selected");
+    assert_eq!(c.attempts(), 1);
+}
