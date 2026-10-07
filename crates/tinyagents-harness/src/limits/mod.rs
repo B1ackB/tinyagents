@@ -26,6 +26,7 @@ mod types;
 
 pub use types::*;
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, TinyAgentsError};
@@ -83,6 +84,30 @@ impl RunLimits {
         self.max_tool_concurrency = n;
         self
     }
+
+    /// Sets the maximum silence between streaming-model output events, after
+    /// the first one. `None` disables the inactivity timeout. See
+    /// [`RunLimits::stream_idle_timeout_ms`].
+    pub fn with_stream_idle_timeout_ms(mut self, ms: Option<u64>) -> Self {
+        self.stream_idle_timeout_ms = ms;
+        self
+    }
+
+    /// Sets the opt-in maximum wait for a streaming model call's first output
+    /// event. `None` (the default) means no separate bound. See
+    /// [`RunLimits::stream_first_event_timeout_ms`].
+    pub fn with_stream_first_event_timeout_ms(mut self, ms: Option<u64>) -> Self {
+        self.stream_first_event_timeout_ms = ms;
+        self
+    }
+
+    /// Sets how many consecutive stream idle timeouts on one model trip the
+    /// breaker. `None` disables it. See
+    /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
+    pub fn with_max_consecutive_stream_idle_timeouts(mut self, n: Option<usize>) -> Self {
+        self.max_consecutive_stream_idle_timeouts = n;
+        self
+    }
 }
 
 /// Tracks live counters for a single harness run and enforces [`RunLimits`].
@@ -95,6 +120,13 @@ pub struct LimitTracker {
     limits: RunLimits,
     model_calls: usize,
     tool_calls: usize,
+    /// Streaming model calls that ended in an idle timeout since the last
+    /// output event arrived (the agent loop also clears it when it switches to
+    /// a fallback model, making it a per-model count). See [`LimitTracker::record_stream_idle_timeout`].
+    consecutive_stream_idle_timeouts: usize,
+    /// Idle-timeout strikes keyed by model name. The public scalar helpers
+    /// remain for compatibility with callers that track one stream at a time.
+    stream_idle_timeouts_by_model: HashMap<String, usize>,
     started_at: Instant,
 }
 
@@ -106,8 +138,56 @@ impl LimitTracker {
             limits,
             model_calls: 0,
             tool_calls: 0,
+            consecutive_stream_idle_timeouts: 0,
+            stream_idle_timeouts_by_model: HashMap::new(),
             started_at: Instant::now(),
         }
+    }
+
+    /// Records that a streaming model call went idle past its timeout and
+    /// returns the number of *consecutive* idle timeouts so far.
+    ///
+    /// The count survives the retry loop; the agent loop clears it on any
+    /// output event and when it moves to a fallback model. The caller compares
+    /// it with
+    /// [`RunLimits::max_consecutive_stream_idle_timeouts`].
+    pub fn record_stream_idle_timeout(&mut self) -> usize {
+        self.consecutive_stream_idle_timeouts += 1;
+        self.consecutive_stream_idle_timeouts
+    }
+
+    /// Clears the consecutive stream-idle-timeout count: a stream delivered
+    /// output, or the loop moved to a different model.
+    pub fn reset_stream_idle_timeouts(&mut self) {
+        self.consecutive_stream_idle_timeouts = 0;
+    }
+
+    /// Returns the current consecutive stream-idle-timeout count.
+    pub fn consecutive_stream_idle_timeouts(&self) -> usize {
+        self.consecutive_stream_idle_timeouts
+    }
+
+    /// Records an idle timeout for `model` and returns that model's strikes.
+    pub fn record_stream_idle_timeout_for(&mut self, model: &str) -> usize {
+        let strikes = self
+            .stream_idle_timeouts_by_model
+            .entry(model.to_owned())
+            .or_default();
+        *strikes += 1;
+        *strikes
+    }
+
+    /// Clears the idle-timeout strikes for `model` after visible output.
+    pub fn reset_stream_idle_timeouts_for(&mut self, model: &str) {
+        self.stream_idle_timeouts_by_model.remove(model);
+    }
+
+    /// Returns the idle-timeout strikes for `model`.
+    pub fn consecutive_stream_idle_timeouts_for(&self, model: &str) -> usize {
+        self.stream_idle_timeouts_by_model
+            .get(model)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Resets the wall-clock start to now, leaving the call counters and
