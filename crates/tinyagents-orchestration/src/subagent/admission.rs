@@ -248,8 +248,12 @@ impl SpawnAdmission {
     /// This is a trusted-host entry point: the ledger holds no per-child
     /// identity, so it cannot verify that `target` names a child that already
     /// paid its budget. The caller must only use it after confirming the child
-    /// exists (the driver does so by requiring a persisted resume); calling it
-    /// for a fresh spawn would bypass `max_total_per_root`.
+    /// exists. The driver treats a request that carries resume state (loaded
+    /// from persistence, or supplied by the trusted host through
+    /// `SubagentRequest`) as a continuation; the model can only trigger fresh
+    /// spawns, through [`SubAgentTool`](super::SubAgentTool), which reserves
+    /// with [`Self::try_reserve`]. Calling this for a fresh spawn would bypass
+    /// `max_total_per_root`.
     pub fn try_reserve_continuation(
         &self,
         parent: &RunConfig,

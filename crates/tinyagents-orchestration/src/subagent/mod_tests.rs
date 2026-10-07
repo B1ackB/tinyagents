@@ -1705,3 +1705,38 @@ async fn driver_scope_is_the_thread_so_turn_run_ids_share_the_cap() {
     cancel.cancel();
     first.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn driver_custom_scope_resolver_sees_the_task_keys_root_run_id() {
+    let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
+    let driver = driver(planner, executor, persistence).with_spawn_admission(
+        SpawnAdmission::new(SpawnPolicy {
+            max_total_per_root: Some(1),
+            ..SpawnPolicy::default()
+        })
+        .with_scope_key(|cfg| format!("root:{}", cfg.lineage.root_run_id.as_str())),
+    );
+    let child_of = |parent: &str| {
+        let mut config = RunConfig::new(parent);
+        config.lineage.root_run_id = tinyagents_harness::context::RunId::new("tree-root");
+        request_with_parent(parent, RunContext::new(config, String::new()))
+    };
+
+    driver
+        .run(child_of("parent-a"), CancellationToken::new())
+        .await
+        .unwrap();
+    // A different immediate parent in the same tree shares the root's budget.
+    let over = driver
+        .run(child_of("parent-b"), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        over,
+        SubagentError::SpawnRejected(SpawnRejection::MaxTotalPerRoot { spawned: 1, max: 1 })
+    );
+    assert_eq!(
+        driver.spawn_admission().spawned_in_scope("root:tree-root"),
+        1
+    );
+}
