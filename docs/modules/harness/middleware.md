@@ -239,10 +239,13 @@ state-changing and a repeat blocks only while it is the most recent call.
 
 **Marker.** Results the guard answers itself carry
 `"tinyagents.repeat_guard": "blocked" | "halted"` in `ToolResult::metadata`
-(host-only, never shown to the model; `repeat_guard_marker`). A host's
+(host-only, never shown to the model; `repeat_guard_marker`). It is stamped
+when the call is refused (`RunContext::set_refusal_metadata`), so every
+`after_tool` hook sees it regardless of registration order. A host's
 repeated-failure middleware should skip them.
 
-At most one warning lands on a result; others wait for the next one.
+At most one warning lands on a result, its own first. Extras (which name their
+tool) wait for the next result and are dropped on a context compaction.
 
 Configure all of it with `RepeatProgressConfig` (`with_config`); defaults are
 `RepeatProgressConfig::default()`. `RepeatProgressConfig::immediate_halt()`

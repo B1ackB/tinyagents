@@ -122,7 +122,10 @@ running the tool. Those results carry `"tinyagents.repeat_guard": "blocked"` or
 `"halted"` in `ToolResult::metadata` (`REPEAT_GUARD_METADATA_KEY`,
 `REPEAT_GUARD_BLOCKED`, `REPEAT_GUARD_HALTED`; read it with
 `repeat_guard_marker(&result)`). Metadata never reaches the model. A host's
-repeated-failure middleware should skip results where the marker is present:
+repeated-failure middleware should skip results where the marker is present.
+The marker is queued at refusal time (`RunContext::set_refusal_metadata`) and
+stamped by the loop when it builds the error result, so it is present for
+every `after_tool` hook whatever its registration order:
 they are the guard's answer, not the tool failing, and counting them would
 double-escalate.
 - [`StreamTextStallDetector`] — consumes visible text fragments during one
