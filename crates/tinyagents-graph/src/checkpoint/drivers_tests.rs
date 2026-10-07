@@ -123,8 +123,14 @@ fn long_keys_are_hashed_and_tuples_never_collide() {
 #[test]
 fn namespaces_encode_injectively() {
     let ns = |parts: &[&str]| parts.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
-    assert_ne!(namespace_key(&ns(&["a", "b"])), namespace_key(&ns(&["a\u{1f}b"])));
-    assert_ne!(namespace_key(&ns(&["a", "b"])), namespace_key(&ns(&["a/b"])));
+    assert_ne!(
+        namespace_key(&ns(&["a", "b"])),
+        namespace_key(&ns(&["a\u{1f}b"]))
+    );
+    assert_ne!(
+        namespace_key(&ns(&["a", "b"])),
+        namespace_key(&ns(&["a/b"]))
+    );
     assert_ne!(namespace_key(&ns(&["ab"])), namespace_key(&ns(&["a", "b"])));
     assert_eq!(namespace_key(&[]), "");
 }
@@ -138,15 +144,30 @@ async fn scoped_reads_stay_in_their_namespace_when_ids_repeat() {
         .put(sample("t", "same", None, 2).with_namespace(child.clone()))
         .await
         .unwrap();
-    let root = saver.get_scoped("t", Some("same"), &[]).await.unwrap().unwrap();
-    assert_eq!(root.state, 1, "the root never loads the subgraph's checkpoint");
+    let root = saver
+        .get_scoped("t", Some("same"), &[])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        root.state, 1,
+        "the root never loads the subgraph's checkpoint"
+    );
     let nested = saver
         .get_scoped("t", Some("same"), &child)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(nested.state, 2);
-    assert_eq!(saver.get_scoped("t", None, &[]).await.unwrap().unwrap().state, 1);
+    assert_eq!(
+        saver
+            .get_scoped("t", None, &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        1
+    );
     assert!(
         saver
             .get_scoped("t", None, &["other".to_string()])

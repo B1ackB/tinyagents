@@ -103,7 +103,7 @@ async fn read_from_follows_long_streams_and_prefixes_isolate() {
     let storage = MemoryStorage::new();
     let streams = Arc::clone(scoped(&storage, "local").streams());
     let journal = DriverAppendStore::with_prefix(Arc::clone(&streams), "journal/");
-    let other = DriverAppendStore::with_prefix(streams, "other/");
+    let other = DriverAppendStore::with_prefix(Arc::clone(&streams), "other/");
     for i in 0..(READ_PAGE as u64 + 5) {
         journal.append("s", json!(i)).await.unwrap();
     }
@@ -113,6 +113,10 @@ async fn read_from_follows_long_streams_and_prefixes_isolate() {
     assert_eq!(other.len("s").await.unwrap(), 0);
     let error = journal.append("", json!(1)).await;
     assert!(error.is_ok(), "a prefix makes the empty stream name valid");
+    let ab = DriverAppendStore::with_prefix(Arc::clone(&streams), "ab");
+    let a = DriverAppendStore::with_prefix(Arc::clone(&streams), "a");
+    ab.append("c", json!("ab/c")).await.unwrap();
+    assert_eq!(a.len("bc").await.unwrap(), 0, "prefixes never overlap");
     let bare = DriverAppendStore::new(Arc::clone(scoped(&storage, "local").streams()));
     let error = bare.append("", json!(1)).await.unwrap_err();
     assert!(matches!(error, TinyAgentsError::Validation(_)), "{error:?}");
