@@ -160,3 +160,62 @@ fn matching_measured_usage_uses_provider_count() {
     assert_eq!(source, PromptSource::Measured);
     assert_eq!(tokens, 2);
 }
+
+// ── preemptive route decision ─────────────────────────────────────────────────
+
+#[test]
+fn a_prompt_inside_the_budget_fits() {
+    assert_eq!(
+        CompactionPressure::route(900, 1_000, 5_000),
+        CompactionRoute::Fits
+    );
+    assert_eq!(
+        CompactionPressure::route(1_000, 1_000, 0),
+        CompactionRoute::Fits,
+        "exactly at the budget still fits"
+    );
+}
+
+#[test]
+fn with_nothing_to_truncate_an_overflow_compacts() {
+    assert_eq!(
+        CompactionPressure::route(2_000, 1_000, 0),
+        CompactionRoute::Compact
+    );
+}
+
+#[test]
+fn truncation_alone_is_chosen_only_when_it_comfortably_covers_the_overflow() {
+    // Overflow is 1_000; the bar is max(1_000 + 512, 1_500) = 1_512.
+    assert_eq!(
+        CompactionPressure::route(2_000, 1_000, 1_512),
+        CompactionRoute::TruncateToolResults
+    );
+    assert_eq!(
+        CompactionPressure::route(2_000, 1_000, 1_511),
+        CompactionRoute::CompactThenTruncate
+    );
+    // A large overflow is judged by the 1.5x margin, not the flat buffer.
+    assert_eq!(
+        CompactionPressure::route(21_000, 1_000, 29_999),
+        CompactionRoute::CompactThenTruncate
+    );
+    assert_eq!(
+        CompactionPressure::route(21_000, 1_000, 30_000),
+        CompactionRoute::TruncateToolResults
+    );
+}
+
+#[test]
+fn route_flags_say_which_steps_run() {
+    assert!(!CompactionRoute::Fits.compacts() && !CompactionRoute::Fits.truncates());
+    assert!(
+        CompactionRoute::TruncateToolResults.truncates()
+            && !CompactionRoute::TruncateToolResults.compacts()
+    );
+    assert!(CompactionRoute::Compact.compacts() && !CompactionRoute::Compact.truncates());
+    assert!(
+        CompactionRoute::CompactThenTruncate.compacts()
+            && CompactionRoute::CompactThenTruncate.truncates()
+    );
+}
