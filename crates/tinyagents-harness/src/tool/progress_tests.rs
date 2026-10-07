@@ -14,7 +14,7 @@ use crate::testkit::EventRecorder;
 use crate::tool::ToolExecutionContext;
 
 fn gate(recorder: &EventRecorder, limits: ToolProgressLimits) -> std::sync::Arc<ToolProgressGate> {
-    ToolProgressGate::new(CallId::new("call-1"), "build", recorder.sink(), limits)
+    ToolProgressGate::new(CallId::new("call-1"), "build", recorder.sink(), limits, true)
 }
 
 fn unlimited() -> ToolProgressLimits {

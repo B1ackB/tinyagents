@@ -1549,6 +1549,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             prepared.tool_name.clone(),
             ctx.events.clone(),
             ToolProgressLimits::default(),
+            // Nothing reads the replay queue when no middleware is registered.
+            !self.middleware.is_empty(),
         )
     }
 
@@ -2506,7 +2508,7 @@ mod canonical_result_tests;
 
 #[cfg(test)]
 #[path = "tools_progress_tests.rs"]
-mod tool_progress_tests;
+mod progress_tests;
 
 /// Stamps the metadata a refusing `before_tool` hook queued for `call_id`
 /// ([`RunContext::set_refusal_metadata`]) onto the result that answers it.
