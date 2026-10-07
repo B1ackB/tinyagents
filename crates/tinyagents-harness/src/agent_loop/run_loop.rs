@@ -627,196 +627,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 request.reasoning = Some(mapped.clone());
             }
 
-            // Resolve the structured-output plan against the resolved model.
-            // `Auto` consults the model profile to choose provider-native schema
-            // mode versus a tool-call fallback; an explicit `JsonSchema` always
-            // uses provider-native mode. The chosen strategy drives extraction of
-            // the final response below.
-            // Marks where any structured-output fallback tool gets pushed
-            // below, so it can be told apart afterward from what was already
-            // on `request.tools` — see `synthesized_tools`.
-            let tools_before_structured_plan = request.tools.len();
-            let structured_plan: Option<(StructuredStrategy, String, Value)> =
-                match request.response_format.clone() {
-                    Some(ResponseFormat::Auto { name, schema })
-                        if matches!(
-                            self.policy.structured_strategy_override,
-                            Some(crate::runtime::StructuredStrategyOverride::Prompted { .. })
-                        ) =>
-                    {
-                        let template = match &self.policy.structured_strategy_override {
-                            Some(crate::runtime::StructuredStrategyOverride::Prompted {
-                                template,
-                            }) => template.clone(),
-                            _ => unreachable!("guarded by the match arm above"),
-                        };
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        request.response_format = Some(ResponseFormat::Text);
-                        let instructions = template.clone().unwrap_or_else(|| {
-                            crate::structured::default_prompted_template().to_string()
-                        });
-                        let schema_text = serde_json::to_string_pretty(&schema).unwrap_or_default();
-                        crate::cache::prepend_system_message(
-                            &mut request,
-                            format!("{instructions}\n\nJSON Schema for `{name}`:\n{schema_text}"),
-                        );
-                        Some((StructuredStrategy::Prompted { template }, name, schema))
-                    }
-                    Some(ResponseFormat::Auto { name, schema })
-                        if matches!(
-                            self.policy.structured_strategy_override,
-                            Some(crate::runtime::StructuredStrategyOverride::ToolCallUnion { .. })
-                        ) =>
-                    {
-                        let variants = match &self.policy.structured_strategy_override {
-                            Some(crate::runtime::StructuredStrategyOverride::ToolCallUnion {
-                                variants,
-                            }) => variants.clone(),
-                            _ => unreachable!("guarded by the match arm above"),
-                        };
-                        request.response_format = Some(ResponseFormat::Text);
-                        for (variant_name, variant_schema) in &variants {
-                            let variant_schema = crate::tool::apply_profile_schema_transform(
-                                variant_schema,
-                                binding.model.profile(),
-                            );
-                            let schema_tool = ToolSchema {
-                                name: variant_name.clone(),
-                                description: format!("Return the result as `{variant_name}`."),
-                                parameters: variant_schema,
-                                format: tinyinference_llm::tool::ToolFormat::Json,
-                            };
-                            request.tools.push(match &self.policy.tool_schemas {
-                                Some(preparation) => {
-                                    crate::tool::prepare_tool_schema(&schema_tool, preparation)
-                                }
-                                None => schema_tool,
-                            });
-                        }
-                        let _ = schema;
-                        Some((StructuredStrategy::ToolCallUnion, name, Value::Null))
-                    }
-                    Some(ResponseFormat::Auto { name, schema }) => {
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        let strategy = StructuredStrategy::for_profile(binding.model.profile());
-                        match strategy {
-                            StructuredStrategy::ProviderSchema => {
-                                request.response_format =
-                                    Some(ResponseFormat::json_schema(name.clone(), schema.clone()));
-                            }
-                            StructuredStrategy::ToolCall => {
-                                request.response_format = Some(ResponseFormat::Text);
-                                let fallback_schema = ToolSchema {
-                                    name: name.clone(),
-                                    description: format!("Return the result as `{name}`."),
-                                    parameters: schema.clone(),
-                                    format: tinyinference_llm::tool::ToolFormat::Json,
-                                };
-                                // This schema is generated here, after the
-                                // direct and bridge schemas above were
-                                // prepared for the target provider, so it
-                                // needs the same projection or it reaches the
-                                // wire raw (see the `tool_schemas` and bridge
-                                // preparation above).
-                                request.tools.push(match &self.policy.tool_schemas {
-                                    Some(preparation) => crate::tool::prepare_tool_schema(
-                                        &fallback_schema,
-                                        preparation,
-                                    ),
-                                    None => fallback_schema,
-                                });
-                                // Force the schema tool **only** when it is the
-                                // sole tool available. Forcing it inside a
-                                // tool-using loop makes the model emit the
-                                // structured call on turn 1, which terminates
-                                // the loop before any registered tool can ever
-                                // run — the agent silently loses its tools, and
-                                // the symptom points nowhere near this code.
-                                // LangChain likewise binds a schema tool with a
-                                // forced `tool_choice` only in its terminal
-                                // wrapper, never in the tool-calling loop.
-                                // A final-call middleware can withdraw the
-                                // ordinary request tools before this planner
-                                // runs. In that case the synthetic schema tool
-                                // is the only remaining callable tool, even
-                                // though the run-level registry still contains
-                                // the withdrawn tools.
-                                if surface.tool_schemas.is_empty()
-                                    || (tools_before_structured_plan == 0
-                                        && request.tool_choice == ToolChoice::None)
-                                {
-                                    request.tool_choice = ToolChoice::Tool(name.clone());
-                                } else {
-                                    tracing::debug!(
-                                        target: "tinyagents::agent_loop",
-                                        run_id = %ctx.run_id(),
-                                        schema_name = %name,
-                                        registered_tools = surface.tool_schemas.len(),
-                                        "[agent_loop] structured tool offered but not forced; \
-                                         registered tools stay callable"
-                                    );
-                                }
-                            }
-                            // A profile whose `default_structured_mode` is
-                            // `Prompted` reaches this arm too (not only
-                            // through the dedicated
-                            // `structured_strategy_override` arm above): the
-                            // schema goes into the system segment instead of
-                            // a provider API field, mirroring the override
-                            // arm's construction.
-                            StructuredStrategy::Prompted { ref template } => {
-                                request.response_format = Some(ResponseFormat::Text);
-                                let instructions = template.clone().unwrap_or_else(|| {
-                                    crate::structured::default_prompted_template().to_string()
-                                });
-                                let schema_text =
-                                    serde_json::to_string_pretty(&schema).unwrap_or_default();
-                                crate::cache::prepend_system_message(
-                                    &mut request,
-                                    format!(
-                                        "{instructions}\n\nJSON Schema for `{name}`:\n{schema_text}"
-                                    ),
-                                );
-                            }
-                            // `for_profile` never returns `ToolCallUnion`;
-                            // that strategy is reached exclusively through
-                            // the dedicated `structured_strategy_override`
-                            // arm above.
-                            StructuredStrategy::ToolCallUnion => unreachable!(
-                                "StructuredStrategy::for_profile never returns ToolCallUnion"
-                            ),
-                        }
-                        Some((strategy, name, schema))
-                    }
-                    Some(ResponseFormat::JsonSchema { name, schema }) => {
-                        let schema = crate::tool::apply_profile_schema_transform(
-                            &schema,
-                            binding.model.profile(),
-                        );
-                        request.response_format = Some(ResponseFormat::JsonSchema {
-                            name: name.clone(),
-                            schema: schema.clone(),
-                        });
-                        Some((StructuredStrategy::ProviderSchema, name, schema))
-                    }
-                    _ => None,
-                };
-
-            // Tool schemas minted by the structured-output plan above (the
-            // `ToolCall` / `ToolCallUnion` fallback tools), pushed onto
-            // `request.tools` after `tools_before_structured_plan` was
-            // recorded. A host that renders its own static tool catalogue
-            // composed it before this turn's structured-output planning ran,
-            // so it cannot have advertised these; `RunDialect::apply_to_request`
-            // appends their catalogue entries even in the host-rendered case.
-            let synthesized_tools: Vec<ToolSchema> =
-                request.tools[tools_before_structured_plan..].to_vec();
+            // Resolve the structured-output plan against the resolved model (see
+            // `structured_plan.rs`); the plan drives extraction of the final
+            // response below. `synthesized_tools` are the schema tools the plan
+            // pushed onto the request.
+            let (structured_plan, synthesized_tools) = self.plan_structured_output(
+                ctx,
+                &mut request,
+                binding.model.profile(),
+                surface.tool_schemas.len(),
+            );
 
             // What was offered is fixed here, before a text dialect strips
             // the schemas off the wire: recovery and the stream scrubber need
@@ -874,59 +694,19 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 &synthesized_tools,
             );
 
-            // A host budget is acquired only for an explicit host-driven run.
-            // Do it after structured-output planning: a synthetic schema tool
-            // is part of the provider request and must be included in its
-            // estimate. The permit remains alive through response accounting,
-            // so cancellation or a provider error still releases it through
-            // Drop.
-            let host_budget = if let Some(host_run) =
-                crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?
-            {
-                if let Some(budget) = host_run.host.budget.clone() {
-                    let context_state = crate::host::ContextState {
-                        message_count: request.messages.len(),
-                        prompt_tokens: crate::token_estimation::estimate_slice_tokens(
-                            &request.messages,
-                        ),
-                        context_window_tokens: binding
-                            .model
-                            .profile()
-                            .and_then(|profile| profile.max_input_tokens),
-                        iterations: run.steps,
-                    };
-                    let hint = budget.compression_hint(&context_state);
-                    if hint.is_advised() {
-                        tracing::debug!(?hint, "[host] budget gate advised context compression");
-                        apply_host_budget_compression(ctx, &mut request.messages, hint)?;
-                    }
-                    let estimate = crate::host::CallEstimate::new(
-                        &model_name,
-                        crate::token_estimation::estimate_slice_tokens(&request.messages),
-                        request.max_tokens.unwrap_or_default() as u64,
-                    )
-                    .with_agent(host_run.agent_id.clone())
-                    .with_thread(
-                        ctx.thread_id()
-                            .cloned()
-                            .unwrap_or_else(|| ctx.run_id().as_str().into()),
-                    )
-                    .with_tool_count(offered_tool_count);
-                    let permit = ctx
-                        .bounded(self.call_budget(ctx), budget.acquire(&estimate), || {
-                            format!(
-                                "budget admission for run `{}` exceeded its remaining wall-clock deadline",
-                                ctx.run_id()
-                            )
-                        })
-                        .await?;
-                    Some((budget.clone(), permit))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            // A host budget is acquired only for an explicit host-driven run (see
+            // `host_budget.rs`), after structured-output planning so a synthetic
+            // schema tool is part of the estimate.
+            let host_budget = self
+                .admit_host_budget(
+                    ctx,
+                    run,
+                    &mut request,
+                    binding.model.profile(),
+                    &model_name,
+                    offered_tool_count,
+                )
+                .await?;
             let call_id = CallId::new(format!("{}-model-{}", ctx.run_id(), run.model_calls + 1));
             status.mark_running(HarnessPhase::Model);
             status.active_model_call = Some(call_id.clone());
@@ -1793,26 +1573,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
         Some((Arc::clone(cache), cache_key(request)))
     }
-
-    /// Records realised provider usage without allowing host accounting I/O to
-    /// outlive a cancelled or deadline-expired run. The local run totals are
-    /// updated before this call, so a host-recording failure never erases spend
-    /// that the provider has already incurred.
-    async fn record_host_usage(
-        &self,
-        ctx: &RunContext<Ctx>,
-        budget: &Arc<dyn crate::host::BudgetGate>,
-        usage: &tinyinference_llm::usage::Usage,
-    ) -> Result<()> {
-        let recording = budget.record(usage);
-        ctx.bounded(self.call_budget(ctx), recording, || {
-            format!(
-                "budget usage recording for run `{}` exceeded its remaining wall-clock deadline",
-                ctx.run_id()
-            )
-        })
-        .await
-    }
 }
 
 /// Use the frozen boundary supplied by a durable session when rebuilding a
@@ -1953,68 +1713,6 @@ pub(super) fn refresh_prompt_cache_fingerprint(request: &mut ModelRequest) {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     );
-}
-
-/// Applies a host budget hint before the provider sees the request.
-///
-/// This deliberately uses the harness's pairing-safe generic context reducer
-/// instead of a host-specific transcript rewrite. `Soft` preserves the most
-/// recent half of a multi-turn conversation (and all system messages) when it
-/// can make progress. `Hard` uses a token budget and refuses a request that
-/// cannot be reduced without discarding its whole conversational payload.
-/// Both outcomes are observable through the canonical `context.compressed`
-/// event so hosts can correlate a budget decision with the actual request.
-fn apply_host_budget_compression<Ctx>(
-    ctx: &mut RunContext<Ctx>,
-    messages: &mut Vec<Message>,
-    hint: crate::host::CompressionHint,
-) -> Result<()> {
-    use crate::host::CompressionHint;
-    use crate::summarization::{TrimStrategy, trim_messages};
-
-    let from_tokens = crate::token_estimation::estimate_slice_tokens(messages);
-    let non_system = messages
-        .iter()
-        .filter(|message| !matches!(message, Message::System(_)))
-        .count();
-    let reduced = match hint {
-        CompressionHint::None => return Ok(()),
-        // Preserve a recent working window without perturbing a short prompt.
-        CompressionHint::Soft if non_system < 3 => return Ok(()),
-        CompressionHint::Soft => {
-            trim_messages(messages, &TrimStrategy::KeepLast((non_system / 2).max(1)))
-        }
-        // A hard hint must create real headroom without ever treating system
-        // instructions as expendable. The token trimmer removes oldest
-        // conversational messages, preserves every system message verbatim,
-        // and clears an orphaned tool-result prefix after its owning assistant
-        // call was evicted.
-        CompressionHint::Hard => crate::summarization::trim_messages_to_token_budget_with(
-            messages,
-            crate::summarization::TokenTrimPolicy::strict((from_tokens / 2).max(1))
-                .preserve_system()
-                .drop_leading_orphan_tools(),
-            crate::token_estimation::estimate_message_tokens,
-        ),
-    };
-    let to_tokens = crate::token_estimation::estimate_slice_tokens(&reduced);
-    let has_conversation = reduced
-        .iter()
-        .any(|message| !matches!(message, Message::System(_)));
-    if to_tokens >= from_tokens || reduced.is_empty() || (hint.is_required() && !has_conversation) {
-        if hint.is_required() {
-            return Err(TinyAgentsError::Validation(
-                "host budget requires reducible conversational context before provider call".into(),
-            ));
-        }
-        return Ok(());
-    }
-    *messages = reduced;
-    ctx.emit(AgentEvent::Compressed {
-        from_tokens,
-        to_tokens,
-    });
-    Ok(())
 }
 
 /// Recovers text-dialect calls through `tinytools-agent`
