@@ -7,6 +7,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tinyinference_llm::cache::canonical_value;
 
 /// Renders a finalized SHA-256 digest as a 64-character lowercase hex string.
 pub(super) fn hex_digest(digest: impl AsRef<[u8]>) -> String {
@@ -56,23 +57,4 @@ pub(super) fn fnv1a_hex(data: &[u8]) -> String {
         hash = hash.wrapping_mul(PRIME);
     }
     format!("{hash:016x}")
-}
-
-/// Recursively sorts the keys of every JSON object so that the serialized form
-/// is canonical regardless of insertion order.
-pub(super) fn canonical_value(v: Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let mut pairs: Vec<(String, Value)> = map.into_iter().collect();
-            pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            Value::Object(
-                pairs
-                    .into_iter()
-                    .map(|(k, val)| (k, canonical_value(val)))
-                    .collect(),
-            )
-        }
-        Value::Array(arr) => Value::Array(arr.into_iter().map(canonical_value).collect()),
-        other => other,
-    }
 }

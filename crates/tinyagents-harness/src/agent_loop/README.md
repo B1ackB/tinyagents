@@ -138,8 +138,9 @@ answers are left untouched.
 
 Local reasoning models (for example `qwen3` via Ollama) intermittently spend
 their entire token budget on the hidden reasoning channel and return
-`finish_reason == "length"` with no visible text, no tool calls, and no
-structured output — a result useless to every caller. Before finalizing such a
+a length stop (`finish_reason` of `length`, or `max_tokens` / `MAX_TOKENS`
+as Anthropic and some gateways spell it — an empty `max_tokens` reply takes this
+path too) with no visible text, no tool calls, and no structured output — a result useless to every caller. Before finalizing such a
 turn (and before structured extraction, which would otherwise fail on the empty
 completion) the loop retries the model call up to
 `runtime::RunPolicy::truncated_empty_retries` times (default `1`, so two
@@ -198,7 +199,14 @@ follows the caller's normal
   `ChatModel::stream` instead of `ChatModel::invoke`, threading deltas through
   every middleware's `on_model_delta` hook. Visible text also crosses the
   streamed-text stall detector; repeated process narration drops the provider
-  stream and returns non-retryable `GenerationStalled`.
+  stream and returns non-retryable `GenerationStalled`. A stream that goes
+  silent past `RunLimits::stream_idle_timeout_ms` after its first output event
+  (a deadline advanced only by output events, not `Started`/`UsageDelta`)
+  fails with retryable `CallTimeout`. The wait for the first output event is
+  unbounded unless `stream_first_event_timeout_ms` opts in. After
+  `max_consecutive_stream_idle_timeouts` in a row on one model, retries on it
+  stop with `LimitExceeded` and the fallback chain continues with a fresh
+  count; the run fails with that error only when the chain is exhausted.
 - `AgentHarness::invoke_stream` / `invoke_stream_in_context` — a caller-facing
   event stream (`stream.rs`): yields every `AgentEvent` emitted during the run
   as `AgentStreamItem::Event`, then a single terminal

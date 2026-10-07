@@ -2,8 +2,7 @@
 //!
 //! JSONL threads and messages under `<workspace>/memory/conversations/`, a
 //! local trigram / CJK-bigram inverted index for cross-thread substring
-//! search, and the [`bus::ConversationEventBus`] persistence-subscriber seam
-//! for mirroring channel turns into the store.
+//! search.
 //!
 //! This is the *product-facing* chat log a UI lists and renders (threads with
 //! titles, labels, message counts). It is independent of the SQLite session
@@ -27,10 +26,7 @@
 //! - `tokenize` - multilingual normalization + character n-gram tokenizer.
 //! - `inverted_index` - in-memory index over message content.
 //! - `store` - the JSONL [`ConversationStore`] and its free-function API.
-//! - [`bus`] - channel-event persistence subscriber abstracted behind
-//!   [`bus::ConversationEventBus`].
 
-pub mod bus;
 mod inverted_index;
 mod store;
 mod tokenize;
@@ -39,7 +35,7 @@ mod types;
 pub use store::{
     ConversationPurgeStats, ConversationStore, append_message, delete_messages_from, delete_thread,
     ensure_thread, get_messages, list_threads, purge_threads, update_message, update_thread_labels,
-    update_thread_title,
+    update_thread_title, update_thread_working_dir,
 };
 pub use types::{
     ConversationThread, CreateConversationThread, CrossThreadHit, DETERMINISTIC_MESSAGE_ID_PREFIX,

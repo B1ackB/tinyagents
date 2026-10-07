@@ -3,7 +3,7 @@ use std::{future::Future, sync::Arc};
 use tinyagents_harness::CancellationToken;
 use tinyagents_session::transcript::{
     SessionRef, SessionTurnGuard, TranscriptHistory, TranscriptMessage, TranscriptPartial,
-    TranscriptTurn, TurnUsage, lock_session_turn,
+    TranscriptTurn, TurnUsage, lock_session_turn, session_stem,
 };
 use tinyinference_llm::message::Message;
 
@@ -527,11 +527,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         )
         .await?;
         self.apply_resume_preparation(resume_preparation)?;
-        // Held from the resume read through the persist below (and any
-        // partial persist on failure), so an out-of-band transcript append
-        // (`append_background_message`) lands between turns rather than
-        // staling this turn's baseline. See `lock_session_turn`.
-        let _turn_lock = cancelable(&cancellation, async { Ok(self.lock_turn().await) }).await?;
+        // Resume preparation may install a lazy target or change the selected
+        // session, so choose the shared locks only after applying it. The lock
+        // still covers the complete resume read and subsequent write.
+        let _turn_lock =
+            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resumed = if options.resume == ResumeMode::Never {
             false
         } else {
@@ -660,6 +660,9 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         self.history = committed.history.clone();
         self.persisted = raw;
         self.committed_turns += 1;
+        // Post-commit hooks may deliver another background message into this
+        // session. Do not hold the non-reentrant turn lock while they run.
+        drop(_turn_lock);
         // The receipt is constructed only after append and state replacement.
         // Its hook and the completed terminal are owned by one task: errors or
         // cancellation cannot relabel the successful durable transition, and
@@ -680,10 +683,44 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
     /// Takes the session's turn lock when the target is session-bound and its
     /// locator names a destination; otherwise there is nothing to share it
     /// with and the turn runs unlocked.
-    async fn lock_turn(&self) -> Option<SessionTurnGuard> {
-        let target = self.target.as_ref()?;
-        let session = target.session.as_ref()?;
-        lock_session_turn(target.locator.as_ref(), session).await
+    async fn lock_turn(&self, options: &TurnOptions<C>) -> Vec<SessionTurnGuard> {
+        let Some(target) = self.target.as_ref() else {
+            return Vec::new();
+        };
+        let Some(target_session) = target.session.as_ref() else {
+            let Some(session) = (options.resume == ResumeMode::Session)
+                .then_some(options.session.as_ref())
+                .flatten()
+            else {
+                return Vec::new();
+            };
+            return lock_session_turn(target.locator.as_ref(), session)
+                .await
+                .into_iter()
+                .collect();
+        };
+
+        // An explicit session can be absent. In that case resume leaves the
+        // target bound to `target_session`, which is where persist will write.
+        // Hold both locks across the read/run/write span. Sort first so two
+        // turns that name each other's session cannot deadlock while acquiring
+        // their fallback and selected locks in opposite order.
+        let mut sessions = vec![target_session];
+        if options.resume == ResumeMode::Session
+            && let Some(selected) = options.session.as_ref()
+            && selected != target_session
+        {
+            sessions.push(selected);
+        }
+        sessions.sort_by_key(|session| session_stem(&session.first_generation()));
+        sessions.dedup_by_key(|session| session_stem(&session.first_generation()));
+        let mut guards = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            if let Some(guard) = lock_session_turn(target.locator.as_ref(), session).await {
+                guards.push(guard);
+            }
+        }
+        guards
     }
 
     fn apply_preparation(
@@ -1083,4 +1120,4 @@ async fn cancelable<T>(
 
 #[cfg(test)]
 #[path = "session_tests.rs"]
-mod tests;
+mod session_tests;

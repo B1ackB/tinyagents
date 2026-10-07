@@ -31,25 +31,7 @@ use tinytools::{Tool, ToolResult};
 
 /// Builds a plain-text assistant response.
 fn text_response(text: &str) -> ModelResponse {
-    ModelResponse {
-        message: tinyinference_llm::message::AssistantMessage {
-            id: None,
-            content: vec![tinyinference_llm::message::ContentBlock::Text(
-                text.to_string(),
-            )],
-            tool_calls: Vec::new(),
-            usage: Some(Usage::new(1, 1)),
-            origin: None,
-        },
-        usage: Some(Usage::new(1, 1)),
-        finish_reason: Some("stop".to_string()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    crate::testkit::text_response(text).with_usage(Usage::new(1, 1))
 }
 
 /// A model that records every request it receives. On its first call it pushes

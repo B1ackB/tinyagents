@@ -1,12 +1,15 @@
 use super::*;
 use crate::{DriverFailure, DriverOutcome, SessionBuilder, TranscriptCodec};
 use async_trait::async_trait;
+use std::sync::Arc;
 use tinyagents_session::transcript::{
-    BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionTranscript,
-    TranscriptMeta, append_background_message, read_transcript, resolve_keyed_transcript_path,
-    session_stem,
+    BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionRef,
+    SessionTranscript, TranscriptLocator, TranscriptMessage, TranscriptMeta, read_transcript,
+    resolve_keyed_transcript_path, session_stem,
 };
+use tinyinference_llm::message::Message;
 use tokio::sync::Notify;
+use tokio::time::{Duration, timeout};
 
 fn meta() -> TranscriptMeta {
     TranscriptMeta {
@@ -89,13 +92,14 @@ impl SessionDriver for GatedDriver {
 }
 
 /// A background delivery issued while a turn is running waits for that turn
-/// to persist, then lands after it — instead of staling the turn's baseline
-/// and failing its persist.
+/// to persist, then lands after it — including when resume selects an absent
+/// session and the write falls back to the target's existing session.
 #[tokio::test]
 async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let directory = tempfile::tempdir().unwrap();
     let locator = Arc::new(FileTranscriptLocator::new(directory.path()));
     let session_ref = SessionRef::scoped("thread-1", "agent");
+    let selected_session = SessionRef::scoped("thread-2", "agent");
     let path =
         resolve_keyed_transcript_path(directory.path(), &session_stem(&session_ref)).unwrap();
     tinyagents_session::transcript::write_transcript(
@@ -118,6 +122,18 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     .session(locator.clone(), session_ref.clone(), meta())
     .build()
     .unwrap();
+    session
+        .seed_history(
+            vec![
+                Message::user("remind me at 5"),
+                Message::assistant("Scheduled."),
+            ],
+            vec![
+                TranscriptMessage::user("remind me at 5"),
+                TranscriptMessage::assistant("Scheduled."),
+            ],
+        )
+        .unwrap();
 
     let turn = tokio::spawn(async move {
         session
@@ -125,6 +141,8 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
                 SessionTurnRequest::new(Message::user("weather?")),
                 TurnOptions {
                     resume: ResumeMode::Session,
+                    session: Some(selected_session),
+                    thread_id: Some("thread-2".into()),
                     ..TurnOptions::default()
                 },
             )
@@ -134,27 +152,38 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
 
     let delivery_locator = locator.clone();
     let delivery_session = session_ref.clone();
-    let delivery = tokio::spawn(async move {
-        append_background_message(
+    let delivery_started = Arc::new(Notify::new());
+    let delivery_started_signal = delivery_started.clone();
+    let mut delivery = tokio::spawn(async move {
+        tinyagents_session::transcript::append_background_message_with_lock_notification(
             &delivery_locator,
             &delivery_session,
             TranscriptMessage::assistant("Time to stretch!"),
             BackgroundAppend::new("run-1", serde_json::json!({"kind": "cron"})),
+            &delivery_started_signal,
         )
         .await
     });
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-    assert!(!delivery.is_finished(), "delivery must wait for the turn");
+    delivery_started.notified().await;
+    assert!(
+        timeout(Duration::from_secs(1), &mut delivery)
+            .await
+            .is_err(),
+        "delivery must wait for the turn"
+    );
 
     release.notify_one();
     turn.await.unwrap().unwrap();
     assert_eq!(
         delivery.await.unwrap().unwrap(),
-        BackgroundAppendOutcome::Appended { generation: 0 }
+        BackgroundAppendOutcome::Appended { generation: 1 }
     );
-    let contents: Vec<String> = read_transcript(&path)
+    let head_path = resolve_keyed_transcript_path(
+        directory.path(),
+        &session_stem(&locator.head_generation(&session_ref)),
+    )
+    .unwrap();
+    let contents: Vec<String> = read_transcript(&head_path)
         .unwrap()
         .messages
         .into_iter()

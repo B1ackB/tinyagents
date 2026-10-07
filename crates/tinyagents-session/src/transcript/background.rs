@@ -39,13 +39,14 @@ use super::jsonl::{LineKind, build_message_line, classify_line};
 use super::paths::resolve_keyed_transcript_path;
 use super::reader::read_jsonl_lines;
 use super::session::{SessionRef, session_stem};
-use super::turn_lock::lock_session_turn;
+use super::turn_lock::lock_session_turn_with_notification;
 use super::types::{
     BackgroundAppend, BackgroundAppendOutcome, BackgroundOrigin, TranscriptMessage,
 };
 use super::writer::append_bytes;
 use anyhow::Context;
 use std::path::Path;
+use tokio::sync::Notify;
 
 /// How many times the head may move under an unpinned append before it gives
 /// up. Each move is a compaction or a fork landing between head resolution
@@ -91,13 +92,36 @@ pub async fn append_background_message(
     message: TranscriptMessage,
     options: BackgroundAppend,
 ) -> anyhow::Result<BackgroundAppendOutcome> {
-    validate(&message, &options)?;
+    append_background_message_impl(locator, session, message, options, None).await
+}
+
+/// Test-oriented variant that signals immediately before waiting for the
+/// shared turn lock. The append and production path are otherwise identical.
+#[doc(hidden)]
+pub async fn append_background_message_with_lock_notification(
+    locator: &FileTranscriptLocator,
+    session: &SessionRef,
+    message: TranscriptMessage,
+    options: BackgroundAppend,
+    lock_attempted: &Notify,
+) -> anyhow::Result<BackgroundAppendOutcome> {
+    append_background_message_impl(locator, session, message, options, Some(lock_attempted)).await
+}
+
+async fn append_background_message_impl(
+    locator: &FileTranscriptLocator,
+    session: &SessionRef,
+    message: TranscriptMessage,
+    options: BackgroundAppend,
+    lock_attempted: Option<&Notify>,
+) -> anyhow::Result<BackgroundAppendOutcome> {
+    let message = validate(message, &options)?;
     let root = session.first_generation();
     let stem = session_stem(&root);
     let key = options.idempotency_key.as_str();
     tracing::debug!(session = %stem, idempotency_key = %key, expected_generation = ?options.expected_generation, "[transcript-background] append requested");
 
-    let _turn = lock_session_turn(locator, &root).await;
+    let _turn = lock_session_turn_with_notification(locator, &root, lock_attempted).await;
     for _ in 0..MAX_HEAD_MOVES {
         let head = locator.head_generation(&root);
         if !locator.session_exists(&head) {
@@ -180,21 +204,31 @@ fn stale(options: &BackgroundAppend, head: u32) -> Option<BackgroundAppendOutcom
 /// A tool-calling row would leave calls with no results in the model context,
 /// and an interrupted row would be skipped by the model-context reader — the
 /// opposite of what a delivery is for.
-fn validate(message: &TranscriptMessage, options: &BackgroundAppend) -> anyhow::Result<()> {
+fn validate(
+    message: TranscriptMessage,
+    options: &BackgroundAppend,
+) -> anyhow::Result<TranscriptMessage> {
+    let normalized = message.normalized();
     anyhow::ensure!(
         !options.idempotency_key.trim().is_empty(),
         "background append needs a non-empty idempotency key"
     );
     anyhow::ensure!(
-        message.role == "assistant",
+        normalized.role == "assistant",
         "background append only writes assistant messages, got role `{}`",
-        message.role
+        normalized.role
     );
     anyhow::ensure!(
-        message.tool_calls.is_empty() && !message.interrupted,
+        !normalized.is_typed()
+            && normalized
+                .turn_usage
+                .as_ref()
+                .is_none_or(|usage| usage.tool_calls.is_empty())
+            && !normalized.interrupted
+            && normalized.tool_failure.is_none(),
         "background append only writes plain, complete assistant messages"
     );
-    Ok(())
+    Ok(normalized)
 }
 
 /// Whether any message line of the transcript at `path` was delivered with

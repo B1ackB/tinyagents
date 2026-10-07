@@ -43,23 +43,7 @@ fn tool_turn(calls: Vec<ToolCall>) -> ModelResponse {
 }
 
 fn text_turn(text: impl Into<String>) -> ModelResponse {
-    ModelResponse {
-        message: AssistantMessage {
-            id: None,
-            content: vec![ContentBlock::Text(text.into())],
-            tool_calls: Vec::new(),
-            usage: Some(Usage::new(5, 2)),
-            origin: None,
-        },
-        usage: Some(Usage::new(5, 2)),
-        finish_reason: Some("stop".into()),
-        raw: None,
-        resolved_model: None,
-        continue_turn: None,
-        served_from_cache: false,
-        correlation: None,
-        resolved_route: None,
-    }
+    tinyagents_harness::testkit::text_response(text).with_usage(Usage::new(5, 2))
 }
 
 /// A probe that observes the request after all earlier `before_model` hooks

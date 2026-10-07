@@ -1,7 +1,8 @@
 use super::*;
 use crate::transcript::{
-    DisplayRecord, TranscriptLocator, TranscriptMeta, TranscriptTurn, lock_session_turn,
-    read_transcript, read_transcript_display, resolve_keyed_transcript_path, session_stem,
+    DisplayRecord, ToolFailure, TranscriptLocator, TranscriptMeta, TranscriptPart, TranscriptTurn,
+    lock_session_turn, read_transcript, read_transcript_display, resolve_keyed_transcript_path,
+    session_stem,
 };
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -354,11 +355,25 @@ async fn only_plain_assistant_messages_with_a_key_are_accepted() {
             extra_content: None,
         }],
     );
+    let mut tool_result_id = TranscriptMessage::assistant("not a tool result");
+    tool_result_id.tool_call_id = Some("call-1".into());
+    let mut parts = TranscriptMessage::assistant("not a user row");
+    parts.parts = Some(vec![TranscriptPart::Text {
+        text: "text".into(),
+    }]);
+    let mut failed = TranscriptMessage::assistant("failed");
+    failed.tool_failure = Some(ToolFailure {
+        failed: true,
+        detail: Some("failed".into()),
+    });
 
     for (message, key) in [
         (TranscriptMessage::user("hi"), "run-1"),
         (TranscriptMessage::system("hi"), "run-1"),
         (calls, "run-1"),
+        (tool_result_id, "run-1"),
+        (parts, "run-1"),
+        (failed, "run-1"),
         (interrupted, "run-1"),
         (TranscriptMessage::assistant("fine"), "  "),
     ] {

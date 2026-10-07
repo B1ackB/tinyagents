@@ -130,7 +130,7 @@ pub(super) enum ThreadLogEntry {
     /// NOTE (audit TR-8): `labels: Some(_)` always **replaces** the folded
     /// label set (see `thread_index_unlocked`'s `Upsert` handling) — it is
     /// not a merge. Callers that want to touch a thread without disturbing
-    /// its labels (e.g. `bus::persist_channel_turn`) must pass `labels: None`.
+    /// its labels (e.g. a host's channel-persistence subscriber) must pass `labels: None`.
     Upsert {
         thread_id: String,
         title: String,
@@ -142,6 +142,8 @@ pub(super) enum ThreadLogEntry {
         labels: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
     },
     /// Tombstone removing `thread_id` from the folded state; `op` wire string
     /// is `delete`.
@@ -190,6 +192,8 @@ pub(super) struct ThreadIndexEntry {
     pub(super) last_message_at: Option<String>,
     /// Personality/persona id bound to this thread, if any.
     pub(super) personality_id: Option<String>,
+    /// Working directory bound to this thread, if any.
+    pub(super) working_dir: Option<String>,
 }
 
 /// Default labels for a thread whose `Upsert` carried none, inferred from its
@@ -426,6 +430,20 @@ pub fn update_thread_labels(
     updated_at: &str,
 ) -> Result<ConversationThread, String> {
     ConversationStore::new(workspace_dir).update_thread_labels(thread_id, labels, updated_at)
+}
+
+/// Free-function shim around [`ConversationStore::update_thread_working_dir`].
+pub fn update_thread_working_dir(
+    workspace_dir: PathBuf,
+    thread_id: &str,
+    working_dir: Option<String>,
+    updated_at: &str,
+) -> Result<ConversationThread, String> {
+    ConversationStore::new(workspace_dir).update_thread_working_dir(
+        thread_id,
+        working_dir,
+        updated_at,
+    )
 }
 
 /// Free-function shim around [`ConversationStore::update_message`].
