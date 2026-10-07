@@ -15,6 +15,8 @@ use tinyagents_harness::tool::{ToolDispatch, ToolRegistry};
 use tinyinference_llm::message::Message;
 use tinytools::{Tool, ToolResult};
 
+use crate::subagent::{AppliedResult, IncompleteKind};
+
 use super::{
     JobLink, SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId, SubAgentJobRegistry,
     SubAgentJobStatus,
@@ -85,6 +87,9 @@ impl SubAgentJobRegistry {
                 error: None,
                 subagent_run_id: link.subagent_run_id,
                 parent_tool_call_id: link.parent_tool_call_id,
+                incomplete_kind: None,
+                artifacts: Vec::new(),
+                schema_error: None,
             },
             owner,
             steering: steering.clone(),
@@ -138,11 +143,36 @@ impl SubAgentJobRegistry {
                 entry.job.status = SubAgentJobStatus::Cancelled;
                 entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
             }
+            Err(error @ TinyAgentsError::LimitExceeded(_)) => {
+                entry.job.status = SubAgentJobStatus::Incomplete;
+                entry.job.incomplete_kind = Some(IncompleteKind::BudgetExceeded);
+                entry.job.error = Some(error.to_string());
+            }
+            Err(error @ TinyAgentsError::Timeout(_)) => {
+                entry.job.status = SubAgentJobStatus::Incomplete;
+                entry.job.incomplete_kind = Some(IncompleteKind::Timeout);
+                entry.job.error = Some(error.to_string());
+            }
             Err(error) => {
                 entry.job.status = SubAgentJobStatus::Failed;
                 entry.job.error = Some(error.to_string());
             }
         }
+    }
+
+    /// Folds a result-policy application into a job that completed: replaces
+    /// the visible output and records any artifact or schema error.
+    pub(crate) fn apply_result(&self, id: &SubAgentJobId, applied: AppliedResult) {
+        let mut entries = self.write();
+        let Some(entry) = entries.get_mut(id) else {
+            return;
+        };
+        if entry.job.status != SubAgentJobStatus::Completed {
+            return;
+        }
+        entry.job.output = Some(applied.text);
+        entry.job.artifacts.extend(applied.artifact);
+        entry.job.schema_error = applied.schema_error;
     }
 
     /// Marks a job `Failed` because its child task panicked or was aborted
