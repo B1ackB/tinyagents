@@ -67,6 +67,30 @@ crate root as `session::run_ledger::`.
   compare-and-swap claim, a quality-gated completion, and an explicit
   release for a member that abandons a task without shutting down.
 
+### Restart recovery classification (`recovery.rs`)
+
+- `classify_recovery(tail, tool_effects)` — pure and advisory. Given the
+  transcript tail's dangling tool calls (`DanglingToolCall`, no recorded
+  result) and the per-call `tool_effects` rows, returns one `CallRecovery` per
+  call, matched on `(run_id, call_id)`:
+
+  | Effect record | Class | Meaning |
+  | --- | --- | --- |
+  | none | `Resume` | the call never began; continue normally |
+  | `completed`, `failed` | `ResumeReportOnly` | status is recorded (the result/error itself may not be persisted); report it, do not re-execute |
+  | `deferred` | `AwaitingAnswer` | the call paused for approval/a result; resume by answering the deferral, never re-execute |
+  | `started` only, `interrupted` | `NeedsVerification` | may have committed; verify real-world state, never blindly re-run |
+
+- When several effect rows match one call, the most cautious class wins.
+- `overall_recovery(&classified)` — the most cautious class (`Resume <
+  ResumeReportOnly < AwaitingAnswer < NeedsVerification`), `Resume` when nothing dangles.
+
+The effect ledger writes `started` before a call executes, which is why "no
+row" means "never began"; hosts that did not attach the ledger must not rely on
+`Resume`. Nothing here re-runs a tool or writes to the ledger. For the
+parent-facing note about interrupted *children* see
+`tinyagents_graph::orchestration::build_restart_recovery_note`.
+
 ## Layout of this module
 
 | File | Role |
@@ -75,6 +99,7 @@ crate root as `session::run_ledger::`.
 | `types.rs` | Serde record types, one `*Upsert` companion per persisted type, and list request/response shapes. |
 | `ops.rs` | CRUD, listing, and coordination primitives (see below). |
 | `store.rs` | Schema entry point — a no-op now that all DDL lives in `crate::migrations`; kept as the conventional call site. |
+| `recovery.rs` | `classify_recovery` / `overall_recovery`: advisory restart-recovery verdicts for dangling tool calls (tests in `recovery_tests.rs`). |
 | `test.rs` | Module-local unit tests. |
 
 ## Operational constraints
