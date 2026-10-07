@@ -13,9 +13,11 @@
 //! ([`OutcomeFingerprinter`](super::OutcomeFingerprinter)) so volatile spans
 //! do not hide a repeat.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use super::types::{
+    ArgumentChurnDetector, ChurnState, PingPongDetector, PingPongState, Step,
+};
 use super::util::{hash_of, lock};
 
 /// Alternations (A,B,A,B,A,B is six) before [`PingPongDetector`] warns.

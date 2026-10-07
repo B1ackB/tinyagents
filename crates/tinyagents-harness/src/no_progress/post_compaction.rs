@@ -12,9 +12,9 @@
 //! behaviour, so a single repeat is never blocked, and a pair that was not
 //! repeating before the compaction is not remembered at all.
 
-use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use super::types::{GuardState, PostCompactionGuard};
 use super::util::{hash_pair, lock};
 
 /// Recurrences of a `(call, result)` pair before a compaction that make it

@@ -221,7 +221,7 @@ pub struct SuccessfulRepeatTracker {
     /// Hash of `(call signature, outcome signature)` → times recorded this run.
     pub(super) recurrences: Mutex<HashMap<u64, u32>>,
     /// Staged escalation settings; `None` halts at the first threshold.
-    pub(super) escalation: Option<super::escalation::RepeatEscalation>,
+    pub(super) escalation: Option<RepeatEscalation>,
     /// Call-signature hash → ledger key of the outcome that call returned
     /// last, so [`SuccessfulRepeatTracker::pre_call`] can tell how often the
     /// next attempt would repeat a result without executing it.
