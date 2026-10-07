@@ -617,6 +617,7 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
         ..Default::default()
     };
     let mut c = ctx();
+    let epoch = c.prompt_prefix_epoch();
     Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut request)
         .await
         .unwrap();
@@ -629,6 +630,11 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
         "the result stayed in the kept tail"
     );
     assert!(tool_text_len(&request) < 1_000, "and the result is cut");
+    assert_ne!(
+        c.prompt_prefix_epoch(),
+        epoch,
+        "the compaction and its cut declare the rewritten prefix"
+    );
 }
 
 #[tokio::test]
