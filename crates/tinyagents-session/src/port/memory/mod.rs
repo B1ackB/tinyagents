@@ -164,10 +164,8 @@ impl InMemoryTranscriptLocator {
             .map(|(_, _, history)| history.clone());
         if let Some(predecessor) = &predecessor {
             // Record the predecessor session as the parent so compaction chains stay connected.
-            if let Some(parent_meta) = predecessor.seed_metadata() {
-                if let Some(parent_id) = parent_meta.session_id {
-                    meta.parent_session_id = Some(parent_id);
-                }
+            if let Some(parent_id) = predecessor.session_id() {
+                meta.parent_session_id = Some(parent_id);
             }
             predecessor.seal();
         }
