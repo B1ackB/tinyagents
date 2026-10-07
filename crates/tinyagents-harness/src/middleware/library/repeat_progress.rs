@@ -64,11 +64,21 @@ pub type ReadOnlyCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// halt above first only *warns*, appending a `[repeat notice]` to the tool
 /// result; an identical call that keeps repeating is then **blocked** in
 /// `before_tool` (answered with an error result, never executed); a second
-/// block in the run halts as described below. Ping-pong and argument-churn
-/// patterns only warn, and a repeat of the calls made right before a context
-/// compaction jumps straight to the block stage.
+/// block *of the same call* halts as described below. Ping-pong and
+/// argument-churn patterns only warn, as does a repeat of calls that were
+/// already repeating right before a context compaction. At most one warning
+/// lands on a result; the rest wait for the next one.
 /// [`RepeatProgressConfig::immediate_halt`] restores halting at the first
 /// threshold.
+///
+/// A block is a *prediction* that the call would return what it returned last
+/// time. Without [`with_read_only`](Self::with_read_only) every tool is treated
+/// as possibly state-changing, so any other successful call discards the
+/// prediction and a repeat only blocks while it is the most recent call
+/// (A, A, A, ...). With it, reads do not discard predictions, so A, B, A, B
+/// cycles of reads block too. The results the guard answers itself carry
+/// [`REPEAT_GUARD_METADATA_KEY`] in their metadata so a host can keep them out
+/// of failure accounting.
 ///
 /// Polling/wait tools (per the [`RepeatExemption`]) are exempt from all three:
 /// their contract is to be re-invoked identically, so an all-poll batch resets
@@ -83,6 +93,8 @@ pub struct RepeatProgressMiddleware {
     handle: SteeringHandle,
     halt_summary: HaltSummarySlot,
     exempt: RepeatExemption,
+    /// Tools known not to change state; see [`Self::with_read_only`].
+    read_only: ReadOnlyCheck,
     state: Arc<RepeatState>,
     /// Reduces a tool result to the identity the recurrence ledger keys on.
     fingerprinter: Arc<dyn OutcomeFingerprinter>,
@@ -103,6 +115,7 @@ impl RepeatProgressMiddleware {
             handle,
             halt_summary,
             exempt,
+            read_only: Arc::new(|_| false),
             state: Arc::new(RepeatState::new(
                 DEFAULT_CLEARED_PLACEHOLDER,
                 RepeatProgressConfig::default(),
@@ -126,6 +139,16 @@ impl RepeatProgressMiddleware {
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         let config = self.state.config.clone();
         self.state = Arc::new(RepeatState::new(placeholder, config));
+        self
+    }
+
+    /// Names the tools that cannot change state (pure reads), typically from
+    /// their declared `ToolPolicy::read_only`. A successful call to any other
+    /// tool discards the guard's prediction of what *other* calls would return,
+    /// so a read repeated after an edit is never blocked. Defaults to "no tool
+    /// is read-only", the conservative reading.
+    pub fn with_read_only(mut self, read_only: ReadOnlyCheck) -> Self {
+        self.read_only = read_only;
         self
     }
 
@@ -173,17 +196,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         _run: &mut crate::middleware::AgentRun,
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
-        if let Ok(mut monitors) = self.state.monitors.lock() {
-            monitors.remove(&run_id);
-        }
+        self.state.forget_run(run_id);
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(&run_id);
-        }
-        if let Ok(mut recorded) = self.state.recorded.lock() {
-            recorded.remove(&run_id);
-        }
-        if let Ok(mut visible) = self.state.visible_before_reduction.lock() {
-            visible.remove(&run_id);
         }
         Ok(())
     }
@@ -317,6 +332,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     tool = call.name,
                     "[tinyagents::mw] repeat-progress blocked a repeated call"
                 );
+                self.state
+                    .mark_refused(ctx.instance_id(), &call.id, REPEAT_GUARD_BLOCKED);
                 Err(TinyAgentsError::ToolFailed(text))
             }
             CallGate::Halt(summary) => {
@@ -324,6 +341,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     tool = call.name,
                     "[tinyagents::mw] repeat-progress halted the run after repeated blocks"
                 );
+                self.state
+                    .mark_refused(ctx.instance_id(), &call.id, REPEAT_GUARD_HALTED);
                 self.halt(summary.clone());
                 Err(TinyAgentsError::ToolFailed(summary))
             }
@@ -340,6 +359,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
         let run_id = ctx.instance_id();
+        if let Some(marker) = self.state.take_refused(run_id, &call_id) {
+            tag_result(result, marker);
+        }
         // Fingerprint outside the mutexes below: it scans the whole result.
         let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
         let mut notes = Vec::new();
@@ -363,7 +385,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             {
                 let identity = identity.as_deref().unwrap_or_default();
                 if let Some(observation) = self.state.with_monitor(run_id, |monitor| {
-                    monitor.record_call(&tool, &arguments, identity)
+                    monitor.record_call(&tool, &arguments, identity, (self.read_only)(&tool))
                 }) {
                     recurrence = observation.verdict;
                     notes.extend(observation.notes);
@@ -392,22 +414,27 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
             batch_verdict.unwrap_or(SuccessfulRepeat::Continue),
             recurrence,
         );
-        // Warnings go to the model on this result whatever else happens.
         // The per-call recurrence note is the more specific one: when it fires,
         // the batch streak that coincides with it adds nothing.
-        match (&recurrence, &batch_verdict) {
-            (SuccessfulRepeat::Warn(note), _) | (_, SuccessfulRepeat::Warn(note)) => {
-                notes.push(note.clone());
-            }
-            _ => {}
+        let mut candidates = Vec::new();
+        if let SuccessfulRepeat::Warn(note) | SuccessfulRepeat::Halt(note) = &recurrence
+            && matches!(recurrence, SuccessfulRepeat::Warn(_))
+        {
+            candidates.push(note.clone());
+        } else if let SuccessfulRepeat::Warn(note) = &batch_verdict {
+            candidates.push(note.clone());
         }
-        if !notes.is_empty() {
-            tracing::debug!(
-                tool = tool_name,
-                notes = notes.len(),
-                "[tinyagents::mw] repeat-progress appended a warning to the tool result"
-            );
-            append_notes(result, &notes);
+        candidates.extend(notes);
+        if !result.is_error {
+            // One warning per result: the rest wait for the next one.
+            let note = self.state.take_one_note(run_id, candidates);
+            if let Some(note) = note {
+                tracing::debug!(
+                    tool = tool_name,
+                    "[tinyagents::mw] repeat-progress appended a warning to the tool result"
+                );
+                append_notes(result, &note);
+            }
         }
         if already_halted {
             // An earlier result in this batch paused the run; keep the streak

@@ -10,6 +10,9 @@ use tinytools::{ToolContent, ToolResult as TaToolResult};
 
 use crate::no_progress::{RepeatMonitor, RepeatProgressConfig};
 
+/// Warnings kept waiting for a later result; beyond this the newest are dropped.
+const MAX_DEFERRED_NOTES: usize = 4;
+
 /// Extract the assistant's visible text (concatenated [`ContentBlock::Text`]
 /// blocks) from a model response message, for the repeat-output signature.
 pub(super) fn assistant_visible_text(message: &tinyinference_llm::message::AssistantMessage) -> String {
@@ -93,6 +96,38 @@ impl RepeatState {
 }
 
 impl RepeatState {
+    /// Remembers that the call `call_id` was answered without running.
+    pub(super) fn mark_refused(&self, run_id: u64, call_id: &str, marker: &'static str) {
+        if let Ok(mut refused) = self.refused.lock() {
+            refused
+                .entry(run_id)
+                .or_default()
+                .insert(call_id.to_string(), marker);
+        }
+    }
+
+    /// Takes (and forgets) how `call_id` was answered, if the guard refused it.
+    pub(super) fn take_refused(&self, run_id: u64, call_id: &str) -> Option<&'static str> {
+        self.refused.lock().ok()?.get_mut(&run_id)?.remove(call_id)
+    }
+
+    /// Picks the single warning to put on this result from `fresh` (most
+    /// specific first) and the ones queued earlier, and queues the rest for
+    /// the next result. Identical notes collapse.
+    pub(super) fn take_one_note(&self, run_id: u64, fresh: Vec<String>) -> Option<String> {
+        let Ok(mut deferred) = self.deferred.lock() else {
+            return fresh.into_iter().next();
+        };
+        let queue = deferred.entry(run_id).or_default();
+        for note in fresh {
+            if !queue.contains(&note) {
+                queue.push_back(note);
+            }
+        }
+        queue.truncate(MAX_DEFERRED_NOTES);
+        queue.pop_front()
+    }
+
     /// Drops everything held for a finished run.
     pub(super) fn forget_run(&self, run_id: u64) {
         if let Ok(mut monitors) = self.monitors.lock() {
@@ -146,22 +181,20 @@ pub(super) fn tag_result(result: &mut TaToolResult, marker: &str) {
     }
 }
 
-/// Appends each warning to the result the model is about to read, in the plain
+/// Appends a warning to the result the model is about to read, in the plain
 /// blocks and in the markdown rendering.
-pub(super) fn append_notes(result: &mut TaToolResult, notes: &[String]) {
-    for note in notes {
-        let mut chars = note.chars();
-        let note = match chars.next() {
-            Some(first) => format!("[repeat notice] {}{}", first.to_uppercase(), chars.as_str()),
-            None => continue,
-        };
-        result.content.push(ToolContent::Text {
-            text: format!("\n\n{note}"),
-        });
-        if let Some(markdown) = result.markdown_formatted.as_mut() {
-            markdown.push_str("\n\n");
-            markdown.push_str(&note);
-        }
+pub(super) fn append_notes(result: &mut TaToolResult, note: &str) {
+    let mut chars = note.chars();
+    let Some(first) = chars.next() else {
+        return;
+    };
+    let note = format!("[repeat notice] {}{}", first.to_uppercase(), chars.as_str());
+    result.content.push(ToolContent::Text {
+        text: format!("\n\n{note}"),
+    });
+    if let Some(markdown) = result.markdown_formatted.as_mut() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&note);
     }
 }
 
