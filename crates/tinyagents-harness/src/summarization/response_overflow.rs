@@ -65,7 +65,7 @@ pub fn detect_response_overflow(
     let length_stop = crate::finish_reason::is_length_stop(finish_reason);
 
     if let Some(window) = context_window {
-        if !length_stop && usage.input_tokens > window {
+        if usage.input_tokens > window {
             return Some(info);
         }
         if length_stop

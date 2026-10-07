@@ -47,6 +47,20 @@ fn a_prompt_inside_the_window_is_not_an_overflow() {
 }
 
 #[test]
+fn an_above_window_prompt_is_an_overflow_even_on_a_length_stop_with_output() {
+    assert!(
+        detect(
+            ResponseOverflowDetection::UsageAndShortLength,
+            usage(9_000, 2_000),
+            Some("length"),
+            Some(8_192),
+            Some(4_000),
+        )
+        .is_some()
+    );
+}
+
+#[test]
 fn without_a_known_window_nothing_is_inferred_from_usage() {
     assert!(
         detect(
