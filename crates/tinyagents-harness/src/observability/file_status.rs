@@ -13,7 +13,9 @@ use super::HarnessStatusStore;
 use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{ExecutionStatus, RunId};
+use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::store::{FileStore, Store};
 
@@ -21,6 +23,26 @@ use crate::store::{FileStore, Store};
 /// (`<kv root>/run_status/<run_id>.json`). Slash-free so it round-trips the
 /// [`FileStore`] name sanitizer. Part of the on-disk format.
 pub const STATUS_NS: &str = "run_status";
+
+fn status_key(run_id: &str) -> String {
+    let safe = is_safe_status_key(run_id);
+    if safe && !run_id.starts_with("x-") {
+        return run_id.to_string();
+    }
+    let mut encoded = String::from("x-");
+    for byte in run_id.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
+fn is_safe_status_key(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && !run_id.bytes().all(|byte| byte == b'.')
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
 
 /// Name fragments that mark an environment variable as credential material.
 const SECRET_NAME_MARKERS: [&str; 7] = [
@@ -83,6 +105,7 @@ pub fn secrets_from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Ve
 /// prompts or payloads.
 pub struct FileStatusStore {
     kv: Arc<dyn Store>,
+    write_lock: Arc<AsyncMutex<()>>,
 }
 
 impl FileStatusStore {
@@ -95,7 +118,10 @@ impl FileStatusStore {
     /// status store. Records keep the [`FileStore`]-safe key encoding, so
     /// they read back identically whichever store holds them.
     pub fn over(kv: Arc<dyn Store>) -> Self {
-        Self { kv }
+        Self {
+            kv,
+            write_lock: Arc::new(AsyncMutex::new(())),
+        }
     }
 
     /// Enumerate every persisted status snapshot (best-effort per record: a
@@ -132,16 +158,80 @@ impl FileStatusStore {
 #[async_trait]
 impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
-        let key = status.run_id.as_str().to_string();
+        let _write_lock = self.write_lock.lock().await;
+        let key = status_key(status.run_id.as_str());
+        let run_id = status.run_id.as_str();
+        let legacy_value = if key != run_id {
+            self.kv.get(STATUS_NS, run_id).await?
+        } else {
+            None
+        };
+        if let Some(value) = self.kv.get(STATUS_NS, &key).await?
+            && let Ok(existing) = serde_json::from_value::<HarnessRunStatus>(value)
+            && existing.run_id != status.run_id
+        {
+            let mut moved = Vec::new();
+            let mut occupied = HashSet::new();
+            let mut current_key = key.clone();
+            let mut current = existing;
+            loop {
+                let destination = status_key(current.run_id.as_str());
+                if destination == current_key {
+                    break;
+                }
+                if !occupied.insert(destination.clone()) {
+                    return Err(TinyAgentsError::Storage(
+                        "status-key migration cycle".to_string(),
+                    ));
+                }
+                moved.push((current_key.clone(), destination.clone(), current));
+                let Some(next) = self.kv.get(STATUS_NS, &destination).await? else {
+                    break;
+                };
+                let Ok(next) = serde_json::from_value::<HarnessRunStatus>(next) else {
+                    break;
+                };
+                if next.run_id == status.run_id {
+                    break;
+                }
+                current_key = destination;
+                current = next;
+            }
+            for (source, destination, value) in moved.into_iter().rev() {
+                self.kv
+                    .put(STATUS_NS, &destination, serde_json::to_value(&value)?)
+                    .await?;
+                self.kv.delete(STATUS_NS, &source).await?;
+            }
+        }
         let value = serde_json::to_value(&status)?;
-        self.kv.put(STATUS_NS, &key, value).await
+        self.kv.put(STATUS_NS, &key, value).await?;
+        if legacy_value
+            .as_ref()
+            .and_then(|value| serde_json::from_value::<HarnessRunStatus>(value.clone()).ok())
+            .is_some_and(|existing| existing.run_id == status.run_id)
+        {
+            self.kv.delete(STATUS_NS, run_id).await?;
+        }
+        Ok(())
     }
 
     async fn get_status(&self, run_id: &str) -> Result<Option<HarnessRunStatus>> {
-        match self.kv.get(STATUS_NS, run_id).await? {
-            Some(value) => Ok(Some(serde_json::from_value(value)?)),
-            None => Ok(None),
+        let key = status_key(run_id);
+        if let Some(value) = self.kv.get(STATUS_NS, &key).await?
+            && let Ok(status) = serde_json::from_value::<HarnessRunStatus>(value)
+            && status.run_id.as_str() == run_id
+        {
+            return Ok(Some(status));
         }
+        if key != run_id
+            && let Some(value) = self.kv.get(STATUS_NS, run_id).await?
+            && let Ok(status) = serde_json::from_value::<HarnessRunStatus>(value)
+            && status.run_id.as_str() == run_id
+        {
+            return Ok(Some(status));
+        }
+        Ok(None)
     }
 
     async fn list_by_thread(&self, thread_id: &str) -> Result<Vec<HarnessRunStatus>> {

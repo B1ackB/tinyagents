@@ -571,7 +571,34 @@ impl TranscriptLocator for FileTranscriptLocator {
     }
 
     fn latest_for_agent(&self, agent_name: &str) -> Option<Arc<dyn TranscriptRead>> {
-        let path = find_latest_transcript(&self.workspace_dir, agent_name)?;
+        let path = find_latest_transcript(&self.workspace_dir, agent_name).or_else(|| {
+            let dir = self.workspace_dir.join("session_raw");
+            let mut best: Option<(String, PathBuf)> = None;
+            for entry in fs::read_dir(dir).ok()?.flatten() {
+                let candidate = entry.path();
+                if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Ok(transcript) = read_transcript(&candidate) else {
+                    continue;
+                };
+                if transcript.meta.parent_session_id.is_none()
+                    && (transcript.meta.agent_name == agent_name
+                        || transcript.meta.agent_id.as_deref() == Some(agent_name))
+                    && best
+                        .as_ref()
+                        .is_none_or(|(updated, _)| transcript.meta.updated > *updated)
+                {
+                    best = Some((transcript.meta.updated, candidate));
+                }
+            }
+            best.map(|(_, path)| path).or_else(|| {
+                crate::transcript::paths::find_latest_legacy_transcript(
+                    &self.workspace_dir,
+                    agent_name,
+                )
+            })
+        })?;
         tracing::debug!(
             "[transcript-history] locator latest_for_agent agent={agent_name} path={}",
             path.display()
@@ -594,19 +621,34 @@ impl TranscriptLocator for FileTranscriptLocator {
         else {
             return Ok(false);
         };
-        crate::transcript::append_interrupted_partial(
-            &path,
-            &partial.content,
-            request_id,
-            partial.iteration,
-            partial.reasoning_content.as_deref(),
-        )?;
-        tracing::debug!(
-            "[transcript-history] locator appended interrupted partial thread={thread_id} chars={} path={}",
-            partial.content.len(),
-            path.display()
-        );
-        Ok(true)
+        if partial.content.is_empty() {
+            return Ok(false);
+        }
+        // Bind the lock handle to the current head so partial writes share
+        // the generation and successor-reservation locks with head writers.
+        let root_path = path;
+        let path = head_generation_path(&root_path);
+        let history =
+            FileTranscriptHistory::opened_at(path.clone(), seed_meta_for_discovered(thread_id));
+        history.with_write_locks(|| {
+            anyhow::ensure!(
+                head_generation_path(&root_path) == path,
+                "transcript head advanced during partial append; retry"
+            );
+            crate::transcript::append_interrupted_partial(
+                &path,
+                &partial.content,
+                request_id,
+                partial.iteration,
+                partial.reasoning_content.as_deref(),
+            )?;
+            tracing::debug!(
+                "[transcript-history] locator appended interrupted partial thread={thread_id} chars={} path={}",
+                partial.content.len(),
+                path.display()
+            );
+            Ok(true)
+        })
     }
 
     fn root_for_thread(&self, thread_id: &str) -> Option<Arc<dyn TranscriptRead>> {
@@ -906,7 +948,10 @@ fn path_entry_exists(path: &Path) -> anyhow::Result<bool> {
     }
 }
 
-fn same_transcript_messages(left: &[TranscriptMessage], right: &[TranscriptMessage]) -> bool {
+pub(crate) fn same_transcript_messages(
+    left: &[TranscriptMessage],
+    right: &[TranscriptMessage],
+) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.same_row_as(b))
 }
 
@@ -1434,6 +1479,44 @@ impl TranscriptHistory for FileTranscriptHistory {
         drop(os_lock);
         result
     }
+}
+
+/// The newest generation of the transcript at `path`: the sibling
+/// `{base}.g{n}.jsonl` with the largest `n`, or `path` itself when no successor
+/// exists. `path` may name any generation of the chain.
+fn head_generation_path(path: &Path) -> PathBuf {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return path.to_path_buf();
+    };
+    let base = match stem.rsplit_once(".g") {
+        Some((base, generation)) if generation.parse::<u32>().is_ok() => base,
+        _ => stem,
+    };
+    let Some(parent) = path.parent() else {
+        return path.to_path_buf();
+    };
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let candidate = entry.path();
+            if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let name = candidate.file_stem()?.to_str()?;
+            let generation = if name == base {
+                0
+            } else {
+                name.strip_prefix(base)?
+                    .strip_prefix(".g")?
+                    .parse::<u32>()
+                    .ok()?
+            };
+            Some((generation, candidate))
+        })
+        .max_by_key(|(generation, _)| *generation)
+        .map_or_else(|| path.to_path_buf(), |(_, head)| head)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! own provider is held to by the conformance suite.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tinyagents_harness::store::{InMemoryAppendStore, InMemoryStore};
@@ -20,6 +20,8 @@ use crate::transcript::{
     TranscriptRead, session_stem,
 };
 use crate::turn_state::{TurnLifecycle, TurnState};
+
+const MAX_GENERATIONS: u32 = 4096;
 
 /// Completed turns kept per thread, as the on-disk store keeps them.
 const COMPLETED_RETENTION: usize = 20;
@@ -53,11 +55,14 @@ impl SessionStoreProvider for InMemorySessionStores {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(agent_id.to_string())
-            .or_insert_with(|| AgentStores {
-                transcripts: Arc::new(InMemoryTranscriptLocator::new(agent_id)),
-                turn_states: Arc::new(InMemoryTurnStates::default()),
-                kv: Arc::new(InMemoryStore::new()),
-                journal: Arc::new(InMemoryAppendStore::new()),
+            .or_insert_with(|| {
+                let transcripts = Arc::new(InMemoryTranscriptLocator::new(agent_id));
+                AgentStores {
+                    transcripts: transcripts.clone(),
+                    turn_states: Arc::new(InMemoryTurnStates::default()),
+                    kv: Arc::new(InMemoryStore::new()),
+                    journal: Arc::new(InMemoryAppendStore::new()),
+                }
             })
             .clone()
     }
@@ -92,7 +97,9 @@ impl SessionStoreProvider for InMemorySessionStores {
 /// means most recently created.
 pub struct InMemoryTranscriptLocator {
     label: String,
-    stems: Mutex<Vec<(String, Arc<InMemoryTranscriptHistory>)>>,
+    stems: Mutex<Vec<(String, bool, Arc<InMemoryTranscriptHistory>)>>,
+    reserved_generations: Mutex<HashSet<String>>,
+    generation_gate: Arc<Mutex<()>>,
 }
 
 impl InMemoryTranscriptLocator {
@@ -101,6 +108,8 @@ impl InMemoryTranscriptLocator {
         Self {
             label: label.into(),
             stems: Mutex::new(Vec::new()),
+            reserved_generations: Mutex::new(HashSet::new()),
+            generation_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -111,16 +120,114 @@ impl InMemoryTranscriptLocator {
         stems
             .iter()
             .rev()
-            .filter(|(stem, _)| !stem.contains("__"))
-            .filter_map(|(_, history)| {
+            .filter(|(_, is_subagent, _)| !is_subagent)
+            .filter_map(|(_, _, history)| {
                 let session = history.read_session().ok().flatten()?;
                 Some((session.meta, history.clone()))
             })
             .collect()
     }
+
+    fn begin_generation_locked(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let successor = session.next_generation();
+        anyhow::ensure!(
+            successor.generation <= MAX_GENERATIONS,
+            "session generation limit reached"
+        );
+        let stem = session_stem(&successor);
+        let mut reservations = self
+            .reserved_generations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let already_exists = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(known, _, _)| known == &stem);
+        anyhow::ensure!(
+            !already_exists && reservations.insert(stem.clone()),
+            "session generation already exists or is reserved"
+        );
+        let mut meta = seed;
+        meta.session_id = Some(successor.session_id());
+        meta.parent_session_id = successor.parent_session_id();
+        let predecessor = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(known, _, _)| known == &session_stem(session))
+            .map(|(_, _, history)| history.clone());
+        if let Some(predecessor) = &predecessor {
+            predecessor.seal();
+        }
+        match self.open_stem_locked(&stem, meta) {
+            Ok(handle) => Ok((successor, handle)),
+            Err(error) => {
+                if let Some(predecessor) = &predecessor {
+                    predecessor.unseal();
+                }
+                reservations.remove(&stem);
+                Err(error)
+            }
+        }
+    }
 }
 
 impl TranscriptLocator for InMemoryTranscriptLocator {
+    fn begin_generation(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.begin_generation_locked(session, seed)
+    }
+
+    fn begin_generation_from_baseline(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+        baseline: &[crate::transcript::TranscriptMessage],
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        // Validate baseline before acquiring the generation gate lock; the gate protects
+        // generation allocation, not transcript reads. Reading without the gate prevents
+        // a deadlock where read_session_transcript's open_stem would re-acquire it.
+        let stem = session_stem(session);
+        if let Some(transcript) = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(known, _, _)| known == &stem)
+            .map(|(_, _, history)| history.clone())
+            && let Some(transcript) = transcript.read_session()?
+        {
+            anyhow::ensure!(
+                crate::transcript::same_transcript_messages(&transcript.messages, baseline),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        } else {
+            anyhow::ensure!(
+                baseline.is_empty(),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        }
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.begin_generation_locked(session, seed)
+    }
+
     fn destination_key(&self) -> Option<String> {
         Some(format!("memory://{}/{:p}", self.label, self))
     }
@@ -161,47 +268,11 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         stem: &str,
         seed: TranscriptMeta,
     ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
-        let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, history)) = stems.iter().find(|(known, _)| known == stem) {
-            history.set_seed_if_unwritten(seed);
-            return Ok(history.clone());
-        }
-        let history = Arc::new(InMemoryTranscriptHistory::new(
-            format!("{}/{stem}", self.label),
-            seed,
-        ));
-        stems.push((stem.to_string(), history.clone()));
-        Ok(history)
-    }
-
-    fn begin_generation(
-        &self,
-        session: &SessionRef,
-        seed: TranscriptMeta,
-    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        const MAX_GENERATIONS: u32 = 4096;
-
-        let successor = session.next_generation();
-        anyhow::ensure!(
-            successor.generation <= MAX_GENERATIONS,
-            "session generation limit reached"
-        );
-        let stem = session_stem(&successor);
-        let mut meta = seed;
-        meta.session_id = Some(successor.session_id());
-        meta.parent_session_id = successor.parent_session_id();
-
-        let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
-        anyhow::ensure!(
-            stems.iter().all(|(known, _)| known != &stem),
-            "session generation already exists"
-        );
-        let history = Arc::new(InMemoryTranscriptHistory::new(
-            format!("{}/{stem}", self.label),
-            meta,
-        ));
-        stems.push((stem, history.clone()));
-        Ok((successor, history))
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.open_stem_locked(stem, seed)
     }
 
     fn append_interrupted_partial(
@@ -211,15 +282,62 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         partial: &TranscriptPartial,
         request_id: Option<&str>,
     ) -> anyhow::Result<bool> {
+        self.append_interrupted_partial_locked(thread_id, agent_id, partial, request_id)
+    }
+}
+
+impl InMemoryTranscriptLocator {
+    fn open_stem_locked(
+        &self,
+        stem: &str,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
+        let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, _, history)) = stems.iter().find(|(known, _, _)| known == stem) {
+            history.set_seed_if_unwritten(seed);
+            return Ok(history.clone());
+        }
+        // Session stems reserve `__` for the parent/child separator. Check the
+        // stem itself so bounded parent stems remain children even when the
+        // parent prefix is not present in this locator's index.
+        let is_subagent = stem
+            .split_once("__")
+            .is_some_and(|(parent, child)| !parent.is_empty() && !child.is_empty());
+        let history = Arc::new(InMemoryTranscriptHistory::new_with_gate(
+            format!("{}/{stem}", self.label),
+            seed,
+            self.generation_gate.clone(),
+        ));
+        stems.push((stem.to_string(), is_subagent, history.clone()));
+        Ok(history)
+    }
+
+    fn append_interrupted_partial_locked(
+        &self,
+        thread_id: &str,
+        agent_id: Option<&str>,
+        partial: &TranscriptPartial,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if partial.content.is_empty() {
+            return Ok(false);
+        }
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return Ok(false);
+        }
         let roots = self.written_roots();
-        let Some((_, history)) = roots.into_iter().find(|(meta, _)| {
+        let Some((_meta, history)) = roots.into_iter().find(|(meta, _)| {
             meta.thread_id.as_deref() == Some(thread_id)
                 && agent_id.is_none_or(|agent| meta.agent_id.as_deref() == Some(agent))
         }) else {
             return Ok(false);
         };
-        history.record_partial(partial.clone(), request_id.map(str::to_string));
-        Ok(true)
+        Ok(history.record_partial_under_gate(partial.clone(), request_id.map(str::to_string)))
     }
 }
 

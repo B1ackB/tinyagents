@@ -438,7 +438,7 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
     );
     let mut meta = contract_meta();
     meta.thread_id = Some("contract-store-thread".to_string());
-    meta.agent_id = Some("contract-store-agent".to_string());
+    meta.agent_id = Some("contract-agent".to_string());
     meta.session_id = Some(session.session_id());
     let history = locator
         .open_session(&session, meta.clone())
@@ -466,12 +466,19 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
         .expect("a written session has a transcript");
     assert_eq!(content_view(&read.messages), content_view(&turn));
     let by_thread = locator
-        .root_for_thread_scoped("contract-store-thread", Some("contract-store-agent"))
+        .root_for_thread_scoped("contract-store-thread", Some("contract-agent"))
         .expect("the root transcript is found by its thread")
         .read_session()
         .expect("read_session succeeds")
         .expect("the thread's root has a transcript");
     assert_eq!(content_view(&by_thread.messages), content_view(&turn));
+    let by_agent = locator
+        .latest_for_agent("contract-agent")
+        .expect("the root transcript is found by its agent")
+        .read_session()
+        .expect("read_session succeeds")
+        .expect("the agent's transcript exists");
+    assert_eq!(content_view(&by_agent.messages), content_view(&turn));
     assert!(
         locator
             .root_for_thread_scoped("contract-store-thread", Some("someone-else"))
@@ -512,12 +519,12 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
         locator
             .append_interrupted_partial(
                 "contract-store-thread",
-                Some("contract-store-agent"),
+                Some("contract-agent"),
                 &TranscriptPartial::new("half an ans"),
                 Some("contract-turn-2"),
             )
-            .expect("a partial is appended"),
-        "a partial lands once the root transcript exists"
+            .expect("a partial append is checked"),
+        "the current head accepts a display partial"
     );
     let replay = locator
         .read_session_transcript(&session)
@@ -532,6 +539,13 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
             .all(|message| message.content != "half an ans"),
         "a display partial never enters the model-context replay"
     );
+    let display = locator
+        .root_for_thread_scoped("contract-store-thread", Some("contract-agent"))
+        .expect("the display transcript remains discoverable")
+        .read_session()
+        .expect("read_session succeeds")
+        .expect("the display transcript exists");
+    assert_eq!(content_view(&display.messages), content_view(&compacted));
 
     // ── Turn states ──────────────────────────────────────────────────
     let turns = &stores.turn_states;

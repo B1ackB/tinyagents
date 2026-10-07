@@ -8,7 +8,7 @@
 //! only needs the trait's semantics does not have to touch a filesystem.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::transcript::{
     SessionTranscript, TranscriptHistory, TranscriptMessage, TranscriptMeta, TranscriptPartial,
@@ -32,6 +32,7 @@ use crate::transcript::{
 pub struct InMemoryTranscriptHistory {
     path: PathBuf,
     state: Mutex<InMemoryTranscriptState>,
+    generation_gate: Arc<Mutex<()>>,
 }
 
 /// The complete logical transcript state. Keeping it behind one mutex makes a
@@ -45,6 +46,7 @@ struct InMemoryTranscriptState {
     /// Display-only partials of interrupted turns, with their request ids.
     /// Never part of [`TranscriptHistory::messages`].
     partials: Vec<(TranscriptPartial, Option<String>)>,
+    sealed: bool,
 }
 
 /// Rows as the file backend returns them: a legacy string row is lifted into
@@ -62,6 +64,14 @@ impl InMemoryTranscriptHistory {
     /// [`TranscriptRead::path`] value (`memory://{label}`); it is never used
     /// for lookup.
     pub fn new(label: impl Into<String>, seed_meta: TranscriptMeta) -> Self {
+        Self::new_with_gate(label, seed_meta, Arc::new(Mutex::new(())))
+    }
+
+    pub(crate) fn new_with_gate(
+        label: impl Into<String>,
+        seed_meta: TranscriptMeta,
+        generation_gate: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             path: PathBuf::from(format!("memory://{}", label.into())),
             state: Mutex::new(InMemoryTranscriptState {
@@ -70,15 +80,45 @@ impl InMemoryTranscriptHistory {
                 tools: None,
                 written: false,
                 partials: Vec::new(),
+                sealed: false,
             }),
+            generation_gate,
         }
     }
 
+    /// Returns the transcript's session ID, if set.
+    pub fn session_id(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .meta
+            .session_id
+            .clone()
+    }
+
     /// Records the display-only `partial` of an interrupted turn.
-    pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) {
+    pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) -> bool {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.record_partial_under_gate(partial, request_id)
+    }
+
+    /// Records a partial while the caller already holds the shared generation
+    /// gate. This keeps locator selection and the mutation atomic.
+    pub(crate) fn record_partial_under_gate(
+        &self,
+        partial: TranscriptPartial,
+        request_id: Option<String>,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.sealed || partial.content.is_empty() {
+            return false;
+        }
         state.partials.push((partial, request_id));
         state.written = true;
+        true
     }
 
     /// The display-only partials recorded so far, oldest first, with their
@@ -91,8 +131,12 @@ impl InMemoryTranscriptHistory {
             .clone()
     }
 
-    fn mark_written(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).written = true;
+    pub(crate) fn seal(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = true;
+    }
+
+    pub(crate) fn unseal(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = false;
     }
 
     /// Replaces discovery metadata until the first write, when an existence
@@ -125,7 +169,12 @@ impl TranscriptRead for InMemoryTranscriptHistory {
 
 impl TranscriptHistory for InMemoryTranscriptHistory {
     fn append_turn(&self, turn: TranscriptTurn<'_>) -> anyhow::Result<()> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages = normalized_rows(turn.next);
         state.meta = turn.meta.clone();
         // `None` means this logical turn does not replace the last durable
@@ -142,16 +191,21 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         turn: TranscriptTurn<'_>,
         partial: Option<&TranscriptPartial>,
     ) -> anyhow::Result<()> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let request_id = turn.request_id.map(str::to_string);
         // One lock for both halves, so the turn and its partial land as one
         // transition, as the trait asks.
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages = normalized_rows(turn.next);
         state.meta = turn.meta.clone();
         if let Some(tools) = turn.tools {
             state.tools = Some(tools.clone());
         }
-        if let Some(partial) = partial {
+        if let Some(partial) = partial.filter(|partial| !partial.content.is_empty()) {
             state.partials.push((partial.clone(), request_id));
         }
         state.written = true;
@@ -168,30 +222,41 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
     }
 
     fn append(&self, message: TranscriptMessage) -> anyhow::Result<()> {
-        self.state
+        let _gate = self
+            .generation_gate
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .messages
-            .push(message.normalized());
-        self.mark_written();
+            .unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
+        state.messages.push(message.normalized());
+        state.written = true;
         Ok(())
     }
 
     fn replace(&self, messages: &[TranscriptMessage]) -> anyhow::Result<()> {
-        self.state
+        let _gate = self
+            .generation_gate
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .messages = normalized_rows(messages);
-        self.mark_written();
+            .unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
+        state.messages = normalized_rows(messages);
+        state.written = true;
         Ok(())
     }
 
     fn clear(&self) -> anyhow::Result<()> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         if !state.written {
             return Ok(());
         }
         state.messages.clear();
+        state.partials.clear();
         Ok(())
     }
 }

@@ -105,6 +105,27 @@ pub fn find_latest_transcript(workspace_dir: &Path, agent_name: &str) -> Option<
     None
 }
 
+/// Find the newest transcript in the date-grouped layouts without consulting
+/// the flat layout, so a canonical transcript cannot hide a legacy candidate.
+pub fn find_latest_legacy_transcript(workspace_dir: &Path, agent_name: &str) -> Option<PathBuf> {
+    let sanitized = sanitize_agent_name(agent_name);
+    let raw_root = raw_session_dir(workspace_dir);
+    let sessions_root = workspace_dir.join("sessions");
+    let today = chrono::Local::now().format("%d%m%Y").to_string();
+    let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%d%m%Y")
+        .to_string();
+
+    [&today, &yesterday]
+        .into_iter()
+        .flat_map(|date| {
+            [raw_root.join(date), sessions_root.join(date)]
+                .into_iter()
+                .filter_map(|dir| latest_in_dir(&dir, &sanitized))
+        })
+        .next()
+}
+
 /// Flat directory for the JSONL source of truth, e.g.
 /// `{workspace}/session_raw`. Stems start with `{unix_ts}` so the
 /// listing is naturally time-ordered without a date subdirectory.

@@ -12,8 +12,8 @@ use rusqlite::types::ToSql;
 
 use tinyagents_harness::error::{Result, TinyAgentsError};
 
-/// Filters for a paged query, each clause numbered after the values before it.
 #[derive(Default)]
+/// Filters for a paged query, each clause numbered after the values before it.
 pub(crate) struct PagedQuery {
     clauses: Vec<String>,
     values: Vec<Box<dyn ToSql>>,
@@ -90,7 +90,6 @@ impl PagedQuery {
             self.params().as_slice(),
             |row| row.get::<_, i64>(0),
         )? as u64;
-
         let limit_idx = self.values.len() + 1;
         let offset_idx = self.values.len() + 2;
         let mut page_params = self.params();

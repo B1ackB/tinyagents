@@ -9,7 +9,7 @@ use crate::observability::{
     AgentObservation, FanOutSink, HarnessEventJournal, JournalSink, RedactingSink,
     StoreEventJournal,
 };
-use crate::store::JsonlAppendStore;
+use crate::store::{JsonlAppendStore, Store};
 use std::sync::Arc;
 
 fn tmp_root(tag: &str) -> std::path::PathBuf {
@@ -239,6 +239,38 @@ async fn a_status_store_over_any_store_reads_back_what_it_wrote() {
     assert_eq!(read.run_id.as_str(), "run.host-store");
     // The record lives in the injected store, keyed as on disk.
     assert_eq!(kv.list(STATUS_NS).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn unsafe_run_ids_read_and_migrate_legacy_raw_keys() {
+    let kv: Arc<dyn Store> = Arc::new(crate::store::InMemoryStore::new());
+    let store = FileStatusStore::over(kv.clone());
+    let run_id = RunId::new("legacy/run");
+    let status = HarnessRunStatus::new(run_id.clone(), ComponentId::new("model"));
+    kv.put(
+        STATUS_NS,
+        run_id.as_str(),
+        serde_json::to_value(&status).unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store
+            .get_status(run_id.as_str())
+            .await
+            .unwrap()
+            .map(|status| status.run_id),
+        Some(run_id.clone())
+    );
+    store.put_status(status).await.unwrap();
+    assert!(kv.get(STATUS_NS, run_id.as_str()).await.unwrap().is_none());
+    assert!(
+        kv.get(STATUS_NS, &status_key(run_id.as_str()))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
