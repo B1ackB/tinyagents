@@ -62,6 +62,10 @@ pub struct ToolExecutionContext {
     /// Type-erased application state snapshot, when the host attached one
     /// with [`RunContext::with_state_view`]. Read it through [`Self::state`].
     pub state_view: Option<Arc<dyn Any + Send + Sync>>,
+    /// Where [`tinytools::ToolRunContext::report_progress`] sends this call's
+    /// updates. Set when the loop scoped a progress gate for this exact call;
+    /// `None` (updates are dropped) for a context built outside a loop.
+    pub progress: Option<tinytools::ProgressSink>,
 }
 
 impl ToolExecutionContext {
@@ -70,7 +74,7 @@ impl ToolExecutionContext {
     pub fn from_run_context<Ctx>(ctx: &RunContext<Ctx>, call_id: CallId) -> Self {
         Self {
             run_id: ctx.config.run_id.clone(),
-            call_id,
+            call_id: call_id.clone(),
             thread_id: ctx.config.thread_id.clone(),
             depth: ctx.depth(),
             max_turn_output_tokens: ctx.config.max_turn_output_tokens,
@@ -80,6 +84,7 @@ impl ToolExecutionContext {
             workspace: ctx.workspace.clone(),
             store: ctx.namespaced_store.clone(),
             state_view: ctx.state_view.clone(),
+            progress: super::progress::ToolProgressGate::current_sink_for(&call_id),
         }
     }
 
@@ -129,6 +134,12 @@ impl tinytools::ToolRunContext for ToolExecutionContext {
 
     fn max_turn_output_tokens(&self) -> Option<u32> {
         self.max_turn_output_tokens
+    }
+
+    fn report_progress(&self, update: tinytools::ToolProgress) {
+        if let Some(sink) = &self.progress {
+            sink.report(update);
+        }
     }
 
     fn host_extension(&self) -> Option<&(dyn Any + Send + Sync)> {
