@@ -622,10 +622,50 @@ async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
         .unwrap();
     assert!(*summarizer.calls.lock().unwrap() >= 1, "it compacted");
     assert!(
-        request.messages.iter().any(|m| matches!(m, Message::Tool(_))),
+        request
+            .messages
+            .iter()
+            .any(|m| matches!(m, Message::Tool(_))),
         "the result stayed in the kept tail"
     );
     assert!(tool_text_len(&request) < 1_000, "and the result is cut");
+}
+
+#[tokio::test]
+async fn aging_out_an_oversized_result_moves_the_prefix_epoch_only_when_it_cuts() {
+    let mw =
+        ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
+    let mut messages = vec![user("read it")];
+    messages.extend(call_and_result("c1", 10_000));
+    let mut c = ctx();
+    let mut first = ModelRequest {
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut first)
+        .await
+        .unwrap();
+    messages.push(Message::assistant("noted"));
+    messages.push(user("and then?"));
+    let epoch = c.prompt_prefix_epoch();
+    let mut second = ModelRequest {
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut second)
+        .await
+        .unwrap();
+    assert_ne!(c.prompt_prefix_epoch(), epoch, "the rewrite was declared");
+    // A request with nothing left to cut leaves the epoch alone.
+    let epoch = c.prompt_prefix_epoch();
+    let mut small = ModelRequest {
+        messages: vec![user("hi")],
+        ..Default::default()
+    };
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut small)
+        .await
+        .unwrap();
+    assert_eq!(c.prompt_prefix_epoch(), epoch);
 }
 
 // ── preemptive route (before_model) ───────────────────────────────────────────
