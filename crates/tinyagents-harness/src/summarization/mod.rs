@@ -29,6 +29,7 @@ mod model_summarizer;
 pub mod pairing;
 mod render;
 mod resilient;
+mod response_overflow;
 pub mod task_state;
 mod trim;
 mod types;
@@ -49,6 +50,7 @@ pub use pairing::{
 };
 pub use render::render_message_for_summary;
 pub use resilient::FaultTolerantCachingSummarizer;
+pub use response_overflow::{ResponseOverflowDetection, detect_response_overflow};
 pub use task_state::{DEFAULT_TASK_STATE_CHUNK_TOKENS, TaskLedger, TaskState, TaskStateSummarizer};
 pub use trim::{trim_messages, trim_messages_to_token_budget_with, trim_messages_with};
 pub use types::*;
