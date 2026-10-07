@@ -139,7 +139,7 @@ pub(crate) async fn settle(
 }
 
 /// Names of delegation tools the child's harness exposes, for a leaf check.
-pub(crate) fn delegation_tools_exposed<State: Send + Sync, Ctx: Send + Sync>(
+pub(crate) fn delegation_tools_exposed<State: Send + Sync + 'static, Ctx: Send + Sync + 'static>(
     subagent: &SubAgent<State, Ctx>,
     host_delegation_tools: &[String],
 ) -> Vec<String> {

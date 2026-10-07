@@ -1049,3 +1049,7 @@ mod inline_test;
 #[cfg(test)]
 #[path = "mod_admission_tests.rs"]
 mod admission_test;
+
+#[cfg(test)]
+#[path = "mod_policy_tests.rs"]
+mod policy_test;
