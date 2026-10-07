@@ -103,7 +103,7 @@ async fn read_from_follows_long_streams_and_prefixes_isolate() {
     let storage = MemoryStorage::new();
     let streams = Arc::clone(scoped(&storage, "local").streams());
     let journal = DriverAppendStore::with_prefix(Arc::clone(&streams), "journal/");
-    let other = DriverAppendStore::with_prefix(streams, "other/");
+    let other = DriverAppendStore::with_prefix(Arc::clone(&streams), "other/");
     for i in 0..(READ_PAGE as u64 + 5) {
         journal.append("s", json!(i)).await.unwrap();
     }
