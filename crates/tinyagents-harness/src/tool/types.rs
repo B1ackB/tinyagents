@@ -116,12 +116,18 @@ impl ToolExecutionContext {
     /// Calls another registered tool as a **nested call** of this one and
     /// returns its result.
     ///
-    /// The call goes through the same admission and execution path as a call
-    /// the model issued: tool lookup and the host allow-list, argument
-    /// validation, host authorization, the tool-wrap middleware onion (so a
-    /// policy middleware can refuse it), timeouts, and the run's
-    /// `max_tool_calls` budget, which nested calls share with model-issued
-    /// ones. See `docs/modules/harness/nested-tool-calls.md`.
+    /// The call is admitted like one the model issued, with exceptions: tool
+    /// lookup and the host allow-list, argument validation, the approval
+    /// refusal, [`Middleware::check_nested_tool`][crate::middleware::Middleware::check_nested_tool]
+    /// on every middleware, host authorization (the request carries
+    /// `parent_call_id`), the tool-wrap onion, timeouts, and the run's
+    /// `max_tool_calls` budget (shared with model-issued calls) all apply, and
+    /// [`Middleware::observe_nested_result`][crate::middleware::Middleware::observe_nested_result]
+    /// sees the result. `before_tool` / `after_tool` proper, the progress gate
+    /// and a result's `ToolControl` do **not** apply, so enforcement that is
+    /// only a `before_tool` binds nested calls only if the middleware also
+    /// implements `check_nested_tool`. See
+    /// `docs/modules/harness/nested-tool-calls.md`.
     ///
     /// # Errors
     ///

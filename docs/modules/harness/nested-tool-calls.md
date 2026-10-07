@@ -15,22 +15,26 @@ async fn execute_with_context(&self, args, _opts, context) -> anyhow::Result<Too
 ```
 
 `ToolExecutionContext::call_tool(name, arguments) -> Result<ToolResult>`
-(`crates/tinyagents-harness/src/tool/types.rs`). The call goes through the same
-admission and execution path as a model-issued call, so composing tools cannot
-sidestep policy, validation or limits. Source: `src/tool/nested.rs` (the seam)
+(`crates/tinyagents-harness/src/tool/types.rs`). The call is admitted and
+executed much like a model-issued call, **with exceptions** (below), so read
+"What applies" before relying on a middleware to bind nested calls. Source: `src/tool/nested.rs` (the seam)
 and `src/agent_loop/nested.rs` (the runner).
 
-## What a nested call goes through
+## What applies to a nested call
 
 | Stage | Behaviour |
 | --- | --- |
 | Lookup | `ToolRegistry::model_dispatch` plus the hosted run's tool allow-list. An unknown or disallowed name is `Err(ToolNotFound)`. |
 | Arguments | Injected-argument preparation, the `InvalidArgsPolicy` normalisation, schema validation. Invalid arguments are an `Err` naming the tool. |
 | Approval | A tool that is external or declares `approval_required` **fails**: `nested call '<name>' requires approval; nested calls cannot be deferred`. The parent is never deferred. A `CallDeferred`/`ApprovalRequired` raised during execution is the same refusal. |
-| Host authorization | `SecurityGate::authorize_tool` for a hosted run; a denial is an `Err`. |
+| Middleware admission | `Middleware::check_nested_tool(&RunContext, &State, &ToolCall)` on every registered middleware, in order, after validation and before host authorization; the first `Err` refuses the call. This is how a middleware's `before_tool` **enforcement** reaches nested calls: `ToolAllowlistMiddleware`, `ToolPolicyMiddleware` (deny mask, sandbox, classification, approval grants), `HumanApprovalMiddleware` (a flagged tool fails with the approval error unless its callback allows; it never interrupts or defers) and `PlanModeMiddleware` implement it over the same decision as `before_tool`. The default admits. |
+| Host authorization | `SecurityGate::authorize_tool` for a hosted run; a denial is an `Err`. The `ToolCallRequest` has `parent_call_id: Some(..)` (`is_nested()`): a nested call cannot be prompted for, so a host gate that would normally ask a human must **fail closed** for it. |
 | Tool-wrap onion | `ToolMiddleware::wrap_tool` runs around the tool, so a policy middleware can deny or rewrite a nested call. |
 | Timeouts | The per-tool timeout policy and the run's remaining wall-clock budget. |
 | Budget | One `max_tool_calls` pool shared with model-issued calls (below). |
+| Result observation | `Middleware::observe_nested_result(&RunContext, &State, &ToolCall, &ToolResult)` on every middleware after a nested call produced a result. `after_tool` never runs for nested calls, so a budget or repeated-failure middleware (research budget, failure counters, result auditing) implements this to account for them. It cannot rewrite the result; keep state behind interior mutability. A refused or raised call has no result and is not observed. |
+| Effect ledger | One `started`/`settled` row per nested call, keyed by the nested id, so recovery sees the effects a parent had through `call_tool`. A ledger `started` failure follows `LedgerFailure` (`Abort` refuses the call). A call dropped mid-flight leaves its row `started`. |
+| Refusal cap | A refused call releases its budget slot, so a parent gets at most 8 refused nested calls; every later call is refused without being evaluated. |
 | Cancellation | The run's token: a cancelled run refuses the next nested call, and dropping the parent drops its in-flight nested calls. |
 
 A tool that reports its own failure (`ToolResult::is_error`) is an `Ok` result,
@@ -42,9 +46,23 @@ Outside the agent loop (no runner installed) `call_tool` returns
 `ToolFailed("cannot call tool '<name>' ...: nested tool calls are only available
 while the agent loop executes the calling tool")`.
 
+Open follow-up for hosts: a host's own `before_tool` enforcement (for example
+a hooks middleware that vetoes tools) must implement `check_nested_tool`
+too, or `call_tool` is a way around it.
+
+## Dropped calls
+
+If a parent settles, times out or is cancelled while a nested call is in
+flight, or its tool drops the `call_tool` future, the nested call is dropped and
+reports `ToolFailed("parent settled: ...")`, so every `ToolStarted` has exactly
+one terminal event. Its summary status is `abandoned` when the tool stopped
+waiting. A `ToolDispatch` that builds the `ToolExecutionContext` must do so
+inside the future the loop polls, or the context carries no runner.
+
 ## Budget
 
-`LimitTracker` holds an atomic `nested_tool_calls` next to `tool_calls`. A
+`LimitTracker` holds an atomic `nested_tool_calls` next to `tool_calls`
+(`tool_calls()` is the model-issued count only; both count against the cap). A
 nested call reserves a slot with `try_reserve_nested_tool_call` (`&self`, so it
 works from a tool future that holds only `&RunContext`); model-issued admission
 counts `tool_calls + nested_tool_calls` against `max_tool_calls`. Concurrent
@@ -68,7 +86,8 @@ recursion cap.
 A nested call's id is `<parent call id>/<n>` (`n` counts from 1 per parent;
 nested-of-nested ids extend the path: `p1/1/1`). `ToolStarted`, `ToolCompleted`
 and `ToolFailed` carry `parent_call_id: Option<CallId>` (serde default, omitted
-when `None`), so exporters can nest the span. Every nested `ToolStarted` has
+when `None`) naming the **immediate** parent (`p1/1/1` has parent `p1/1`, not
+`p1`), so exporters can nest the span. Every nested `ToolStarted` has
 exactly one terminal partner.
 
 ## Transcript and metadata
@@ -88,28 +107,27 @@ result metadata (host-only; `ToolCompleted.metadata` and
 }
 ```
 
-`status` is `ok`, `error` (the tool returned `is_error`) or `failed` (refused or
-raised). `args` is the serialized arguments cut at 1 KiB; `error` is cut at 256
+`status` is `ok`, `error` (the tool returned `is_error`), `failed` (refused or
+raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB; `error` is cut at 256
 bytes and omitted when empty. At most 32 entries are kept; `nested_calls_truncated`
 counts the rest. The summary is attached only when the metadata is absent or an
 object.
 
-## What a nested call does not do
+## What does not apply
 
-- **Lifecycle hooks.** `Middleware::before_tool` / `after_tool` take
-  `&mut RunContext`, which a tool future (holding `&RunContext`) cannot lend,
-  so they do not run for nested calls. The wrap onion does. Policy that must
-  bind nested calls belongs in a `ToolMiddleware::wrap_tool`. For the same
-  reason the repeat-progress and no-progress guards (which key on
-  `before_tool`/`after_tool`) never see nested calls: they cannot be counted as
-  model repeats of the parent.
+- **`before_tool` / `after_tool` proper.** They take `&mut RunContext`, which a
+  tool future (holding `&RunContext`) cannot lend, so they never run for nested
+  calls. Enforcement belongs in `check_nested_tool` or a
+  `ToolMiddleware::wrap_tool`; accounting in `observe_nested_result`. The
+  repeat-progress and no-progress guards key on `before_tool`/`after_tool`, so
+  they never see nested calls and cannot count them as model repeats of the
+  parent.
 - **Progress gate.** A nested tool's `report_progress` is not forwarded: the
   parent's gate is keyed to the parent's call id, and a nested call does not open
   one of its own on the parent's stream. Use the nested call's result and the
   parent's own progress.
-- **Effect ledger, host output screening, tool control.** The parent's ledger
-  row and the screening of the parent's final output cover the call as a whole.
-  A nested result's `ToolControl` (`terminate`, `return_direct`, `goto`) and a
+- **Host output screening and tool control.** The screening of the parent's
+  final output covers the call as a whole. A nested result's `ToolControl` (`terminate`, `return_direct`, `goto`) and a
   wrap middleware's control request are ignored.
 
 ## Shape (why it is a channel)

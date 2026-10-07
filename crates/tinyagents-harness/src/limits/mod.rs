@@ -411,7 +411,11 @@ impl LimitTracker {
         self.model_calls
     }
 
-    /// Returns the number of tool calls recorded so far.
+    /// Returns the number of **model-issued** tool calls recorded so far.
+    ///
+    /// Nested calls are counted separately
+    /// ([`LimitTracker::nested_tool_calls`]); both count against the cap, so
+    /// the slots left are `max_tool_calls - tool_calls - nested_tool_calls`.
     pub fn tool_calls(&self) -> usize {
         self.tool_calls
     }

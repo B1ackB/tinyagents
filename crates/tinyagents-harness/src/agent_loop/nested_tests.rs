@@ -1076,7 +1076,10 @@ async fn a_parent_cannot_loop_on_free_refusals() {
     let outcomes = outcomes.lock().unwrap();
     assert!(outcomes[7].as_ref().unwrap_err().contains("ghost"));
     let blocked = outcomes[8].as_ref().unwrap_err();
-    assert!(blocked.contains("already had 8 nested calls refused"), "{blocked}");
+    assert!(
+        blocked.contains("already had 8 nested calls refused"),
+        "{blocked}"
+    );
     assert!(outcomes[9].is_err());
 }
 

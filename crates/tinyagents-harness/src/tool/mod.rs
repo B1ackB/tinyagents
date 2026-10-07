@@ -96,7 +96,8 @@ pub trait ToolDispatch<State: Send + Sync, Ctx: Send + Sync>: Send + Sync {
     /// The loop scopes the call's progress gate around the future this method
     /// returns, so a dispatch that builds a [`ToolExecutionContext`] must do so
     /// **inside** this future (as the canonical dispatch does); a context built
-    /// earlier or on another task carries no progress sink.
+    /// earlier or on another task carries no progress sink — and no nested-call
+    /// runner, so `ToolExecutionContext::call_tool` fails for that tool.
     ///
     /// `call_id` is the admitted call's id — the one the transcript row and
     /// the `ToolStarted`/`ToolCompleted` events carry — so a dispatch that

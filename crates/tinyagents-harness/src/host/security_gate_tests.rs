@@ -167,7 +167,11 @@ fn value_types_round_trip_through_serde() {
 fn a_nested_request_names_its_parent_and_serialises_it_only_then() {
     let plain = sample_request();
     assert!(!plain.is_nested());
-    assert!(!serde_json::to_string(&plain).unwrap().contains("parent_call_id"));
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("parent_call_id")
+    );
 
     let nested = sample_request().with_parent_call_id("p1");
     assert!(nested.is_nested());

@@ -522,3 +522,9 @@ Compression middleware must preserve enough provenance for debugging and replay:
 source message ids, source artifact ids, original token estimates, compressed
 token estimates, prompt segment ids, cache prefix fingerprints, policy version,
 and whether the stable provider prompt-cache prefix was preserved.
+
+## Nested calls
+
+`Middleware::check_nested_tool` (admission, `&RunContext`) and `observe_nested_result`
+are the nested-call counterparts of `before_tool` enforcement and `after_tool`
+accounting; both default to no-ops. See [nested-tool-calls.md](nested-tool-calls.md).

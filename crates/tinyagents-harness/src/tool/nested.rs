@@ -5,9 +5,22 @@
 //! [`ToolExecutionContext::call_tool`](super::ToolExecutionContext::call_tool)
 //! instead of reaching into the registry. The harness installs a
 //! [`NestedToolRunner`] on the context of every call it executes; the runner
-//! sends the nested call through the same admission and execution path as a
-//! model-issued call, so policy, validation, limits and timeouts cannot be
-//! sidestepped by composing tools.
+//! sends the nested call through the admission and execution path of a
+//! model-issued call, with the exceptions listed below.
+//!
+//! Applies to a nested call: tool lookup and allow-list, argument validation,
+//! the approval refusal, `Middleware::check_nested_tool` (the nested-call form
+//! of `before_tool` enforcement), host authorization, the tool-wrap onion,
+//! timeouts, the run budget, and `Middleware::observe_nested_result`. Does
+//! **not** apply: `before_tool` / `after_tool` proper (they need `&mut
+//! RunContext`), the progress gate, host output screening and `ToolControl`.
+//! A middleware that enforces policy only in `before_tool` does not bind
+//! nested calls until it implements `check_nested_tool`. See
+//! `docs/modules/harness/nested-tool-calls.md`.
+//!
+//! A [`ToolDispatch`](super::ToolDispatch) that builds a
+//! [`ToolExecutionContext`](super::ToolExecutionContext) must do so inside the
+//! future the loop polls (the scoped runner is read when the context is built).
 //!
 //! This module holds only the seam. The runner itself lives in the agent loop
 //! (`agent_loop::nested`), because it needs the harness, the run state and the

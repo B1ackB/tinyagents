@@ -54,10 +54,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use futures::{FutureExt, StreamExt};
 use futures::channel::{mpsc, oneshot};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use serde_json::{Value, json};
 
 use super::model_call::ToolCallBase;
@@ -658,9 +658,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 TinyAgentsError::ApprovalRequired { .. }
                 | TinyAgentsError::CallDeferred { .. }
                 | TinyAgentsError::Interrupted { .. } => approval_error(&name),
-                other => TinyAgentsError::ToolFailed(format!(
-                    "nested call '{name}' refused: {other}"
-                )),
+                other => {
+                    TinyAgentsError::ToolFailed(format!("nested call '{name}' refused: {other}"))
+                }
             });
         }
 
