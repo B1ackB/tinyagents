@@ -442,7 +442,7 @@ impl Tool for SubAgentMessageTool {
                 "message": { "type": "string" },
                 "request_id": {
                     "type": "string",
-                    "description": "Optional idempotency key: resending the same request_id to the same job does not queue the message again."
+                    "description": "Optional idempotency key: resending the same request_id to the same job does not queue the message again while it is among the most recent 64 request ids remembered for that job (older ids are evicted); ids over 128 bytes are rejected."
                 }
             },
             "required": ["job_id", "message"]
