@@ -88,6 +88,12 @@ impl RunLimits {
     /// Sets the maximum silence between streaming-model output events, after
     /// the first one. `None` disables the inactivity timeout. See
     /// [`RunLimits::stream_idle_timeout_ms`].
+    pub fn with_max_nested_depth(mut self, n: usize) -> Self {
+        self.max_nested_depth = n;
+        self
+    }
+
+    /// Sets [`RunLimits::stream_idle_timeout_ms`].
     pub fn with_stream_idle_timeout_ms(mut self, ms: Option<u64>) -> Self {
         self.stream_idle_timeout_ms = ms;
         self
