@@ -1022,7 +1022,39 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         shape: &super::dialect::CallShape,
     ) -> Result<ModelResponse> {
         let recovery = &shape.recovery;
-        let mut stream = model.stream(state, request.clone()).await?;
+        // Start the first-event window before opening the provider stream so
+        // a provider that hangs while establishing the stream is bounded too.
+        // The same deadline is then used for the first item below, preserving
+        // the configured window across both phases.
+        let cancellation = ctx.cancellation.clone();
+        let first_event_timeout = positive_window(self.policy.limits.stream_first_event_timeout_ms);
+        let first_event_deadline =
+            first_event_timeout.map(|window| tokio::time::Instant::now() + window);
+        let stream_result = async {
+            match first_event_deadline {
+                Some(deadline) => {
+                    tokio::time::timeout_at(deadline, model.stream(state, request.clone()))
+                        .await
+                        .map_err(|_| ())
+                }
+                None => Ok(model.stream(state, request.clone()).await),
+            }
+        };
+        let mut stream = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(TinyAgentsError::Cancelled),
+            result = stream_result => match result {
+                Ok(result) => result?,
+                Err(()) => {
+                    let window_ms = first_event_timeout.map_or(0, |window| window.as_millis() as u64);
+                    ctx.limits.record_stream_idle_timeout();
+                    return Err(TinyAgentsError::CallTimeout(format!(
+                        "model stream for run `{}` went idle waiting for the first output event: no event within {window_ms} ms",
+                        ctx.run_id(),
+                    )));
+                }
+            },
+        };
         let mut accumulator = StreamAccumulator::new();
         // Tool-call markup a model narrates as text is held back from live
         // consumers and turned into calls on the terminal response instead.
@@ -1052,11 +1084,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .map(|profile| profile.ignore_streamed_leading_whitespace)
             .unwrap_or(false);
 
-        // Clone the cheap token so the cancellation future does not borrow
-        // `ctx` for the duration of the stream loop (the body still needs
-        // `&mut ctx` for events and middleware).
-        let cancellation = ctx.cancellation.clone();
-
         // Deadline-based stream watchdog. Before the first output event the
         // only bound is the opt-in first-event window (none by default: hidden
         // reasoning and local prefill are legitimately silent for minutes, and
@@ -1066,9 +1093,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // so a provider that keeps trickling those cannot hold the call open.
         let limits = &self.policy.limits;
         let idle_timeout = positive_window(limits.stream_idle_timeout_ms);
-        let first_event_timeout = positive_window(limits.stream_first_event_timeout_ms);
         let mut armed_window = first_event_timeout;
-        let mut deadline = armed_window.map(|window| tokio::time::Instant::now() + window);
+        let mut deadline = first_event_deadline;
         let mut saw_output = false;
         // Set when an output event arrives; the deadline is advanced at the top
         // of the next iteration so time spent in delta middleware does not eat
@@ -1133,10 +1159,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // the connection and then goes quiet is exactly the wedge being
             // detected. Only output-bearing events end the first-event phase,
             // re-arm the idle deadline and clear the breaker's count.
-            if !matches!(
-                item,
-                ModelStreamItem::Started | ModelStreamItem::UsageDelta(_)
-            ) {
+            let is_output = match &item {
+                ModelStreamItem::MessageDelta(delta) => {
+                    !delta.text.is_empty()
+                        || !delta.reasoning.is_empty()
+                        || delta.tool_call.is_some()
+                }
+                ModelStreamItem::ToolCallDelta(_) | ModelStreamItem::Completed(_) => true,
+                _ => false,
+            };
+            if is_output {
                 saw_output = true;
                 rearm = true;
                 ctx.limits.reset_stream_idle_timeouts();
