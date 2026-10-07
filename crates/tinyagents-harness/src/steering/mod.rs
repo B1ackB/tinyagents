@@ -302,6 +302,36 @@ impl SteeringHandle {
         current
     }
 
+    /// The model a [`SteeringCommand::SwitchModel`] selected for this run, if
+    /// any. Read by the agent loop's model call, which validates the name
+    /// against its registry (see [`SteeringHandle::reject_model_override`]).
+    pub fn model_override(&self) -> Option<String> {
+        self.local
+            .model_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Records the model a `SwitchModel` asked for, replacing any earlier one.
+    fn set_model_override(&self, model: String) {
+        *self
+            .local
+            .model_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(model);
+    }
+
+    /// Drops a model override the model call could not honour, so the run
+    /// keeps its current model and is not re-checked on every call.
+    pub(crate) fn reject_model_override(&self) {
+        self.local
+            .model_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     /// Locks the pause latch, recovering from poisoning (see
     /// [`SteeringHandle::send`]).
     fn lock_paused(&self) -> std::sync::MutexGuard<'_, Option<PauseState>> {
@@ -342,6 +372,9 @@ impl SteeringHandle {
 ///   [`SteeringCommand::Resume`] — in this batch or a subsequent one — clears
 ///   it. While latched, every checkpoint returns [`SteeringOutcome::Pause`]
 ///   even with an empty queue.
+/// - [`SteeringCommand::SwitchModel`] records the requested model on the
+///   handle ([`SteeringHandle::model_override`]); the model call validates and
+///   applies it. A blank name is rejected here.
 /// - [`SteeringCommand::InjectMessage`] and [`SteeringCommand::Redirect`]
 ///   append to `messages`; [`SteeringCommand::SetMetadata`] replaces
 ///   `ctx.config.metadata`.
@@ -416,6 +449,27 @@ pub fn apply_pending_steering<Ctx>(
             }
             SteeringCommand::SetMetadata { metadata } => {
                 ctx.config.metadata = metadata;
+            }
+            SteeringCommand::SwitchModel { model } => {
+                if model.trim().is_empty() {
+                    tracing::debug!(
+                        target: "tinyagents::steering",
+                        checkpoint,
+                        "[steering] switch_model rejected: blank model name"
+                    );
+                    ctx.emit(AgentEvent::Steered {
+                        command_kind: kind.as_str().to_string(),
+                        accepted: false,
+                    });
+                    continue;
+                }
+                tracing::debug!(
+                    target: "tinyagents::steering",
+                    checkpoint,
+                    model = %model,
+                    "[steering] model switch queued for the next model call"
+                );
+                handle.set_model_override(model);
             }
         }
 

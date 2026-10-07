@@ -107,6 +107,25 @@ pub enum SteeringCommand {
         /// The new metadata value.
         metadata: serde_json::Value,
     },
+
+    /// Switch the model used for every subsequent model call in this run.
+    ///
+    /// `model` is a registry name, the same namespace as
+    /// [`crate::retry::FallbackPolicy::models`] and
+    /// [`tinyinference_llm::model::ModelRequest::model`]. The command is
+    /// recorded at the steering checkpoint and **consumed at the next
+    /// model-call boundary**, where the name is resolved against the harness's
+    /// [`crate::model_registry::ModelRegistry`]: a name that is unknown,
+    /// capability-ineligible, or addressed to a host-routed run is dropped
+    /// (the run keeps its current model) and reported as an
+    /// [`crate::events::AgentEvent::Steered`] with `accepted = false` plus an
+    /// [`crate::events::AgentEvent::ModelOverrideSkipped`]. A blank name is
+    /// rejected immediately. The latest accepted switch wins; the switch lasts
+    /// for the rest of the run and does not touch the transcript.
+    SwitchModel {
+        /// Registry name of the model to switch to.
+        model: String,
+    },
 }
 
 impl SteeringCommand {
@@ -121,6 +140,7 @@ impl SteeringCommand {
             SteeringCommand::InjectMessage(_) => SteeringCommandKind::InjectMessage,
             SteeringCommand::Redirect { .. } => SteeringCommandKind::Redirect,
             SteeringCommand::SetMetadata { .. } => SteeringCommandKind::SetMetadata,
+            SteeringCommand::SwitchModel { .. } => SteeringCommandKind::SwitchModel,
         }
     }
 }
@@ -142,17 +162,20 @@ pub enum SteeringCommandKind {
     Redirect,
     /// See [`SteeringCommand::SetMetadata`].
     SetMetadata,
+    /// See [`SteeringCommand::SwitchModel`].
+    SwitchModel,
 }
 
 impl SteeringCommandKind {
     /// Every steering command kind, in declaration order.
-    pub const ALL: [SteeringCommandKind; 6] = [
+    pub const ALL: [SteeringCommandKind; 7] = [
         SteeringCommandKind::Pause,
         SteeringCommandKind::Resume,
         SteeringCommandKind::Cancel,
         SteeringCommandKind::InjectMessage,
         SteeringCommandKind::Redirect,
         SteeringCommandKind::SetMetadata,
+        SteeringCommandKind::SwitchModel,
     ];
 
     /// Returns a stable, lower-snake-case name for this kind, suitable for
@@ -165,6 +188,7 @@ impl SteeringCommandKind {
             SteeringCommandKind::InjectMessage => "inject_message",
             SteeringCommandKind::Redirect => "redirect",
             SteeringCommandKind::SetMetadata => "set_metadata",
+            SteeringCommandKind::SwitchModel => "switch_model",
         }
     }
 }
@@ -298,6 +322,10 @@ pub(crate) struct SteeringLocal {
     /// How many steering checkpoints this handle has processed. Recorded into
     /// [`PauseState::paused_at_checkpoint`].
     pub(crate) checkpoints: Mutex<usize>,
+    /// The model name a [`SteeringCommand::SwitchModel`] asked for, awaiting
+    /// (or already past) the next model-call boundary. Per run, like the
+    /// pause latch.
+    pub(crate) model_override: Mutex<Option<String>>,
 }
 
 /// Bounded memory of recently applied steering `request_id`s, used to make a

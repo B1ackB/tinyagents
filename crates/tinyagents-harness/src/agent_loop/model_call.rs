@@ -189,6 +189,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         shape: &super::dialect::CallShape,
     ) -> Result<ModelResponse> {
         let streaming = shape.streaming;
+        let binding = self.apply_steered_model_switch(ctx, request, binding);
         let policy = self.effective_cache_policy(request);
         // The identity of the model that is actually about to be called — known
         // only *after* resolution, which is why the key cannot be finalized by
@@ -895,6 +896,83 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         None => return Err(error),
                     }
                 }
+            }
+        }
+    }
+
+    /// Applies a pending [`SteeringCommand::SwitchModel`][crate::steering::SteeringCommand::SwitchModel]
+    /// at the model-call boundary: when the run's steering handle carries a
+    /// model override, the call goes to that registry model instead of
+    /// `binding`'s.
+    ///
+    /// The override is **sticky** (every later call in the run resolves to it
+    /// too, until another switch replaces it). A name that is not registered,
+    /// fails the request's capability/lifecycle gate, or belongs to a run whose
+    /// routing a host resolver owns is dropped: the run keeps `binding`, an
+    /// [`AgentEvent::ModelOverrideSkipped`] and a rejected
+    /// [`AgentEvent::Steered`] are emitted, and the call proceeds. Never fails
+    /// the run.
+    fn apply_steered_model_switch(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &ModelRequest,
+        binding: ResolvedModelBinding<State>,
+    ) -> ResolvedModelBinding<State> {
+        let Some(handle) = ctx.steering.clone() else {
+            return binding;
+        };
+        let Some(requested) = handle.model_override() else {
+            return binding;
+        };
+        if requested == binding.resolved.name {
+            return binding;
+        }
+        let hosted = !matches!(
+            crate::runtime::host_invocation_binding::<State, Ctx>(ctx),
+            Ok(None)
+        );
+        let eligible = if hosted {
+            None
+        } else {
+            self.models.get(&requested).filter(|candidate| {
+                model_eligible(candidate.as_ref(), request.required_capabilities.as_ref(), false)
+            })
+        };
+        match eligible {
+            Some(model) => {
+                tracing::debug!(
+                    from = %binding.resolved.name,
+                    to = %requested,
+                    "[steering] model switch applied at the model-call boundary"
+                );
+                ResolvedModelBinding {
+                    resolved: ResolvedModel {
+                        name: requested.clone(),
+                        requested: Some(requested),
+                        source: ModelResolutionSource::RequestOverride,
+                    },
+                    model,
+                }
+            }
+            None => {
+                tracing::warn!(
+                    requested = %requested,
+                    current = %binding.resolved.name,
+                    hosted,
+                    "[steering] model switch rejected; keeping the current model"
+                );
+                handle.reject_model_override();
+                ctx.emit(AgentEvent::ModelOverrideSkipped {
+                    requested,
+                    resolved: binding.resolved.name.clone(),
+                });
+                ctx.emit(AgentEvent::Steered {
+                    command_kind: crate::steering::SteeringCommandKind::SwitchModel
+                        .as_str()
+                        .to_string(),
+                    accepted: false,
+                });
+                binding
             }
         }
     }
