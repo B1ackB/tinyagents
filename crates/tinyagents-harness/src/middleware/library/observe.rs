@@ -470,7 +470,6 @@ impl LoggingMiddleware {
         update(&mut self.counts.lock().expect("counts mutex poisoned"));
     }
 }
-}
 
 impl Default for LoggingMiddleware {
     fn default() -> Self {
