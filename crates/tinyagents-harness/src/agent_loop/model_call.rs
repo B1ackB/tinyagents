@@ -603,6 +603,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let mut model = binding.model;
         let mut resolved = binding.resolved;
         let run_id = ctx.run_id().clone();
+        // The request each attempt sends. `request.model` is the wire-level
+        // override providers such as the Claude CLI adapters honour, so it must
+        // always name the binding actually being called: every fallback
+        // rebinding below retargets it, or a fallback would re-ask the model
+        // that just failed while events report the fallback's name.
+        let mut attempt_request = request.clone();
         // Tracks every model name already attempted in this fallback chain so
         // a chain containing a repeated name (e.g. `[primary, backup,
         // primary]`) cannot alternate between the same two models forever;
@@ -636,6 +642,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 requested: Some(name.clone()),
                 source: ModelResolutionSource::Hint,
             };
+            attempt_request.model = Some(name.clone());
             current_name = name;
             model = next_model;
         }
@@ -674,7 +681,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         state,
                         ctx,
                         &model,
-                        request,
+                        &attempt_request,
                         call_id,
                         &mut deltas_emitted,
                         &current_name,
@@ -693,7 +700,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // still short-circuits before the request is ever issued.
                     let fut = async {
                         model
-                            .invoke(state, request.clone())
+                            .invoke(state, attempt_request.clone())
                             .await
                             .map_err(TinyAgentsError::from)
                     };
@@ -893,6 +900,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                 requested: Some(name.clone()),
                                 source: ModelResolutionSource::Hint,
                             };
+                            attempt_request.model = Some(name.clone());
                             current_name = name;
                             model = next_model;
                             if streaming && deltas_emitted > 0 {

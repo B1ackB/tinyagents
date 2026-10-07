@@ -42,7 +42,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     ///
     /// Called both before and after `before_model` middleware: the second
     /// call re-validates against the capabilities middleware added and
-    /// re-asserts the switch over a model a middleware selected.
+    /// re-asserts the switch over a model a middleware selected. Only the
+    /// `final_pass` call reports the switch as applied
+    /// ([`AgentEvent::Steered`] with `accepted: true`, once per switch), so a
+    /// switch the second pass rejects is never reported as accepted first.
     /// `model_before_switch` is what `request.model` held before the first
     /// call; a rejection puts it back when `request.model` still carries the
     /// rejected name, so that name never reaches resolution or an adapter that
@@ -52,6 +55,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         ctx: &mut RunContext<Ctx>,
         request: &mut ModelRequest,
         model_before_switch: &Option<String>,
+        final_pass: bool,
     ) {
         let Some(handle) = ctx.steering.clone() else {
             return;
@@ -89,6 +93,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     ),
                 }
                 request.model = Some(requested);
+            }
+            if final_pass && handle.announce_model_override() {
+                ctx.emit(AgentEvent::Steered {
+                    command_kind: crate::steering::SteeringCommandKind::SwitchModel
+                        .as_str()
+                        .to_string(),
+                    accepted: true,
+                });
             }
             return;
         }
