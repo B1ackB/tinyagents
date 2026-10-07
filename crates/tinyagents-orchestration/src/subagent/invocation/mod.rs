@@ -93,7 +93,7 @@ use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
 use tinyinference_llm::message::Message;
 
-use super::{SpawnAdmission, SpawnPolicy};
+use super::SpawnAdmission;
 
 impl<State: Send + Sync, Ctx: Send + Sync + 'static> SubAgent<State, Ctx> {
     /// Creates a sub-agent wrapping `harness` with a stable `name` and
@@ -614,7 +614,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         }
     }
 
-    /// Enforces spawn limits through `admission` (see [`SpawnPolicy`]).
+    /// Enforces spawn limits through `admission` (see [`super::SpawnPolicy`]).
     ///
     /// Share one [`SpawnAdmission`] across every tool whose spawns should
     /// count against the same limits. Without this call spawning is unlimited.

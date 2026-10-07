@@ -1,7 +1,11 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 
-fn admission(parent: Option<usize>, root: Option<usize>, targets: Option<&[&str]>) -> SpawnAdmission {
+fn admission(
+    parent: Option<usize>,
+    root: Option<usize>,
+    targets: Option<&[&str]>,
+) -> SpawnAdmission {
     SpawnAdmission::new(SpawnPolicy {
         max_children_per_parent: parent,
         max_total_per_root: root,
@@ -83,10 +87,16 @@ fn continuation_reservation_takes_an_active_slot_but_no_total_budget() {
     drop(first);
     assert!(admission.try_reserve("root", "p", "w").is_err());
 
-    let mut resumed = admission.try_reserve_continuation("root", "p", "w").unwrap();
+    let mut resumed = admission
+        .try_reserve_continuation("root", "p", "w")
+        .unwrap();
     resumed.commit();
     assert_eq!(admission.active_children("p"), 1);
-    assert!(admission.try_reserve_continuation("root", "p", "w").is_err());
+    assert!(
+        admission
+            .try_reserve_continuation("root", "p", "w")
+            .is_err()
+    );
     drop(resumed);
     assert_eq!(admission.spawned_in_root("root"), 1);
 }

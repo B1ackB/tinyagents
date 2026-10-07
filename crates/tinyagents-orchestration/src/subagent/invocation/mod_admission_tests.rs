@@ -205,8 +205,16 @@ async fn shared_admission_counts_across_tools() {
     let shared = SpawnAdmission::new(policy(Some(1), None, None));
     let (tool_a, _sa, release_a) = blocked_tool(SpawnPolicy::default());
     let (tool_b, _sb, release_b) = blocked_tool(SpawnPolicy::default());
-    let tool_a = Arc::new(Arc::into_inner(tool_a).unwrap().with_spawn_admission(shared.clone()));
-    let tool_b = Arc::new(Arc::into_inner(tool_b).unwrap().with_spawn_admission(shared));
+    let tool_a = Arc::new(
+        Arc::into_inner(tool_a)
+            .unwrap()
+            .with_spawn_admission(shared.clone()),
+    );
+    let tool_b = Arc::new(
+        Arc::into_inner(tool_b)
+            .unwrap()
+            .with_spawn_admission(shared),
+    );
     let parent = parent();
 
     assert!(!call(&tool_a, &parent, json!({"input": "a"})).await.is_error);
