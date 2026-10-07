@@ -676,7 +676,12 @@ fn absolute_normalized_path(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                if normalized.components().count() > 1 {
+                if normalized.components().count() > 1
+                    && !matches!(
+                        normalized.components().next_back(),
+                        Some(Component::RootDir)
+                    )
+                {
                     normalized.pop();
                 }
             }
@@ -730,7 +735,9 @@ fn symlink_normalized_path(path: &Path) -> PathBuf {
         match component {
             OwnedComponent::CurDir => {}
             OwnedComponent::ParentDir => {
-                if resolved.components().count() > 1 {
+                if resolved.components().count() > 1
+                    && !matches!(resolved.components().next_back(), Some(Component::RootDir))
+                {
                     resolved.pop();
                 }
             }

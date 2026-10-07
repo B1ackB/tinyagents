@@ -19,7 +19,10 @@
 use super::history::TranscriptLocator;
 use super::session::{SessionRef, session_stem};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::task::{Context, Poll};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 /// Proof that the holder owns `session`'s turn lock. Released on drop.
@@ -49,6 +52,51 @@ pub async fn lock_session_turn(
     let guard = lock.lock_owned().await;
     tracing::debug!(session = %stem, "[transcript-turn-lock] acquired");
     Some(SessionTurnGuard { _guard: guard })
+}
+
+#[doc(hidden)]
+pub(crate) async fn lock_session_turn_with_notification(
+    locator: &dyn TranscriptLocator,
+    session: &SessionRef,
+    attempted: Option<&tokio::sync::Notify>,
+) -> Option<SessionTurnGuard> {
+    let destination = locator.destination_key()?;
+    let stem = session_stem(&session.first_generation());
+    let lock = registry_lock(destination, stem.clone());
+    tracing::debug!(session = %stem, "[transcript-turn-lock] acquiring");
+    let guard = NotifyOnPoll::new(lock.lock_owned(), attempted).await;
+    tracing::debug!(session = %stem, "[transcript-turn-lock] acquired");
+    Some(SessionTurnGuard { _guard: guard })
+}
+
+struct NotifyOnPoll<'a, F> {
+    future: Pin<Box<F>>,
+    notify: Option<&'a tokio::sync::Notify>,
+    notified: bool,
+}
+
+impl<'a, F> NotifyOnPoll<'a, F> {
+    fn new(future: F, notify: Option<&'a tokio::sync::Notify>) -> Self {
+        Self {
+            future: Box::pin(future),
+            notify,
+            notified: false,
+        }
+    }
+}
+
+impl<F: Future> Future for NotifyOnPoll<'_, F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.notified {
+            if let Some(notify) = self.notify {
+                notify.notify_one();
+            }
+            self.notified = true;
+        }
+        self.future.as_mut().poll(cx)
+    }
 }
 
 /// The shared mutex for `(destination, stem)`, created on first use.

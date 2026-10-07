@@ -39,7 +39,7 @@ use super::jsonl::{LineKind, build_message_line, classify_line};
 use super::paths::resolve_keyed_transcript_path;
 use super::reader::read_jsonl_lines;
 use super::session::{SessionRef, session_stem};
-use super::turn_lock::lock_session_turn;
+use super::turn_lock::lock_session_turn_with_notification;
 use super::types::{
     BackgroundAppend, BackgroundAppendOutcome, BackgroundOrigin, TranscriptMessage,
 };
@@ -121,10 +121,7 @@ async fn append_background_message_impl(
     let key = options.idempotency_key.as_str();
     tracing::debug!(session = %stem, idempotency_key = %key, expected_generation = ?options.expected_generation, "[transcript-background] append requested");
 
-    if let Some(lock_attempted) = lock_attempted {
-        lock_attempted.notify_one();
-    }
-    let _turn = lock_session_turn(locator, &root).await;
+    let _turn = lock_session_turn_with_notification(locator, &root, lock_attempted).await;
     for _ in 0..MAX_HEAD_MOVES {
         let head = locator.head_generation(&root);
         if !locator.session_exists(&head) {
