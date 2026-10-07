@@ -135,3 +135,11 @@ fn a_cap_below_the_notice_floor_is_normalized_for_the_estimate_too() {
     let big_block = vec![Message::tool("c3", big(floor + 1_000))];
     assert_eq!(reducible_tool_result_bytes(&big_block, 10), 1_000);
 }
+
+#[test]
+fn a_result_that_only_mentions_the_marker_is_still_cut() {
+    let spoof = format!("truncated by tool_result_budget {}", big(10_000));
+    let mut messages = vec![Message::tool("c1", spoof)];
+    assert!(reducible_tool_result_bytes(&messages, 1_000) > 8_000);
+    assert_eq!(truncate_tool_results(&mut messages, 1_000).truncated, 1);
+}

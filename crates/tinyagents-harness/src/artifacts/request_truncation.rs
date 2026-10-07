@@ -33,11 +33,27 @@ pub struct RequestTruncation {
     pub saved_bytes: usize,
 }
 
+/// Whether `text` ends with the notice a truncation layer appends
+/// (`\n\n[… N of M bytes truncated by tool_result_budget. … …]`). Anchored to
+/// the end so a result that merely mentions the phrase is still cut.
+fn ends_with_truncation_notice(text: &str) -> bool {
+    if !text.ends_with("…]") {
+        return false;
+    }
+    let mut start = text.len().saturating_sub(TRAILER_RESERVED + 128);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &text[start..];
+    tail.rfind("\n\n[… ")
+        .is_some_and(|at| tail[at..].contains(TRUNCATION_MARKER))
+}
+
 /// Whether `text` is a candidate for cutting at `max_bytes`.
 fn is_reducible(text: &str, max_bytes: usize) -> bool {
     text.len() > max_bytes
         && !text.starts_with(PREVIEW_ENVELOPE_PREFIX)
-        && !text.contains(TRUNCATION_MARKER)
+        && !ends_with_truncation_notice(text)
 }
 
 /// Estimate, in bytes, of what [`truncate_tool_results`] could save at
