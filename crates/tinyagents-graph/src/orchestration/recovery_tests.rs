@@ -3,8 +3,8 @@ use crate::orchestration::{
     InMemoryTaskStore, OrchestrationTaskFilter, OrchestrationTaskSpec, OrchestrationTaskStatus,
     ReconciledTask, TaskStore, reconcile_orphaned_tasks,
 };
-use tinyagents_harness::ids::TaskId;
 use std::time::{Duration, SystemTime};
+use tinyagents_harness::ids::TaskId;
 
 fn task(
     id: &str,
@@ -56,10 +56,16 @@ fn no_interrupted_children_yield_no_note() {
 #[test]
 fn roster_lists_id_target_last_status_and_reason() {
     let mut running = subagent("t-1", "researcher");
-    running.record.spec.metadata.insert("label".into(), "  find the bug  ".into());
+    running
+        .record
+        .spec
+        .metadata
+        .insert("label".into(), "  find the bug  ".into());
     let pending = task(
         "t-2",
-        OrchestrationTaskKind::Tool { tool: "shell".into() },
+        OrchestrationTaskKind::Tool {
+            tool: "shell".into(),
+        },
         OrchestrationTaskStatus::Pending,
         ReconcileOutcome::Failed,
     );
@@ -70,7 +76,10 @@ fn roster_lists_id_target_last_status_and_reason() {
     assert_eq!(rows.as_array().unwrap().len(), 2);
     assert_eq!(rows[0]["task_id"], "t-1");
     assert_eq!(rows[0]["kind"], "sub_agent");
-    assert_eq!(rows[0]["label"], "find the bug", "metadata label wins, trimmed");
+    assert_eq!(
+        rows[0]["label"], "find the bug",
+        "metadata label wins, trimmed"
+    );
     assert_eq!(rows[0]["last_status"], "running");
     assert_eq!(rows[0]["interrupted_reason"], "process restarted");
     assert_eq!(rows[1]["label"], "shell", "falls back to the kind's target");
@@ -116,19 +125,26 @@ fn tasks_that_failed_to_settle_are_still_listed() {
 
 #[test]
 fn roster_is_capped_with_a_plus_n_more_line() {
-    let tasks: Vec<_> = (0..40).map(|i| subagent(&format!("t-{i:02}"), "a")).collect();
+    let tasks: Vec<_> = (0..40)
+        .map(|i| subagent(&format!("t-{i:02}"), "a"))
+        .collect();
     let children = recovery_children(&report(tasks), &reason);
     assert_eq!(children.len(), 40, "selection does not truncate");
     let note = build_restart_recovery_note(&children);
 
-    assert_eq!(roster_json(&note).as_array().unwrap().len(), MAX_RECOVERY_CHILDREN);
+    assert_eq!(
+        roster_json(&note).as_array().unwrap().len(),
+        MAX_RECOVERY_CHILDREN
+    );
     assert_eq!(MAX_RECOVERY_CHILDREN, 32);
     assert!(note.contains("+8 more"), "{note}");
 }
 
 #[test]
 fn exactly_the_cap_has_no_overflow_line() {
-    let tasks: Vec<_> = (0..32).map(|i| subagent(&format!("t-{i:02}"), "a")).collect();
+    let tasks: Vec<_> = (0..32)
+        .map(|i| subagent(&format!("t-{i:02}"), "a"))
+        .collect();
     let note = build_restart_recovery_note(&recovery_children(&report(tasks), &reason));
     assert!(!note.contains("more"), "{note}");
 }
@@ -185,7 +201,9 @@ fn builds_a_note_from_a_real_reconcile_sweep_and_never_relaunches() {
     store
         .insert(OrchestrationTaskSpec::new(
             "live",
-            OrchestrationTaskKind::SubAgent { agent: "worker".into() },
+            OrchestrationTaskKind::SubAgent {
+                agent: "worker".into(),
+            },
         ))
         .unwrap();
     store.mark_running(&TaskId::new("live")).unwrap();

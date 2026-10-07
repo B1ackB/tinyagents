@@ -50,8 +50,6 @@ pub struct RecoveryChild {
     /// Why it was interrupted, as supplied by the host's reconcile reason.
     /// Truncated to [`MAX_RECOVERY_LABEL_CHARS`].
     pub interrupted_reason: String,
-    #[serde(skip)]
-    created_at: std::time::SystemTime,
 }
 
 fn truncate_chars(text: &str, max: usize) -> String {
@@ -78,10 +76,19 @@ pub fn recovery_children(
     report: &ReconcileReport,
     reason: &dyn Fn(&OrchestrationTaskRecord) -> String,
 ) -> Vec<RecoveryChild> {
-    let mut children: Vec<RecoveryChild> = report
+    let mut tasks: Vec<_> = report
         .tasks
         .iter()
         .filter(|task| !matches!(task.outcome, ReconcileOutcome::Cancelled))
+        .collect();
+    tasks.sort_by(|a, b| {
+        a.record
+            .created_at
+            .cmp(&b.record.created_at)
+            .then_with(|| a.task_id.as_str().cmp(b.task_id.as_str()))
+    });
+    let children: Vec<RecoveryChild> = tasks
+        .into_iter()
         .map(|task| {
             let spec = &task.record.spec;
             let label = spec
@@ -95,19 +102,10 @@ pub fn recovery_children(
                 kind: spec.kind.as_str().to_owned(),
                 label: truncate_chars(label, MAX_RECOVERY_LABEL_CHARS),
                 last_status: task_status_label(task.prior_status).to_owned(),
-                interrupted_reason: truncate_chars(
-                    &reason(&task.record),
-                    MAX_RECOVERY_LABEL_CHARS,
-                ),
-                created_at: task.record.created_at,
+                interrupted_reason: truncate_chars(&reason(&task.record), MAX_RECOVERY_LABEL_CHARS),
             }
         })
         .collect();
-    children.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.task_id.cmp(&b.task_id))
-    });
     tracing::debug!(
         interrupted = children.len(),
         "[orchestration] selected restart-recovery children"
