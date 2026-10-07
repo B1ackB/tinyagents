@@ -13,6 +13,7 @@ use super::HarnessStatusStore;
 use crate::error::{Result, TinyAgentsError};
 use crate::events::HarnessRunStatus;
 use crate::ids::{ExecutionStatus, RunId};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::store::{FileStore, Store};
@@ -163,12 +164,36 @@ impl HarnessStatusStore for FileStatusStore {
             && let Ok(existing) = serde_json::from_value::<HarnessRunStatus>(value)
             && existing.run_id != status.run_id
         {
-            let existing_key = status_key(existing.run_id.as_str());
-            if existing_key != key {
+            let mut moved = Vec::new();
+            let mut occupied = HashSet::new();
+            let mut current_key = key.clone();
+            let mut current = existing;
+            loop {
+                let destination = status_key(current.run_id.as_str());
+                if destination == current_key {
+                    break;
+                }
+                if !occupied.insert(destination.clone()) {
+                    return Err(TinyAgentsError::Storage(
+                        "status-key migration cycle".to_string(),
+                    ));
+                }
+                moved.push((current_key.clone(), destination.clone(), current));
+                let Some(next) = self.kv.get(STATUS_NS, &destination).await? else {
+                    break;
+                };
+                let next: HarnessRunStatus = serde_json::from_value(next)?;
+                if next.run_id == status.run_id {
+                    break;
+                }
+                current_key = destination;
+                current = next;
+            }
+            for (source, destination, value) in moved.into_iter().rev() {
                 self.kv
-                    .put(STATUS_NS, &existing_key, serde_json::to_value(&existing)?)
+                    .put(STATUS_NS, &destination, serde_json::to_value(&value)?)
                     .await?;
-                self.kv.delete(STATUS_NS, &key).await?;
+                self.kv.delete(STATUS_NS, &source).await?;
             }
         }
         let value = serde_json::to_value(&status)?;
@@ -195,7 +220,17 @@ impl HarnessStatusStore for FileStatusStore {
         match value {
             Some(value) => {
                 let status: HarnessRunStatus = serde_json::from_value(value)?;
-                Ok((status.run_id.as_str() == run_id).then_some(status))
+                if status.run_id.as_str() == run_id {
+                    return Ok(Some(status));
+                }
+                if key != run_id
+                    && is_safe_status_key(run_id)
+                    && let Some(legacy) = self.kv.get(STATUS_NS, run_id).await?
+                {
+                    let legacy: HarnessRunStatus = serde_json::from_value(legacy)?;
+                    return Ok((legacy.run_id.as_str() == run_id).then_some(legacy));
+                }
+                Ok(None)
             }
             None => Ok(None),
         }
