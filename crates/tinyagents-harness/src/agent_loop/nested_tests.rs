@@ -876,6 +876,93 @@ async fn a_refused_nested_call_releases_its_budget_slot() {
     assert_eq!(leaf.runs(), 1);
 }
 
+/// Blocks the first nested admission forever, then admits everything.
+struct StallFirstAdmission(std::sync::atomic::AtomicBool);
+
+#[async_trait]
+impl crate::middleware::Middleware<(), ()> for StallFirstAdmission {
+    fn name(&self) -> &str {
+        "stall_first_admission"
+    }
+    async fn check_nested_tool(
+        &self,
+        _ctx: &RunContext<()>,
+        _state: &(),
+        _call: &ToolCall,
+    ) -> Result<()> {
+        if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+}
+
+/// Abandons its first nested call mid-admission, then makes a second.
+struct Abandoner {
+    outcome: Arc<Mutex<Option<Outcome>>>,
+}
+
+#[async_trait]
+impl Tool for Abandoner {
+    fn name(&self) -> &str {
+        "abandoner"
+    }
+    fn description(&self) -> &str {
+        "abandons a call"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let harness = harness_extension(context);
+        let first = tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            harness.call_tool("leaf", json!({})),
+        )
+        .await;
+        assert!(first.is_err(), "the first admission stalls");
+        // Let the abandoned call observe the dropped reply and release.
+        tokio::task::yield_now().await;
+        let second = harness.call_tool("leaf", json!({})).await;
+        *self.outcome.lock().unwrap() = Some(second.map_err(|e| e.to_string()));
+        Ok(ToolResult::success("abandoner-out"))
+    }
+}
+
+#[tokio::test]
+async fn a_nested_call_dropped_mid_admission_releases_its_budget_slot() {
+    let outcome = Arc::new(Mutex::new(None));
+    let leaf = Leaf::new("leaf");
+    // Parent + one nested call: the second call only fits if the abandoned
+    // first one gave its slot back.
+    let mut harness = harness_with(
+        vec![parent_call("p1", "abandoner")],
+        enabled().with_max_tool_calls(2),
+    );
+    harness.register_tool(leaf.clone());
+    harness.register_tool(Arc::new(Abandoner {
+        outcome: Arc::clone(&outcome),
+    }));
+    harness.push_middleware(Arc::new(StallFirstAdmission(Default::default())));
+
+    run(&harness, &EventRecorder::new()).await.unwrap();
+
+    let second = outcome.lock().unwrap().take().expect("second call made");
+    assert!(second.is_ok(), "{second:?}");
+    assert_eq!(leaf.runs(), 1);
+}
+
 /// Runs the wrapped call twice, like a retrying wrap middleware.
 struct RetryTwice;
 
