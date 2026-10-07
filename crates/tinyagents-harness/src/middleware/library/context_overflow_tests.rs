@@ -555,6 +555,73 @@ async fn a_compaction_is_judged_against_the_truncated_request_actually_sent() {
     }
 }
 
+#[tokio::test]
+async fn a_response_discarded_for_the_truncation_fallback_is_still_accounted() {
+    // Nothing to compact (one user message and one tool exchange), so the
+    // mixed route falls back to cutting the tool results: the discarded
+    // response was billed and its usage must be recorded.
+    let base = ScriptedBase::new(|n, _| {
+        let tokens = if n == 1 { 9_000 } else { 50 };
+        Ok(response(Some(input_usage(tokens, 20)), Some("stop")))
+    });
+    let stack = stack_of(
+        ContextCompressionMiddleware::with_summarizer(
+            truncating_policy(),
+            Box::new(ShortSummarizer::default()),
+        )
+        .with_response_overflow_detection(ResponseOverflowDetection::Usage)
+        .with_tool_result_truncation(400),
+    );
+    let mut messages = vec![user("read it")];
+    messages.extend(call_and_result("c1", 10_000));
+    let mut c = ctx();
+    let response = stack
+        .run_wrapped_model(
+            &mut c,
+            &(),
+            ModelRequest {
+                messages,
+                ..Default::default()
+            },
+            &base,
+        )
+        .await
+        .unwrap()
+        .into_response();
+    assert_eq!(response.usage.unwrap().input_tokens, 50);
+    assert_eq!(base.calls(), 2);
+    let discarded = c.take_discarded_usage();
+    assert_eq!(discarded.len(), 1, "the first response's usage is kept");
+    assert_eq!(discarded[0].input_tokens, 9_000);
+}
+
+#[tokio::test]
+async fn the_mixed_route_cuts_the_newest_result_again_after_compacting() {
+    // Truncation alone cannot reach the trigger, so the request is compacted;
+    // the compaction splice rebuilds it from the untruncated transcript, and
+    // the newest (otherwise spared) oversized result must be cut again.
+    let summarizer = ShortSummarizer::default();
+    let mw = ContextCompressionMiddleware::with_summarizer(
+        truncating_policy(),
+        Box::new(summarizer.clone()),
+    )
+    .with_tool_result_truncation(400);
+    let mut messages = long_transcript();
+    messages.extend(long_transcript());
+    messages.extend(long_transcript());
+    messages.extend(call_and_result("c1", 10_000));
+    let mut request = ModelRequest {
+        messages,
+        ..Default::default()
+    };
+    let mut c = ctx();
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut request)
+        .await
+        .unwrap();
+    assert!(*summarizer.calls.lock().unwrap() >= 1, "it compacted");
+    assert!(tool_text_len(&request) < 1_000, "and the result is cut");
+}
+
 // ── preemptive route (before_model) ───────────────────────────────────────────
 
 fn truncating_policy() -> SummarizationPolicy {

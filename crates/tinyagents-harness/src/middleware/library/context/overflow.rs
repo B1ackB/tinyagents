@@ -517,7 +517,11 @@ impl ContextCompressionMiddleware {
         });
         // The estimate chose this route; the measured request decides whether
         // it sufficed. Still over the trigger: compact as well.
-        if to_tokens < from_tokens && !self.policy.exceeds_trigger(to_tokens + schema_tokens(&request.tools)) {
+        if to_tokens < from_tokens
+            && !self
+                .policy
+                .exceeds_trigger(to_tokens + schema_tokens(&request.tools))
+        {
             OverTrigger::Done
         } else {
             OverTrigger::Compact
