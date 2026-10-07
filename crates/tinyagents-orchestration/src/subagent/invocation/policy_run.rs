@@ -11,7 +11,7 @@ use tinyagents_harness::middleware::AgentRun;
 
 use super::SubAgent;
 use crate::subagent::policy::may_retry;
-use crate::subagent::{ResultPolicy, SubAgentJobId, SubAgentJobRegistry, SubAgentPolicy};
+use crate::subagent::{AppliedResult, ResultPolicy, SubAgentJobId, SubAgentJobRegistry, SubAgentPolicy};
 
 const LOG_PREFIX: &str = "[subagent-tool-policy]";
 
@@ -179,19 +179,21 @@ pub(crate) async fn settle(
             } else {
                 None
             };
-            jobs.mark_result(id, Ok(run));
-            if let Some(applied) = applied {
-                jobs.apply_result(id, applied);
-            }
+            jobs.mark_result_applied(id, Ok(run), applied);
         }
         Finished::OverBudget { run, error } => {
-            let applied = result_policy
-                .apply(
-                    id.as_str(),
-                    &run.text().unwrap_or_default(),
-                    run.structured.as_ref(),
-                )
-                .await;
+            // A disabled policy leaves the output untouched, as on success.
+            let text = run.text().unwrap_or_default();
+            let applied = if result_policy.is_active() {
+                result_policy
+                    .apply(id.as_str(), &text, run.structured.as_ref())
+                    .await
+            } else {
+                AppliedResult {
+                    text,
+                    ..AppliedResult::default()
+                }
+            };
             jobs.mark_budget_overrun(id, applied, error.to_string());
         }
         Finished::Failed(error) => jobs.mark_result(id, Err(error)),

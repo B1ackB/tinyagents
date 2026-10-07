@@ -115,6 +115,18 @@ impl SubAgentJobRegistry {
         id: &SubAgentJobId,
         result: Result<tinyagents_harness::middleware::AgentRun, TinyAgentsError>,
     ) {
+        self.mark_result_applied(id, result, None);
+    }
+
+    /// Settles a job like [`Self::mark_result`], publishing the
+    /// result-policy-applied output in the same registry write so no reader
+    /// ever sees a terminal job with the raw, unpolicied output.
+    pub(crate) fn mark_result_applied(
+        &self,
+        id: &SubAgentJobId,
+        result: Result<tinyagents_harness::middleware::AgentRun, TinyAgentsError>,
+        applied: Option<AppliedResult>,
+    ) {
         let mut entries = self.write();
         let Some(entry) = entries.get_mut(id) else {
             return;
@@ -138,6 +150,12 @@ impl SubAgentJobRegistry {
                 } else {
                     entry.job.status = SubAgentJobStatus::Completed;
                     entry.job.output = run.text();
+                    if let Some(applied) = applied {
+                        entry.job.output = Some(applied.text);
+                        entry.job.artifacts.extend(applied.artifact);
+                        entry.job.schema_error = applied.schema_error;
+                        entry.job.artifact_error = applied.artifact_error;
+                    }
                 }
             }
             Err(TinyAgentsError::Cancelled) => {
@@ -159,22 +177,6 @@ impl SubAgentJobRegistry {
                 entry.job.error = Some(error.to_string());
             }
         }
-    }
-
-    /// Folds a result-policy application into a job that completed: replaces
-    /// the visible output and records any artifact or schema error.
-    pub(crate) fn apply_result(&self, id: &SubAgentJobId, applied: AppliedResult) {
-        let mut entries = self.write();
-        let Some(entry) = entries.get_mut(id) else {
-            return;
-        };
-        if entry.job.status != SubAgentJobStatus::Completed {
-            return;
-        }
-        entry.job.output = Some(applied.text);
-        entry.job.artifacts.extend(applied.artifact);
-        entry.job.schema_error = applied.schema_error;
-        entry.job.artifact_error = applied.artifact_error;
     }
 
     /// Points the job link at the attempt that is now running.

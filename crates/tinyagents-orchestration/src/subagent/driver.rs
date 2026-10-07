@@ -404,6 +404,7 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
             };
             let error = TinyAgentsError::Tool(message.clone());
             if cancellation.is_cancelled()
+                || token.is_cancelled()
                 || !may_retry(&policy, attempt, &error, *tools_ran)
                 || !attempts.can_retry()
             {
