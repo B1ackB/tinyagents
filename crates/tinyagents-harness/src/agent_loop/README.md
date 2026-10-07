@@ -50,13 +50,13 @@ directly, so follow-ups never interleave with tool rows. The same holds for
 the deferred-resume batch in `apply_deferred_results`.
 
 Execution runs concurrently only when *all* of the following hold: the turn
-requests two or more tools, zero tool-wrap middleware (`ToolMiddleware`) is
-registered, and every call's tool reports `Tool::is_concurrency_safe() ==
+requests two or more tools, every registered tool-wrap middleware
+(`ToolMiddleware`) reports `concurrent_safe() == true`, and every call's tool reports `Tool::is_concurrency_safe() ==
 true` (the trait default is `false`, so a tool must opt in). See
 `should_execute_tools_concurrently` and `batch_is_canonical_parallel_safe` in
-`tools.rs`. Tool-wrap middleware holds `&mut RunContext` across each wrapped
-call — part of its public contract — so its presence keeps the historical
-serial path. Lifecycle middleware does **not** force the serial path: every
+`tools.rs`. Tool-wrap middleware takes a shared `&RunContext`, so the wrap onion runs
+inside each concurrent call; a wrap returning `concurrent_safe() == false`
+keeps the historical serial path. Lifecycle middleware does **not** force the serial path: every
 `before_tool` hook runs during serial admission, which completes in full for
 every call in the batch before any concurrent future is built, so there is
 nothing left for a lifecycle middleware to mutate once execution starts

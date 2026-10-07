@@ -101,9 +101,9 @@ Detailed lifecycle:
 12. If tool calls exist, validate name, schema, and limits.
 13. Run `before_tool` middleware per call.
 14. Execute tools — concurrently only when *all* of: the turn has two or more
-    calls, zero tool-wrap (`ToolMiddleware`) middleware is registered (wrap
-    middleware holds `&mut RunContext` across each call, so it forces the
-    serial path), and every call's tool reports `is_concurrency_safe() ==
+    calls, every registered tool-wrap (`ToolMiddleware`) reports
+    `concurrent_safe() == true` (wraps take `&RunContext` and run inside each
+    concurrent call; `false` forces the serial path), and every call's tool reports `is_concurrency_safe() ==
     true` (the trait default is `false`, so concurrency is opt-in per tool);
     see `should_execute_tools_concurrently` in
     `crates/tinyagents-harness/src/agent_loop/tools.rs`. Lifecycle middleware
