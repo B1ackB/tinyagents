@@ -3,42 +3,16 @@
 //! single host-neutral surface. A host middleware fingerprints results, feeds
 //! each call in, and turns the answers into notes, blocks and halts.
 
-use super::escalation::RepeatEscalation;
 use super::loop_patterns::{
-    ArgumentChurnDetector, DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS,
-    DEFAULT_PING_PONG_ALTERNATIONS, PingPongDetector,
+    DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS, DEFAULT_PING_PONG_ALTERNATIONS,
 };
-use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, PostCompactionGuard, REPEATING_AT};
+use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, REPEATING_AT};
 use super::successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
-use super::types::{CallGate, SuccessfulRepeat, SuccessfulRepeatTracker};
-
-/// Settings for [`RepeatMonitor`] (and the middleware built on it).
-///
-/// The default is the staged ladder: warn at the first threshold (3 identical
-/// results, 3 identical batches, 4 identical outputs), block two repeats
-/// later, halt on the second block, plus the warning-only pattern detectors and
-/// the post-compaction guard. [`immediate_halt`](Self::immediate_halt) restores
-/// the historical halt-at-the-first-threshold behaviour.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct RepeatProgressConfig {
-    /// Consecutive identical output batches that trigger the first stage.
-    pub output_threshold: u32,
-    /// Identical results of one call, or identical call batches in a row, that
-    /// trigger the first stage.
-    pub call_threshold: u32,
-    /// Staged escalation; `None` halts at the first threshold.
-    pub escalation: Option<RepeatEscalation>,
-    /// Alternating calls before the ping-pong warning; `0` disables it.
-    pub ping_pong_alternations: u32,
-    /// Argument variants before the churn warning; `0` disables it.
-    pub churn_variants: u32,
-    /// Calls per variant, with one result, that make a variant count.
-    pub churn_calls_per_variant: u32,
-    /// Calls watched after a compaction (and remembered before it); `0`
-    /// disables the guard (warning-only).
-    pub post_compaction_window: u32,
-}
+use super::types::{
+    ArgumentChurnDetector, CallGate, CallObservation, PingPongDetector, PostCompactionGuard,
+    RepeatEscalation, RepeatMonitor, RepeatProgressConfig, SuccessfulRepeat,
+    SuccessfulRepeatTracker,
+};
 
 impl Default for RepeatProgressConfig {
     fn default() -> Self {
@@ -106,25 +80,6 @@ impl RepeatProgressConfig {
         self.post_compaction_window = window;
         self
     }
-}
-
-/// What recording one successful call produced.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct CallObservation {
-    /// The exact-repeat ledger's verdict for the call.
-    pub verdict: SuccessfulRepeat,
-    /// Warning notes to attach to this call's result, from the pattern
-    /// detectors and the post-compaction guard.
-    pub notes: Vec<String>,
-}
-
-/// See the module docs.
-pub struct RepeatMonitor {
-    tracker: SuccessfulRepeatTracker,
-    ping_pong: Option<PingPongDetector>,
-    churn: Option<ArgumentChurnDetector>,
-    guard: Option<PostCompactionGuard>,
 }
 
 /// `tool\u{1}arguments`, with the tool name prefixed by its length so a

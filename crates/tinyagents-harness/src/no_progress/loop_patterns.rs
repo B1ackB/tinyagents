@@ -13,9 +13,9 @@
 //! ([`OutcomeFingerprinter`](super::OutcomeFingerprinter)) so volatile spans
 //! do not hide a repeat.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use super::types::{ArgumentChurnDetector, ChurnState, PingPongDetector, PingPongState, Step};
 use super::util::{hash_of, lock};
 
 /// Alternations (A,B,A,B,A,B is six) before [`PingPongDetector`] warns.
@@ -35,31 +35,6 @@ fn tool_name(call_signature: &str) -> &str {
         return name;
     }
     call_signature.split('\u{1}').next().unwrap_or_default()
-}
-
-/// One call and the result it produced, as hashes.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Step {
-    call: u64,
-    outcome: u64,
-}
-
-#[derive(Default)]
-struct PingPongState {
-    prev: Option<Step>,
-    last: Option<Step>,
-    /// Tool names of `prev` and `last`, for the warning text.
-    names: (String, String),
-    /// Length of the current strictly alternating tail ending at `last`.
-    tail: u32,
-    /// Pairs already warned about (order-independent hash of both calls).
-    warned: HashSet<u64>,
-}
-
-/// Detects two calls alternating with a stable result on each side.
-pub struct PingPongDetector {
-    alternations: u32,
-    state: Mutex<PingPongState>,
 }
 
 impl Default for PingPongDetector {
@@ -130,25 +105,6 @@ const MAX_WARNED: usize = 1024;
 const MAX_CHURN_GROUPS: usize = 1024;
 /// Argument variants tracked per group; later variants are not tracked.
 const MAX_CHURN_VARIANTS_PER_GROUP: usize = 256;
-
-#[derive(Default)]
-struct ChurnState {
-    /// `(tool, outcome)` → argument variant → calls so far.
-    groups: HashMap<(String, u64), HashMap<u64, u32>>,
-    /// Groups already warned about; their counts are dropped.
-    warned: HashSet<(String, u64)>,
-}
-
-/// Detects one tool called with many argument variants that all return the
-/// same result. Tracking is bounded ([`MAX_CHURN_GROUPS`],
-/// [`MAX_CHURN_VARIANTS_PER_GROUP`]) so a run supplying unique values cannot
-/// grow it without limit; past the bound new groups are simply not tracked.
-pub struct ArgumentChurnDetector {
-    variants: u32,
-    calls_per_variant: u32,
-    /// One lock for counts and warnings so `record` and `reset` are atomic.
-    state: Mutex<ChurnState>,
-}
 
 impl Default for ArgumentChurnDetector {
     fn default() -> Self {

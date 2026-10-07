@@ -4,7 +4,7 @@
 //! Split out of `no_progress/mod.rs`; see that module's doc comment for
 //! the full escalation-ladder design.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::OutcomeFingerprinter;
@@ -221,7 +221,7 @@ pub struct SuccessfulRepeatTracker {
     /// Hash of `(call signature, outcome signature)` → times recorded this run.
     pub(super) recurrences: Mutex<HashMap<u64, u32>>,
     /// Staged escalation settings; `None` halts at the first threshold.
-    pub(super) escalation: Option<super::escalation::RepeatEscalation>,
+    pub(super) escalation: Option<RepeatEscalation>,
     /// Call-signature hash → ledger key of the outcome that call returned
     /// last, so [`SuccessfulRepeatTracker::pre_call`] can tell how often the
     /// next attempt would repeat a result without executing it.
@@ -233,4 +233,141 @@ pub struct SuccessfulRepeatTracker {
     /// Call-signature hash → times that call was blocked (survives context
     /// eviction; cleared when the call returns a new result).
     pub(super) blocks: Mutex<HashMap<u64, u32>>,
+    /// Serializes a whole `record_call_identity` with `reset`/`reset_ledger`,
+    /// so a reset never lands between the recurrence and prediction updates.
+    pub(super) ops: Mutex<()>,
+}
+
+/// Staged escalation of a successful repeat: **warn**, then **block**, then
+/// **halt**.
+///
+/// The first threshold a repeat reaches (the tracker's `call_threshold` /
+/// `output_threshold`) only *warns*: the host appends a note to the tool result
+/// telling the model it is repeating itself. If the model repeats anyway the
+/// call is **blocked** (not executed, answered with an error asking it to
+/// reassess); a second block in the same run **halts** the run.
+///
+/// Without escalation (`Option<RepeatEscalation>` = `None` on the tracker, the
+/// default for [`SuccessfulRepeatTracker::new`](super::SuccessfulRepeatTracker::new))
+/// the first threshold halts immediately, which is the historical behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RepeatEscalation {
+    /// How many repeats past the warning the call is blocked at: with the
+    /// default warning at 3 identical results, the 5th identical call is the
+    /// first one blocked. Clamped to at least 1 so a warning always lands
+    /// before a block.
+    pub block_after_warn: u32,
+    /// Blocks of one call tolerated before the run halts; the halting block is
+    /// the `blocks_before_halt`-th. Clamped to at least 1 (halt on the first
+    /// block).
+    pub blocks_before_halt: u32,
+}
+
+/// Settings for [`RepeatMonitor`] (and the middleware built on it).
+///
+/// The default is the staged ladder: warn at the first threshold (3 identical
+/// results, 3 identical batches, 4 identical outputs), block two repeats
+/// later, halt on the second block, plus the warning-only pattern detectors and
+/// the post-compaction guard. [`immediate_halt`](Self::immediate_halt) restores
+/// the historical halt-at-the-first-threshold behaviour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RepeatProgressConfig {
+    /// Consecutive identical output batches that trigger the first stage.
+    pub output_threshold: u32,
+    /// Identical results of one call, or identical call batches in a row, that
+    /// trigger the first stage.
+    pub call_threshold: u32,
+    /// Staged escalation; `None` halts at the first threshold.
+    pub escalation: Option<RepeatEscalation>,
+    /// Alternating calls before the ping-pong warning; `0` disables it.
+    pub ping_pong_alternations: u32,
+    /// Argument variants before the churn warning; `0` disables it.
+    pub churn_variants: u32,
+    /// Calls per variant, with one result, that make a variant count.
+    pub churn_calls_per_variant: u32,
+    /// Calls watched after a compaction (and remembered before it); `0`
+    /// disables the guard (warning-only).
+    pub post_compaction_window: u32,
+}
+
+/// What recording one successful call produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CallObservation {
+    /// The exact-repeat ledger's verdict for the call.
+    pub verdict: SuccessfulRepeat,
+    /// Warning notes to attach to this call's result, from the pattern
+    /// detectors and the post-compaction guard.
+    pub notes: Vec<String>,
+}
+
+/// See the module docs.
+pub struct RepeatMonitor {
+    pub(super) tracker: SuccessfulRepeatTracker,
+    pub(super) ping_pong: Option<PingPongDetector>,
+    pub(super) churn: Option<ArgumentChurnDetector>,
+    pub(super) guard: Option<PostCompactionGuard>,
+}
+
+/// One call and the result it produced, as hashes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Step {
+    pub(super) call: u64,
+    pub(super) outcome: u64,
+}
+
+#[derive(Default)]
+pub(super) struct PingPongState {
+    pub(super) prev: Option<Step>,
+    pub(super) last: Option<Step>,
+    /// Tool names of `prev` and `last`, for the warning text.
+    pub(super) names: (String, String),
+    /// Length of the current strictly alternating tail ending at `last`.
+    pub(super) tail: u32,
+    /// Pairs already warned about (order-independent hash of both calls).
+    pub(super) warned: HashSet<u64>,
+}
+
+/// Detects two calls alternating with a stable result on each side.
+pub struct PingPongDetector {
+    pub(super) alternations: u32,
+    pub(super) state: Mutex<PingPongState>,
+}
+
+#[derive(Default)]
+pub(super) struct ChurnState {
+    /// `(tool, outcome)` → argument variant → calls so far.
+    pub(super) groups: HashMap<(String, u64), HashMap<u64, u32>>,
+    /// Groups already warned about; their counts are dropped.
+    pub(super) warned: HashSet<(String, u64)>,
+}
+
+/// Detects one tool called with many argument variants that all return the
+/// same result. Tracking is bounded (`MAX_CHURN_GROUPS`,
+/// `MAX_CHURN_VARIANTS_PER_GROUP`) so a run supplying unique values cannot
+/// grow it without limit; past the bound new groups are simply not tracked.
+pub struct ArgumentChurnDetector {
+    pub(super) variants: u32,
+    pub(super) calls_per_variant: u32,
+    /// One lock for counts and warnings so `record` and `reset` are atomic.
+    pub(super) state: Mutex<ChurnState>,
+}
+
+#[derive(Default)]
+pub(super) struct GuardState {
+    /// Repeating `(call, result)` hashes with the call number they were seen
+    /// at, oldest first. Only pairs from the last `window` calls are kept.
+    pub(super) tail: VecDeque<(u64, u64)>,
+    /// Successful calls recorded so far, repeating or not.
+    pub(super) calls: u64,
+    /// The tail captured at compaction and the calls still to watch.
+    pub(super) armed: Option<(Vec<u64>, u32)>,
+}
+
+/// Flags calls that repeat the pre-compaction tail. See the module docs.
+pub struct PostCompactionGuard {
+    pub(super) window: u32,
+    pub(super) state: Mutex<GuardState>,
 }
