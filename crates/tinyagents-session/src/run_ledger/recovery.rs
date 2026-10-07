@@ -64,6 +64,16 @@ pub struct CallRecovery {
     pub reason: &'static str,
 }
 
+fn status_rank(status: ToolEffectStatus) -> u8 {
+    match status {
+        ToolEffectStatus::Completed => 0,
+        ToolEffectStatus::Failed => 1,
+        ToolEffectStatus::Deferred => 2,
+        ToolEffectStatus::Started => 3,
+        ToolEffectStatus::Interrupted => 4,
+    }
+}
+
 fn classify_status(status: Option<ToolEffectStatus>) -> (RecoveryClass, &'static str) {
     match status {
         None => (
@@ -93,11 +103,35 @@ fn classify_status(status: Option<ToolEffectStatus>) -> (RecoveryClass, &'static
     }
 }
 
+/// What a call with no effect row means. A missing row proves the call never
+/// began only when every failed `started` write aborts the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingEffectRow {
+    /// The call never began (every `started` write failure aborted execution).
+    #[default]
+    NeverBegan,
+    /// The host runs with a policy that proceeds after a failed `started` write
+    /// (e.g. `LedgerFailure::Continue`), so a missing row may hide an executed
+    /// call: classify it [`RecoveryClass::NeedsVerification`].
+    Uncertain,
+}
+
 /// Classifies each dangling call in `tail` against the recorded
 /// `tool_effects`, matching on `(run_id, call_id)`. Output order follows `tail`.
+/// A missing row is read as "never began"; use [`classify_recovery_with`] when
+/// the run could have continued past a failed `started` write.
 pub fn classify_recovery(
     tail: &[DanglingToolCall],
     tool_effects: &[ToolEffectRow],
+) -> Vec<CallRecovery> {
+    classify_recovery_with(tail, tool_effects, MissingEffectRow::NeverBegan)
+}
+
+/// Like [`classify_recovery`], with an explicit reading of missing rows.
+pub fn classify_recovery_with(
+    tail: &[DanglingToolCall],
+    tool_effects: &[ToolEffectRow],
+    missing: MissingEffectRow,
 ) -> Vec<CallRecovery> {
     tail.iter()
         .map(|call| {
@@ -110,10 +144,19 @@ pub fn classify_recovery(
                     let (class, reason) = classify_status(Some(effect.status));
                     (Some(effect.status), class, reason)
                 })
-                .max_by_key(|(_, class, _)| *class)
-                .unwrap_or_else(|| {
-                    let (class, reason) = classify_status(None);
-                    (None, class, reason)
+                // Equal classes (Completed vs Failed) tie-break on a fixed status
+                // rank so the chosen row never depends on row order.
+                .max_by_key(|(status, class, _)| (*class, status.map(status_rank)))
+                .unwrap_or_else(|| match missing {
+                    MissingEffectRow::NeverBegan => {
+                        let (class, reason) = classify_status(None);
+                        (None, class, reason)
+                    }
+                    MissingEffectRow::Uncertain => (
+                        None,
+                        RecoveryClass::NeedsVerification,
+                        "no effect record, but the ledger may have failed to record the start: verify before continuing",
+                    ),
                 });
             tracing::debug!(
                 "[run_ledger:recovery] run_id={} call_id={} tool={} class={class:?}",
