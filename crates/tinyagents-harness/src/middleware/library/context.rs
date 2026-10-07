@@ -1612,11 +1612,16 @@ impl PromptCacheGuardMiddleware {
 
     /// The conversation key cache accounting groups calls by: the thread when
     /// the run has one (a provider cache spans runs of a thread), else the
-    /// run.
+    /// run instance, plus the context's prompt-prefix epoch so a deliberate
+    /// rewrite starts a fresh baseline.
     fn cache_key<Ctx: Send + Sync>(ctx: &RunContext<Ctx>) -> String {
-        ctx.thread_id()
+        let conversation = ctx
+            .thread_id()
             .map(|thread| format!("thread:{thread}"))
-            .unwrap_or_else(|| format!("run:{}", ctx.run_id()))
+            // A run id is a caller's label that two runs may share; the
+            // instance id is unique.
+            .unwrap_or_else(|| format!("run:{}", ctx.instance_id()));
+        format!("{conversation}@{}", ctx.prompt_prefix_epoch())
     }
 
     /// Sets the maximum number of [`CacheLayoutEvent`]s retained before the
@@ -1735,11 +1740,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
             return Ok(());
         };
         let key = Self::cache_key(ctx);
+        let model = response
+            .resolved_model
+            .as_ref()
+            .map_or("", |resolved| resolved.name.as_str());
         let miss = self
             .cache_misses
             .lock()
             .expect("cache misses mutex poisoned")
-            .observe(&key, usage);
+            .observe(&key, model, usage);
         if let Some(miss) = miss {
             let call_id = ctx
                 .active_model_call

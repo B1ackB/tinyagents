@@ -688,3 +688,32 @@ async fn a_first_attempt_that_grows_the_request_is_not_used_or_persisted() {
     assert_eq!(*sink.0.lock().unwrap(), 0, "no boundary persisted");
     assert_eq!(compacted_count(&recorder), 0);
 }
+
+#[tokio::test]
+async fn an_overflow_compaction_marks_the_prompt_prefix_as_changed() {
+    // The prompt cache guard keys its miss accounting on this, so the smaller
+    // prompt after a compaction is not reported as a miss.
+    let base = ScriptedBase::new(|n, _| {
+        if n == 1 {
+            Err(overflow_error())
+        } else {
+            Ok(response(None, Some("stop")))
+        }
+    });
+    let stack = stack_of(short_mw(roomy_policy()));
+    let mut c = ctx();
+    let before = c.prompt_prefix_epoch();
+    stack
+        .run_wrapped_model(
+            &mut c,
+            &(),
+            ModelRequest {
+                messages: long_transcript(),
+                ..Default::default()
+            },
+            &base,
+        )
+        .await
+        .unwrap();
+    assert_ne!(c.prompt_prefix_epoch(), before);
+}

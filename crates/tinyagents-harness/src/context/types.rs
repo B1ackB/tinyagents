@@ -507,6 +507,12 @@ pub struct RunContext<Ctx = ()> {
     /// discarding a response would also discard output a consumer already
     /// received as deltas.
     pub call_streamed: bool,
+    /// Identifies the current shape of the prompt prefix: `0` until a
+    /// middleware that rewrites it (a compaction, a truncation) calls
+    /// [`RunContext::mark_prompt_prefix_changed`], then a process-unique
+    /// value. Provider cache accounting keys on it so the uncached tokens of a
+    /// deliberately rewritten prefix are not reported as a miss.
+    pub(crate) prefix_epoch: u64,
     /// Usage of responses a wrap middleware paid for and then discarded (a
     /// retry after an overflow reported by a successful response). The agent
     /// loop folds it into the run's totals and the host budget at its next

@@ -53,6 +53,17 @@ async fn call(
     input: u64,
     cached: u64,
 ) {
+    call_on(guard, c, system, "model-a", input, cached).await;
+}
+
+async fn call_on(
+    guard: &PromptCacheGuardMiddleware,
+    c: &mut RunContext,
+    system: &str,
+    model: &str,
+    input: u64,
+    cached: u64,
+) {
     let mut request = ModelRequest {
         messages: vec![Message::system(system), Message::user("hello")],
         ..Default::default()
@@ -61,6 +72,11 @@ async fn call(
         .await
         .unwrap();
     let mut resp = response(input, cached);
+    resp.resolved_model = Some(tinyinference_llm::model::ResolvedModel {
+        name: model.to_string(),
+        requested: None,
+        source: tinyinference_llm::model::ModelResolutionSource::RegistryDefault,
+    });
     Middleware::<(), ()>::after_model(guard, c, &(), &mut resp)
         .await
         .unwrap();
@@ -148,5 +164,38 @@ async fn the_noise_floor_is_configurable() {
     let (mut c, recorder) = ctx("r", None);
     call(&guard, &mut c, "sys", 10_000, 9_000).await;
     call(&guard, &mut c, "sys", 12_000, 0).await;
+    assert!(misses(&recorder).is_empty());
+}
+
+#[tokio::test]
+async fn a_compaction_between_calls_is_not_a_cache_miss() {
+    let guard = PromptCacheGuardMiddleware::new();
+    let (mut c, recorder) = ctx("r", None);
+    call(&guard, &mut c, "sys", 10_000, 9_000).await;
+    // What ContextCompressionMiddleware does when it rewrites the prefix.
+    c.mark_prompt_prefix_changed();
+    call(&guard, &mut c, "sys", 3_000, 0).await;
+    assert!(misses(&recorder).is_empty());
+    // The new prefix then gets its own baseline.
+    call(&guard, &mut c, "sys", 4_000, 0).await;
+    assert_eq!(misses(&recorder).len(), 1);
+}
+
+#[tokio::test]
+async fn a_model_switch_is_not_a_cache_miss() {
+    let guard = PromptCacheGuardMiddleware::new();
+    let (mut c, recorder) = ctx("r", None);
+    call_on(&guard, &mut c, "sys", "model-a", 10_000, 9_000).await;
+    call_on(&guard, &mut c, "sys", "model-b", 11_000, 0).await;
+    assert!(misses(&recorder).is_empty());
+}
+
+#[tokio::test]
+async fn two_runs_sharing_a_run_id_but_not_a_thread_do_not_share_a_baseline() {
+    let guard = PromptCacheGuardMiddleware::new();
+    let (mut first, _) = ctx("same-id", None);
+    call(&guard, &mut first, "sys", 10_000, 9_000).await;
+    let (mut second, recorder) = ctx("same-id", None);
+    call(&guard, &mut second, "sys", 11_000, 0).await;
     assert!(misses(&recorder).is_empty());
 }

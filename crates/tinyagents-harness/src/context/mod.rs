@@ -326,6 +326,7 @@ impl<Ctx> RunContext<Ctx> {
             terminal_observer: None,
             active_model_call: None,
             call_streamed: false,
+            prefix_epoch: 0,
             discarded_usage: Vec::new(),
             deferred_results: None,
             approved_calls: std::collections::HashSet::new(),
@@ -555,6 +556,19 @@ impl<Ctx> RunContext<Ctx> {
     /// call that replaces it.
     pub fn record_discarded_usage(&mut self, usage: tinyinference_llm::usage::Usage) {
         self.discarded_usage.push(usage);
+    }
+
+    /// Declares that a middleware rewrote the prompt prefix on purpose
+    /// (compaction, truncation): the next provider cache read is expected to
+    /// be cold, so it is not a cache miss.
+    pub fn mark_prompt_prefix_changed(&mut self) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.prefix_epoch = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The value [`Self::mark_prompt_prefix_changed`] last set (`0` if never).
+    pub fn prompt_prefix_epoch(&self) -> u64 {
+        self.prefix_epoch
     }
 
     pub(crate) fn take_discarded_usage(&mut self) -> Vec<tinyinference_llm::usage::Usage> {
