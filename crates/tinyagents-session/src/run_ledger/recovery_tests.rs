@@ -36,10 +36,29 @@ fn a_call_the_ledger_never_saw_start_is_safe_to_resume() {
 }
 
 #[test]
-fn a_deferred_call_resumes_to_receive_its_answer() {
+fn a_deferred_call_awaits_its_answer_and_is_not_plain_resume() {
+    let class = class_of(Some(ToolEffectStatus::Deferred));
+    assert_eq!(class, RecoveryClass::AwaitingAnswer);
+    assert_ne!(class, RecoveryClass::Resume);
+}
+
+#[test]
+fn the_most_cautious_row_wins_when_several_match_one_call() {
+    let rows = [
+        effect("run-1", "c1", ToolEffectStatus::Completed),
+        effect("run-1", "c1", ToolEffectStatus::Started),
+        effect("run-1", "c1", ToolEffectStatus::Deferred),
+    ];
+    let classified = classify_recovery(&[call("c1")], &rows);
+    assert_eq!(classified[0].class, RecoveryClass::NeedsVerification);
+    assert_eq!(classified[0].effect_status, Some(ToolEffectStatus::Started));
+
+    // Order of the rows must not matter.
+    let mut reversed = rows.to_vec();
+    reversed.reverse();
     assert_eq!(
-        class_of(Some(ToolEffectStatus::Deferred)),
-        RecoveryClass::Resume
+        classify_recovery(&[call("c1")], &reversed)[0].class,
+        RecoveryClass::NeedsVerification
     );
 }
 
