@@ -11,7 +11,8 @@
 //! Three collections, named from a prefix (default `graph`):
 //!
 //! - `<prefix>_checkpoints`: one document per stored checkpoint,
-//!   `{thread, seq, checkpoint_id, record}`. `seq` is a per-thread insertion
+//!   `{thread, namespace, seq, checkpoint_id, record}` (`namespace` is the
+//!   encoded subgraph namespace, so scoped reads filter on it). `seq` is a per-thread insertion
 //!   counter, so listing is a query sorted on it and duplicate checkpoint ids
 //!   resolve to the latest write, exactly like the append-only backends.
 //! - `<prefix>_threads`: one counter document per thread, advanced with a
@@ -49,26 +50,39 @@ fn map_error(error: StorageError) -> TinyAgentsError {
     TinyAgentsError::Checkpoint(format!("storage driver: {error}"))
 }
 
-/// A stable 64-bit FNV-1a hash, for ids built from unbounded keys.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
+/// Documents read per driver call when following a query to its end.
+/// [`DocumentStoreExt::query_all`] follows the cursors, so this bounds one
+/// page, not the result.
+const PAGE: usize = 500;
+
+/// Longest id stored as is; longer ones are hashed.
+const MAX_KEY_LEN: usize = 400;
 
 /// A document id for `parts`: length-prefixed so no two tuples collide, and
-/// hashed when it would exceed the driver's id limit.
+/// replaced by its SHA-256 when it would exceed the driver's id limit.
 fn key(parts: &[&str]) -> String {
     let joined: String = parts
         .iter()
         .map(|part| format!("{}:{part}", part.len()))
         .collect::<Vec<_>>()
         .join("/");
-    if joined.len() <= 400 {
+    if joined.len() <= MAX_KEY_LEN {
         joined
     } else {
-        format!("h:{:016x}:{}", fnv1a(joined.as_bytes()), joined.len())
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(joined.as_bytes());
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!("h:{hex}")
     }
+}
+
+/// `namespace` as one string, injectively: each component is
+/// length-prefixed, so `["a", "b"]` and `["a/b"]` never meet.
+fn namespace_key(namespace: &[String]) -> String {
+    namespace
+        .iter()
+        .map(|part| format!("{}:{part};", part.len()))
+        .collect()
 }
 
 /// A [`Checkpointer`] that stores everything in a driver [`DocumentStore`].
@@ -130,7 +144,11 @@ impl<State> DriverCheckpointer<State> {
                 let specs = [
                     CollectionSpec::new(&self.checkpoints)
                         .index(IndexSpec::new("by_thread_seq", ["thread", "seq"]))
-                        .index(IndexSpec::new("by_thread_id", ["thread", "checkpoint_id"])),
+                        .index(IndexSpec::new("by_thread_id", ["thread", "checkpoint_id"]))
+                        .index(IndexSpec::new(
+                            "by_thread_namespace",
+                            ["thread", "namespace", "seq"],
+                        )),
                     CollectionSpec::new(&self.threads),
                     CollectionSpec::new(&self.writes)
                         .index(IndexSpec::new("by_thread", ["thread"])),
@@ -174,7 +192,7 @@ impl<State> DriverCheckpointer<State> {
         self.declared().await?;
         let query = Query::filter(Filter::eq("thread", thread))
             .sort(Sort::asc("seq"))
-            .limit(500);
+            .limit(PAGE);
         self.docs
             .query_all(&self.checkpoints, &query)
             .await
@@ -182,8 +200,7 @@ impl<State> DriverCheckpointer<State> {
     }
 
     fn writes_id(thread: &str, namespace: &[String], checkpoint_id: &str) -> String {
-        let namespace = namespace.join("\u{1f}");
-        key(&[thread, &namespace, checkpoint_id])
+        key(&[thread, &namespace_key(namespace), checkpoint_id])
     }
 
     async fn drop_writes(&self, filter: Filter) -> Result<()> {
@@ -221,6 +238,7 @@ where
         let seq = self.next_seq(&checkpoint.thread_id).await?;
         let doc = json!({
             "thread": checkpoint.thread_id,
+            "namespace": namespace_key(&checkpoint.namespace),
             "seq": seq,
             "checkpoint_id": checkpoint.checkpoint_id,
             "record": serde_json::to_value(&checkpoint)?,
@@ -240,6 +258,30 @@ where
     ) -> Result<Option<Checkpoint<State>>> {
         self.declared().await?;
         let mut filter = Filter::eq("thread", thread_id);
+        if let Some(id) = checkpoint_id {
+            filter = filter.and(Filter::eq("checkpoint_id", id));
+        }
+        let query = Query::filter(filter).sort(Sort::desc("seq")).limit(1);
+        let page = self
+            .docs
+            .query(&self.checkpoints, &query)
+            .await
+            .map_err(map_error)?;
+        page.items.into_iter().next().map(Self::decode).transpose()
+    }
+
+    /// One indexed query on the stored namespace, so a parent run and a
+    /// subgraph sharing a thread never load each other's checkpoints, even
+    /// when they reuse a checkpoint id.
+    async fn get_scoped(
+        &self,
+        thread_id: &str,
+        checkpoint_id: Option<&str>,
+        namespace: &[String],
+    ) -> Result<Option<Checkpoint<State>>> {
+        self.declared().await?;
+        let mut filter =
+            Filter::eq("thread", thread_id).and(Filter::eq("namespace", namespace_key(namespace)));
         if let Some(id) = checkpoint_id {
             filter = filter.and(Filter::eq("checkpoint_id", id));
         }
@@ -273,7 +315,7 @@ where
         self.declared().await?;
         let counters = self
             .docs
-            .query_all(&self.threads, &Query::all().limit(500))
+            .query_all(&self.threads, &Query::all().limit(PAGE))
             .await
             .map_err(map_error)?;
         let mut threads = Vec::new();
