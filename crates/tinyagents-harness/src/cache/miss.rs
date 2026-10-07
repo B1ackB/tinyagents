@@ -115,7 +115,7 @@ impl PromptCacheTracker {
             .get(key)
             .filter(|prev| prev.model == model)
             .cloned();
-        let miss = previous.and_then(|prev| {
+        let miss = previous.as_ref().and_then(|prev| {
             if !cache_activity && !prev.reported_cache {
                 return None;
             }
