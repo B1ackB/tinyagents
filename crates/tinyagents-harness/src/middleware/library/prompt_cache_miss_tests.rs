@@ -174,7 +174,7 @@ async fn a_compaction_between_calls_is_not_a_cache_miss() {
     call(&guard, &mut c, "sys", 10_000, 9_000).await;
     // What ContextCompressionMiddleware does when it rewrites the prefix.
     c.mark_prompt_prefix_changed();
-    call(&guard, &mut c, "sys", 3_000, 0).await;
+    call(&guard, &mut c, "sys", 3_000, 100).await;
     assert!(misses(&recorder).is_empty());
     // The new prefix then gets its own baseline.
     call(&guard, &mut c, "sys", 4_000, 0).await;

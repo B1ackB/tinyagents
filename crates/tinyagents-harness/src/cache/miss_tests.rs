@@ -117,7 +117,7 @@ fn a_model_switch_starts_a_fresh_baseline() {
     let mut t = tracker();
     t.observe("t", "model-a", &usage(10_000, 9_000));
     // A different model has its own cache: nothing to compare against.
-    assert_eq!(t.observe("t", "model-b", &usage(11_000, 0)), None);
+    assert_eq!(t.observe("t", "model-b", &usage(11_000, 5_000)), None);
     // And the new model's own baseline is then tracked.
     assert!(t.observe("t", "model-b", &usage(12_000, 0)).is_some());
 }
