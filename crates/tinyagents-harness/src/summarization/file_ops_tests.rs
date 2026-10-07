@@ -271,3 +271,27 @@ fn huge_omitted_counts_saturate() {
     merged.merge(&ops);
     assert_eq!(merged.read_omitted, usize::MAX);
 }
+
+#[test]
+fn escaped_paths_survive_repeated_compactions_unchanged() {
+    let mut ops = FileOperations::default();
+    ops.add_modified("a<b&c");
+    let first = append_file_sections("s", &ops);
+    let (body, parsed) = split_file_sections(&first);
+    assert_eq!(parsed.modified(), ops.modified(), "parsing keeps the encoding");
+    let second = append_file_sections(&body, &parsed);
+    assert_eq!(first, second, "a second round trip changes nothing");
+    let mut merged = FileOperations::default();
+    merged.merge(&ops);
+    assert_eq!(merged.modified(), ops.modified(), "merging keeps it too");
+}
+
+#[test]
+fn a_later_touch_of_a_carried_path_moves_it_instead_of_duplicating() {
+    let mut carried = FileOperations::default();
+    carried.add_read("src/a<b.rs");
+    let (_, mut ops) = split_file_sections(&append_file_sections("s", &carried));
+    ops.add_modified("src/a<b.rs");
+    assert_eq!(ops.modified().len(), 1);
+    assert!(ops.read_only().is_empty(), "the read became a modification");
+}
