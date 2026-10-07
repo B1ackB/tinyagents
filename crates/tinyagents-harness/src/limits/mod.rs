@@ -287,30 +287,44 @@ impl LimitTracker {
     /// Pair a successful reservation with
     /// [`LimitTracker::release_nested_tool_call`] when the call never runs.
     pub fn try_reserve_nested_tool_call(&self) -> Result<()> {
-        use std::sync::atomic::Ordering;
-        // One compare-and-update: the slot is taken only if the combined count
-        // is still under the cap, so a rejected reservation never touches the
-        // counter and concurrent reservations cannot overspend it.
-        let reserved = self
-            .nested_tool_calls
-            .compare_exchange_loop(|nested| {
-                (self.tool_calls + nested < self.limits.max_tool_calls).then_some(nested + 1)
-            });
-        let _ = Ordering::SeqCst;
-        if reserved {
+        // One compare-and-swap loop: the slot is taken only if the combined
+        // count is still under the cap, so a rejected reservation never
+        // touches the counter and concurrent reservations cannot overspend it.
+        let cap = self.limits.max_tool_calls;
+        let issued = self.tool_calls;
+        if self.update_nested(|nested| (issued + nested < cap).then_some(nested + 1)) {
             return Ok(());
         }
         Err(TinyAgentsError::LimitExceeded(format!(
-            "max tool calls ({}) exceeded by a nested tool call",
-            self.limits.max_tool_calls
+            "max tool calls ({cap}) exceeded by a nested tool call"
         )))
     }
 
     /// Releases a slot taken by [`LimitTracker::try_reserve_nested_tool_call`]
     /// for a call that never ran. Saturates at zero.
     pub fn release_nested_tool_call(&self) {
-        self.nested_tool_calls
-            .compare_exchange_loop(|nested| nested.checked_sub(1));
+        self.update_nested(|nested| nested.checked_sub(1));
+    }
+
+    /// Applies `step` to the nested counter atomically; `false` when `step`
+    /// declined (returned `None`).
+    fn update_nested(&self, step: impl Fn(usize) -> Option<usize>) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut current = self.nested_tool_calls.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = step(current) else {
+                return false;
+            };
+            match self.nested_tool_calls.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Returns the number of nested tool calls counted against the cap so far.
