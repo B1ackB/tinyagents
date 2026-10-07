@@ -55,7 +55,7 @@ pub use types::{
     ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause,
     PreparedSubagent, SubagentError, SubagentExecution, SubagentIncomplete, SubagentOutcome,
     SubagentPause, SubagentPausePersistenceDisposition, SubagentPersistenceDisposition,
-    SubagentRequest, SubagentRequestParts, SubagentResume, SubagentRunResult, SubagentStatus,
+    SubagentRequest, SubagentRequestParts, SubagentResume, SubagentRunResult, SubagentOutcomeKind,
     SubagentTaskKey, SubagentTerminalPersistenceDisposition,
 };
 
