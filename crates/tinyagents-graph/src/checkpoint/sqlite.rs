@@ -524,11 +524,7 @@ where
             self.put(checkpoint).await?;
             return Ok(id);
         }
-        let config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let config = checkpoint.config();
         let checkpoint_id = checkpoint.checkpoint_id.clone();
         let writes = writes.to_vec();
         let conn = self.conn.clone();
@@ -718,20 +714,9 @@ where
             // needed here.
             let mut out = Vec::with_capacity(records.len());
             for checkpoint in records {
-                let config = CheckpointConfig {
-                    thread_id: checkpoint.thread_id.clone(),
-                    checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-                    namespace: checkpoint.namespace.clone(),
-                };
+                let config = checkpoint.config();
                 let parent_config =
-                    checkpoint
-                        .parent_checkpoint_id
-                        .as_ref()
-                        .map(|parent| CheckpointConfig {
-                            thread_id: checkpoint.thread_id.clone(),
-                            checkpoint_id: Some(parent.clone()),
-                            namespace: checkpoint.namespace.clone(),
-                        });
+                    checkpoint.parent_config();
                 let pending_writes = writes
                     .get(&checkpoint.checkpoint_id)
                     .cloned()

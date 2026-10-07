@@ -209,11 +209,7 @@ where
         checkpoint: Checkpoint<State>,
         writes: &[PendingWrite],
     ) -> Result<CheckpointId> {
-        let config = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let config = checkpoint.config();
         let id = self.put(checkpoint).await?;
         self.put_writes(&config, writes).await?;
         Ok(id)
@@ -342,20 +338,9 @@ where
         else {
             return Ok(None);
         };
-        let resolved = CheckpointConfig {
-            thread_id: checkpoint.thread_id.clone(),
-            checkpoint_id: Some(checkpoint.checkpoint_id.clone()),
-            namespace: checkpoint.namespace.clone(),
-        };
+        let resolved = checkpoint.config();
         let parent_config =
-            checkpoint
-                .parent_checkpoint_id
-                .as_ref()
-                .map(|parent| CheckpointConfig {
-                    thread_id: checkpoint.thread_id.clone(),
-                    checkpoint_id: Some(parent.clone()),
-                    namespace: checkpoint.namespace.clone(),
-                });
+            checkpoint.parent_config();
         let pending_writes = self.resolved_writes(&resolved, &checkpoint).await?;
         Ok(Some(CheckpointTuple {
             config: resolved,
