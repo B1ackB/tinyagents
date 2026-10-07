@@ -1567,7 +1567,27 @@ impl PromptCacheGuardMiddleware {
             previous: std::sync::Mutex::new(None),
             events: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_events: DEFAULT_CACHE_GUARD_EVENT_CAP,
+            cache_misses: std::sync::Mutex::new(crate::cache::PromptCacheTracker::default()),
         }
+    }
+
+    /// Sets the noise floor of the prompt-cache miss accounting: a call whose
+    /// cache read falls short of the previous prompt by this many tokens or
+    /// fewer is not reported. Defaults to
+    /// [`DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS`][crate::cache::DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS].
+    pub fn with_cache_miss_noise_floor(self, tokens: u64) -> Self {
+        *self.cache_misses.lock().expect("cache misses mutex poisoned") =
+            crate::cache::PromptCacheTracker::new(tokens);
+        self
+    }
+
+    /// The conversation key cache accounting groups calls by: the thread when
+    /// the run has one (a provider cache spans runs of a thread), else the
+    /// run.
+    fn cache_key<Ctx: Send + Sync>(ctx: &RunContext<Ctx>) -> String {
+        ctx.thread_id()
+            .map(|thread| format!("thread:{thread}"))
+            .unwrap_or_else(|| format!("run:{}", ctx.run_id()))
     }
 
     /// Sets the maximum number of [`CacheLayoutEvent`]s retained before the
@@ -1636,6 +1656,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
                 !prev.has_same_stable_prefix_as(&layout)
             };
             if changed {
+                // The prefix changed on purpose (or by accident the layout
+                // event below records): the next uncached tokens are new
+                // content, not a silent miss.
+                self.cache_misses
+                    .lock()
+                    .expect("cache misses mutex poisoned")
+                    .reset(&Self::cache_key(ctx));
                 tracing::debug!(
                     "[cache] prompt_cache_guard: stable prefix changed run={run_id} \
                      before={} after={}",
@@ -1658,6 +1685,47 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
             }
         }
         *previous = Some((run_id, layout));
+        Ok(())
+    }
+
+    /// Compares the call's `cache_read_tokens` with the previous call's prompt
+    /// for the same conversation and emits [`AgentEvent::PromptCacheMiss`]
+    /// when the cache read fell short beyond the noise floor.
+    async fn after_model(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        _state: &State,
+        response: &mut ModelResponse,
+    ) -> Result<()> {
+        // A replayed response consumed no provider cache.
+        let Some(usage) = response.usage.as_ref().filter(|_| !response.served_from_cache) else {
+            return Ok(());
+        };
+        let key = Self::cache_key(ctx);
+        let miss = self
+            .cache_misses
+            .lock()
+            .expect("cache misses mutex poisoned")
+            .observe(&key, usage);
+        if let Some(miss) = miss {
+            let call_id = ctx
+                .active_model_call
+                .clone()
+                .unwrap_or_else(|| crate::ids::CallId::new(format!("{}-model", ctx.run_id())));
+            tracing::warn!(
+                run = %ctx.run_id(),
+                expected_cached = miss.expected_cached_tokens,
+                cached = miss.cached_tokens,
+                wasted = miss.wasted_input_tokens,
+                "[cache] prompt cache read back less than the previous prompt"
+            );
+            ctx.emit(AgentEvent::PromptCacheMiss {
+                call_id,
+                expected_cached_tokens: miss.expected_cached_tokens,
+                cached_tokens: miss.cached_tokens,
+                wasted_input_tokens: miss.wasted_input_tokens,
+            });
+        }
         Ok(())
     }
 }

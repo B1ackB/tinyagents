@@ -1160,6 +1160,9 @@ pub struct PromptCacheGuardMiddleware {
     pub(crate) events: Mutex<VecDeque<CacheLayoutEvent>>,
     /// Eviction cap for `events`.
     pub(crate) max_events: usize,
+    /// Per-conversation prompt-cache miss accounting, fed from each
+    /// response's usage. See [`crate::cache::PromptCacheTracker`].
+    pub(crate) cache_misses: Mutex<crate::cache::PromptCacheTracker>,
 }
 
 // ── UsageAccountingMiddleware ─────────────────────────────────────────────────
