@@ -1,5 +1,4 @@
 # Compaction: rules, split turns, iterative summaries, overflow recovery
-
 This is the durable, rule-driven layer built on top of
 [`summarization.md`](./summarization.md)'s trimming/summarization primitives.
 It is the harness's port of pi's `compaction.ts` / `overflow.ts`
