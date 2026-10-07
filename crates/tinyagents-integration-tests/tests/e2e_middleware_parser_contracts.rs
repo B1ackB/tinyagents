@@ -36,7 +36,7 @@ impl ModelBase {
 impl ModelBaseCall<(), ()> for ModelBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a RunContext<()>,
+        _ctx: &'a mut RunContext<()>,
         _state: &'a (),
         request: ModelRequest,
     ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + 'a>> {
@@ -198,7 +198,7 @@ async fn middleware_stack_runs_lifecycle_hooks_and_builtin_guards() {
     let mut tool_result = ToolResult::success("secret tool result");
     stack
         .run_after_tool(
-            &ctx,
+            &mut ctx,
             &(),
             &ToolInvocationIdentity::new("lookup-call", "lookup"),
             &mut tool_result,
@@ -295,7 +295,7 @@ async fn builtin_middleware_validates_structured_output_human_approval_and_wraps
     let base = ModelBase::new(1);
     let outcome = fallback_stack
         .run_wrapped_model(
-            &ctx,
+            &mut ctx,
             &(),
             ModelRequest::new(vec![Message::user("hi")]).with_model("large"),
             &base,
@@ -317,7 +317,7 @@ async fn builtin_middleware_validates_structured_output_human_approval_and_wraps
     replace_stack.push_model_middleware(Arc::new(ModelReplace));
     let replaced = replace_stack
         .run_wrapped_model(
-            &ctx,
+            &mut ctx,
             &(),
             ModelRequest::new(vec![Message::user("hi")]),
             &ModelBase::new(0),
