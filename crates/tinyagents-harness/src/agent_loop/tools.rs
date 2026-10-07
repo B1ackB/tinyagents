@@ -169,7 +169,6 @@ enum AdmittedCall<State: Send + Sync, Ctx: Send + Sync> {
     /// A registered tool to invoke, with its (validated) call.
     Execute {
         dispatch: Arc<dyn ToolDispatch<State, Ctx>>,
-        tool: Arc<dyn tinytools::Tool>,
         call: ToolCall,
     },
     /// A recovery or an intrinsic answer: no tool runs, but the call is still
@@ -1732,7 +1731,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let parent_ctx: &RunContext<Ctx> = ctx;
         for entry in admitted {
             let (dispatch, call) = match entry {
-                AdmittedCall::Execute { dispatch, call, .. } => (dispatch, call),
+                AdmittedCall::Execute { dispatch, call } => (dispatch, call),
                 AdmittedCall::Recovered { call, result } => {
                     slots.push(ToolSlot::Recovered { call, result });
                     continue;
