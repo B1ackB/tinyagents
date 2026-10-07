@@ -1635,12 +1635,16 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
                         || turn_had_truncated_calls
                 );
+                let not_final_note = if matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
+                {
+                    "Structured output noted but not final yet; finish the remaining tool \
+                     calls first (EndStrategy::Exhaustive)."
+                } else {
+                    "Structured output noted but not final yet; a tool call in this turn was \
+                     cut off by the output token limit, so re-issue it and answer again."
+                };
                 for call in &structured_hits {
-                    messages.push(Message::tool(
-                        call.id.clone(),
-                        "Structured output noted but not final yet; finish the remaining tool \
-                         calls first (EndStrategy::Exhaustive).",
-                    ));
+                    messages.push(Message::tool(call.id.clone(), not_final_note));
                 }
 
                 // A mixed turn (structured payload alongside real tool calls)
