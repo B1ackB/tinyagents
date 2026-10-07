@@ -217,7 +217,7 @@ impl Inner {
 
 /// Whether `error` means another writer got there first.
 fn is_race(error: &StorageError) -> bool {
-    matches!(error.kind(), ErrorKind::Conflict | ErrorKind::NotFound)
+    error.kind() == ErrorKind::Conflict
 }
 
 fn contended(thread_id: &str, request_id: &str) -> StorageError {
@@ -269,7 +269,7 @@ impl TurnStates for DriverTurnStates {
                         }
                         return Ok(true);
                     }
-                    Err(error) if is_race(&error) || error.kind() == ErrorKind::AlreadyExists => {}
+                    Err(error) if is_race(&error) => {}
                     Err(error) => return Err(error),
                 }
             }
