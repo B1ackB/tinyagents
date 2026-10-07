@@ -202,6 +202,13 @@ impl SubAgentJobRegistry {
             return;
         }
         entry.cancellation = None;
+        if entry.cancellation_requested {
+            // An owner cancellation that raced the finish wins, as in
+            // `mark_result`.
+            entry.job.status = SubAgentJobStatus::Cancelled;
+            entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
+            return;
+        }
         entry.job.status = SubAgentJobStatus::Incomplete;
         entry.job.incomplete_kind = Some(IncompleteKind::BudgetExceeded);
         entry.job.error = Some(reason);

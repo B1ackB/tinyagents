@@ -163,8 +163,9 @@ impl ResultPolicy {
 /// Shortens `text` to at most `max_chars` characters *including* a
 /// `[… N chars omitted …]` marker between its head and tail; returns the text
 /// and `N` (`0` when it already fits). Counts characters, never splitting a
-/// code point. When `max_chars` is smaller than the marker itself, only the
-/// marker is returned.
+/// code point. When `max_chars` leaves no room for the marker, the text is
+/// hard-cut to its first `max_chars` characters (the returned count still
+/// reports what was dropped), so the cap always holds.
 pub fn truncate_head_tail(text: &str, max_chars: usize) -> (String, usize) {
     let total = text.chars().count();
     if total <= max_chars {
@@ -182,6 +183,13 @@ pub fn truncate_head_tail(text: &str, max_chars: usize) -> (String, usize) {
         }
         kept = room;
         omitted = total - kept;
+    }
+    if kept == 0 {
+        let end = text
+            .char_indices()
+            .nth(max_chars)
+            .map_or(text.len(), |(i, _)| i);
+        return (text[..end].to_owned(), total - max_chars);
     }
     let head = kept.div_ceil(2);
     let tail = kept - head;
