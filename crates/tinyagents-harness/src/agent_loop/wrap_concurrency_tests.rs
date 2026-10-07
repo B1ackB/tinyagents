@@ -420,10 +420,7 @@ async fn a_wrap_command_outcome_is_applied_by_the_concurrent_fold() {
 
     // The queued control ends the run with the wrap's final answer, and the
     // siblings of the commanding call still ran and were answered.
-    assert_eq!(
-        run.final_response.as_ref().map(|r| r.message.text()),
-        Some("stopped by wrap".to_string())
-    );
+    assert_eq!(run.text().as_deref(), Some("stopped by wrap"));
     assert_eq!(run.model_calls, 1, "the control ended the loop");
     assert_eq!(
         tool_text(&run.messages, "call-a").as_deref(),
