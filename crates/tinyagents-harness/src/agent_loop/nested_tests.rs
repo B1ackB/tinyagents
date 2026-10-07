@@ -430,11 +430,11 @@ async fn concurrent_parents_share_one_nested_budget() {
     let recorder = EventRecorder::new();
     run(&harness, &recorder).await.expect("run succeeds");
 
+    let outcomes_a = outcomes_a.lock().unwrap();
+    let outcomes_b = outcomes_b.lock().unwrap();
     let admitted = outcomes_a
-        .lock()
-        .unwrap()
         .iter()
-        .chain(outcomes_b.lock().unwrap().iter())
+        .chain(outcomes_b.iter())
         .filter(|outcome| outcome.is_ok())
         .count();
     assert_eq!(admitted, 3, "total nested calls admitted across parents");
@@ -854,21 +854,172 @@ async fn plan_mode_refuses_a_nested_write() {
 
 #[tokio::test]
 async fn a_refused_nested_call_releases_its_budget_slot() {
-    use crate::middleware::library::ToolAllowlistMiddleware;
-
-    let caller = Caller::new("caller", vec![("leaf", json!({})), ("leaf", json!({}))]);
+    // The first call is refused at admission (unknown tool) after taking a
+    // slot; with a cap of parent + one nested call, the second can only run if
+    // that slot was given back.
+    let leaf = Leaf::new("leaf");
+    let caller = Caller::new("caller", vec![("ghost", json!({})), ("leaf", json!({}))]);
+    let outcomes = caller.outcomes();
     let mut harness = harness_with(
         vec![parent_call("p1", "caller")],
-        // Parent + room for exactly one nested call, which would be spent by
-        // the first (refused) attempt if the slot were not released.
         enabled().with_max_tool_calls(2),
     );
-    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(leaf.clone());
     harness.register_tool(Arc::new(caller));
-    harness.push_middleware(Arc::new(ToolAllowlistMiddleware::new(["caller"])));
 
     let run = run(&harness, &EventRecorder::new()).await.unwrap();
     assert_eq!(run.tool_calls, 1);
+    let outcomes = outcomes.lock().unwrap();
+    let refused = outcomes[0].as_ref().expect_err("ghost is refused");
+    assert!(!refused.contains("max tool calls"), "{refused}");
+    assert!(outcomes[1].is_ok(), "{:?}", outcomes[1]);
+    assert_eq!(leaf.runs(), 1);
+}
+
+/// Runs the wrapped call twice, like a retrying wrap middleware.
+struct RetryTwice;
+
+#[async_trait]
+impl ToolMiddleware<()> for RetryTwice {
+    fn name(&self) -> &str {
+        "retry_twice"
+    }
+    async fn wrap_tool(
+        &self,
+        ctx: &RunContext<()>,
+        state: &(),
+        call: ToolCall,
+        next: ToolHandler<'_, (), ()>,
+    ) -> Result<MiddlewareToolOutcome> {
+        let _ = next.run(ctx, state, call.clone()).await?;
+        next.run(ctx, state, call).await
+    }
+}
+
+#[tokio::test]
+async fn nested_ids_stay_unique_across_wrap_middleware_retries() {
+    let caller = Caller::new("caller", vec![("leaf", json!({}))]);
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(Arc::new(caller));
+    harness.push_tool_middleware(Arc::new(RetryTwice));
+
+    let recorder = EventRecorder::new();
+    let run = run(&harness, &recorder).await.unwrap();
+
+    let ids: Vec<String> = started(&recorder)
+        .into_iter()
+        .filter(|(_, parent)| parent.is_some())
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, ["p1/1", "p1/2"], "each attempt gets a fresh nested id");
+    let nested = run.tool_metadata[0].metadata["nested_calls"]
+        .as_array()
+        .expect("summary")
+        .len();
+    assert_eq!(nested, 2);
+}
+
+/// Makes `count` concurrent nested calls to an unknown tool.
+struct Fanout {
+    count: usize,
+    outcomes: Arc<Mutex<Vec<Outcome>>>,
+}
+
+#[async_trait]
+impl Tool for Fanout {
+    fn name(&self) -> &str {
+        "fanout"
+    }
+    fn description(&self) -> &str {
+        "fans out"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let harness = harness_extension(context);
+        let calls = (0..self.count).map(|_| harness.call_tool("ghost", json!({})));
+        let results = futures::future::join_all(calls).await;
+        self.outcomes
+            .lock()
+            .unwrap()
+            .extend(results.into_iter().map(|r| r.map_err(|e| e.to_string())));
+        Ok(ToolResult::success("fanout-out"))
+    }
+}
+
+#[tokio::test]
+async fn concurrent_nested_calls_cannot_exceed_the_refusal_cap() {
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = harness_with(vec![parent_call("p1", "fanout")], enabled());
+    harness.register_tool(Arc::new(Fanout {
+        count: 20,
+        outcomes: Arc::clone(&outcomes),
+    }));
+
+    run(&harness, &EventRecorder::new()).await.unwrap();
+
+    let outcomes = outcomes.lock().unwrap();
+    assert_eq!(outcomes.len(), 20);
+    let cap_hit = outcomes
+        .iter()
+        .filter(|o| o.as_ref().unwrap_err().contains("already had 8 nested"))
+        .count();
+    assert_eq!(cap_hit, 12, "only 8 calls may reach admission");
+}
+
+/// Answers `deferring` with an approval request from inside the wrap onion.
+struct DeferInWrap;
+
+#[async_trait]
+impl ToolMiddleware<()> for DeferInWrap {
+    fn name(&self) -> &str {
+        "defer_in_wrap"
+    }
+    async fn wrap_tool(
+        &self,
+        ctx: &RunContext<()>,
+        state: &(),
+        call: ToolCall,
+        next: ToolHandler<'_, (), ()>,
+    ) -> Result<MiddlewareToolOutcome> {
+        if call.name == "leaf" && call.id.contains('/') {
+            return Err(crate::error::TinyAgentsError::ApprovalRequired {
+                metadata: Value::Null,
+            });
+        }
+        next.run(ctx, state, call).await
+    }
+}
+
+#[tokio::test]
+async fn execution_time_deferrals_count_toward_the_refusal_cap() {
+    let script: Vec<(&'static str, Value)> = (0..10).map(|_| ("leaf", json!({}))).collect();
+    let caller = Caller::new("caller", script);
+    let outcomes = caller.outcomes();
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(Arc::new(caller));
+    harness.push_tool_middleware(Arc::new(DeferInWrap));
+
+    run(&harness, &EventRecorder::new()).await.unwrap();
+
+    let outcomes = outcomes.lock().unwrap();
+    assert!(outcomes[7].as_ref().unwrap_err().contains("requires approval"));
+    let blocked = outcomes[8].as_ref().unwrap_err();
+    assert!(blocked.contains("already had 8 nested calls refused"), "{blocked}");
 }
 
 /// A middleware that records the nested results it observes.
