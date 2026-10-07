@@ -145,7 +145,7 @@ async fn the_extractor_is_pluggable() {
     let mw = middleware(&Recording::default()).with_file_op_extractor(Everything);
     let text = compact(&mw, transcript_with_file_calls()).await;
     assert!(
-        text.contains("<modified-files>\nedit_file\nread_file\n</modified-files>"),
+        text.contains("<modified-files>\nread_file\nedit_file\n</modified-files>"),
         "{text}"
     );
 }
