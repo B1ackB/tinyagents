@@ -139,10 +139,7 @@ fn without_escalation_the_first_threshold_halts_and_nothing_blocks() {
 
 #[test]
 fn custom_escalation_moves_the_block_and_halt_points() {
-    let tracker = SuccessfulRepeatTracker::new(4, 3).with_escalation(RepeatEscalation {
-        block_after_warn: 1,
-        blocks_before_halt: 1,
-    });
+    let tracker = SuccessfulRepeatTracker::new(4, 3).with_escalation(RepeatEscalation::new(1, 1));
     for _ in 0..3 {
         record(&tracker);
     }
@@ -203,6 +200,38 @@ fn blocks_survive_a_ledger_reset_but_not_a_full_reset() {
     tracker.reset();
     for _ in 0..4 {
         record(&tracker);
+    }
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
+}
+
+#[test]
+fn progress_after_an_invalidation_still_clears_the_blocks() {
+    let tracker = staged();
+    for _ in 0..4 {
+        record(&tracker);
+    }
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
+    tracker.invalidate_predictions_except("edit\u{1}x");
+    tracker.record_call_outcome(CALL, "a new result");
+    for _ in 0..3 {
+        tracker.record_call_outcome(CALL, "a new result");
+    }
+    assert!(
+        matches!(tracker.pre_call(CALL), CallGate::Block(_)),
+        "the new result was progress, so this is a first block, not a halt"
+    );
+}
+
+#[test]
+fn progress_after_a_ledger_reset_clears_the_blocks_too() {
+    let tracker = staged();
+    for _ in 0..4 {
+        record(&tracker);
+    }
+    assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
+    tracker.reset_ledger();
+    for _ in 0..4 {
+        tracker.record_call_outcome(CALL, "a new result");
     }
     assert!(matches!(tracker.pre_call(CALL), CallGate::Block(_)));
 }

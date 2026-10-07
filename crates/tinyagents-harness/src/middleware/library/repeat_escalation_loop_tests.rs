@@ -8,6 +8,8 @@ use serde_json::json;
 
 use super::*;
 use crate::context::{RunConfig, RunContext};
+use crate::error::Result as TaResult;
+use crate::middleware::{Middleware, ToolInvocationIdentity};
 use crate::runtime::AgentHarness;
 use crate::steering::SteeringHandle;
 use tinyinference_llm::message::{AssistantMessage, ContentBlock, Message};
@@ -100,5 +102,65 @@ async fn blocked_calls_never_execute_and_the_second_block_pauses_the_run() {
     assert!(
         summary.lock().unwrap().is_some(),
         "the halt names its cause"
+    );
+}
+
+/// Registered after the guard, so its `after_tool` runs before the guard's.
+struct MarkerObserver(Arc<Mutex<Vec<Option<String>>>>);
+
+#[async_trait]
+impl Middleware<(), ()> for MarkerObserver {
+    fn name(&self) -> &str {
+        "marker_observer"
+    }
+
+    async fn after_tool(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _invocation: &ToolInvocationIdentity,
+        result: &mut ToolResult,
+    ) -> TaResult<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(repeat_guard_marker(result).map(str::to_string));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_later_registered_after_tool_sees_the_marker_on_refused_calls() {
+    let steering = SteeringHandle::allow_all();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let tool = Arc::new(CountingTool {
+        runs: Mutex::new(0),
+    });
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model(
+        "mock",
+        Arc::new(MockModel::with_responses(
+            (0..12).map(repeat_call).collect::<Vec<_>>(),
+        )),
+    );
+    harness.register_tool(tool);
+    harness.push_middleware(Arc::new(RepeatProgressMiddleware::new(
+        steering.clone(),
+        Arc::new(Mutex::new(None)),
+        Arc::new(|_| false),
+    )));
+    harness.push_middleware(Arc::new(MarkerObserver(seen.clone())));
+
+    let ctx = RunContext::new(RunConfig::new("marker"), ()).with_steering(steering);
+    harness
+        .invoke_in_context_with_status(&(), ctx, vec![Message::user("go")])
+        .await
+        .expect("a halt pauses the run");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.iter().map(Option::as_deref).collect::<Vec<_>>(),
+        [None, None, None, None, Some("blocked"), Some("halted")],
+        "executed results are unmarked; refused ones are marked for every hook"
     );
 }

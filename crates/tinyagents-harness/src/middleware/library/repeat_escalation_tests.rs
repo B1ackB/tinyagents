@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+use super::repeat_progress_state::RepeatState;
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 use super::*;
 use crate::context::{RunConfig, RunContext};
@@ -346,28 +347,81 @@ async fn without_a_read_only_check_only_the_latest_call_is_predicted() {
 }
 
 #[tokio::test]
-async fn blocked_and_halted_results_carry_the_guard_marker() {
+async fn refusals_queue_the_guard_marker_for_the_loop_to_stamp() {
     let handle = SteeringHandle::allow_all();
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
     for _ in 0..4 {
         same_turn(&mw, "ok").await;
     }
     for expected in [REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED] {
+        let mut ctx = ctx();
         let mut resp = response("lookup", json!({"id": 1}), "again");
-        mw.after_model(&mut ctx(), &(), &mut resp).await.unwrap();
+        mw.after_model(&mut ctx, &(), &mut resp).await.unwrap();
         let mut call = TaToolCall::new("repeat-1", "lookup", json!({"id": 1}));
-        let Err(TinyAgentsError::ToolFailed(message)) =
-            mw.before_tool(&mut ctx(), &(), &mut call).await
-        else {
-            panic!("expected a refusal");
-        };
-        let mut result = TaToolResult::failed(message);
-        let invocation = ToolInvocationIdentity::new("repeat-1", "lookup");
-        mw.after_tool(&mut ctx(), &(), &invocation, &mut result)
-            .await
-            .unwrap();
-        assert_eq!(repeat_guard_marker(&result), Some(expected));
+        assert!(mw.before_tool(&mut ctx, &(), &mut call).await.is_err());
+        let metadata = ctx.take_refusal_metadata("repeat-1");
+        assert_eq!(
+            metadata
+                .as_ref()
+                .and_then(|m| m.get(REPEAT_GUARD_METADATA_KEY)),
+            Some(&json!(expected))
+        );
     }
+}
+
+#[tokio::test]
+async fn a_batch_of_halting_refusals_pauses_the_run_once() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    for _ in 0..4 {
+        same_turn(&mw, "ok").await;
+    }
+    assert!(same_turn(&mw, "ok").await.contains("not executed"));
+
+    let mut resp = response("lookup", json!({"id": 1}), "twice");
+    resp.message
+        .tool_calls
+        .push(TaToolCall::new("repeat-2", "lookup", json!({"id": 1})));
+    mw.after_model(&mut ctx(), &(), &mut resp).await.unwrap();
+    for id in ["repeat-1", "repeat-2"] {
+        let mut call = TaToolCall::new(id, "lookup", json!({"id": 1}));
+        assert!(mw.before_tool(&mut ctx(), &(), &mut call).await.is_err());
+    }
+    assert_eq!(pauses(&handle), 1);
+}
+
+#[tokio::test]
+async fn compaction_drops_warnings_that_were_waiting() {
+    let handle = SteeringHandle::allow_all();
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    mw.state
+        .take_one_note(1, vec!["first".into(), "stale".into()]);
+    compact(&mw).await;
+    // The queue is cleared only when something was evicted; `compact` evicts
+    // the one recorded result, so record one first.
+    same_turn(&mw, "ok").await;
+    mw.state
+        .take_one_note(1, vec!["first".into(), "stale".into()]);
+    compact(&mw).await;
+    assert_eq!(mw.state.take_one_note(1, Vec::new()), None);
+}
+
+#[test]
+fn a_results_own_warning_beats_queued_ones() {
+    let state = RepeatState::new("cleared", RepeatProgressConfig::default());
+    assert_eq!(
+        state
+            .take_one_note(1, vec!["a".into(), "b".into()])
+            .as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        state.take_one_note(1, vec!["c".into()]).as_deref(),
+        Some("c"),
+        "queued `b` waits behind the fresh note"
+    );
+    assert_eq!(state.take_one_note(1, Vec::new()).as_deref(), Some("b"));
+    assert_eq!(state.take_one_note(1, Vec::new()), None);
 }
 
 #[tokio::test]

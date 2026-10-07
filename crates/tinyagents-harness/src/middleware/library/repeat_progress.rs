@@ -333,11 +333,14 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     "[tinyagents::mw] repeat-progress halted the run after repeated blocks"
                 );
                 ctx.set_refusal_metadata(call.id.clone(), guard_metadata(REPEAT_GUARD_HALTED));
-                // This batch's other results must not pause the run again.
-                if let Some(batch) = lock(&self.pending).get_mut(&run_id) {
-                    batch.halted = true;
+                // Later refusals and results in this batch must not pause the
+                // run again.
+                let first = lock(&self.pending)
+                    .get_mut(&run_id)
+                    .is_none_or(|batch| !std::mem::replace(&mut batch.halted, true));
+                if first {
+                    self.halt(summary.clone());
                 }
-                self.halt(summary.clone());
                 Err(TinyAgentsError::ToolFailed(summary))
             }
         }
