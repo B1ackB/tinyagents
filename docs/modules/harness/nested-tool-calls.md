@@ -120,7 +120,7 @@ result metadata (host-only; `ToolCompleted.metadata` and
 (`nested_calls_truncated` is added, as a count, only when more than 32 calls ran.)
 
 `status` is `ok`, `error` (the tool returned `is_error`), `failed` (refused or
-raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB; `error` is cut at 256
+raised) or `abandoned` (the tool stopped waiting). `args` is the serialized arguments cut at 1 KiB, present only when tool payload capture (`PayloadCapture::tool_io`) is on; `error` is cut at 256
 bytes and omitted when empty. At most 32 entries are kept; `nested_calls_truncated`
 counts the rest. The summary is attached only when the metadata is absent or an
 object.
@@ -164,3 +164,14 @@ captures it for exactly that call id. The runner is a channel: the loop that
 drives the tool's future also services the nested requests it sends, borrowing
 `&AgentHarness`, `&State` and `&RunContext` as the model-issued path does.
 Servicing a nested call is a plain call-base execution, so it can nest again.
+
+## Concurrency
+
+Nested calls honor `Tool::is_concurrency_safe` and `ToolMiddleware::concurrent_safe`
+among themselves: one parent's fan-out and every concurrent parent of the run share a
+shared/exclusive gate (safe calls shared, unsafe ones exclusive). A concurrency-safe
+nested call that itself calls an unsafe tool is refused (a shared hold cannot be
+upgraded). The gate covers nested calls only: it does not stop a nested unsafe tool
+from overlapping a *model-issued* sibling in the same batch, because that batch's
+safety was declared per call by the model-issued path; a tool that nests an unsafe
+tool takes that composition on itself.
