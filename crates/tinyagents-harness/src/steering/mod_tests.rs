@@ -756,9 +756,11 @@ fn allow_all_does_not_grant_model_switch() {
     // A model switch changes cost, data residency and the provider that sees
     // the transcript, so the blanket "allow everything" policy withholds it.
     assert!(!SteeringPolicy::allow_all().is_allowed(SteeringCommandKind::SwitchModel));
-    assert!(!SteeringHandle::allow_all()
-        .policy()
-        .is_allowed(SteeringCommandKind::SwitchModel));
+    assert!(
+        !SteeringHandle::allow_all()
+            .policy()
+            .is_allowed(SteeringCommandKind::SwitchModel)
+    );
     for kind in SteeringCommandKind::ALL
         .into_iter()
         .filter(|kind| *kind != SteeringCommandKind::SwitchModel)
