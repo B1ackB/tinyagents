@@ -226,7 +226,7 @@ pub fn record_approved<Ctx: Send + Sync>(
 
 async fn run_approved<State: Send + Sync, Ctx: Send + Sync>(
     resolver: &dyn ApprovalResolver<Ctx>,
-    ctx: &mut RunContext<Ctx>,
+    ctx: &RunContext<Ctx>,
     state: &State,
     call: ToolCall,
     next: ToolHandler<'_, State, Ctx>,

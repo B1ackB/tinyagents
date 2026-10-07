@@ -1731,12 +1731,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // run context stays with the fold phase after all futures complete.
         let parent_ctx: &RunContext<Ctx> = ctx;
         for entry in admitted {
-            let (dispatch, tool, call) = match entry {
-                AdmittedCall::Execute {
-                    dispatch,
-                    tool,
-                    call,
-                } => (dispatch, tool, call),
+            let (dispatch, call) = match entry {
+                AdmittedCall::Execute { dispatch, call, .. } => (dispatch, call),
                 AdmittedCall::Recovered { call, result } => {
                     slots.push(ToolSlot::Recovered { call, result });
                     continue;
