@@ -383,6 +383,7 @@ fn persist_channel_turn(
             // later touches, `None` preserves any labels the user assigned.
             labels: None,
             personality_id: None,
+            working_dir: None,
         },
     )?;
 
