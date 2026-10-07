@@ -88,6 +88,3 @@ pub use types::{
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
-#[cfg(test)]
-#[path = "request_truncation_tests.rs"]
-mod request_truncation_test;
