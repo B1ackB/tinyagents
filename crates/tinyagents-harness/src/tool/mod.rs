@@ -8,6 +8,7 @@ pub mod deferred;
 pub mod discover;
 pub mod effects;
 pub mod packs;
+mod progress;
 mod prompt;
 mod schema;
 mod schema_compact;
@@ -31,6 +32,8 @@ pub use effects::{
     LedgerFailure, ToolEffect, ToolEffectLedger, ToolEffectSettle, ToolEffectStart,
     ToolEffectStatus,
 };
+pub use progress::ToolProgressLimits;
+pub(crate) use progress::ToolProgressGate;
 pub use prompt::*;
 pub use schema::*;
 pub use schema_compact::*;
@@ -408,6 +411,10 @@ pub(crate) fn provider_schema(tool: &dyn tinytools::Tool) -> tinyinference_llm::
 #[cfg(test)]
 #[path = "canonical_tests.rs"]
 mod canonical_test;
+#[cfg(test)]
+#[path = "progress_tests.rs"]
+mod progress_test;
+
 #[cfg(test)]
 #[path = "context_tests.rs"]
 mod context_test;
