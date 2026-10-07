@@ -45,6 +45,10 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
         r#"{"event_at": "2026-10-06T12:34:57Z"}"#,
     );
     differ(
+        "event_at: 2026-10-06T12:34:56Z",
+        "event_at: 2026-10-06T12:34:57Z",
+    );
+    differ(
         "2026-10-06T12:34:56Z started",
         "2026-10-06T12:34:56Z stopped",
     );
@@ -56,6 +60,11 @@ fn clock_times_are_normalized() {
     same("[12:34:56.789] ready", "[01:02:03.1] ready");
     differ("[12:34:56] ready", "[12:34:56] failed");
     differ("position=00:00:01 processed", "position=00:00:02 processed");
+    differ(
+        "position (00:00:01) processed",
+        "position (00:00:02) processed",
+    );
+    same("logged at (12:34:56) ready", "logged at (01:02:03) ready");
 }
 
 #[test]
@@ -135,6 +144,15 @@ fn attempt_and_retry_counters_are_normalized() {
     same("retry 1 of 5: boom", "retry 4 of 5: boom");
     same("(attempt 2/5) boom", "(attempt 3/5) boom");
     differ("attempt 1 failed", "attempt 1 succeeded");
+    differ("job attempt 1 of 5 running", "job attempt 2 of 5 running");
+}
+
+#[test]
+fn lowercase_rfc3339_timestamps_are_normalized() {
+    same(
+        "failed at 2026-10-06t12:34:56z",
+        "failed at 2026-10-07t01:02:03z",
+    );
 }
 
 #[test]

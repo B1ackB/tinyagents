@@ -50,7 +50,9 @@ hook" section in `mod.rs` for that contract.
   error line (identical-failure rung) and `SuccessfulRepeatTracker` on the
   result; both take a replacement through `with_fingerprinter`, and a host
   that wants the previous byte-for-byte behavior passes a verbatim
-  fingerprinter. For example:
+  fingerprinter. `NoProgressTracker` fingerprints the complete error message,
+  including multiline tails, so changing diagnostic detail on a later line is
+  treated as a different failure. For example:
 
   ```rust
   struct VerbatimFingerprinter;

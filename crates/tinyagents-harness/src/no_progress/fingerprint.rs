@@ -124,16 +124,21 @@ fn iso_timestamp_context(text: &str, found: &Match<'_>) -> bool {
     let field_prefix = field_prefix(text, found);
     ![
         "event_at\":",
+        "event_at:",
         "eventat\":",
+        "eventat:",
         "created_at\":",
+        "created_at:",
         "updated_at\":",
+        "updated_at:",
         "timestamp\":",
+        "timestamp:",
     ]
     .iter()
     .any(|field| field_prefix.ends_with(field))
 }
 
-fn state_timestamp_context(text: &str, found: &Match<'_>) -> bool {
+fn quoted_state_timestamp_context(text: &str, found: &Match<'_>) -> bool {
     let field_prefix = field_prefix(text, found);
     [
         "event_at\":",
@@ -168,10 +173,19 @@ fn pid_context(text: &str, found: &Match<'_>) -> bool {
 fn clock_context(text: &str, found: &Match<'_>) -> bool {
     let before = &text[..found.start()];
     let after = &text[found.end()..];
-    let preceded_by_context = before.ends_with(['[', '('])
+    let lower_before = before.to_ascii_lowercase();
+    let preceded_by_context = before.ends_with('[')
         || ["at ", "on ", "time ", "timestamp "]
             .iter()
-            .any(|prefix| before.to_ascii_lowercase().ends_with(prefix));
+            .any(|prefix| lower_before.ends_with(prefix))
+        || (before.ends_with('(')
+            && ["at", "on", "time", "timestamp"].iter().any(|prefix| {
+                lower_before[..lower_before.len() - 1]
+                    .trim_end()
+                    .rsplit(|character: char| !character.is_ascii_alphabetic())
+                    .next()
+                    == Some(prefix)
+            }));
     let followed_by_boundary = after
         .chars()
         .next()
@@ -201,7 +215,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // ISO-8601 / RFC 3339 timestamp, `T` or space separated, with optional
         // seconds, fraction and zone.
         rule(
-            r"(?-u:\b)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?",
+            r"(?-u:\b)\d{4}-\d{2}-\d{2}(?i:T| )[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[.,]\d+)?)?(?:(?i:Z)|[+-]\d{2}:?\d{2})?",
             "<timestamp>",
             |text, found| not_followed_by_word(text, found) && iso_timestamp_context(text, found),
         ),
@@ -229,7 +243,9 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r#"(?-u:\b)(?:(?i:ts|time|timestamp|epoch|mtime|ctime|atime)|[A-Za-z0-9]*(?:[_-](?i:ts|time|timestamp|epoch|at)|At|Time|Ts|Timestamp))["']?\s*[=:]\s*["']?(?P<span>1\d{9}(?:\d{3})?(?:\.\d+)?)(?-u:\b)"#,
             "<epoch>",
-            |text, found| not_after_dot(text, found) && !state_timestamp_context(text, found),
+            |text, found| {
+                not_after_dot(text, found) && !quoted_state_timestamp_context(text, found)
+            },
         ),
         // Measurement fields and phrases such as `duration=123ms`,
         // `elapsed 1.2s`, `took 1h2m3.5s`, and log phrases such as
@@ -242,7 +258,19 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r"(?i)(?-u:\b)(?:attempt|retry)\s*#?\s*\d+(?:\s*(?:of|/)\s*\d+)?(?-u:\b)",
             "<attempt>",
-            accept_all,
+            |text, found| {
+                let after = text[found.end()..].to_ascii_lowercase();
+                ![
+                    "running",
+                    "queued",
+                    "processing",
+                    "ready",
+                    "succeeded",
+                    "completed",
+                ]
+                .iter()
+                .any(|state| after.trim_start().starts_with(state))
+            },
         ),
         rule(
             r"(?i)(?-u:\b)pid(?:\s*[=:]\s*|\s+)\d+(?-u:\b)",

@@ -212,7 +212,7 @@ impl NoProgressTracker {
         // Signature: tool name + argument fingerprint + the fingerprinted error
         // (the deterministic parts; volatile spans such as timestamps must not
         // make a repeated failure look novel, including when stable context is
-        // on a later line).
+        // on a later line. The complete multiline error is fingerprinted.)
         let err_identity = err_identity.unwrap_or_default();
         let sig = format!(
             "{}\u{1f}{}\u{1f}{err_identity}",
