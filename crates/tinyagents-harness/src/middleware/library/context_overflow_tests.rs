@@ -554,7 +554,9 @@ async fn once_truncation_engages_it_stays_applied_for_the_run() {
         .await
         .unwrap();
 
-    // The loop rebuilds the next request from the untruncated transcript.
+    // The loop rebuilds the next request from the untruncated transcript; the
+    // model has answered since, so the result is no longer the newest.
+    messages.push(Message::assistant("noted"));
     messages.push(user("and then?"));
     let mut second = ModelRequest {
         messages,
@@ -564,6 +566,41 @@ async fn once_truncation_engages_it_stays_applied_for_the_run() {
         .await
         .unwrap();
     assert!(tool_text_len(&second) < 1_000, "still truncated");
+}
+
+#[tokio::test]
+async fn truncating_mode_spares_the_results_the_model_just_asked_for() {
+    let mw = ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
+    let mut messages = vec![user("read it")];
+    messages.extend(call_and_result("c1", 10_000));
+    let mut c = ctx();
+    let mut first = ModelRequest {
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut first)
+        .await
+        .unwrap();
+    assert!(tool_text_len(&first) < 1_000, "the route itself cut it");
+
+    // Next call: a second result arrived after the last assistant message.
+    messages.push(Message::assistant("noted"));
+    messages.extend(call_and_result("c2", 10_000));
+    let mut second = ModelRequest {
+        messages,
+        ..Default::default()
+    };
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut second)
+        .await
+        .unwrap();
+    let lens: Vec<usize> = second
+        .messages
+        .iter()
+        .filter(|m| matches!(m, Message::Tool(_)))
+        .map(|m| m.text().len())
+        .collect();
+    assert!(lens[0] < 1_000, "older result stays cut: {lens:?}");
+    assert_eq!(lens[1], 10_000, "newest result is whole: {lens:?}");
 }
 
 #[tokio::test]
