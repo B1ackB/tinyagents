@@ -752,11 +752,34 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // model-wrap onion, so truncated-empty recovery can compute the next
             // (doubled) budget from what was actually sent.
             let attempt_max_tokens = request.max_tokens;
-            let (mut response, wrap_control) = self
+            let (mut response, wrap_control) = match self
                 .middleware
                 .run_wrapped_model(ctx, state, request, &base)
-                .await?
-                .into_response_with_control();
+                .await
+            {
+                Ok(outcome) => outcome.into_response_with_control(),
+                Err(error) => {
+                    // A response discarded before a retry was billed even if
+                    // the replacement call fails. Do not leave that usage in
+                    // the context when the `?` below would skip normal
+                    // response accounting.
+                    let active_call = ctx
+                        .active_model_call
+                        .clone()
+                        .expect("active model call while model middleware runs");
+                    self.account_discarded_usage(
+                        ctx,
+                        run,
+                        status,
+                        &active_call,
+                        &model_name,
+                        model_started_at_ms,
+                        &host_budget,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
             // A `ModelMiddleware::wrap_model` that short-circuited with
             // `MiddlewareModelOutcome::Command` carries no real response (see
             // that variant's docs); queue its control the same way a
@@ -814,9 +837,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // model call while the parent waits for the child tool to return.
             drop(host_budget);
             status.mark_running(HarnessPhase::Middleware);
-            self.middleware
+            let after_model = self
+                .middleware
                 .run_after_model(ctx, state, &mut response)
-                .await?;
+                .await;
+            ctx.active_model_call = None;
+            after_model?;
             let captured_output = self
                 .policy
                 .capture

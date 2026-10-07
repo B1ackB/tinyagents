@@ -132,14 +132,8 @@ mod context_fold_test;
 #[path = "context_loop_tests.rs"]
 mod context_loop_test;
 #[cfg(test)]
-#[path = "context_overflow_tests.rs"]
-mod context_overflow_test;
-#[cfg(test)]
 #[path = "context_pin_tests.rs"]
 mod context_pin_test;
-#[cfg(test)]
-#[path = "context_summary_tests.rs"]
-mod context_summary_test;
 #[cfg(test)]
 #[path = "context_task_state_tests.rs"]
 mod context_task_state_test;
@@ -152,9 +146,6 @@ mod image_trim_test;
 #[cfg(test)]
 #[path = "policy_gate_tests.rs"]
 mod policy_gate_test;
-#[cfg(test)]
-#[path = "prompt_cache_miss_tests.rs"]
-mod prompt_cache_miss_test;
 #[cfg(test)]
 #[path = "repeat_escalation_loop_tests.rs"]
 mod repeat_escalation_loop_test;

@@ -1,6 +1,9 @@
 //! Tests for the prompt-cache miss accounting in
 //! [`PromptCacheGuardMiddleware`].
 
+#[allow(unused_imports)]
+use super::*;
+
 use std::sync::Arc;
 
 use crate::context::{RunConfig, RunContext};
@@ -179,6 +182,34 @@ async fn a_compaction_between_calls_is_not_a_cache_miss() {
     // The new prefix then gets its own baseline.
     call(&guard, &mut c, "sys", 4_000, 0).await;
     assert_eq!(misses(&recorder).len(), 1);
+}
+
+#[tokio::test]
+async fn a_compacted_thread_keeps_its_epoch_in_a_fresh_run() {
+    let guard = PromptCacheGuardMiddleware::new();
+    let (mut first, _) = ctx("run-1", Some("thread-a"));
+    call(&guard, &mut first, "sys", 10_000, 9_000).await;
+    first.mark_prompt_prefix_changed();
+    call(&guard, &mut first, "sys", 3_000, 100).await;
+
+    let (mut second, recorder) = ctx("run-2", Some("thread-a"));
+    call(&guard, &mut second, "sys", 4_000, 3_000).await;
+    assert!(misses(&recorder).is_empty());
+}
+
+#[tokio::test]
+async fn a_cache_miss_uses_the_active_model_call_id() {
+    let guard = PromptCacheGuardMiddleware::new();
+    let (mut c, recorder) = ctx("r", None);
+    call(&guard, &mut c, "sys", 10_000, 9_000).await;
+    c.active_model_call = Some(crate::ids::CallId::new("r-model-2"));
+    call(&guard, &mut c, "sys", 12_000, 0).await;
+
+    let event = misses(&recorder).pop().expect("cache miss event");
+    let AgentEvent::PromptCacheMiss { call_id, .. } = event else {
+        unreachable!()
+    };
+    assert_eq!(call_id, crate::ids::CallId::new("r-model-2"));
 }
 
 #[tokio::test]

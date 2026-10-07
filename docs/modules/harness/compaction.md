@@ -467,83 +467,15 @@ The transcript is never rewritten. A retry is a rewrite of the *request*;
 compactions extend the run's fingerprint-chained fold exactly as `before_model`
 compactions do, so a later call re-applies them instead of re-summarizing.
 
-### Overflow from the response
+Response-based overflow detection and billed-response accounting are described
+with the truncation route in
+[`compaction-truncation.md`](compaction-truncation.md).
 
-Some servers never raise an error: they accept an oversized prompt and report
-usage above the window ("silent overflow"), or truncate the input to fit and
-stop with `length` and no output. `detect_response_overflow` (a port of the
-response cases of pi's `isContextOverflow` / `isRecoverableLength`) classifies
-these; `with_response_overflow_detection(ResponseOverflowDetection)` chooses
-how much to trust. **Off by default** (`Off`): discarding a successful
-response throws away billed work, so a host opts in.
+The cheaper tool-result truncation route is documented in
+[`compaction-truncation.md`](compaction-truncation.md).
 
-| Mode | Counts as overflow |
-| --- | --- |
-| `Off` (default) | nothing (errors only) |
-| `Usage` | `usage.input_tokens > window` on a non-`length` stop; a `length` stop with zero output and `input_tokens >= 0.99 * window` |
-| `UsageAndShortLength` | the above, plus a `length` stop whose output is under half the request's `max_tokens` |
-
-The window is the response's `usage.context_window_tokens`, else
-`SummarizationPolicy::context_window`; without one only the short-`length` rule
-can fire. `input_tokens` is the whole prompt (cache reads are a subset). The
-short-`length` rule is opt-in because a model can stop short for its own
-reasons and each false positive costs a compaction. A cache-served response is
-never classified.
-
-When a response is discarded:
-
-- **Its usage is still accounted.** The middleware hands it to
-  `RunContext::record_discarded_usage`; the agent loop folds it into the run's
-  usage totals, emits `UsageRecorded` and records it with the host budget when
-  it accounts for the replacing call (`account_model_response`). A `Custom`
-  event `{"type": "overflow_discarded_response", input_tokens, output_tokens}`
-  marks the discard on the stream.
-- **Streamed calls are never discarded** (`RunContext::call_streamed`, set by
-  the loop's innermost model call): their deltas already reached the consumer,
-  and a retry would stream the answer twice. Error-level recovery is
-  unaffected.
-- A `warn!` is logged when the verdict rested on the policy's context window
-  because the response reported none (`usage.context_window_tokens`).
-
-### Cheaper first: truncate tool results
-
-`with_tool_result_truncation(max_bytes)` (opt-in; unset never truncates) adds a
-route in front of summarization. `CompactionPressure::route(prompt, budget,
-reducible)` (a port of OpenClaw's `resolveCompactionPressureDecision`) returns:
-
-| Route | When | Action |
-| --- | --- | --- |
-| `Fits` | `prompt <= budget` | nothing |
-| `Compact` | over budget, nothing reducible | summarize |
-| `TruncateToolResults` | `reducible >= max(overflow + 512, 1.5 * overflow)` tokens | cut tool results only, no summary |
-| `CompactThenTruncate` | reducible, but not enough alone | summarize, then cut what remains |
-
-`reducible` is the bytes above `max_bytes` in every tool-result text block
-(`artifacts::reducible_tool_result_bytes`, /4 for tokens). The cut
-(`artifacts::truncate_tool_results`) keeps the head and appends the standard
-`truncated by tool_result_budget` notice; it skips `trusted_verbatim` results,
-non-text blocks and `[tool_result_preview]` envelopes, and is idempotent.
-
-It runs in two places: before the call (`before_model`, once the prompt is over
-the trigger; `budget` is the trigger budget) and on a reported overflow
-(`budget` is the provider's stated limit, or the trigger budget when none).
-The provider's word outranks the estimate, so a `Fits` verdict on a reported
-overflow still compacts. A route that truncates switches the run into
-*truncating mode*, scoped to the run (a later run starts uncut): every later
-request of the run has its oversized results cut again before it is measured,
-so the measured prompt size stays valid. The cut spares the results after the
-last assistant message (what the model just asked for); each result is cut once
-a later assistant turn follows it, so the prefix changes once per result — a
-provider-cache cost bounded by one rewrite per tool result. A route that cuts
-the newest results too (the prompt is still over budget without them) does so. A compaction summarizes the **uncut**
-results; the cut is applied on top when sending.
-
-Limitation: in truncating mode `wrap_model` sees an already-cut request, which
-no longer fingerprint-aligns with the live transcript, so an overflow
-compaction in that state is not persisted as a boundary (it still retries).
 
 ## Tests
-
 - `summarization::compaction::test` — cut points (never inside a tool pair,
   respects `keep_recent_tokens`), split-turn merge and `previous_summary`
   threading, `OverflowClassifier` per built-in pattern plus `with_pattern`.
@@ -566,10 +498,4 @@ compaction in that state is not persisted as a boundary (it still retries).
   incremental second compaction, the user-role checkpoint after the system
   prompt, `compacted_history` and its adoption by a fresh instance on the next
   turn, system placement, the usage-based trigger, overflow compact-and-retry
-  with the fold reused afterwards, and the anti-thrash guard.
-- `middleware::library::compaction_pressure::tests` — the measured-prompt
-  arithmetic and the strike/cooldown state machine.
-- `summarization::checkpoint::tests` — building and recognising checkpoints.
-- `tinyagents_session::entry_tree::test` — `SessionCompactionSink` anchoring,
-  tip advancement across repeated compactions, the empty-session and
-  out-of-range-index no-op cases.
+  with the fold reused afterwards.
