@@ -180,6 +180,7 @@ async fn orchestrator_resolves_and_runs_only_the_chosen_subagents() -> Result<()
         let call_id = format!("dispatch-{i}");
         async move {
             sink.emit(AgentEvent::ToolStarted {
+                parent_call_id: None,
                 call_id: CallId::new(call_id.clone()),
                 tool_name: name.clone(),
                 input: None,
@@ -194,6 +195,7 @@ async fn orchestrator_resolves_and_runs_only_the_chosen_subagents() -> Result<()
                 )
                 .await?;
             sink.emit(AgentEvent::ToolCompleted {
+                parent_call_id: None,
                 call_id: CallId::new(call_id),
                 tool_name: name.clone(),
                 started_at_ms: None,
