@@ -32,8 +32,12 @@ pub enum ToolCallStatus {
 pub enum SubagentStatus {
     /// The run ended with a final answer.
     Completed,
-    /// The spawning call failed, or reported the run incomplete.
+    /// The spawning call failed.
     Failed,
+    /// The run stopped without a complete answer: the spawn result carries the
+    /// typed `"status": "incomplete"` (a timeout or exceeded budget), or is a
+    /// legacy `[SUBAGENT_INCOMPLETE]` text result.
+    Incomplete,
     /// The run's last record is an interrupted partial answer.
     Interrupted,
     /// No terminal record yet (still running, or never settled).

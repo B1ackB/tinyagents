@@ -117,7 +117,7 @@ async fn subagent_node_errors_for_missing_agent_and_budget_excess() {
 
     let policy = SubAgentPolicy::default().with_budget(SubAgentBudget {
         max_model_calls: Some(1),
-        max_tool_calls: None,
+        ..SubAgentBudget::unlimited()
     });
     let node = SubAgentNode::<String, String>::from_fns(
         "twostep",
