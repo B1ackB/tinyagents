@@ -314,6 +314,11 @@ pub trait Middleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync {
     /// would defer or interrupt must fail instead. `call.arguments` are the
     /// prepared (validated) arguments; `call.id` is the nested id
     /// (`<parent>/<n>`).
+    ///
+    /// A refusal is returned to the calling tool and is **not** fanned out to
+    /// [`Middleware::on_error`]: that hook needs `&mut RunContext`, which a
+    /// running tool cannot lend, and a refused nested call is a tool-level
+    /// result, not a run failure.
     async fn check_nested_tool(
         &self,
         _ctx: &RunContext<Ctx>,
