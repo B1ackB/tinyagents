@@ -177,6 +177,8 @@ pub struct SubAgentTool<State: Send + Sync, Ctx: Send + Sync = ()> {
     pub(crate) declaration: std::sync::OnceLock<Arc<dyn tinytools::Tool>>,
     /// Shared registry that owns asynchronous child-job state and controls.
     pub(crate) jobs: SubAgentJobRegistry,
+    /// Spawn admission ledger; unlimited unless the host injects a policy.
+    pub(crate) admission: crate::subagent::SpawnAdmission,
 }
 
 /// Stable identifier returned immediately when a subagent job is spawned.
@@ -280,6 +282,7 @@ pub(crate) struct SubAgentJobEntry {
 }
 
 /// Error returned by job lookup or live-message delivery.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SubAgentJobError {
     /// No job exists for the supplied id.

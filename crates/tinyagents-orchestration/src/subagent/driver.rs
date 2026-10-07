@@ -12,7 +12,8 @@ use super::{
     SubagentPlanner, SubagentRequest, SubagentRunResult, SubagentStatus, SubagentTaskKey,
     SubagentTerminalPersistenceDisposition,
 };
-use tinyagents_harness::CancellationToken;
+use super::{SpawnAdmission, SpawnRejection};
+use tinyagents_harness::{CancellationToken, context::RunConfig, ids::RunId};
 
 /// Optional host seams accepted by [`SubagentDriver::new`].
 ///
@@ -38,6 +39,7 @@ pub struct SubagentDriver<C: Send + 'static = (), H: Send + 'static = ()> {
     persistence: Arc<dyn SubagentPersistence>,
     terminal_outcomes: AsyncMutex<HashMap<SubagentTaskKey, SubagentOutcome>>,
     in_flight: Arc<Mutex<HashMap<SubagentTaskKey, Arc<InFlight>>>>,
+    admission: SpawnAdmission,
 }
 
 /// Result shared by callers that arrived while the same task was executing.
@@ -149,7 +151,25 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                 .ok_or(SubagentError::MissingCapability("persistence"))?,
             terminal_outcomes: AsyncMutex::new(HashMap::new()),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
+            admission: SpawnAdmission::default(),
         })
+    }
+
+    /// Enforces spawn limits on every lifecycle this driver launches.
+    ///
+    /// A slot is reserved after cancellation and resume loading but before the
+    /// planner runs, and released when the lifecycle returns; a lifecycle that
+    /// fails before the executor launches also refunds its total-budget unit.
+    /// Coalesced followers and cached terminal results never reserve a slot.
+    /// Without this call spawning is unlimited.
+    pub fn with_spawn_admission(mut self, admission: SpawnAdmission) -> Self {
+        self.admission = admission;
+        self
+    }
+
+    /// The admission ledger this driver reserves from.
+    pub fn spawn_admission(&self) -> &SpawnAdmission {
+        &self.admission
     }
 
     /// Runs `load -> prepare -> execute -> one persistence action`.
@@ -272,6 +292,42 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                 .await;
         }
 
+        // Reserve before any planner/executor work. A resumed lifecycle is an
+        // existing child, so it takes a live slot but no new total budget.
+        // The scope resolves from the parent as the key describes it: the
+        // durable thread when there is one, else the parent run id. Fresh spawns
+        // and continuations resolve identically.
+        //
+        // The key carries the parent's run id, thread and the tree's root run
+        // id, so a custom scope rule that groups by root
+        // (`cfg.lineage.root_run_id`) sees the real root, not the immediate
+        // parent. Tags and metadata are not part of the durable key and so are
+        // not available to a resolver here.
+        let mut parent_config = RunConfig::new(task_key.parent_run_id.as_str());
+        parent_config.lineage.root_run_id = RunId::new(task_key.root_run_id.as_str());
+        if let Some(thread) = &task_key.thread_id {
+            parent_config = parent_config.with_thread(thread.as_str());
+        }
+        let target = match request.target() {
+            Some(target) => target,
+            // Fail closed: an allowlist cannot vet a target it was never told.
+            None if self.admission.policy().allowed_targets.is_some() => {
+                return Err(SubagentError::SpawnRejected(
+                    SpawnRejection::TargetNotAllowed {
+                        target: String::new(),
+                    },
+                ));
+            }
+            None => "",
+        };
+        let reservation = if request.resume().is_some() {
+            self.admission
+                .try_reserve_continuation(&parent_config, target)
+        } else {
+            self.admission.try_reserve(&parent_config, target)
+        };
+        let mut reservation = reservation.map_err(SubagentError::SpawnRejected)?;
+
         let mut prepared = self.planner.prepare(request).await?;
         if prepared.task_id != task_id {
             return Err(SubagentError::TaskIdMismatch {
@@ -289,6 +345,9 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                 .await;
         }
         prepared.run_context = prepared.run_context.with_cancellation(cancellation.clone());
+        // The child is about to launch: from here its total-budget unit stays
+        // spent, and the live slot is released when this function returns.
+        reservation.commit();
 
         let executed = self
             .executor

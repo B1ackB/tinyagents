@@ -235,3 +235,15 @@ fn stream_idle_timeouts_are_independent_per_model() {
     assert_eq!(tracker.consecutive_stream_idle_timeouts_for("primary"), 0);
     assert_eq!(tracker.consecutive_stream_idle_timeouts_for("backup"), 1);
 }
+
+#[test]
+fn skipped_models_are_remembered_for_the_run_only() {
+    let mut tracker = LimitTracker::new(RunLimits::default());
+    assert!(!tracker.is_model_skipped("primary"));
+    tracker.skip_model_for_run("primary");
+    assert!(tracker.is_model_skipped("primary"));
+    assert!(!tracker.is_model_skipped("backup"));
+    // Idempotent.
+    tracker.skip_model_for_run("primary");
+    assert!(tracker.is_model_skipped("primary"));
+}
