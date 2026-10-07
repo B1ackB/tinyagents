@@ -111,7 +111,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// serial pipeline, with the model's or the approver's edited
     /// arguments. Returns whatever the approved calls deferred *again*.
     #[allow(clippy::too_many_arguments)]
-    async fn apply_deferred_results(
+    pub(super) async fn apply_deferred_results(
         &self,
         state: &State,
         ctx: &mut RunContext<Ctx>,
