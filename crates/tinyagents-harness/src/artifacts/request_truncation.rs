@@ -48,6 +48,8 @@ pub fn reducible_tool_result_bytes(messages: &[Message], max_bytes: usize) -> us
     if max_bytes == 0 {
         return 0;
     }
+    // The same effective cap `truncate_tool_results` cuts to.
+    let max_bytes = max_bytes.max(TRAILER_RESERVED + 1);
     messages
         .iter()
         .filter_map(|message| match message {
@@ -71,6 +73,8 @@ pub fn truncate_tool_results(messages: &mut [Message], max_bytes: usize) -> Requ
     if max_bytes == 0 {
         return outcome;
     }
+    // A cap below the notice floor cuts to the floor; judge candidates by it.
+    let max_bytes = max_bytes.max(TRAILER_RESERVED + 1);
     for message in messages {
         let Message::Tool(tool) = message else {
             continue;
@@ -86,7 +90,7 @@ pub fn truncate_tool_results(messages: &mut [Message], max_bytes: usize) -> Requ
                 continue;
             }
             // Leave room for the notice so the result lands near the cap.
-            let budget = max_bytes.max(TRAILER_RESERVED + 1);
+            let budget = max_bytes;
             let original = std::mem::take(text);
             let before = original.len();
             let (cut, _) = apply_tool_result_budget(original.clone(), budget);

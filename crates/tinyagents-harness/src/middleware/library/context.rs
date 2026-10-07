@@ -774,7 +774,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 continue;
             }
             match self
-                .compact_for_overflow(ctx, &base, overflow, attempts > 1)
+                .compact_for_overflow(ctx, &base, overflow, attempts > 1, truncate)
                 .await
             {
                 Some(shrunk) => {

@@ -26,8 +26,12 @@ impl ContextCompressionMiddleware {
         request: &ModelRequest,
         overflow: OverflowInfo,
         strictly_smaller: bool,
+        truncate: Option<usize>,
     ) -> Option<ModelRequest> {
-        let before_tokens = total_message_tokens(&request.messages);
+        // Sizes are compared as sent: with a truncation cap in force the
+        // provider sees the cut request, so a summary replacing an already-cut
+        // result must beat that, not the raw base.
+        let before_tokens = sent_tokens(&request.messages, truncate);
         // Checkpoints in the request (this run's fold summary, or one carried
         // in from an earlier turn) are the previous summary, never raw history
         // to summarize again.
@@ -177,7 +181,10 @@ impl ContextCompressionMiddleware {
                 };
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
-                if to_tokens > before_tokens || (strictly_smaller && to_tokens == before_tokens) {
+                let sent_to_tokens = sent_tokens(&new_messages, truncate);
+                if sent_to_tokens > before_tokens
+                    || (strictly_smaller && sent_to_tokens == before_tokens)
+                {
                     tracing::debug!(
                         before_tokens,
                         to_tokens,
@@ -231,10 +238,13 @@ impl ContextCompressionMiddleware {
 
         let new_messages = splice_summary(to_keep, record.summary.clone());
         let to_tokens = total_message_tokens(&new_messages);
+        let sent_to_tokens = sent_tokens(&new_messages, truncate);
         // A summary that grows the request (or, after the first attempt, does
         // not shrink it) cannot help, and a further attempt would only repeat
         // it: stop here, change nothing — no fold, no boundary, no record.
-        if to_tokens > before_tokens || (strictly_smaller && to_tokens == before_tokens) {
+        if sent_to_tokens > before_tokens
+            || (strictly_smaller && sent_to_tokens == before_tokens)
+        {
             tracing::info!(
                 before_tokens,
                 to_tokens,
@@ -265,6 +275,19 @@ impl ContextCompressionMiddleware {
         retried.messages = new_messages;
         self.forget_pending(ctx.instance_id());
         Some(retried)
+    }
+}
+
+/// Estimated tokens of `messages` as the provider would receive them: with
+/// `truncate` set, oversized tool results are cut first.
+fn sent_tokens(messages: &[Message], truncate: Option<usize>) -> u64 {
+    match truncate {
+        None => total_message_tokens(messages),
+        Some(cap) => {
+            let mut cut = messages.to_vec();
+            truncate_tool_results(&mut cut, cap);
+            total_message_tokens(&cut)
+        }
     }
 }
 
