@@ -192,6 +192,14 @@ fn uuids_are_normalized_but_long_hex_ids_are_content() {
         r#"{"event_id": "123e4567-e89b-12d3-a456-426614174000", "status":"ready"}"#,
         r#"{"event_id": "00000000-1111-2222-3333-444444444444", "status":"ready"}"#,
     );
+    differ(
+        r#"{"session_id":"123e4567-e89b-12d3-a456-426614174000","status":"started"}"#,
+        r#"{"session_id":"00000000-1111-2222-3333-444444444444","status":"started"}"#,
+    );
+    differ(
+        r#"{"run_id":"123e4567-e89b-12d3-a456-426614174000","status":"started"}"#,
+        r#"{"run_id":"00000000-1111-2222-3333-444444444444","status":"started"}"#,
+    );
     // A commit id or checksum is usually the answer, not noise around it.
     differ(
         "Created commit 0123456789abcdef0123456789abcdef01234567",
@@ -236,6 +244,11 @@ fn literal_placeholder_text_counts_as_residue() {
         "<timestamp> <duration> 2026-10-06T12:34:56Z",
         "<timestamp> <duration> 2026-10-07T01:02:03Z",
     );
+}
+
+#[test]
+fn literal_placeholders_do_not_collide_with_generated_ones() {
+    differ("failed at <timestamp>", "failed at 2026-10-06T12:34:56Z");
 }
 
 #[test]

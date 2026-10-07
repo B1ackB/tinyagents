@@ -220,7 +220,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             |text, found| not_followed_by_word(text, found) && iso_timestamp_context(text, found),
         ),
         rule(
-            r#"(?i)(?-u:\b)(?:request|trace|correlation|session|run|call|invocation|operation|message|event)(?:[_ -]?(?:id|uuid))?\s*["']?\s*(?:[:=]\s*|\s+)["']?\s*(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
+            r#"(?i)(?-u:\b)(?:request|trace|correlation)(?:[_ -]?(?:id|uuid))?\s*["']?\s*(?:[:=]\s*|\s+)["']?\s*(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
             "<uuid>",
             uuid_context,
         ),
@@ -301,19 +301,33 @@ const MIN_RESIDUE_CHARS: usize = 4;
 /// spans are the content rather than noise around it, and two such outcomes
 /// that differ are different outcomes.
 pub fn normalize_volatile(text: &str) -> String {
-    let mut current: Cow<'_, str> = Cow::Borrowed(text);
+    // Keep literal placeholder-looking output distinct from generated
+    // placeholders. If no span is rewritten, the original text is returned.
+    let mut current: Cow<'_, str> = Cow::Owned(escape_literal_placeholders(text));
     let mut removed = 0;
+    let mut rewritten = false;
     for rule in RULES.iter() {
-        if let Some((rewritten, alnum)) = rewrite(rule, &current) {
-            current = Cow::Owned(rewritten);
+        if let Some((output, alnum)) = rewrite(rule, &current) {
+            current = Cow::Owned(output);
             removed += alnum;
+            rewritten = true;
         }
     }
     let residue = alnum_count(text).saturating_sub(removed);
-    if matches!(current, Cow::Borrowed(_)) || residue < MIN_RESIDUE_CHARS {
+    if !rewritten || residue < MIN_RESIDUE_CHARS {
         return text.to_string();
     }
     current.into_owned()
+}
+
+fn escape_literal_placeholders(text: &str) -> String {
+    text.replace("<timestamp>", "\\<timestamp>")
+        .replace("<time>", "\\<time>")
+        .replace("<epoch>", "\\<epoch>")
+        .replace("<duration>", "\\<duration>")
+        .replace("<attempt>", "\\<attempt>")
+        .replace("<pid>", "\\<pid>")
+        .replace("<uuid>", "\\<uuid>")
 }
 
 /// `text` with every accepted match of `rule` replaced, plus the number of
