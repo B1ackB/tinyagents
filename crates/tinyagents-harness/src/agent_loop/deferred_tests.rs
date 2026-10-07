@@ -641,3 +641,138 @@ async fn human_approval_middleware_deny_outcome_answers_the_model_without_runnin
     );
     assert_eq!(run.text().as_deref(), Some("understood"));
 }
+
+// ── Terminate across a deferred batch ───────────────────────────────────────
+
+/// An approval-gated tool whose result asks the loop to end the run.
+struct FinishTool;
+
+#[async_trait]
+impl Tool for FinishTool {
+    fn name(&self) -> &str {
+        "finish"
+    }
+    fn description(&self) -> &str {
+        "approval-gated tool that terminates the run"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    fn policy(&self) -> ToolPolicy {
+        ToolPolicy::classified().requiring_approval()
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::success("finished").terminate())
+    }
+}
+
+fn finish_with_lookup_batch() -> ModelResponse {
+    response(
+        vec![
+            ToolCall::new("call-lookup", "lookup", json!({"q": "x"})),
+            ToolCall::new("call-finish", "finish", json!({})),
+        ],
+        "",
+    )
+}
+
+fn finish_only_batch() -> ModelResponse {
+    response(vec![ToolCall::new("call-finish", "finish", json!({}))], "")
+}
+
+fn terminate_harness(first: ModelResponse) -> AgentHarness<()> {
+    let mut harness: AgentHarness<()> = AgentHarness::new();
+    harness.register_model(
+        "mock",
+        Arc::new(MockModel::with_responses(vec![
+            first,
+            response(Vec::new(), "model saw the results"),
+        ])),
+    );
+    harness.register_tool(RecordingTool::plain("lookup", "found"));
+    harness.register_tool(Arc::new(FinishTool));
+    harness
+}
+
+#[tokio::test]
+async fn external_resume_of_part_of_a_batch_does_not_terminate() {
+    // `lookup` ran before the pause and did not ask to terminate, so the
+    // approved terminating call is not the whole batch: the model still has to
+    // read `lookup`'s result.
+    let harness = terminate_harness(finish_with_lookup_batch());
+    let first = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("first leg defers");
+    assert!(first.deferred.is_some());
+
+    let ctx = RunContext::new(RunConfig::new("second"), ());
+    let run = harness
+        .resume_deferred(
+            &(),
+            ctx,
+            first.messages.clone(),
+            DeferredToolResults::new().approve("call-finish"),
+        )
+        .await
+        .expect("resume completes");
+
+    assert_eq!(run.text().as_deref(), Some("model saw the results"));
+    assert_eq!(run.model_calls, 1, "resume spends one new model call");
+}
+
+#[tokio::test]
+async fn inline_handler_resolving_part_of_a_batch_does_not_terminate() {
+    let mut harness = terminate_harness(finish_with_lookup_batch());
+    harness.with_deferred_tool_handler(Arc::new(ApproveAllHandler {
+        asked: Mutex::new(Vec::new()),
+    }));
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("the handler settles the batch");
+
+    assert_eq!(run.text().as_deref(), Some("model saw the results"));
+    assert_eq!(run.model_calls, 2);
+}
+
+#[tokio::test]
+async fn external_resume_of_a_whole_batch_terminates() {
+    let harness = terminate_harness(finish_only_batch());
+    let first = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("first leg defers");
+    assert!(first.deferred.is_some());
+
+    let ctx = RunContext::new(RunConfig::new("second"), ());
+    let run = harness
+        .resume_deferred(
+            &(),
+            ctx,
+            first.messages.clone(),
+            DeferredToolResults::new().approve("call-finish"),
+        )
+        .await
+        .expect("resume completes");
+
+    assert_eq!(run.text().as_deref(), Some("finished"));
+    assert_eq!(run.model_calls, 0, "terminate spends no further model call");
+}
+
+#[tokio::test]
+async fn inline_handler_resolving_a_whole_batch_terminates() {
+    let mut harness = terminate_harness(finish_only_batch());
+    harness.with_deferred_tool_handler(Arc::new(ApproveAllHandler {
+        asked: Mutex::new(Vec::new()),
+    }));
+
+    let run = harness
+        .invoke_default(&(), vec![Message::user("go")])
+        .await
+        .expect("the handler settles the batch");
+
+    assert_eq!(run.text().as_deref(), Some("finished"));
+    assert_eq!(run.model_calls, 1);
+}

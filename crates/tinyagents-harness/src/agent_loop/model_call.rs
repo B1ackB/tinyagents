@@ -381,7 +381,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             && response.continue_turn.is_none()
             && response.message.tool_calls.is_empty()
             && response.text().trim().is_empty()
-            && response.finish_reason.as_deref() != Some("length")
+            && !crate::finish_reason::is_length_stop(response.finish_reason.as_deref())
             && response.finish_reason.as_deref() != Some("tool_calls")
     }
 

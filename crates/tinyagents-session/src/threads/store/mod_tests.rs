@@ -54,6 +54,7 @@ fn store_roundtrips_threads_and_messages() {
             created_at: created_at.clone(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     assert_eq!(thread.message_count, 0);
@@ -93,6 +94,7 @@ fn append_message_is_idempotent_by_message_id() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     let first = ThreadMessage {
@@ -146,6 +148,7 @@ fn append_message_does_not_dedupe_client_generated_ids() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     let message = ThreadMessage {
@@ -176,6 +179,7 @@ fn append_message_idempotency_ignores_an_id_quoted_inside_content() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     store
@@ -222,6 +226,7 @@ fn get_messages_for_new_empty_thread_returns_empty_list() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
 
@@ -240,6 +245,7 @@ fn store_updates_message_metadata() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     store
@@ -282,6 +288,7 @@ fn purge_removes_threads_and_messages() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .expect("ensure thread");
     store
@@ -314,6 +321,7 @@ fn ensure_thread_is_idempotent() {
         created_at: "2026-04-10T12:00:00Z".to_string(),
         labels: None,
         personality_id: None,
+        working_dir: None,
     };
     store.ensure_thread(req.clone()).unwrap();
     store.ensure_thread(req).unwrap();
@@ -332,6 +340,7 @@ fn delete_thread_removes_thread_and_messages() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -372,6 +381,7 @@ fn get_messages_empty_thread() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     let messages = store.get_messages("t1").unwrap();
@@ -397,6 +407,7 @@ fn multiple_threads_and_messages() {
                 created_at: format!("2026-04-10T12:0{i}:00Z"),
                 labels: None,
                 personality_id: None,
+                working_dir: None,
             })
             .unwrap();
         store
@@ -436,6 +447,7 @@ fn update_message_nonexistent_returns_error() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     let result = store.update_message(
@@ -459,6 +471,7 @@ fn update_thread_title_persists_latest_title() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -485,6 +498,7 @@ fn store_handles_labels_and_inference() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: Some(vec!["custom".to_string()]),
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -497,6 +511,7 @@ fn store_handles_labels_and_inference() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -509,6 +524,7 @@ fn store_handles_labels_and_inference() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -521,6 +537,7 @@ fn store_handles_labels_and_inference() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: None,
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -537,6 +554,7 @@ fn store_handles_labels_and_inference() {
                 "work".to_string(),
             ]),
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -551,6 +569,7 @@ fn store_handles_labels_and_inference() {
                 "subconscious".to_string(),
             ]),
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
     store
@@ -561,6 +580,7 @@ fn store_handles_labels_and_inference() {
             created_at: "2026-04-10T12:00:00Z".to_string(),
             labels: Some(vec!["agent-task".to_string(), "worker".to_string()]),
             personality_id: None,
+            working_dir: None,
         })
         .unwrap();
 
@@ -630,3 +650,39 @@ fn store_handles_labels_and_inference() {
 
 #[path = "mod_more_tests.rs"]
 mod more;
+
+#[test]
+fn working_dir_binds_survives_upserts_and_clears() {
+    let (_temp, store) = make_store();
+    let created_at = "2026-10-06T12:00:00Z".to_string();
+    let thread = store
+        .ensure_thread(CreateConversationThread {
+            parent_thread_id: None,
+            id: "workdir-thread".to_string(),
+            title: "Conversation".to_string(),
+            created_at: created_at.clone(),
+            labels: None,
+            personality_id: None,
+            working_dir: Some("/projects/alpha".to_string()),
+        })
+        .expect("ensure thread");
+    assert_eq!(thread.working_dir.as_deref(), Some("/projects/alpha"));
+
+    // A later upsert without a working dir keeps the bound one.
+    let renamed = store
+        .update_thread_title("workdir-thread", "Renamed", &created_at)
+        .expect("rename");
+    assert_eq!(renamed.working_dir.as_deref(), Some("/projects/alpha"));
+
+    let moved = store
+        .update_thread_working_dir("workdir-thread", Some("/projects/beta".into()), &created_at)
+        .expect("rebind");
+    assert_eq!(moved.working_dir.as_deref(), Some("/projects/beta"));
+
+    let cleared = store
+        .update_thread_working_dir("workdir-thread", None, &created_at)
+        .expect("clear");
+    assert_eq!(cleared.working_dir, None);
+    let listed = store.list_threads().expect("list");
+    assert_eq!(listed[0].working_dir, None);
+}
