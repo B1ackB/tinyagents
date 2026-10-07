@@ -349,7 +349,8 @@ fn project_two_roots(
         .to_rfc3339();
     let call = |id: &str| format!(r#"{{"id":"{id}","name":"worker","arguments":"{{}}"}}"#);
     let tool_row = |id: &str, run_id: &str| {
-        let output = format!(r#"{{"job_id":"job-{id}","status":"queued","subagent_run_id":"{run_id}"}}"#);
+        let output =
+            format!(r#"{{"job_id":"job-{id}","status":"queued","subagent_run_id":"{run_id}"}}"#);
         format!(
             r#"{{"role":"tool","content":{},"id":"{id}","request_id":"req-1"}}"#,
             serde_json::to_string(&envelope(id, &output)).unwrap()
@@ -375,9 +376,11 @@ fn project_two_roots(
     ];
     std::fs::write(&second_path, second.join("\n") + "\n").unwrap();
 
-    let child_path =
-        transcript::resolve_keyed_transcript_path(dir.path(), "800_orch_a__2000000_000000001_worker")
-            .unwrap();
+    let child_path = transcript::resolve_keyed_transcript_path(
+        dir.path(),
+        "800_orch_a__2000000_000000001_worker",
+    )
+    .unwrap();
     let child_meta = format!(
         r#"{{"_meta":{{"version":1,"agent":"worker","agent_id":"worker","agent_type":"subagent","dispatcher":"native","created":"2026-07-21T00:00:00Z","updated":"2026-07-21T00:00:10Z","turn_count":1,"input_tokens":1,"output_tokens":1,"cached_input_tokens":0,"charged_amount_usd":0.0,"thread_id":"{child_thread_id}"}}}}"#
     );
@@ -387,7 +390,7 @@ fn project_two_roots(
     )
     .unwrap();
 
-    let projected = project_from_files(
+    let projected = crate::transcript::view::project::project_from_files(
         "thr_roots",
         &[first_path, second_path],
         &[child_path],
