@@ -36,6 +36,10 @@ pub(super) struct CancelState {
     /// keeps propagation working when an intermediate handle is dropped while
     /// allowing completed child states to be collected.
     pub(super) children: Mutex<Vec<Weak<CancelState>>>,
+    /// Serializes descendant registration with cancellation draining across
+    /// the whole token lineage. Without one shared lock, cancellation could
+    /// drain an ancestor immediately before a child is linked to it.
+    pub(super) registration_lock: Arc<Mutex<()>>,
     /// Ancestors kept alive by a live descendant so their cancellation state
     /// remains reachable until that descendant is dropped.
     pub(super) ancestors: Vec<Arc<CancelState>>,

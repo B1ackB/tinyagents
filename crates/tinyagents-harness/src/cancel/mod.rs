@@ -68,6 +68,7 @@ impl CancellationToken {
                 cancelled: AtomicBool::new(false),
                 notify: Notify::new(),
                 children: Mutex::new(Vec::new()),
+                registration_lock: Arc::new(Mutex::new(())),
                 ancestors: Vec::new(),
             }),
         }
@@ -81,24 +82,33 @@ impl CancellationToken {
     /// tree cancel one sub-run independently while a parent cancel still
     /// unwinds every descendant.
     pub fn child_token(&self) -> Self {
-        let mut ancestors = self.state.ancestors.clone();
-        ancestors.push(Arc::clone(&self.state));
-        let child = Self {
-            state: Arc::new(CancelState {
-                cancelled: AtomicBool::new(false),
-                notify: Notify::new(),
-                children: Mutex::new(Vec::new()),
-                ancestors,
-            }),
-        };
-        for ancestor in &child.state.ancestors {
-            let mut children = ancestor
-                .children
+        let child = {
+            let _registration = self
+                .state
+                .registration_lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            children.retain(|link| link.strong_count() > 0);
-            children.push(Arc::downgrade(&child.state));
-        }
+            let mut ancestors = self.state.ancestors.clone();
+            ancestors.push(Arc::clone(&self.state));
+            let child = Self {
+                state: Arc::new(CancelState {
+                    cancelled: AtomicBool::new(false),
+                    notify: Notify::new(),
+                    children: Mutex::new(Vec::new()),
+                    registration_lock: Arc::clone(&self.state.registration_lock),
+                    ancestors,
+                }),
+            };
+            for ancestor in &child.state.ancestors {
+                let mut children = ancestor
+                    .children
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                children.retain(|link| link.strong_count() > 0);
+                children.push(Arc::downgrade(&child.state));
+            }
+            child
+        };
         // Re-check every linked ancestor after registration. A cancellation
         // may have drained an older ancestor before this child was linked;
         // checking only the immediate parent would let that race escape.
@@ -174,6 +184,10 @@ impl CancellationToken {
 fn cancel_state(state: &Arc<CancelState>) {
     let mut pending = vec![Arc::clone(state)];
     while let Some(current) = pending.pop() {
+        let _registration = current
+            .registration_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         current.cancelled.store(true, Ordering::Release);
         current.notify.notify_waiters();
         let children = current
