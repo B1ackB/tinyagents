@@ -92,7 +92,8 @@ async fn blocked_calls_never_execute_and_the_second_block_pauses_the_run() {
     let texts: Vec<String> = run
         .messages
         .iter()
-        .filter_map(|m| matches!(m, Message::Tool(_)).then(|| m.text()))
+        .filter(|m| matches!(m, Message::Tool(_)))
+        .map(|m| m.text())
         .collect();
     assert!(texts[2].contains("[repeat notice]"), "{texts:?}");
     assert!(texts[4].contains("not executed"), "{texts:?}");
