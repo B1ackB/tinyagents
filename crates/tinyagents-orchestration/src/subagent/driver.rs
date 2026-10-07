@@ -13,10 +13,7 @@ use super::{
     SubagentTerminalPersistenceDisposition,
 };
 use super::{SpawnAdmission, SpawnRejection};
-use tinyagents_harness::{
-    CancellationToken,
-    context::{RunConfig, RunId},
-};
+use tinyagents_harness::{CancellationToken, context::RunConfig, ids::RunId};
 
 /// Optional host seams accepted by [`SubagentDriver::new`].
 ///

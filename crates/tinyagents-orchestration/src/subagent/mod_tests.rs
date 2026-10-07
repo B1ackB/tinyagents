@@ -1718,7 +1718,7 @@ async fn driver_custom_scope_resolver_sees_the_task_keys_root_run_id() {
     );
     let child_of = |parent: &str| {
         let mut config = RunConfig::new(parent);
-        config.lineage.root_run_id = tinyagents_harness::context::RunId::new("tree-root");
+        config.lineage.root_run_id = tinyagents_harness::ids::RunId::new("tree-root");
         request_with_parent(parent, RunContext::new(config, String::new()))
     };
 
