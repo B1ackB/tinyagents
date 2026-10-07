@@ -96,10 +96,11 @@ pub fn project_from_files(
     );
 
     let mut records: Vec<DisplayRecord> = Vec::new();
-    let root_thread_id = root_paths
-        .first()
-        .and_then(|path| transcript::read_transcript_display(path).ok())
-        .and_then(|display| display.meta.thread_id);
+    let root_thread_id = root_paths.iter().find_map(|path| {
+        transcript::read_transcript_display(path)
+            .ok()
+            .and_then(|display| display.meta.thread_id)
+    });
     let mut previous: Option<(Option<String>, Vec<DisplayRecord>)> = None;
     for root_path in root_paths {
         let display = match transcript::read_transcript_display(root_path) {

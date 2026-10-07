@@ -20,6 +20,7 @@ use tinyinference_llm::message::Message;
 use super::types::{DetachedSubagentStatus, SubagentIdentity, WaitError};
 
 /// Why a steer could not be delivered.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SteerError {
     /// No such subagent: never existed, or already finished and pruned.
