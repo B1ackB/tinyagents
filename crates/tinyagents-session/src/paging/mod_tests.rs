@@ -56,3 +56,26 @@ fn custom_clauses_use_their_placeholder_number() {
 
     assert_eq!(ids(&mut query, 10, 0), (vec![4, 1], 2));
 }
+
+#[test]
+fn repeated_fetch_does_not_accumulate_pagination_parameters() {
+    let conn = table();
+    let mut query = PagedQuery::default();
+    query.eq("kind", Some("a"));
+
+    query.page(2, 0);
+    assert_eq!(
+        query
+            .fetch(&conn, "items", "id", "rank DESC", |row| row.get(0))
+            .unwrap(),
+        (vec![4, 1], 3)
+    );
+
+    query.page(1, 2);
+    assert_eq!(
+        query
+            .fetch(&conn, "items", "id", "rank DESC", |row| row.get(0))
+            .unwrap(),
+        (vec![3], 3)
+    );
+}

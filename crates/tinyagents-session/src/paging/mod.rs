@@ -81,10 +81,11 @@ impl PagedQuery {
             |row| row.get::<_, i64>(0),
         )? as u64;
 
-        self.values.push(Box::new(self.limit));
-        let limit_idx = self.values.len();
-        self.values.push(Box::new(self.offset));
-        let offset_idx = self.values.len();
+        let limit_idx = self.values.len() + 1;
+        let offset_idx = self.values.len() + 2;
+        let mut page_params = self.params();
+        page_params.push(&self.limit);
+        page_params.push(&self.offset);
         let mut stmt = conn.prepare(&format!(
             "SELECT {columns}
              FROM {from} {where_sql}
@@ -92,7 +93,7 @@ impl PagedQuery {
              LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
         ))?;
         let rows = stmt
-            .query_map(self.params().as_slice(), map)?
+            .query_map(page_params.as_slice(), map)?
             .collect::<rusqlite::Result<Vec<T>>>()?;
         Ok((rows, total))
     }
