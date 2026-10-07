@@ -121,8 +121,8 @@ fn fixture(first_turn: ModelResponse) -> Fixture {
 
 impl Fixture {
     async fn run(&self) {
-        let ctx = RunContext::new(RunConfig::new("run-progress"), ())
-            .with_events(self.recorder.sink());
+        let ctx =
+            RunContext::new(RunConfig::new("run-progress"), ()).with_events(self.recorder.sink());
         self.harness
             .invoke_in_context(&(), ctx, vec![Message::user("go")])
             .await
@@ -148,9 +148,7 @@ fn seen(recorder: &EventRecorder) -> Vec<Seen> {
             AgentEvent::ToolProgress {
                 call_id, message, ..
             } => Some(Seen::Progress(call_id.to_string(), message)),
-            AgentEvent::ToolCompleted { call_id, .. } => {
-                Some(Seen::Completed(call_id.to_string()))
-            }
+            AgentEvent::ToolCompleted { call_id, .. } => Some(Seen::Completed(call_id.to_string())),
             AgentEvent::ToolFailed { call_id, .. } => Some(Seen::Failed(call_id.to_string())),
             _ => None,
         })
@@ -197,10 +195,18 @@ async fn an_update_reported_after_completion_is_dropped() {
     fx.run().await;
     let before = seen(&fx.recorder);
 
-    let late = stash.lock().unwrap().take().expect("tool stashed its context");
+    let late = stash
+        .lock()
+        .unwrap()
+        .take()
+        .expect("tool stashed its context");
     late.report_progress(ToolProgress::message("too late"));
 
-    assert_eq!(seen(&fx.recorder), before, "no event after the terminal one");
+    assert_eq!(
+        seen(&fx.recorder),
+        before,
+        "no event after the terminal one"
+    );
     assert_eq!(before.last(), Some(&Seen::Completed("c1".into())));
 }
 
@@ -229,7 +235,10 @@ async fn concurrent_calls_interleave_but_each_precedes_its_own_terminal_event() 
         let first = position(&progress(call, updates[0]));
         let second = position(&progress(call, updates[1]));
         let completed = position(&Seen::Completed(call.into()));
-        assert!(started < first && first < second && second < completed, "{events:?}");
+        assert!(
+            started < first && first < second && second < completed,
+            "{events:?}"
+        );
     }
     // The batch really ran concurrently: the two calls' progress interleaves.
     assert!(
@@ -253,10 +262,12 @@ impl Middleware<(), ()> for DeltaLog {
         _state: &(),
         delta: &mut ToolDelta,
     ) -> Result<()> {
-        self.0
-            .lock()
-            .unwrap()
-            .push(format!("{}:{}:{}", delta.call_id, delta.tool_name.clone().unwrap_or_default(), delta.content));
+        self.0.lock().unwrap().push(format!(
+            "{}:{}:{}",
+            delta.call_id,
+            delta.tool_name.clone().unwrap_or_default(),
+            delta.content
+        ));
         Ok(())
     }
 
@@ -267,7 +278,10 @@ impl Middleware<(), ()> for DeltaLog {
         invocation: &ToolInvocationIdentity,
         _result: &mut ToolResult,
     ) -> Result<()> {
-        self.0.lock().unwrap().push(format!("after:{}", invocation.call_id()));
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("after:{}", invocation.call_id()));
         Ok(())
     }
 }
@@ -307,7 +321,11 @@ async fn middleware_observes_concurrent_progress_per_call_in_order() {
     fx.run().await;
 
     let log = log.lock().unwrap();
-    let index = |entry: &str| log.iter().position(|l| l == entry).unwrap_or_else(|| panic!("{entry} missing from {log:?}"));
+    let index = |entry: &str| {
+        log.iter()
+            .position(|l| l == entry)
+            .unwrap_or_else(|| panic!("{entry} missing from {log:?}"))
+    };
     assert!(index("a:alpha:a1") < index("a:alpha:a2") && index("a:alpha:a2") < index("after:a"));
     assert!(index("b:beta:b1") < index("b:beta:b2") && index("b:beta:b2") < index("after:b"));
 }
@@ -346,8 +364,7 @@ impl Tool for ReportThenFail {
 async fn progress_from_a_call_that_then_fails_still_precedes_its_failure() {
     let mut fx = fixture(calls(&[("c1", "crash")]));
     fx.harness.register_tool(Arc::new(ReportThenFail));
-    let ctx =
-        RunContext::new(RunConfig::new("run-progress"), ()).with_events(fx.recorder.sink());
+    let ctx = RunContext::new(RunConfig::new("run-progress"), ()).with_events(fx.recorder.sink());
     let outcome = fx
         .harness
         .invoke_in_context(&(), ctx, vec![Message::user("go")])
