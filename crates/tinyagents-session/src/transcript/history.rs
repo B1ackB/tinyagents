@@ -1384,3 +1384,7 @@ impl TranscriptHistory for FileTranscriptHistory {
         result
     }
 }
+
+#[cfg(test)]
+#[path = "history_tests.rs"]
+mod tests;
