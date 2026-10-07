@@ -3,14 +3,16 @@
 //! single host-neutral surface. A host middleware fingerprints results, feeds
 //! each call in, and turns the answers into notes, blocks and halts.
 
-use super::escalation::RepeatEscalation;
 use super::loop_patterns::{
-    ArgumentChurnDetector, DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS,
-    DEFAULT_PING_PONG_ALTERNATIONS, PingPongDetector,
+    DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS, DEFAULT_PING_PONG_ALTERNATIONS,
 };
-use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, PostCompactionGuard, REPEATING_AT};
+use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, REPEATING_AT};
 use super::successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
-use super::types::{CallGate, SuccessfulRepeat, SuccessfulRepeatTracker};
+use super::types::{
+    ArgumentChurnDetector, CallGate, CallObservation, PingPongDetector, PostCompactionGuard,
+    RepeatEscalation, RepeatMonitor, RepeatProgressConfig, SuccessfulRepeat,
+    SuccessfulRepeatTracker,
+};
 
 impl Default for RepeatProgressConfig {
     fn default() -> Self {

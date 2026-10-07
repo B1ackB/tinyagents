@@ -72,19 +72,19 @@ mod types;
 mod util;
 
 pub use classified::{ClassifiedFailure, ClassifiedFailureTracker};
-pub use escalation::{DEFAULT_BLOCK_AFTER_WARN, DEFAULT_BLOCKS_BEFORE_HALT, RepeatEscalation};
+pub use escalation::{DEFAULT_BLOCK_AFTER_WARN, DEFAULT_BLOCKS_BEFORE_HALT};
 pub use fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer, normalize_volatile};
 pub use loop_patterns::{
-    ArgumentChurnDetector, DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS,
-    DEFAULT_PING_PONG_ALTERNATIONS, PingPongDetector,
+    DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS, DEFAULT_PING_PONG_ALTERNATIONS,
 };
-pub use monitor::{CallObservation, RepeatMonitor, RepeatProgressConfig};
-pub use post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, PostCompactionGuard};
+pub use post_compaction::DEFAULT_POST_COMPACTION_WINDOW;
 pub use stream_text::StreamTextStallDetector;
 pub use successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
 use types::LadderState;
 pub use types::{
-    CallGate, NoProgress, NoProgressTracker, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
+    ArgumentChurnDetector, CallGate, CallObservation, NoProgress, NoProgressTracker,
+    PingPongDetector, PostCompactionGuard, RepeatEscalation, RepeatMonitor, RepeatProgressConfig,
+    SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
 };
 
 use std::sync::{Arc, Mutex};

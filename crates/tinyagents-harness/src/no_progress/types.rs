@@ -4,7 +4,7 @@
 //! Split out of `no_progress/mod.rs`; see that module's doc comment for
 //! the full escalation-ladder design.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::OutcomeFingerprinter;
