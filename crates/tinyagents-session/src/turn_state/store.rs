@@ -567,6 +567,10 @@ impl TurnStateStore {
             .sync_all()
             .map_err(|e| format!("fsync turn-state tempfile: {e}"))?;
         persist_temp_file(tmp, &path)?;
+        // Sync the directory entry created by the rename — without this a crash
+        // or power loss between persist() and the next fs flush can drop the
+        // snapshot, defeating the cold-boot recovery guarantee. Best-effort on
+        // platforms where opening a directory for sync is not supported.
         if let Err(err) = sync_dir(&dir) {
             tracing::warn!("{LOG_PREFIX} failed to fsync {}: {err}", dir.display());
         }
