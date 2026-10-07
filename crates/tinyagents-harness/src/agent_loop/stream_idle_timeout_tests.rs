@@ -978,7 +978,11 @@ async fn redacted_provider_output_still_counts_as_progress() {
     // The provider keeps sending real text 800ms apart; the middleware blanks
     // all of it, so no consumer sees anything, but the provider is not idle.
     let model = ScriptedStreams::new(vec![slow_chunks(vec![started()], &["a", "b", "c", "d"])]);
-    let mut harness = harness_with(model.clone(), idle_1s(), 1);
+    let mut harness = harness_with(
+        model.clone(),
+        idle_1s().with_stream_first_event_timeout_ms(Some(1_000)),
+        1,
+    );
     harness.push_middleware(Arc::new(BlankOrInject));
 
     run(&harness, RunConfig::new("redacted-progress"))
