@@ -242,9 +242,7 @@ impl ContextCompressionMiddleware {
         // A summary that grows the request (or, after the first attempt, does
         // not shrink it) cannot help, and a further attempt would only repeat
         // it: stop here, change nothing — no fold, no boundary, no record.
-        if sent_to_tokens > before_tokens
-            || (strictly_smaller && sent_to_tokens == before_tokens)
-        {
+        if sent_to_tokens > before_tokens || (strictly_smaller && sent_to_tokens == before_tokens) {
             tracing::info!(
                 before_tokens,
                 to_tokens,
