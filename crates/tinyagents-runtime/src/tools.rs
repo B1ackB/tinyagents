@@ -54,6 +54,20 @@ impl ToolSnapshot {
         &self.specs
     }
 
+    /// A narrowed copy holding only the declarations `keep` accepts, with the
+    /// one-off ([`Self::exact`]) marker preserved. The source is untouched.
+    pub fn retaining(&self, keep: impl Fn(&ToolSpec) -> bool) -> Self {
+        Self {
+            specs: self
+                .specs
+                .iter()
+                .filter(|spec| keep(spec))
+                .cloned()
+                .collect(),
+            exact: self.exact,
+        }
+    }
+
     /// The declarations as the JSON a transcript `tools` record stores.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(&self.specs).unwrap_or(serde_json::Value::Array(Vec::new()))

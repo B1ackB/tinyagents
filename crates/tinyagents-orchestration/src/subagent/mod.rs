@@ -16,6 +16,9 @@ mod executor;
 mod invocation;
 mod persistence;
 mod planner;
+mod policy;
+mod result_policy;
+mod role;
 mod types;
 
 pub use admission::{SpawnAdmission, SpawnPolicy, SpawnRejection, SpawnReservation};
@@ -40,13 +43,26 @@ pub use invocation::{
 };
 pub use persistence::SubagentPersistence;
 pub use planner::SubagentPlanner;
+pub use policy::{SubAgentBudget, SubAgentPolicy};
+pub use result_policy::{
+    AppliedResult, ArtifactStore, ResultOverflow, ResultPolicy, truncate_head_tail,
+};
+pub use role::{
+    SUBAGENT_JOBS_TOOL, SUBAGENT_MESSAGE_TOOL, SubagentRole, is_delegation_tool, restrict_tools,
+    subagent_framing,
+};
 pub use types::{
-    ArtifactReference, PersistedSubagentPause, PreparedSubagent, SubagentError, SubagentExecution,
-    SubagentIncomplete, SubagentOutcome, SubagentPause, SubagentPausePersistenceDisposition,
-    SubagentPersistenceDisposition, SubagentRequest, SubagentRequestParts, SubagentResume,
-    SubagentRunResult, SubagentStatus, SubagentTaskKey, SubagentTerminalPersistenceDisposition,
+    ArtifactReference, AttemptContextFactory, IncompleteKind, PersistedSubagentPause,
+    PreparedSubagent, SubagentError, SubagentExecution, SubagentIncomplete, SubagentOutcome,
+    SubagentPause, SubagentPausePersistenceDisposition, SubagentPersistenceDisposition,
+    SubagentRequest, SubagentRequestParts, SubagentResume, SubagentRunResult, SubagentStatus,
+    SubagentTaskKey, SubagentTerminalPersistenceDisposition,
 };
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+
+#[cfg(test)]
+#[path = "driver_policy_tests.rs"]
+mod driver_policy_test;
