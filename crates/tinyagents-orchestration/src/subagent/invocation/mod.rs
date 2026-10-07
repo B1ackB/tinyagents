@@ -900,3 +900,7 @@ mod link_test;
 #[cfg(test)]
 #[path = "mod_inline_tests.rs"]
 mod inline_test;
+
+#[cfg(test)]
+#[path = "mod_admission_tests.rs"]
+mod admission_test;
