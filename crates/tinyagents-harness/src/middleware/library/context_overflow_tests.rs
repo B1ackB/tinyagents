@@ -293,7 +293,9 @@ fn small_window() -> SummarizationPolicy {
 #[tokio::test]
 async fn usage_above_the_window_on_a_successful_response_is_recovered() {
     let base = silent_overflow_then_ok();
-    let stack = stack_of(short_mw(small_window()));
+    let stack = stack_of(
+        short_mw(small_window()).with_response_overflow_detection(ResponseOverflowDetection::Usage),
+    );
     let response = run(&stack, &base, long_transcript()).await.unwrap();
     assert_eq!(response.usage.unwrap().input_tokens, 50);
     assert_eq!(base.calls(), 2);
@@ -357,7 +359,9 @@ async fn a_length_stop_far_below_the_cap_is_recovered_only_when_opted_in() {
 async fn an_unrecoverable_response_overflow_is_returned_not_turned_into_an_error() {
     // One message: nothing can be compacted, so the response stands.
     let base = silent_overflow_then_ok();
-    let stack = stack_of(short_mw(small_window()));
+    let stack = stack_of(
+        short_mw(small_window()).with_response_overflow_detection(ResponseOverflowDetection::Usage),
+    );
     let response = run(&stack, &base, vec![user("hello")]).await.unwrap();
     assert_eq!(response.usage.unwrap().input_tokens, 9_000);
     assert_eq!(base.calls(), 1);
@@ -567,4 +571,34 @@ async fn a_prompt_under_the_trigger_is_never_truncated() {
         .await
         .unwrap();
     assert_eq!(request.messages, original);
+}
+
+// ── streamed calls ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_streamed_response_is_never_discarded_for_its_usage() {
+    // Its deltas already reached the consumer; a retry would stream the answer
+    // twice. Error-level recovery is unaffected.
+    let base = silent_overflow_then_ok();
+    let stack = stack_of(
+        short_mw(small_window())
+            .with_response_overflow_detection(ResponseOverflowDetection::Usage),
+    );
+    let mut c = ctx();
+    c.call_streamed = true;
+    let out = stack
+        .run_wrapped_model(
+            &mut c,
+            &(),
+            ModelRequest {
+                messages: long_transcript(),
+                ..Default::default()
+            },
+            &base,
+        )
+        .await
+        .unwrap()
+        .into_response();
+    assert_eq!(out.usage.unwrap().input_tokens, 9_000);
+    assert_eq!(base.calls(), 1);
 }

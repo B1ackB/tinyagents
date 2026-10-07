@@ -434,3 +434,32 @@ async fn a_provider_overflow_compacts_once_and_retries() {
     );
     assert!(run.compacted_history.is_some());
 }
+
+#[tokio::test]
+async fn a_discarded_overflow_response_is_still_accounted_to_the_run() {
+    // The first reply reports usage above the window it names: it is discarded
+    // and the call retried. The provider billed it, so the run's usage must
+    // include it as well as the retry's.
+    let silent_overflow = ModelResponse::assistant("too big").with_usage(Usage {
+        input_tokens: 9_000,
+        output_tokens: 7,
+        context_window_tokens: Some(1_000),
+        ..Usage::default()
+    });
+    let fixture = fixture_with(
+        vec![silent_overflow, with_input_tokens(ModelResponse::assistant("ok"), 40)],
+        10_000,
+        |mw| mw.with_response_overflow_detection(crate::summarization::ResponseOverflowDetection::Usage),
+    );
+    let mut input = task();
+    for i in 0..8 {
+        input.push(Message::assistant(format!("a{i} {}", "w".repeat(300))));
+        input.push(Message::user(format!("u{i} {}", "w".repeat(300))));
+    }
+    let run = fixture.run(input).await;
+
+    assert_eq!(run.final_response.unwrap().text(), "ok");
+    assert_eq!(run.usage.usage.input_tokens, 9_040, "discarded usage is billed");
+    assert_eq!(run.usage.usage.output_tokens, 12);
+    assert_eq!(fixture.model.requests().len(), 2);
+}

@@ -138,3 +138,8 @@ fn a_response_without_usage_is_never_an_overflow() {
         .is_none()
     );
 }
+
+#[test]
+fn detection_is_off_by_default() {
+    assert_eq!(ResponseOverflowDetection::default(), ResponseOverflowDetection::Off);
+}

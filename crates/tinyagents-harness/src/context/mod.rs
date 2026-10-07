@@ -325,6 +325,8 @@ impl<Ctx> RunContext<Ctx> {
             host_authority: None,
             terminal_observer: None,
             active_model_call: None,
+            call_streamed: false,
+            discarded_usage: Vec::new(),
             deferred_results: None,
             approved_calls: std::collections::HashSet::new(),
             refusal_metadata: std::collections::HashMap::new(),

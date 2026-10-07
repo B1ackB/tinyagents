@@ -25,12 +25,15 @@ const SHORT_LENGTH_DIVISOR: u64 = 2;
 /// Which successful-response signals count as a context overflow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ResponseOverflowDetection {
-    /// Only errors are classified (the pre-v2 behaviour).
+    /// Only errors are classified. The default: discarding a successful
+    /// response throws away billed work and, on a streamed call, output the
+    /// consumer already saw, so a host opts in.
+    #[default]
     Off,
     /// Reported prompt tokens above the window, and a zero-output `length`
     /// stop with the window full. Both need a known window and are
-    /// unambiguous, so this is the default.
-    #[default]
+    /// unambiguous. The discarded response's usage is still accounted to the
+    /// run; streamed calls are never discarded.
     Usage,
     /// [`Self::Usage`] plus a `length` stop whose output is far below the
     /// requested `max_tokens`. A model can also stop short for its own
