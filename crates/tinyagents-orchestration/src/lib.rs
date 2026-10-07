@@ -9,6 +9,7 @@
 //! `orchestration -> {harness, runtime}`. The lower-level crates never
 //! depend on this composition layer.
 
+pub mod status;
 pub mod subagent;
 pub mod teams;
 pub mod workflow;

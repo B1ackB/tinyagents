@@ -37,14 +37,14 @@ fn detached_to_run_covers_every_variant() {
 
 #[test]
 fn detached_to_job_covers_every_variant() {
-    let expected = [Some(Job::Running), Some(Job::Completed), None, Some(Job::Failed)];
+    let expected = [
+        Some(Job::Running),
+        Some(Job::Completed),
+        None,
+        Some(Job::Failed),
+    ];
     for (status, job) in all().iter().zip(expected) {
-        assert_eq!(
-            Job::try_from(status).ok(),
-            job,
-            "{}",
-            status.label()
-        );
+        assert_eq!(Job::try_from(status).ok(), job, "{}", status.label());
     }
 }
 

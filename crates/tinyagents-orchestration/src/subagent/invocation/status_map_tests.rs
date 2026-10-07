@@ -1,5 +1,6 @@
 use super::*;
 use crate::status::NoEquivalentStatus;
+use crate::subagent::SubAgentJobId;
 use tinyagents_graph::orchestration::OrchestrationTaskStatus as Task;
 use tinyagents_session::run_ledger::AgentRunStatus as Run;
 
@@ -56,7 +57,7 @@ fn job_mappings_preserve_terminality() {
 
 fn job_with(status: Job, kind: Option<IncompleteKind>) -> SubAgentJob {
     SubAgentJob {
-        id: SubAgentJobId::new("job-1"),
+        id: SubAgentJobId("job-1".into()),
         agent: "researcher".into(),
         status,
         output: None,
