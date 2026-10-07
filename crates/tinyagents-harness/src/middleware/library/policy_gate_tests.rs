@@ -431,13 +431,11 @@ async fn assert_approvals_serialise(
     let c = ctx();
 
     let started = tokio::time::Instant::now();
-    let results = futures::future::join_all(
-        ["gated_one", "gated_two", "free"].map(|name| {
-            let mut tool_call = call(name);
-            tool_call.id = format!("call-{name}");
-            stack.run_wrapped_tool(&c, &(), tool_call, &base)
-        }),
-    )
+    let results = futures::future::join_all(["gated_one", "gated_two", "free"].map(|name| {
+        let mut tool_call = call(name);
+        tool_call.id = format!("call-{name}");
+        stack.run_wrapped_tool(&c, &(), tool_call, &base)
+    }))
     .await;
     let elapsed = started.elapsed();
 
