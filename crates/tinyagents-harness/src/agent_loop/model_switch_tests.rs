@@ -740,10 +740,10 @@ async fn an_applied_switch_reports_one_accepted_outcome_across_calls() {
         .await
         .expect("run succeeds");
 
-    // Two model calls on the sticky switch, one command outcome: the replaced
-    // `nope-first` was never applied, so only `b`'s application is reported.
+    // Two model calls on the sticky switch. The replaced `nope-first` is
+    // explicitly rejected, then `b` is reported when it is applied.
     assert_eq!(model_started(&recorder), vec!["b", "b"]);
-    assert_eq!(switch_outcomes(&recorder), vec![true]);
+    assert_eq!(switch_outcomes(&recorder), vec![false, true]);
 }
 
 #[tokio::test]

@@ -338,12 +338,18 @@ impl SteeringHandle {
     }
 
     /// Records the model a `SwitchModel` asked for, replacing any earlier one.
-    fn set_model_override(&self, model: String) {
+    fn set_model_override(&self, model: String) -> bool {
         let mut slot = self.lock_model_override();
+        let superseded = slot.is_some()
+            && !self
+                .local
+                .model_override_announced
+                .load(std::sync::atomic::Ordering::SeqCst);
         *slot = Some(model);
         self.local
             .model_override_announced
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        superseded
     }
 
     /// Marks the current model override as reported, returning `true` only the
@@ -516,7 +522,13 @@ pub fn apply_pending_steering<Ctx>(
                     model = %model,
                     "[steering] model switch queued for the next model call"
                 );
-                handle.set_model_override(model);
+                let superseded = handle.set_model_override(model);
+                if superseded {
+                    ctx.emit(AgentEvent::Steered {
+                        command_kind: kind.as_str().to_string(),
+                        accepted: false,
+                    });
+                }
                 // Queuing is not an outcome: the agent loop reports the one
                 // `Steered` event for this command when it applies or rejects
                 // the switch at the model-call boundary.

@@ -818,16 +818,25 @@ fn switch_model_is_recorded_sticky_and_latest_wins() {
     // Later checkpoints with an empty queue keep it.
     apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
     assert_eq!(override_of(&ctx), Some("first".to_string()));
-    // A newer switch replaces it.
+    // A newer switch replaces it. Because the first switch never reached the
+    // model-call boundary, it receives an explicit rejected outcome.
     handle.send(switch("second"));
     apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
     assert_eq!(override_of(&ctx), Some("second".to_string()));
-    // Queuing is not an outcome: the agent loop reports the switch once, when
-    // it is applied or rejected at the model-call boundary.
-    assert!(!recorder.events().iter().any(|event| matches!(
-        event,
-        AgentEvent::Steered { command_kind, .. } if command_kind == "switch_model"
-    )));
+    assert_eq!(
+        recorder
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Steered {
+                    command_kind,
+                    accepted,
+                } if command_kind == "switch_model" => Some(*accepted),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![false]
+    );
 }
 
 #[test]
