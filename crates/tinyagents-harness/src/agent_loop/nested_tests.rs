@@ -1374,8 +1374,8 @@ async fn fan_out_to(target: Arc<Overlap>, count: usize) -> Vec<Outcome> {
     }));
     harness.register_tool(target);
     run(&harness, &EventRecorder::new()).await.unwrap();
-    let outcomes = outcomes.lock().unwrap().clone();
-    outcomes
+    let collected = outcomes.lock().unwrap().clone();
+    collected
 }
 
 #[tokio::test]
