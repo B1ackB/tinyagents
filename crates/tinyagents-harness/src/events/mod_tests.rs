@@ -588,3 +588,29 @@ fn emit_delivers_normally_once_a_listener_subscribes_after_a_quiet_run() {
     assert_eq!(recorder.events().len(), 1);
     assert_eq!(recorder.events()[0].offset, 1);
 }
+
+#[test]
+fn tool_events_serialise_parent_call_id_only_when_nested() {
+    use crate::ids::CallId;
+
+    let model_issued = AgentEvent::ToolStarted {
+        call_id: CallId::new("p1"),
+        tool_name: "caller".to_string(),
+        input: None,
+        parent_call_id: None,
+    };
+    let nested = AgentEvent::ToolStarted {
+        call_id: CallId::new("p1/1"),
+        tool_name: "leaf".to_string(),
+        input: None,
+        parent_call_id: Some(CallId::new("p1")),
+    };
+
+    let plain = serde_json::to_value(&model_issued).unwrap();
+    assert!(plain.to_string().find("parent_call_id").is_none(), "{plain}");
+    let tagged = serde_json::to_value(&nested).unwrap();
+    assert!(tagged.to_string().contains(r#""parent_call_id":"p1""#), "{tagged}");
+    assert_eq!(serde_json::from_value::<AgentEvent>(tagged).unwrap(), nested);
+    // Events journalled before the field existed still deserialise.
+    assert_eq!(serde_json::from_value::<AgentEvent>(plain).unwrap(), model_issued);
+}
