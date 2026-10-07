@@ -1944,6 +1944,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tinyinference-core",
  "tinytools-agent",
