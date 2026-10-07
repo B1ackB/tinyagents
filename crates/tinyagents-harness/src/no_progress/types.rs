@@ -345,8 +345,8 @@ pub(super) struct ChurnState {
 }
 
 /// Detects one tool called with many argument variants that all return the
-/// same result. Tracking is bounded ([`MAX_CHURN_GROUPS`],
-/// [`MAX_CHURN_VARIANTS_PER_GROUP`]) so a run supplying unique values cannot
+/// same result. Tracking is bounded (`MAX_CHURN_GROUPS`,
+/// `MAX_CHURN_VARIANTS_PER_GROUP`) so a run supplying unique values cannot
 /// grow it without limit; past the bound new groups are simply not tracked.
 pub struct ArgumentChurnDetector {
     pub(super) variants: u32,
