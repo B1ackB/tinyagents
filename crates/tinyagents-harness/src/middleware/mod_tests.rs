@@ -1578,7 +1578,7 @@ struct CountingModelBase {
 impl ModelBaseCall<(), ()> for CountingModelBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext,
+        _ctx: &'a RunContext,
         _state: &'a (),
         _request: ModelRequest,
     ) -> BoxModelFuture<'a> {
@@ -1782,7 +1782,7 @@ struct CountingToolBase {
 impl ToolBaseCall<(), ()> for CountingToolBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext,
+        _ctx: &'a RunContext,
         _state: &'a (),
         _call: ToolCall,
     ) -> BoxToolFuture<'a> {
@@ -1901,7 +1901,7 @@ async fn wrap_tool_short_circuits_without_calling_base() {
 
     let mut c = ctx();
     let result = stack
-        .run_wrapped_tool(&mut c, &(), tool_call(), &base)
+        .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
         .unwrap()
         .into_result();
@@ -1923,7 +1923,7 @@ async fn wrap_tool_calls_next_then_mutates_result() {
 
     let mut c = ctx();
     let result = stack
-        .run_wrapped_tool(&mut c, &(), tool_call(), &base)
+        .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
         .unwrap()
         .into_result();
@@ -1945,7 +1945,7 @@ async fn wrap_tool_retries_next_until_success() {
 
     let mut c = ctx();
     let result = stack
-        .run_wrapped_tool(&mut c, &(), tool_call(), &base)
+        .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
         .unwrap()
         .into_result();
@@ -1975,7 +1975,7 @@ struct OverflowThenSucceedBase {
 impl ModelBaseCall<(), ()> for OverflowThenSucceedBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext,
+        _ctx: &'a RunContext,
         _state: &'a (),
         _request: ModelRequest,
     ) -> BoxModelFuture<'a> {
@@ -2124,7 +2124,7 @@ async fn context_compression_wrap_model_ignores_unrelated_errors() {
     impl ModelBaseCall<(), ()> for AlwaysFailsBase {
         fn call<'a>(
             &'a self,
-            _ctx: &'a mut RunContext,
+            _ctx: &'a RunContext,
             _state: &'a (),
             _request: ModelRequest,
         ) -> BoxModelFuture<'a> {

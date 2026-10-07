@@ -36,7 +36,7 @@ impl ModelBase {
 impl ModelBaseCall<(), ()> for ModelBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext<()>,
+        _ctx: &'a RunContext<()>,
         _state: &'a (),
         request: ModelRequest,
     ) -> Pin<Box<dyn Future<Output = Result<ModelResponse>> + Send + 'a>> {
@@ -59,7 +59,7 @@ struct ToolBase;
 impl ToolBaseCall<(), ()> for ToolBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext<()>,
+        _ctx: &'a RunContext<()>,
         _state: &'a (),
         call: ToolCall,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
@@ -198,7 +198,7 @@ async fn middleware_stack_runs_lifecycle_hooks_and_builtin_guards() {
     let mut tool_result = ToolResult::success("secret tool result");
     stack
         .run_after_tool(
-            &mut ctx,
+            &ctx,
             &(),
             &ToolInvocationIdentity::new("lookup-call", "lookup"),
             &mut tool_result,
@@ -295,7 +295,7 @@ async fn builtin_middleware_validates_structured_output_human_approval_and_wraps
     let base = ModelBase::new(1);
     let outcome = fallback_stack
         .run_wrapped_model(
-            &mut ctx,
+            &ctx,
             &(),
             ModelRequest::new(vec![Message::user("hi")]).with_model("large"),
             &base,
@@ -317,7 +317,7 @@ async fn builtin_middleware_validates_structured_output_human_approval_and_wraps
     replace_stack.push_model_middleware(Arc::new(ModelReplace));
     let replaced = replace_stack
         .run_wrapped_model(
-            &mut ctx,
+            &ctx,
             &(),
             ModelRequest::new(vec![Message::user("hi")]),
             &ModelBase::new(0),
@@ -332,7 +332,7 @@ async fn builtin_middleware_validates_structured_output_human_approval_and_wraps
     assert_eq!(tool_stack.tool_middleware_len(), 1);
     let tool_result = tool_stack
         .run_wrapped_tool(
-            &mut ctx,
+            &ctx,
             &(),
             ToolCall::new("tool-1", "lookup", json!({})),
             &ToolBase,

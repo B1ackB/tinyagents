@@ -38,7 +38,7 @@ struct Base {
 impl ToolBaseCall<(), Host> for Base {
     fn call<'a>(
         &'a self,
-        _ctx: &'a mut RunContext<Host>,
+        _ctx: &'a RunContext<Host>,
         _state: &'a (),
         _call: ToolCall,
     ) -> BoxToolFuture<'a> {
@@ -106,9 +106,9 @@ async fn run(mw: Arc<dyn ToolMiddleware<(), Host>>, name: &str, fail: bool) -> (
     };
     let mut stack: MiddlewareStack<(), Host> = MiddlewareStack::new();
     stack.push_tool_middleware(mw);
-    let mut c = ctx();
+    let c = ctx();
     let result = stack
-        .run_wrapped_tool(&mut c, &(), call(name), &base)
+        .run_wrapped_tool(&c, &(), call(name), &base)
         .await
         .unwrap()
         .into_result();
@@ -135,7 +135,7 @@ fn decision_helpers_expose_the_blocking_reason() {
 #[tokio::test]
 async fn gate_check_passes_the_host_context_and_waives_only_approval() {
     let gate = ToolPolicyGate::new(Arc::new(NamePolicy));
-    let mut c = ctx();
+    let c = ctx();
     assert_eq!(gate.policy_name(), "name_policy");
     assert_eq!(
         gate.check(&c, &call("read"), false).await,
