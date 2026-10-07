@@ -90,6 +90,7 @@ impl SubAgentJobRegistry {
                 incomplete_kind: None,
                 artifacts: Vec::new(),
                 schema_error: None,
+                artifact_error: None,
             },
             owner,
             steering: steering.clone(),
@@ -173,6 +174,41 @@ impl SubAgentJobRegistry {
         entry.job.output = Some(applied.text);
         entry.job.artifacts.extend(applied.artifact);
         entry.job.schema_error = applied.schema_error;
+        entry.job.artifact_error = applied.artifact_error;
+    }
+
+    /// Points the job link at the attempt that is now running.
+    pub(crate) fn set_attempt_run_id(&self, id: &SubAgentJobId, run_id: &str) {
+        if let Some(entry) = self.write().get_mut(id)
+            && !entry.job.status.is_terminal()
+        {
+            entry.job.subagent_run_id = Some(run_id.to_owned());
+        }
+    }
+
+    /// Settles a job whose run finished but overshot a budget: it keeps the
+    /// (policy-applied) output and ends `Incomplete(BudgetExceeded)`.
+    pub(crate) fn mark_budget_overrun(
+        &self,
+        id: &SubAgentJobId,
+        applied: AppliedResult,
+        reason: String,
+    ) {
+        let mut entries = self.write();
+        let Some(entry) = entries.get_mut(id) else {
+            return;
+        };
+        if entry.job.status.is_terminal() {
+            return;
+        }
+        entry.cancellation = None;
+        entry.job.status = SubAgentJobStatus::Incomplete;
+        entry.job.incomplete_kind = Some(IncompleteKind::BudgetExceeded);
+        entry.job.error = Some(reason);
+        entry.job.output = Some(applied.text);
+        entry.job.artifacts.extend(applied.artifact);
+        entry.job.schema_error = applied.schema_error;
+        entry.job.artifact_error = applied.artifact_error;
     }
 
     /// Marks a job `Failed` because its child task panicked or was aborted

@@ -492,9 +492,23 @@ pub struct SubagentOutcome {
     /// unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_error: Option<String>,
+    /// Why an oversized output could not be stored as an artifact
+    /// ([`ResultOverflow::Artifact`](super::ResultOverflow)): no store was
+    /// configured, or the store failed. The output was truncated instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_error: Option<String>,
 }
 
 impl SubagentOutcome {
+    /// A completed result with `output` and no history, usage or artifacts.
+    pub fn completed(task_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            status: SubagentStatus::Completed,
+            ..Self::cancelled(task_id)
+        }
+    }
+
     /// Creates the truthful empty result used when cancellation prevents a
     /// planner or executor from starting.
     pub fn cancelled(task_id: impl Into<String>) -> Self {
@@ -506,6 +520,7 @@ impl SubagentOutcome {
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
             schema_error: None,
+            artifact_error: None,
         }
     }
 

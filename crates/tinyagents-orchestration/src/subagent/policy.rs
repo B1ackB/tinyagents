@@ -143,6 +143,7 @@ pub(crate) async fn apply_outcome_policies(
             .await;
         outcome.output = applied.text;
         outcome.schema_error = applied.schema_error;
+        outcome.artifact_error = applied.artifact_error;
         outcome.artifacts.extend(applied.artifact);
     }
     outcome

@@ -9,7 +9,7 @@
 //!
 //! All public items are re-exported through [`super`] so callers import from
 //! `tinyagents_orchestration::subagent` directly. Implementations and tests live in the
-//! sibling `mod.rs` and `test.rs`.
+//! sibling `mod.rs` and its `*_tests.rs` files.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -272,6 +272,9 @@ pub struct SubAgentJob {
     /// Why the output failed the result policy's schema, if one was set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_error: Option<String>,
+    /// Why an oversized output could not be stored as an artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_error: Option<String>,
 }
 
 /// Explicit link from a spawned job back to the parent call and child run.

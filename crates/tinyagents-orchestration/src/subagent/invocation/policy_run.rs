@@ -15,10 +15,15 @@ use crate::subagent::{ResultPolicy, SubAgentJobId, SubAgentJobRegistry, SubAgent
 
 const LOG_PREFIX: &str = "[subagent-tool-policy]";
 
-/// One pre-minted child attempt: its context and whether it ran any tool.
+/// One child attempt: its context, id, and whether it ran any tool.
+///
+/// Attempts after the first are given ids derived from the first child's
+/// (`{first}-a{n}`), so enabling retries consumes no extra child ordinals from
+/// the parent: sibling child ids are identical whether or not a retry happens.
 pub(crate) struct Attempt<Ctx> {
     pub(crate) child: RunContext<Ctx>,
     pub(crate) tools_ran: Arc<AtomicBool>,
+    pub(crate) run_id: String,
 }
 
 /// Forwards every event to the parent sink while noting tool executions, so a
@@ -42,8 +47,9 @@ impl<Ctx> Attempt<Ctx> {
     /// [`ToolWatch`] (only needed when a retry is possible).
     pub(crate) fn new(child: RunContext<Ctx>, watch: bool) -> Self {
         let tools_ran = Arc::new(AtomicBool::new(false));
+        let run_id = child.run_id().as_str().to_owned();
         let child = if watch {
-            let sink = EventSink::with_stream_id(child.run_id().as_str());
+            let sink = EventSink::with_stream_id(&run_id);
             sink.subscribe(Arc::new(ToolWatch {
                 parent: child.events.clone(),
                 tools_ran: tools_ran.clone(),
@@ -52,13 +58,31 @@ impl<Ctx> Attempt<Ctx> {
         } else {
             child
         };
-        Self { child, tools_ran }
+        Self {
+            child,
+            tools_ran,
+            run_id,
+        }
     }
+}
+
+/// How the attempts ended.
+pub(crate) enum Finished {
+    /// A run within budget.
+    Run(AgentRun),
+    /// The run completed but overshot a token/call budget: its work is kept.
+    OverBudget { run: AgentRun, error: TinyAgentsError },
+    /// No attempt produced a run.
+    Failed(TinyAgentsError),
 }
 
 /// Runs `attempts` in order under `policy` and returns the first result that is
 /// not a retryable failure. A timeout cancels the child (via `cancel`) and is
-/// never retried; token/call budgets are checked on success.
+/// never retried; budgets are checked on success. Each attempt records its run
+/// id on the job when it starts, so the job link names the current attempt.
+///
+/// Subagent retry compounds with the harness's own per-call model retry: each
+/// subagent attempt may itself retry model calls first.
 pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync + 'static>(
     subagent: &SubAgent<State, Ctx>,
     policy: &SubAgentPolicy,
@@ -67,9 +91,14 @@ pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync 
     input: String,
     streaming: bool,
     cancel: &tinyagents_harness::cancel::CancellationToken,
-) -> Result<AgentRun> {
+    jobs: &SubAgentJobRegistry,
+    job_id: &SubAgentJobId,
+) -> Finished {
     let last = attempts.len().saturating_sub(1);
     for (index, attempt) in attempts.into_iter().enumerate() {
+        if index > 0 {
+            jobs.set_attempt_run_id(job_id, &attempt.run_id);
+        }
         let tools_ran = attempt.tools_ran.clone();
         let run = subagent.run_hosted_child(state, attempt.child, input.clone(), streaming);
         let result = match policy.timeout {
@@ -78,7 +107,7 @@ pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync 
                 Err(_) => {
                     cancel.cancel();
                     tracing::debug!("{LOG_PREFIX} timeout agent={}", subagent.name());
-                    return Err(TinyAgentsError::Timeout(format!(
+                    return Finished::Failed(TinyAgentsError::Timeout(format!(
                         "sub-agent `{}` timed out after {limit:?}",
                         subagent.name()
                     )));
@@ -94,8 +123,10 @@ pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync 
                     tool_calls: run.tool_calls,
                     ..Default::default()
                 };
-                policy.budget.check(&measured, subagent.name())?;
-                return Ok(run);
+                return match policy.budget.check(&measured, subagent.name()) {
+                    Ok(()) => Finished::Run(run),
+                    Err(error) => Finished::OverBudget { run, error },
+                };
             }
             Err(error)
                 if index < last
@@ -107,38 +138,59 @@ pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync 
                     subagent.name(),
                     index + 1
                 );
-                policy.retry.sleep_backoff(index + 1).await;
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Finished::Failed(TinyAgentsError::Cancelled),
+                    _ = policy.retry.sleep_backoff(index + 1) => {}
+                }
             }
-            Err(error) => return Err(error),
+            Err(error) => return Finished::Failed(error),
         }
     }
-    Err(TinyAgentsError::Validation(
+    Finished::Failed(TinyAgentsError::Validation(
         "sub-agent had no attempt to run".into(),
     ))
 }
 
-/// Records `result` on the job, applying the result policy to a success first.
+/// Records the finished attempts on the job, applying the result policy to any
+/// output that was produced (including an over-budget one).
 pub(crate) async fn settle(
     jobs: &SubAgentJobRegistry,
     id: &SubAgentJobId,
-    result: Result<AgentRun>,
+    finished: Finished,
     result_policy: &ResultPolicy,
 ) {
-    let applied = match (&result, result_policy.is_active()) {
-        (Ok(run), true) => Some(
-            result_policy
+    match finished {
+        Finished::Run(run) => {
+            let applied = if result_policy.is_active() {
+                Some(
+                    result_policy
+                        .apply(
+                            id.as_str(),
+                            &run.text().unwrap_or_default(),
+                            run.structured.as_ref(),
+                        )
+                        .await,
+                )
+            } else {
+                None
+            };
+            jobs.mark_result(id, Ok(run));
+            if let Some(applied) = applied {
+                jobs.apply_result(id, applied);
+            }
+        }
+        Finished::OverBudget { run, error } => {
+            let applied = result_policy
                 .apply(
                     id.as_str(),
                     &run.text().unwrap_or_default(),
                     run.structured.as_ref(),
                 )
-                .await,
-        ),
-        _ => None,
-    };
-    jobs.mark_result(id, result);
-    if let Some(applied) = applied {
-        jobs.apply_result(id, applied);
+                .await;
+            jobs.mark_budget_overrun(id, applied, error.to_string());
+        }
+        Finished::Failed(error) => jobs.mark_result(id, Err(error)),
     }
 }
 
@@ -146,12 +198,15 @@ pub(crate) async fn settle(
 pub(crate) fn delegation_tools_exposed<State: Send + Sync + 'static, Ctx: Send + Sync + 'static>(
     subagent: &SubAgent<State, Ctx>,
     host_delegation_tools: &[String],
+    own_tool_name: &str,
 ) -> Vec<String> {
     subagent
         .harness()
         .tools()
         .names()
         .into_iter()
-        .filter(|name| crate::subagent::is_delegation_tool(name, host_delegation_tools))
+        .filter(|name| {
+            name == own_tool_name || crate::subagent::is_delegation_tool(name, host_delegation_tools)
+        })
         .collect()
 }
