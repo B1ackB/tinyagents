@@ -16,6 +16,12 @@ fn docs(storage: &MemoryStorage, scope: &str) -> Arc<dyn DocumentStore> {
     )
 }
 
+fn sample(thread: &str, id: &str, _parent: Option<&str>, step: i32) -> Checkpoint<i32> {
+    Checkpoint::new(step, Vec::new())
+        .with_thread_id(thread.to_string())
+        .with_checkpoint_id(id.to_string())
+}
+
 fn checkpointer() -> DriverCheckpointer<i32> {
     DriverCheckpointer::new(docs(&MemoryStorage::new(), "local"))
 }
@@ -46,7 +52,7 @@ async fn scopes_and_prefixes_keep_threads_apart() {
     let alice = DriverCheckpointer::<i32>::new(docs(&storage, "alice"));
     let bob = DriverCheckpointer::<i32>::new(docs(&storage, "bob"));
     let other = DriverCheckpointer::<i32>::with_prefix(docs(&storage, "alice"), "other");
-    let checkpoint = crate::testkit::conformance::contract_checkpoint("t", "c1", None, 1);
+    let checkpoint = sample("t", "c1", None, 1);
     alice.put(checkpoint).await.unwrap();
     assert!(bob.get("t", None).await.unwrap().is_none());
     assert!(other.get("t", None).await.unwrap().is_none());
@@ -99,7 +105,7 @@ async fn a_corrupt_record_is_a_checkpoint_error() {
     let storage = MemoryStorage::new();
     let docs = docs(&storage, "local");
     let cp = DriverCheckpointer::<i32>::new(Arc::clone(&docs));
-    cp.put(crate::testkit::conformance::contract_checkpoint("t", "c1", None, 1))
+    cp.put(sample("t", "c1", None, 1))
         .await
         .unwrap();
     let stored = cp.thread_docs("t").await.unwrap().remove(0);
