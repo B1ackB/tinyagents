@@ -462,7 +462,7 @@ impl ContextCompressionMiddleware {
     /// After a `before_model` compaction on the mixed route, cuts every
     /// oversized tool result again: the splice rebuilt the request from the
     /// untruncated transcript and may keep the newest oversized result.
-    pub(super) fn cut_after_compaction(&self, mixed: bool, messages: &mut Vec<Message>) {
+    pub(super) fn cut_after_compaction(&self, mixed: bool, messages: &mut [Message]) {
         if let Some(cap) = self.tool_result_truncation.filter(|_| mixed) {
             truncate_tool_results(messages, cap);
         }
