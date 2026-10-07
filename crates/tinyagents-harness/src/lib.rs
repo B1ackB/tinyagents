@@ -128,7 +128,8 @@ pub use model_registry::{ModelRegistry, ModelSelection, ResolvedModelBinding};
 pub use no_progress::{
     ClassifiedFailure, ClassifiedFailureTracker, DEFAULT_IDENTICAL_HALT_THRESHOLD,
     DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD, NoProgress, NoProgressTracker,
-    StreamTextStallDetector, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
+    OutcomeFingerprinter, StreamTextStallDetector, SuccessfulRepeat, SuccessfulRepeatTracker,
+    ToolAttempt, VolatileSpanNormalizer,
 };
 pub use observability::replay::{
     RunEventsPage, list_active_runs, read_run_events_page, read_run_status,
@@ -148,6 +149,7 @@ pub use run_queue::{
     QueuedMessage, RunQueue, RunQueueHandle, SteeringForwarderGuard,
 };
 pub use steering::{
-    SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringOutcome, SteeringPolicy,
+    RecentRequestIds, RequestIdError, SteeringCommand, SteeringCommandKind, SteeringHandle,
+    SteeringOutcome, SteeringPolicy,
 };
 pub use tool::ToolRegistry;

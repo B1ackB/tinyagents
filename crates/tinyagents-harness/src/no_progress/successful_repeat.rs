@@ -14,7 +14,9 @@
 //! [`SuccessfulRepeatTracker::record_call_outcome`].
 
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
+use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
 use super::types::{Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
 
 /// Consecutive identical assistant-output batches required to halt.
@@ -63,10 +65,21 @@ impl SuccessfulRepeatTracker {
         Self {
             output_threshold: output_threshold.max(1),
             call_threshold: call_threshold.max(1),
+            fingerprinter: Arc::new(VolatileSpanNormalizer),
             output: std::sync::Mutex::new(Streak::default()),
             calls: std::sync::Mutex::new(Streak::default()),
             recurrences: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Replaces the fingerprinter that reduces a tool result to the identity
+    /// [`record_call_outcome`](Self::record_call_outcome) keys on. The default
+    /// is [`VolatileSpanNormalizer`], which ignores timestamps, durations and
+    /// request ids; pass a different one to tighten or relax what counts as
+    /// "the same result".
+    pub fn with_fingerprinter(mut self, fingerprinter: Arc<dyn OutcomeFingerprinter>) -> Self {
+        self.fingerprinter = fingerprinter;
+        self
     }
 
     /// Stages the canonical visible-output plus tool-call signature produced
@@ -142,8 +155,22 @@ impl SuccessfulRepeatTracker {
         call_signature: &str,
         outcome_signature: &str,
     ) -> SuccessfulRepeat {
+        let outcome_identity = self.fingerprinter.fingerprint(outcome_signature);
+        self.record_call_identity(call_signature, &outcome_identity)
+    }
+
+    /// [`record_call_outcome`](Self::record_call_outcome) for a caller that has
+    /// already reduced the result to its identity with an
+    /// [`OutcomeFingerprinter`]. Fingerprinting scans the whole result, so a
+    /// host that shares this tracker behind a lock should fingerprint first
+    /// and call this while holding the lock.
+    pub fn record_call_identity(
+        &self,
+        call_signature: &str,
+        outcome_identity: &str,
+    ) -> SuccessfulRepeat {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (call_signature, outcome_signature).hash(&mut hasher);
+        (call_signature, outcome_identity).hash(&mut hasher);
         let mut recurrences = self.recurrences.lock().unwrap();
         let count = recurrences.entry(hasher.finish()).or_insert(0);
         *count += 1;

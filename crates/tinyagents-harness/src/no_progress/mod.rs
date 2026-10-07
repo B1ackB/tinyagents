@@ -61,11 +61,13 @@
 //! `as_str()` gives a stable telemetry label.
 
 mod classified;
+mod fingerprint;
 mod stream_text;
 mod successful_repeat;
 mod types;
 
 pub use classified::{ClassifiedFailure, ClassifiedFailureTracker};
+pub use fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer, normalize_volatile};
 pub use stream_text::StreamTextStallDetector;
 pub use successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
 use types::LadderState;
@@ -73,7 +75,7 @@ pub use types::{
     NoProgress, NoProgressTracker, SuccessfulRepeat, SuccessfulRepeatTracker, ToolAttempt,
 };
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Consecutive **identical** (tool + args + error) failures tolerated before the
 /// ladder halts the run — a call re-issued unchanged that keeps failing can
@@ -172,8 +174,18 @@ impl NoProgressTracker {
     pub fn new(identical_halt_threshold: usize) -> Self {
         Self {
             identical_halt_threshold: identical_halt_threshold.max(IDENTICAL_NUDGE_THRESHOLD + 1),
+            fingerprinter: Arc::new(VolatileSpanNormalizer),
             state: Mutex::new(LadderState::default()),
         }
+    }
+
+    /// Replaces the fingerprinter that reduces a failure message to the
+    /// identity the identical-repeat rung compares. The default is
+    /// [`VolatileSpanNormalizer`], so the same failure carrying a fresh
+    /// timestamp, duration or attempt counter still counts as identical.
+    pub fn with_fingerprinter(mut self, fingerprinter: Arc<dyn OutcomeFingerprinter>) -> Self {
+        self.fingerprinter = fingerprinter;
+        self
     }
 
     /// Clear every counter. Called after a halt so a resumed run does not
@@ -187,6 +199,8 @@ impl NoProgressTracker {
     /// the ladder's verdict. On a [`NoProgress::Halt`] the internal state is
     /// reset for the caller.
     pub fn record(&self, step: usize, attempt: &ToolAttempt) -> NoProgress {
+        // Fingerprint before taking the lock: it scans the whole line.
+        let err_identity = attempt.error.map(|err| self.fingerprinter.fingerprint(err));
         let mut state = self.state.lock().unwrap();
 
         let Some(err) = attempt.error else {
@@ -195,12 +209,13 @@ impl NoProgressTracker {
             return NoProgress::Continue;
         };
 
-        // Signature: tool name + argument fingerprint + first error line (the
-        // deterministic parts; a huge payload tail must not dominate the
-        // identical-repeat comparison).
-        let err_line = err.lines().next().unwrap_or(err);
+        // Signature: tool name + argument fingerprint + the fingerprinted error
+        // (the deterministic parts; volatile spans such as timestamps must not
+        // make a repeated failure look novel, including when stable context is
+        // on a later line. The complete multiline error is fingerprinted.)
+        let err_identity = err_identity.unwrap_or_default();
         let sig = format!(
-            "{}\u{1f}{}\u{1f}{err_line}",
+            "{}\u{1f}{}\u{1f}{err_identity}",
             attempt.tool, attempt.arg_fingerprint
         );
 

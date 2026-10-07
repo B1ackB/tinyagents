@@ -32,6 +32,44 @@ hook" section in `mod.rs` for that contract.
   state for one turn. `new(identical_halt_threshold)` builds it,
   `record(step, &ToolAttempt) -> NoProgress` feeds one outcome and returns the
   verdict, `reset()` clears all counters (called internally after a halt).
+- [`OutcomeFingerprinter`] — pluggable reduction of a tool outcome to the
+  identity the trackers compare. The default, [`VolatileSpanNormalizer`],
+  blanks timestamps, clock times, 10/13-digit epochs that are the value of a
+  time-like key (`ts=`, `"timestamp":`, `updated_at:`; a bare 10-digit number
+  is a byte count or an id as often as a clock), measurement durations (`took
+  123ms`, `duration=1.2s`), `attempt N` / `retry N of M`, diagnostic `pid N`
+  values (while preserving PIDs in process-creation results), and UUIDs in
+  request/trace-style fields, and leaves every other
+  number alone, including long hex ids such as commit SHAs and checksums, which
+  are usually the result itself. An outcome that is *only*
+  volatile (a bare commit id or checksum: fewer than four alphanumeric
+  characters left outside the spans) is compared verbatim. The normalizer is
+  deliberately identity-preserving for explicit state timestamps in
+  `event_at`, `eventat`, `created_at`, `updated_at`, and `timestamp` fields;
+  this includes quoted JSON forms and whitespace before the colon.
+  text-based and does not parse JSON, so a volatile field is only blanked when
+  its value matches one of those patterns (a counter or opaque message id
+  under an arbitrary key is not). `NoProgressTracker` uses it on the first
+  error line (identical-failure rung) and `SuccessfulRepeatTracker` on the
+  result; both take a replacement through `with_fingerprinter`, and a host
+  that wants the previous byte-for-byte behavior passes a verbatim
+  fingerprinter. `NoProgressTracker` fingerprints the complete error message,
+  including multiline tails, so changing diagnostic detail on a later line is
+  treated as a different failure. For example:
+
+  ```rust
+  struct VerbatimFingerprinter;
+
+  impl OutcomeFingerprinter for VerbatimFingerprinter {
+      fn fingerprint(&self, outcome: &str) -> String {
+          outcome.to_string()
+      }
+  }
+
+  let tracker = NoProgressTracker::new(3).with_fingerprinter(
+      std::sync::Arc::new(VerbatimFingerprinter),
+  );
+  ```
 - [`ClassifiedFailureTracker`] — an additive ledger for equivalent failures
   keyed by class, operation, and resource or permission scope. `record` accepts
   a class-specific recovery budget; `clear` removes one group only after an

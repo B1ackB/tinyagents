@@ -128,6 +128,15 @@ impl InMemoryTranscriptHistory {
     pub(crate) fn unseal(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).sealed = false;
     }
+
+    /// Replaces discovery metadata until the first write, when an existence
+    /// probe created the in-memory stand-in before the real session was bound.
+    pub(crate) fn set_seed_if_unwritten(&self, seed_meta: TranscriptMeta) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.written {
+            state.meta = seed_meta;
+        }
+    }
 }
 
 impl TranscriptRead for InMemoryTranscriptHistory {

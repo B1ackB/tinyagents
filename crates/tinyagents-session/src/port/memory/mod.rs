@@ -260,6 +260,7 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
     ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
         let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, _, history)) = stems.iter().find(|(known, _, _)| known == stem) {
+            history.set_seed_if_unwritten(seed);
             return Ok(history.clone());
         }
         // Session stems reserve `__` for the parent/child separator. Check the
@@ -326,6 +327,8 @@ fn newest_first(a: &TurnState, b: &TurnState) -> Ordering {
         .then_with(|| compare_rfc3339(&b.updated_at, &a.updated_at))
 }
 
+/// Completed-turn retention follows completion time, as the durable store
+/// does. Listing the latest live turn still follows its start time.
 fn completed_newest_first(a: &TurnState, b: &TurnState) -> Ordering {
     compare_rfc3339(&b.updated_at, &a.updated_at)
         .then_with(|| compare_rfc3339(&b.started_at, &a.started_at))

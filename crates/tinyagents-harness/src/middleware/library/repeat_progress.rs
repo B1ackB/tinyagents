@@ -11,7 +11,10 @@ use async_trait::async_trait;
 use crate::context::RunContext;
 use crate::error::Result as TaResult;
 use crate::middleware::{Middleware, ToolInvocationIdentity};
-use crate::no_progress::{SuccessfulRepeat, SuccessfulRepeatTracker, fingerprint_arguments};
+use crate::no_progress::{
+    OutcomeFingerprinter, SuccessfulRepeat, SuccessfulRepeatTracker, VolatileSpanNormalizer,
+    fingerprint_arguments,
+};
 use crate::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
@@ -143,6 +146,8 @@ pub struct RepeatProgressMiddleware {
     halt_summary: HaltSummarySlot,
     exempt: RepeatExemption,
     state: Arc<RepeatState>,
+    /// Reduces a tool result to the identity the recurrence ledger keys on.
+    fingerprinter: Arc<dyn OutcomeFingerprinter>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
     pending: Mutex<HashMap<u64, PendingCallBatch>>,
 }
@@ -161,8 +166,18 @@ impl RepeatProgressMiddleware {
             halt_summary,
             exempt,
             state: Arc::new(RepeatState::new(DEFAULT_CLEARED_PLACEHOLDER)),
+            fingerprinter: Arc::new(VolatileSpanNormalizer),
             pending: Mutex::default(),
         }
+    }
+
+    /// Replaces the fingerprinter the recurrence ledger uses to compare tool
+    /// results. The default ignores volatile spans (timestamps, durations,
+    /// request ids), so a result that differs only by those still counts as
+    /// the same result.
+    pub fn with_fingerprinter(mut self, fingerprinter: Arc<dyn OutcomeFingerprinter>) -> Self {
+        self.fingerprinter = fingerprinter;
+        self
     }
 
     /// Override the placeholder body treated as an evicted tool result. Must be
@@ -340,6 +355,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
     ) -> TaResult<()> {
         let tool_name = invocation.tool_name();
         let call_id = invocation.call_id().to_string();
+        // Fingerprint outside the mutexes below: it scans the whole result.
+        let identity = (!result.is_error).then(|| self.fingerprinter.fingerprint(&result.output()));
         // Fold this result into the pending batch; the call guard only acts once
         // the batch is complete so it sees whole-batch success.
         let (already_halted, recurrence, completed) = {
@@ -362,7 +379,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     recurrence = trackers
                         .entry(ctx.instance_id())
                         .or_default()
-                        .record_call_outcome(&sig, &result.output());
+                        .record_call_identity(&sig, identity.as_deref().unwrap_or_default());
                 }
                 if let Ok(mut recorded) = self.state.recorded.lock() {
                     recorded

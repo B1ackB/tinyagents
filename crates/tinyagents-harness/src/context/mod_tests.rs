@@ -319,6 +319,21 @@ fn child_inherits_recursive_capabilities_but_not_mutable_run_state() {
 }
 
 #[test]
+fn child_cancellation_is_independent_but_parent_cancel_cascades() {
+    let parent: RunContext<()> = RunContext::new(RunConfig::new("root"), ());
+    let first = parent.child(RunConfig::new("first"), ()).unwrap();
+    let second = parent.child(RunConfig::new("second"), ()).unwrap();
+
+    first.cancellation.cancel();
+    assert!(first.cancellation.is_cancelled());
+    assert!(!parent.cancellation.is_cancelled(), "no upward propagation");
+    assert!(!second.cancellation.is_cancelled(), "siblings unaffected");
+
+    parent.cancellation.cancel();
+    assert!(second.cancellation.is_cancelled(), "parent cancel cascades");
+}
+
+#[test]
 fn sibling_children_are_isolated_while_sharing_tree_signals() {
     let events = EventSink::new();
     let parent: RunContext<()> = RunContext::new(RunConfig::new("root"), ()).with_events(events);

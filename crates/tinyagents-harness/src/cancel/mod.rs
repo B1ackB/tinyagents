@@ -53,8 +53,8 @@ mod types;
 
 pub use types::*;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
@@ -67,8 +67,60 @@ impl CancellationToken {
             state: Arc::new(CancelState {
                 cancelled: AtomicBool::new(false),
                 notify: Notify::new(),
+                children: Mutex::new(Vec::new()),
+                registration_lock: Arc::new(Mutex::new(())),
+                parent: None,
             }),
         }
+    }
+
+    /// Creates a child token linked to this one.
+    ///
+    /// Cancelling `self` (or any ancestor) cancels the child, but cancelling
+    /// the child leaves `self` and the child's siblings untouched. A child of
+    /// an already-cancelled token starts cancelled. This is what lets a run
+    /// tree cancel one sub-run independently while a parent cancel still
+    /// unwinds every descendant.
+    pub fn child_token(&self) -> Self {
+        let (child, ancestor_cancelled) = {
+            let _registration = self
+                .state
+                .registration_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let child = Self {
+                state: Arc::new(CancelState {
+                    cancelled: AtomicBool::new(false),
+                    notify: Notify::new(),
+                    children: Mutex::new(Vec::new()),
+                    registration_lock: Arc::clone(&self.state.registration_lock),
+                    parent: Some(Arc::clone(&self.state)),
+                }),
+            };
+            let mut children = self
+                .state
+                .children
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            children.retain(|link| link.strong_count() > 0);
+            children.push(Arc::downgrade(&child.state));
+            let mut ancestor = child.state.parent.clone();
+            let ancestor_cancelled = std::iter::from_fn(move || {
+                let current = ancestor.take()?;
+                ancestor = current.parent.clone();
+                Some(current)
+            })
+            .any(|ancestor| ancestor.cancelled.load(Ordering::Acquire));
+            (child, ancestor_cancelled)
+        };
+        // Cancellation can be between two nodes in the lineage, so checking
+        // only the immediate parent would let a newly registered descendant
+        // escape cancelled. The full-chain check above is serialized with
+        // cancellation traversal; release the lock before cascading locally.
+        if ancestor_cancelled {
+            child.cancel();
+        }
+        child
     }
 
     /// Requests cancellation.
@@ -82,8 +134,7 @@ impl CancellationToken {
         // `Release` so the flag write is visible to any `Acquire` poll in
         // `is_cancelled`; pair the wake-up after the store so a waiter that
         // re-checks the flag on wake always sees `true`.
-        self.state.cancelled.store(true, Ordering::Release);
-        self.state.notify.notify_waiters();
+        cancel_state(&self.state);
     }
 
     /// Returns `true` once [`CancellationToken::cancel`] has been called on this
@@ -125,6 +176,28 @@ impl CancellationToken {
             }
             // Spurious wake (no transition observed): loop and re-arm.
         }
+    }
+}
+
+/// Latches `state` and cascades to every live descendant created through
+/// [`CancellationToken::child_token`].
+fn cancel_state(state: &Arc<CancelState>) {
+    let mut pending = vec![Arc::clone(state)];
+    while let Some(current) = pending.pop() {
+        let _registration = current
+            .registration_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        current.cancelled.store(true, Ordering::Release);
+        current.notify.notify_waiters();
+        let children = current
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .filter_map(|link| link.upgrade())
+            .collect::<Vec<_>>();
+        pending.extend(children);
     }
 }
 

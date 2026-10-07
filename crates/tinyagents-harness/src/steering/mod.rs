@@ -434,6 +434,53 @@ pub fn apply_pending_steering<Ctx>(
     }
 }
 
+/// Validation failure from [`RecentRequestIds::claim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestIdError {
+    /// The identifier exceeds [`RecentRequestIds::MAX_REQUEST_ID_BYTES`].
+    TooLong,
+}
+
+impl RecentRequestIds {
+    /// Number of ids remembered per task by [`Self::default`].
+    pub const DEFAULT_CAPACITY: usize = 64;
+
+    /// Longest `request_id` (in bytes) callers should accept; bounds the
+    /// memory a task's id window can hold.
+    pub const MAX_REQUEST_ID_BYTES: usize = 128;
+
+    /// Creates a memory holding at most `capacity` ids (minimum one).
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Records `request_id`, returning `true` when it is new and `false` when
+    /// it was already remembered (a duplicate). The oldest id is forgotten once
+    /// the memory is full.
+    pub fn claim(&mut self, request_id: &str) -> std::result::Result<bool, RequestIdError> {
+        if request_id.len() > Self::MAX_REQUEST_ID_BYTES {
+            return Err(RequestIdError::TooLong);
+        }
+        if self.order.iter().any(|seen| seen == request_id) {
+            return Ok(false);
+        }
+        if self.order.len() >= self.capacity {
+            self.order.pop_front();
+        }
+        self.order.push_back(request_id.to_owned());
+        Ok(true)
+    }
+}
+
+impl Default for RecentRequestIds {
+    fn default() -> Self {
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;

@@ -1274,9 +1274,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             });
             if return_direct {
                 let output = result.output_for_llm(prepared.options.prefer_markdown);
-                run.final_response = Some(ModelResponse::assistant(output.clone()));
+                run.final_response = Some(ModelResponse::assistant(output));
                 ctx.request_control(MiddlewareControl::JumpTo(LoopTarget::End));
-                terminate_vote = Some(output);
+                // No terminate vote: the pending `JumpTo(End)` already ends
+                // the run, and a vote would let a later terminating sibling
+                // make the batch look unanimous and replace this output as
+                // the final response in `settle_batch_termination`.
             } else if control.terminate {
                 terminate_vote = Some(result.output_for_llm(prepared.options.prefer_markdown));
             } else if let Some(goto) = &control.goto {
