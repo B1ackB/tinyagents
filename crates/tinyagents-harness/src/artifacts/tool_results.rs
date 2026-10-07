@@ -237,7 +237,10 @@ impl BudgetOutcome {
     }
 }
 
-pub(super) fn apply_tool_result_budget(content: String, budget_bytes: usize) -> (String, BudgetOutcome) {
+pub(super) fn apply_tool_result_budget(
+    content: String,
+    budget_bytes: usize,
+) -> (String, BudgetOutcome) {
     let original_bytes = content.len();
     if budget_bytes == 0 || original_bytes <= budget_bytes {
         return (content, BudgetOutcome::unchanged(original_bytes));
