@@ -326,7 +326,21 @@ fn bounded_text(text: &str) -> String {
 
 fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
     let encoded = bounded_json(value);
-    serde_json::from_str(&encoded).unwrap_or(serde_json::Value::String(encoded))
+    serde_json::from_str(&encoded).unwrap_or_else(|_| {
+        // Truncated JSON is not valid JSON: carry it as a string, trimmed so
+        // the *escaped* form (quotes and backslashes grow) still fits the cap.
+        let mut budget = MAX_DELTA_CONTENT_BYTES.saturating_sub(2);
+        let mut text = String::new();
+        for ch in encoded.chars() {
+            let cost = serde_json::to_string(&ch.to_string()).map_or(budget + 1, |s| s.len() - 2);
+            if cost > budget {
+                break;
+            }
+            budget -= cost;
+            text.push(ch);
+        }
+        serde_json::Value::String(text)
+    })
 }
 
 /// Serializes `value`, stopping once [`MAX_DELTA_CONTENT_BYTES`] are written.
