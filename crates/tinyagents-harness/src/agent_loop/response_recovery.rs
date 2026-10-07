@@ -132,7 +132,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 status.set_last_event(record.id);
                 if truncated_positions
                     .iter()
-                    .any(|&index| structured_call_names.contains(tool_calls[index].name))
+                    .any(|&index| structured_call_names.contains(&tool_calls[index].name))
                 {
                     // The structured-output call itself was cut off: it
                     // cannot be extracted as the answer, and the turn has
