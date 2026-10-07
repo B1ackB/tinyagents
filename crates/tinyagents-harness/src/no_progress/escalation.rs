@@ -1,5 +1,7 @@
 //! Configuration for the staged escalation of successful repeats.
 
+use super::types::RepeatEscalation;
+
 /// Default for [`RepeatEscalation::block_after_warn`].
 pub const DEFAULT_BLOCK_AFTER_WARN: u32 = 2;
 /// Default for [`RepeatEscalation::blocks_before_halt`].

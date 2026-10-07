@@ -15,9 +15,8 @@
 
 use std::sync::Arc;
 
-use super::escalation::RepeatEscalation;
 use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
-use super::types::{CallGate, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
+use super::types::{CallGate, RepeatEscalation, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
 use super::util::{hash_of, hash_pair, lock};
 
 /// Distinct calls (or `(call, result)` pairs) the tracker keeps state for; a
