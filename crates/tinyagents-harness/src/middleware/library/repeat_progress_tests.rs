@@ -263,3 +263,73 @@ async fn successful_repeat_tracker_resets_failed_and_exempt_batches() {
         "polling tools remain exempt from successful-repeat halts"
     );
 }
+
+// ── Volatility-aware outcome fingerprinting ─────────────────────────────
+
+#[tokio::test]
+async fn identical_results_with_fresh_timestamps_halt_on_recurrence() {
+    let handle = SteeringHandle::allow_all();
+    let summary = Arc::new(std::sync::Mutex::new(None));
+    let mw = new_mw(handle.clone(), summary.clone());
+    for i in 0..DEFAULT_REPEAT_CALL_THRESHOLD {
+        run_alternating_round(
+            &mw,
+            &format!("doc fetched at 2026-10-06T12:00:{:02}Z in {}ms", i, 10 + i),
+            &format!("hits-{i}"),
+        )
+        .await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        1,
+        "a result that differs only by timestamp and duration is the same result"
+    );
+}
+
+#[tokio::test]
+async fn custom_fingerprinter_is_honored_by_the_middleware() {
+    struct Verbatim;
+    impl crate::no_progress::OutcomeFingerprinter for Verbatim {
+        fn fingerprint(&self, outcome: &str) -> String {
+            outcome.to_string()
+        }
+    }
+    let handle = SteeringHandle::allow_all();
+    let mw = new_mw(handle.clone(), Arc::new(std::sync::Mutex::new(None)))
+        .with_fingerprinter(Arc::new(Verbatim));
+    for i in 0..DEFAULT_REPEAT_CALL_THRESHOLD * 2 {
+        run_alternating_round(
+            &mw,
+            &format!("doc fetched at 2026-10-06T12:00:{i:02}Z"),
+            &format!("hits-{i}"),
+        )
+        .await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        0,
+        "with a verbatim fingerprinter, fresh timestamps keep each result distinct"
+    );
+}
+
+#[tokio::test]
+async fn distinct_hex_only_results_do_not_halt_on_recurrence() {
+    let handle = SteeringHandle::allow_all();
+    let mw = new_mw(handle.clone(), Arc::new(std::sync::Mutex::new(None)));
+    for (i, sha) in [
+        "0123456789abcdef0123456789abcdef01234567",
+        "fedcba9876543210fedcba9876543210fedcba98",
+        "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "99999999aaaaaaaa99999999aaaaaaaa99999999",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        run_alternating_round(&mw, sha, &format!("hits-{i}")).await;
+    }
+    assert_eq!(
+        drain_pause_count(&handle),
+        0,
+        "three different commit ids are three different results"
+    );
+}

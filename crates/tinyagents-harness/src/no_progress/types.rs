@@ -5,7 +5,9 @@
 //! the full escalation-ladder design.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use super::OutcomeFingerprinter;
 
 /// One recorded tool outcome, as the driver observed it.
 ///
@@ -148,6 +150,10 @@ pub(super) struct LadderState {
 /// same-strategy retry cap; it is clamped so a nudge always precedes a halt.
 pub struct NoProgressTracker {
     pub(super) identical_halt_threshold: usize,
+    /// Reduces a failure message to the identity the identical-repeat rung
+    /// compares, so volatile spans (timestamps, attempt counters) do not make
+    /// a repeated failure look novel.
+    pub(super) fingerprinter: Arc<dyn OutcomeFingerprinter>,
     pub(super) state: Mutex<LadderState>,
 }
 
@@ -185,6 +191,10 @@ pub(super) struct Streak {
 pub struct SuccessfulRepeatTracker {
     pub(super) output_threshold: u32,
     pub(super) call_threshold: u32,
+    /// Reduces a tool result to the identity the recurrence ledger keys on, so
+    /// volatile spans (timestamps, durations, request ids) do not make a
+    /// repeated result look novel.
+    pub(super) fingerprinter: Arc<dyn OutcomeFingerprinter>,
     pub(super) output: Mutex<Streak>,
     pub(super) calls: Mutex<Streak>,
     /// Hash of `(call signature, outcome signature)` → times recorded this run.
