@@ -138,6 +138,9 @@ mod context_overflow_test;
 #[path = "context_pin_tests.rs"]
 mod context_pin_test;
 #[cfg(test)]
+#[path = "context_summary_tests.rs"]
+mod context_summary_test;
+#[cfg(test)]
 #[path = "context_task_state_tests.rs"]
 mod context_task_state_test;
 #[cfg(test)]

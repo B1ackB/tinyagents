@@ -17,9 +17,9 @@ use crate::middleware::{
 };
 use crate::summarization::{
     CompactionContext, CompactionDecision, CompactionReason, CompactionRecord, ConcatSummarizer,
-    OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer,
+    DefaultFileOpExtractor, FileOpExtractor, OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer,
     SummaryPlacement, SummaryRecord, TrimStrategy, checkpoint_body, checkpoint_message,
-    find_cut_point, is_checkpoint, summarize_with_split, trim_messages,
+    find_cut_point, is_checkpoint, trim_messages,
 };
 
 // ── MessageTrimMiddleware ─────────────────────────────────────────────────────
@@ -95,7 +95,24 @@ impl ContextCompressionMiddleware {
             max_overflow_attempts: DEFAULT_MAX_OVERFLOW_ATTEMPTS,
             response_overflow: ResponseOverflowDetection::default(),
             tool_result_truncation: None,
+            file_ops: Some(std::sync::Arc::new(DefaultFileOpExtractor)),
         }
+    }
+
+    /// Replaces the extractor that derives the file lists appended to every
+    /// compaction summary (`<read-files>` / `<modified-files>`, carried
+    /// forward across compactions). The default,
+    /// [`DefaultFileOpExtractor`], reads the `path` / `file` / `file_path` /
+    /// `paths` arguments and classifies the call by tool name.
+    pub fn with_file_op_extractor(mut self, extractor: impl FileOpExtractor + 'static) -> Self {
+        self.file_ops = Some(std::sync::Arc::new(extractor));
+        self
+    }
+
+    /// Stops appending file lists to compaction summaries.
+    pub fn without_file_operations(mut self) -> Self {
+        self.file_ops = None;
+        self
     }
 
     /// Sets how many compaction (or truncation) attempts one model call may
@@ -583,13 +600,7 @@ impl ContextCompressionMiddleware {
             "[context_compression] compacting"
         );
         let started = std::time::Instant::now();
-        let record = match summarize_with_split(
-            self.summarizer.as_ref(),
-            &to_summarize,
-            self.max_turn_tokens.unwrap_or(u64::MAX),
-            previous_summary,
-            crate::token_estimation::estimate_message_tokens,
-        )
+        let record = match self.summarize_batch(&to_summarize, &to_keep, previous_summary)
         .await
         {
             Ok(record) => record,
@@ -673,6 +684,7 @@ impl ContextCompressionMiddleware {
 }
 
 mod overflow;
+mod summary;
 
 #[async_trait]
 impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>

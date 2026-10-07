@@ -215,13 +215,7 @@ impl ContextCompressionMiddleware {
             "[context_compression] provider reported a context overflow; compacting and retrying"
         );
         let started = std::time::Instant::now();
-        let record = match summarize_with_split(
-            self.summarizer.as_ref(),
-            &to_summarize,
-            self.max_turn_tokens.unwrap_or(u64::MAX),
-            previous_summary,
-            crate::token_estimation::estimate_message_tokens,
-        )
+        let record = match self.summarize_batch(&to_summarize, &to_keep, previous_summary)
         .await
         {
             Ok(record) => record,

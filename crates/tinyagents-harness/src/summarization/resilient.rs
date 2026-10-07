@@ -107,6 +107,7 @@ impl FaultTolerantCachingSummarizer {
             }
         }
         request.previous_summary.hash(&mut hasher);
+        (request.kind as u8).hash(&mut hasher);
         hasher.finish()
     }
 

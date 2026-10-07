@@ -927,6 +927,10 @@ pub struct ContextCompressionMiddleware {
     /// default) never truncates. See
     /// [`ContextCompressionMiddleware::with_tool_result_truncation`].
     pub(crate) tool_result_truncation: Option<usize>,
+    /// Derives the `<read-files>` / `<modified-files>` lists appended to each
+    /// compaction summary; `None` appends nothing. See
+    /// [`crate::summarization::FileOpExtractor`].
+    pub(crate) file_ops: Option<std::sync::Arc<dyn crate::summarization::FileOpExtractor>>,
 }
 
 /// Default number of compaction attempts one model call may make after the
