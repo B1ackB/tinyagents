@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::test::BlockedModel;
 use crate::subagent::{
-    IncompleteKind, ResultPolicy, SubAgentPolicy, SubagentRole, register_subagent_job_tools,
+    IncompleteKind, ResultPolicy, SubAgentPolicy, SubagentRole,
 };
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::ids::CallId;
@@ -134,7 +134,7 @@ async fn default_policies_leave_the_output_untouched() {
 #[tokio::test]
 async fn a_leaf_refuses_to_spawn_when_its_harness_exposes_delegation_tools() {
     let mut harness = constant("x");
-    register_subagent_job_tools(harness.tools_mut(), SubAgentJobRegistry::new());
+    harness.register_tool_dispatch(Arc::new(crate::subagent::SubAgentJobsTool::new(SubAgentJobRegistry::new())));
     let tool = tool_over(harness).with_role(SubagentRole::Leaf);
     let result = call_inline(&tool).await;
     assert!(result.is_error);
