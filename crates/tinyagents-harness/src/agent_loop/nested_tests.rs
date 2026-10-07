@@ -660,3 +660,43 @@ async fn a_refusal_propagated_with_question_mark_reaches_the_model_as_a_tool_fai
         .expect("parent answered");
     assert!(text.contains("requires approval"), "{text}");
 }
+
+#[tokio::test]
+async fn repeated_nested_calls_do_not_trip_the_repeat_guard() {
+    use crate::middleware::library::RepeatProgressMiddleware;
+    use crate::no_progress::RepeatProgressConfig;
+    use crate::steering::{SteeringCommand, SteeringHandle, SteeringPolicy};
+
+    let handle = SteeringHandle::new(SteeringPolicy::allow_all());
+    let guard = RepeatProgressMiddleware::new(handle.clone(), Arc::default(), Arc::new(|_| false))
+        .with_config(RepeatProgressConfig::immediate_halt());
+    let leaf = Leaf::new("leaf");
+    // The same call, with the same arguments and result, many times over: a
+    // model doing this would be halted, a tool fanning out is not.
+    let caller = Caller::new("caller", (0..8).map(|_| ("leaf", json!({"n": 1}))).collect());
+    let mut harness = harness_with(
+        vec![parent_call("p1", "caller")],
+        RunLimits::default().with_max_tool_calls(20),
+    );
+    harness.push_middleware(Arc::new(guard));
+    harness.register_tool(leaf.clone());
+    harness.register_tool(Arc::new(caller));
+
+    let recorder = EventRecorder::new();
+    let ctx = RunContext::new(RunConfig::new("nested"), ())
+        .with_events(recorder.sink())
+        .with_steering(handle.clone());
+    harness
+        .invoke_in_context(&(), ctx, vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    assert_eq!(leaf.runs(), 8);
+    assert!(
+        !handle
+            .drain()
+            .iter()
+            .any(|command| matches!(command, SteeringCommand::Pause)),
+        "the guard must not pause the run over nested calls"
+    );
+}
