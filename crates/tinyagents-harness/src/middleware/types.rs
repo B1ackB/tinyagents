@@ -930,6 +930,10 @@ pub struct ContextCompressionMiddleware {
     /// Derives the `<read-files>` / `<modified-files>` lists appended to each
     /// compaction summary; `None` appends nothing. See
     /// [`crate::summarization::FileOpExtractor`].
+    /// Whether a cut inside a turn gives the turn's prefix its own summary
+    /// request. See
+    /// [`ContextCompressionMiddleware::with_split_turn_prefix`].
+    pub(crate) split_turn_prefix: bool,
     pub(crate) file_ops: Option<std::sync::Arc<dyn crate::summarization::FileOpExtractor>>,
 }
 
