@@ -41,7 +41,8 @@ struct AgentGraphState {
 
 /// Builds an assistant response that asks for a single tool call.
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(6, 2))
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(6, 2))
 }
 
 /// Builds a plain-text final assistant response.

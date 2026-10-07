@@ -20,7 +20,8 @@ use tinyinference_llm::tool::ToolCall;
 use tinyinference_llm::usage::Usage;
 
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(7, 3))
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(7, 3))
 }
 
 fn text_response(text: &str) -> ModelResponse {

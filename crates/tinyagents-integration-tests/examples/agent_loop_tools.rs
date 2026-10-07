@@ -58,7 +58,8 @@ impl Tool for CalculatorTool {
 
 /// Builds an assistant response that requests a single tool call.
 fn tool_call_response(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
-    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(12, 4))
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(12, 4))
 }
 
 /// Builds a final, plain-text assistant response.

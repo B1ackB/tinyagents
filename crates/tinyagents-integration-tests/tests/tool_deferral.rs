@@ -136,7 +136,8 @@ impl ChatModel<()> for RecordingModel {
 }
 
 fn tool_call(id: &str, name: &str, arguments: Value) -> ModelResponse {
-    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments)).with_usage(Usage::new(1, 1))
+    tinyagents_harness::testkit::tool_call_response(ToolCall::new(id, name, arguments))
+        .with_usage(Usage::new(1, 1))
 }
 
 fn text(body: &str) -> ModelResponse {
