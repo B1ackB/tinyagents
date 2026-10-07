@@ -619,27 +619,25 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // anyway — failing again is better than refusing to try.
         if ctx.limits.is_model_skipped(&current_name)
             && crate::runtime::host_invocation_binding::<State, Ctx>(ctx)?.is_none()
-        {
-            if let Some((name, next_model)) =
+            && let Some((name, next_model)) =
                 self.select_fallback(ctx, request, &current_name, &mut visited)
-            {
-                tracing::debug!(
-                    call_id = %call_id.as_str(),
-                    skipped = %current_name,
-                    to = %name,
-                    "[failover] skipping a model written off earlier in this run"
-                );
-                ctx.emit(AgentEvent::FallbackSkipped {
-                    model: current_name.clone(),
-                });
-                resolved = ResolvedModel {
-                    name: name.clone(),
-                    requested: Some(name.clone()),
-                    source: ModelResolutionSource::Hint,
-                };
-                current_name = name;
-                model = next_model;
-            }
+        {
+            tracing::debug!(
+                call_id = %call_id.as_str(),
+                skipped = %current_name,
+                to = %name,
+                "[failover] skipping a model written off earlier in this run"
+            );
+            ctx.emit(AgentEvent::FallbackSkipped {
+                model: current_name.clone(),
+            });
+            resolved = ResolvedModel {
+                name: name.clone(),
+                requested: Some(name.clone()),
+                source: ModelResolutionSource::Hint,
+            };
+            current_name = name;
+            model = next_model;
         }
 
         loop {
