@@ -1422,6 +1422,7 @@ async fn concurrency_unsafe_nested_tools_do_not_overlap_across_concurrent_parent
 struct UnsafeLink {
     name: &'static str,
     next: Option<&'static str>,
+    safe: bool,
 }
 
 #[async_trait]
@@ -1437,6 +1438,9 @@ impl Tool for UnsafeLink {
     }
     fn policy(&self) -> ToolPolicy {
         ToolPolicy::read_only()
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        self.safe
     }
     async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
         unreachable!("the harness dispatches through execute_with_context")
@@ -1462,14 +1466,17 @@ async fn a_chain_of_unsafe_nested_tools_does_not_deadlock_on_the_run_gate() {
     harness.register_tool(Arc::new(UnsafeLink {
         name: "link_a",
         next: Some("link_b"),
+        safe: false,
     }));
     harness.register_tool(Arc::new(UnsafeLink {
         name: "link_b",
         next: Some("link_c"),
+        safe: false,
     }));
     harness.register_tool(Arc::new(UnsafeLink {
         name: "link_c",
         next: None,
+        safe: false,
     }));
     let recorder = EventRecorder::new();
     tokio::time::timeout(std::time::Duration::from_secs(5), run(&harness, &recorder))
@@ -1627,6 +1634,121 @@ async fn a_non_replayable_nested_call_is_refused_over_an_unresolved_ledger_row()
     let refused = outcomes[0].as_ref().expect_err("refused");
     assert!(refused.contains("never settled"), "{refused}");
     assert_eq!(pay.runs(), 0, "the effect must not run twice");
+}
+
+/// Calls `safe_link` (a safe tool that calls an unsafe one) and reports the
+/// result, so a refusal at depth two is observable.
+struct RootCaller {
+    outcome: Arc<Mutex<Option<Outcome>>>,
+}
+
+#[async_trait]
+impl Tool for RootCaller {
+    fn name(&self) -> &str {
+        "root"
+    }
+    fn description(&self) -> &str {
+        "root"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let result = harness_extension(context)
+            .call_tool("safe_link", json!({}))
+            .await;
+        *self.outcome.lock().unwrap() = Some(result.map_err(|e| e.to_string()));
+        Ok(ToolResult::success("root-out"))
+    }
+}
+
+#[tokio::test]
+async fn an_unsafe_call_under_a_shared_gate_hold_is_refused() {
+    // A concurrency-safe nested call that calls a concurrency-unsafe one would
+    // have to upgrade its own shared hold: it is refused instead of
+    // deadlocking or running the unsafe tool beside other calls.
+    let outcome = Arc::new(Mutex::new(None));
+    let mut harness = harness_with(vec![parent_call("p1", "root")], enabled());
+    harness.register_tool(Arc::new(RootCaller {
+        outcome: Arc::clone(&outcome),
+    }));
+    harness.register_tool(Arc::new(UnsafeLink {
+        name: "safe_link",
+        next: Some("unsafe_leaf"),
+        safe: true,
+    }));
+    harness.register_tool(Arc::new(UnsafeLink {
+        name: "unsafe_leaf",
+        next: None,
+        safe: false,
+    }));
+    run(&harness, &EventRecorder::new()).await.unwrap();
+    // `safe_link` surfaces the refusal of its own nested call with `?`.
+    let error = outcome
+        .lock()
+        .unwrap()
+        .take()
+        .expect("root ran")
+        .expect_err("the nested chain fails");
+    assert!(error.contains("shared nested-call gate"), "{error}");
+}
+
+/// Returns its own `nested_calls` metadata while also making a nested call.
+struct MetaOwner;
+
+#[async_trait]
+impl Tool for MetaOwner {
+    fn name(&self) -> &str {
+        "meta_owner"
+    }
+    fn description(&self) -> &str {
+        "owns metadata"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let _ = harness_extension(context)
+            .call_tool("leaf", json!({}))
+            .await;
+        let mut result = ToolResult::success("meta-out");
+        result.metadata = Some(json!({"nested_calls": "tool-owned"}));
+        Ok(result)
+    }
+}
+
+#[tokio::test]
+async fn tool_owned_nested_calls_metadata_is_not_overwritten() {
+    let mut harness = harness_with(vec![parent_call("p1", "meta_owner")], enabled());
+    harness.register_tool(Leaf::new("leaf"));
+    harness.register_tool(Arc::new(MetaOwner));
+    let run = run(&harness, &EventRecorder::new()).await.unwrap();
+    assert_eq!(
+        run.tool_metadata[0].metadata["nested_calls"], "tool-owned",
+        "the harness summary must not replace a tool's own key"
+    );
 }
 
 // ── In-flight nested calls dropped with their parent ────────────────────────

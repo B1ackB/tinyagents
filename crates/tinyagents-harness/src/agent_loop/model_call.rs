@@ -1873,7 +1873,7 @@ pub(super) struct ToolCallBase<'h, State: Send + Sync, Ctx: Send + Sync> {
     pub(super) nested_state: super::nested::NestedState,
     /// Whether this call already runs under the run-wide nested serialization
     /// gate, so its own nested calls must not take it again.
-    pub(super) gate_held: bool,
+    pub(super) gate_held: super::nested::GateHold,
 }
 
 impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>

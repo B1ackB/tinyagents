@@ -147,9 +147,8 @@ impl NestedSummary {
 #[derive(Default)]
 pub(super) struct NestedState {
     issued: AtomicUsize,
-    /// Refusal slots taken: refused calls, plus calls whose admission is in
-    /// flight (refunded when the call is admitted and runs).
-    refused: AtomicUsize,
+    /// Refusal accounting: committed refusals and admissions in flight.
+    refusals: std::sync::Mutex<Refusals>,
     summaries: std::sync::Mutex<Vec<NestedSummary>>,
     dropped_summaries: AtomicUsize,
     /// Held while a nested call that is not concurrency-safe executes, so a
@@ -158,43 +157,64 @@ pub(super) struct NestedState {
     serial: tokio::sync::RwLock<()>,
 }
 
+/// Refusals this parent has had, kept apart from the admissions still in
+/// flight so a refund can only ever return a reservation, never erase a real
+/// refusal.
+#[derive(Default)]
+struct Refusals {
+    committed: usize,
+    in_flight: usize,
+}
+
 impl NestedState {
-    /// Takes one refusal slot atomically; `false` when the cap is spent.
-    fn reserve_refusal(&self) -> bool {
-        let mut current = self.refused.load(Ordering::SeqCst);
-        loop {
-            if current >= MAX_NESTED_REFUSALS {
-                return false;
-            }
-            match self.refused.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => current = actual,
-            }
-        }
+    fn refusals(&self) -> std::sync::MutexGuard<'_, Refusals> {
+        self.refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Gives back a slot taken by [`Self::reserve_refusal`] for a call that
-    /// was admitted (or abandoned) rather than refused. Used by
-    /// [`RefusalSlot`]'s drop.
-    fn refund_refusal(&self) {
-        let mut current = self.refused.load(Ordering::SeqCst);
-        while current > 0 {
-            match self.refused.compare_exchange_weak(
-                current,
-                current - 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return,
-                Err(actual) => current = actual,
-            }
+    /// Reserves an admission slot atomically; `false` when committed refusals
+    /// plus admissions in flight have spent the cap.
+    fn reserve_refusal(&self) -> bool {
+        let mut refusals = self.refusals();
+        if refusals.committed + refusals.in_flight >= MAX_NESTED_REFUSALS {
+            return false;
         }
+        refusals.in_flight += 1;
+        true
     }
+
+    /// Returns a reservation taken by [`Self::reserve_refusal`] for a call
+    /// that was admitted or abandoned.
+    fn refund_refusal(&self) {
+        let mut refusals = self.refusals();
+        refusals.in_flight = refusals.in_flight.saturating_sub(1);
+    }
+
+    /// Turns a reservation into a committed refusal.
+    fn commit_refusal(&self) {
+        let mut refusals = self.refusals();
+        refusals.in_flight = refusals.in_flight.saturating_sub(1);
+        refusals.committed = (refusals.committed + 1).min(MAX_NESTED_REFUSALS);
+    }
+
+    /// Commits a refusal for a call that already left admission (an
+    /// execution-time deferral), saturating at the cap.
+    fn commit_late_refusal(&self) {
+        let mut refusals = self.refusals();
+        refusals.committed = (refusals.committed + 1).min(MAX_NESTED_REFUSALS);
+    }
+}
+
+/// What the ancestors of a nested call already hold on the run-wide gate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateHold {
+    /// Nothing: a model-issued call.
+    None,
+    /// A shared hold (a concurrency-safe ancestor).
+    Shared,
+    /// An exclusive hold (a concurrency-unsafe ancestor).
+    Exclusive,
 }
 
 /// A shared or exclusive hold on a serialization gate. The payload is held
@@ -228,9 +248,12 @@ struct RefusalSlot<'a> {
 }
 
 impl RefusalSlot<'_> {
-    /// The call was refused: the slot stays spent.
+    /// The call was refused: the reservation becomes a committed refusal.
     fn keep(&mut self) {
-        self.armed = false;
+        if self.armed {
+            self.armed = false;
+            self.shared.commit_refusal();
+        }
     }
 
     /// The call was admitted: refund the slot now.
@@ -244,19 +267,7 @@ impl RefusalSlot<'_> {
     /// A call that was already admitted turned out to need approval or a
     /// deferral at execution time: count it as a refusal after the fact.
     fn count_late_refusal(&self) {
-        // Saturates at the cap, like the reservation path.
-        let mut current = self.shared.refused.load(Ordering::SeqCst);
-        while current < MAX_NESTED_REFUSALS {
-            match self.shared.refused.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return,
-                Err(actual) => current = actual,
-            }
-        }
+        self.shared.commit_late_refusal();
     }
 }
 
@@ -293,7 +304,7 @@ pub(super) struct NestedCalls<'a, State: Send + Sync, Ctx: Send + Sync> {
     /// Nesting level of that call: `0` for a model-issued call.
     level: usize,
     /// Whether that call already runs under the run-wide serialization gate.
-    gate_held: bool,
+    gate_held: GateHold,
     shared: &'a NestedState,
 }
 
@@ -305,7 +316,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         parent: CallId,
         level: usize,
         shared: &'a NestedState,
-        gate_held: bool,
+        gate_held: GateHold,
     ) -> Self {
         Self {
             harness,
@@ -446,6 +457,15 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             );
             return;
         };
+        if object.contains_key("nested_calls") {
+            // The tool owns that key; never overwrite its value.
+            tracing::debug!(
+                target: "tinyagents::nested_tools",
+                call_id = %self.parent,
+                "[nested_tools] parent metadata already has `nested_calls`; summary not attached"
+            );
+            return;
+        }
         object.insert(
             "nested_calls".to_string(),
             Value::Array(summaries.iter().map(NestedSummary::to_json).collect()),
@@ -541,7 +561,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         name: &str,
         arguments: Value,
         slot: &mut RefusalSlot<'_>,
-        gate_held: bool,
+        gate_held: GateHold,
     ) -> Result<tinytools::ToolResult> {
         let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
         let (dispatch, call, mut budget) =
@@ -575,7 +595,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .iter()
                 .any(|effect| effect.call_id == call_id.as_str())
             {
-                slot.count_late_refusal();
+                // A recovery safety failure, not an approval refusal: it does
+                // not spend the parent's refusal cap.
                 return Err(TinyAgentsError::ToolFailed(format!(
                     "nested call '{name}' refused: an earlier attempt of '{call_id}' never \
                      settled and the tool is not replay-safe"
@@ -631,10 +652,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // Shared for concurrency-safe calls, exclusive otherwise: a safe call
         // must not overlap an unsafe sibling either.
         let _serial = NestedGuard::acquire(&slot.shared.serial, serialize).await;
-        let gate = if gate_held {
-            None
-        } else {
-            Some(NestedGuard::acquire(&ctx.nested_serial, serialize).await)
+        let gate = match (gate_held, serialize) {
+            (GateHold::Exclusive, _) | (GateHold::Shared, false) => None,
+            (GateHold::Shared, true) => {
+                // A shared hold cannot be upgraded without waiting on itself.
+                // Fail closed rather than run an unsafe tool alongside others.
+                slot.count_late_refusal();
+                return Err(TinyAgentsError::ToolFailed(format!(
+                    "nested call '{name}' refused: it is not concurrency-safe and its caller \
+                     runs under the shared nested-call gate"
+                )));
+            }
+            (GateHold::None, exclusive) => {
+                Some(NestedGuard::acquire(&ctx.nested_serial, exclusive).await)
+            }
         };
         // Execution starts now; from here the call is spent even if dropped.
         budget.armed = false;
@@ -645,7 +676,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             timeout_settings: self.tool_timeouts.clone(),
             level,
             nested_state: Default::default(),
-            gate_held: gate_held || gate.is_some(),
+            gate_held: match (&gate, gate_held) {
+                (Some(NestedGuard::Exclusive(_)), _) => GateHold::Exclusive,
+                (Some(NestedGuard::Shared(_)), _) => GateHold::Shared,
+                (None, held) => held,
+            },
         };
         let execution = futures::FutureExt::map(
             self.middleware
