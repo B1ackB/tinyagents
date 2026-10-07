@@ -124,6 +124,7 @@ mod handoff_transform;
 mod host_budget;
 mod mixed_turn;
 mod model_call;
+mod model_switch;
 mod model_turn;
 pub mod phases;
 mod response_recovery;

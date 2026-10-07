@@ -355,7 +355,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     crate::model_registry::ResolvedModelBinding<State>,
                 )>,
             ));
-            let patch_request = ModelRequest::default();
+            let mut patch_request = ModelRequest::default();
+            // A pending steered model switch decides the model this call
+            // uses, so the preview (and the tool-change patch shaped by it)
+            // must be for that model, not the default.
+            patch_request.model = self.steered_model(ctx);
             let patch_profile =
                 if let Some(binding) = self.resolve_host_model(ctx, &patch_request).await? {
                     let profile = binding.model.profile().cloned();
@@ -389,6 +393,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 &surface.tool_schemas,
                 turn_recovery.boosted_max_tokens,
             );
+
+            // Apply a pending `SteeringCommand::SwitchModel` before anything
+            // resolves a binding, so middleware, resolution, events and the
+            // handoff/budget/dialect decisions below all see the new model.
+            // Re-applied after `before_model` (see below).
+            self.apply_steered_model_switch(ctx, &mut request);
 
             // Known tool requirements must shape the hosted profile seen by
             // middleware. The later gate below still catches tools added by
@@ -460,6 +470,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     .get_or_insert_default()
                     .tool_calling = true;
             }
+
+            // Middleware may have chosen another model or added capability
+            // requirements; the steered switch is re-validated and wins.
+            self.apply_steered_model_switch(ctx, &mut request);
 
             // Safe checkpoint: a control requested from `before_model_control`
             // (for example `BudgetMiddleware` finding the budget already
