@@ -73,6 +73,22 @@ fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// Accepts clock-shaped values only when their surrounding syntax indicates a
+/// timestamp or log time, rather than a semantic position or counter.
+fn clock_context(text: &str, found: &Match<'_>) -> bool {
+    let before = &text[..found.start()];
+    let after = &text[found.end()..];
+    let preceded_by_context = before.ends_with(['[', '('])
+        || ["at ", "on ", "time ", "timestamp "]
+            .iter()
+            .any(|prefix| before.to_ascii_lowercase().ends_with(prefix));
+    let followed_by_boundary = after
+        .chars()
+        .next()
+        .is_none_or(|character| !character.is_alphanumeric() && character != '_');
+    preceded_by_context && followed_by_boundary
+}
+
 fn rule(pattern: &str, placeholder: &'static str, accept: fn(&str, &Match<'_>) -> bool) -> Rule {
     Rule {
         pattern: Regex::new(pattern).expect("volatile-span pattern is valid"),
@@ -105,9 +121,9 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             accept_all,
         ),
         rule(
-            r"(?-u:\b)\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?-u:\b)",
+            r"(?-u:\b)(?P<span>\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?)(?-u:\b)",
             "<time>",
-            accept_all,
+            clock_context,
         ),
         // Unix epoch seconds (10 digits) or milliseconds (13 digits) in the
         // 2001-2033 range, optionally with a fraction, and only as the value
@@ -124,7 +140,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // `elapsed 1.2s`, and `took 1h2m3.5s`. Restricting the context keeps
         // semantic countdowns such as `lease expires in 30s` distinct.
         rule(
-            r#"(?i)(?-u:\b)(?:took|elapsed|duration|latency|timeout|wait(?:ed)?|sleep(?:ing)?)(?:\s*(?:was|of|in))?\s*["']?\s*(?:[:=]\s*)?["']?\s*(?P<span>(?:(?:\d+h)?(?:\d+m)?(?:\d{1,2}|\d+\.\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms)))(?-u:\b)"#,
+            r#"(?i)(?-u:\b)(?:took|elapsed|duration|latency|timeout|wait(?:ed)?|sleep(?:ing)?)(?:\s*(?:was|of|in))?\s*["']?\s*(?:[:=]\s*)?["']?\s*(?P<span>(?:(?:\d+h)?(?:\d+m)?(?:\d+\.\d+|\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms)))(?-u:\b)"#,
             "<duration>",
             not_after_dot,
         ),

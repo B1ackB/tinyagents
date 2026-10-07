@@ -47,6 +47,7 @@ fn clock_times_are_normalized() {
     same("[12:34:56] ready", "[01:02:03] ready");
     same("[12:34:56.789] ready", "[01:02:03.1] ready");
     differ("[12:34:56] ready", "[12:34:56] failed");
+    differ("position=00:00:01 processed", "position=00:00:02 processed");
 }
 
 #[test]
@@ -100,6 +101,7 @@ fn outputs_that_are_only_volatile_fall_back_to_the_raw_text() {
 fn durations_are_normalized() {
     same("took 123ms", "took 4ms");
     same("took 1.2s", "took 45s");
+    same("took 123s", "took 456s");
     same("took 250us", "took 3us");
     same("elapsed 1h2m3.5s", "elapsed 4h5m6s");
     differ("took 123ms to read", "took 123ms to write");

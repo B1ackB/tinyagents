@@ -49,8 +49,21 @@ hook" section in `mod.rs` for that contract.
   error line (identical-failure rung) and `SuccessfulRepeatTracker` on the
   result; both take a replacement through `with_fingerprinter`, and a host
   that wants the previous byte-for-byte behavior passes a verbatim
-  fingerprinter (a unit struct whose `fingerprint` returns
-  `outcome.to_string()`).
+  fingerprinter. For example:
+
+  ```rust
+  struct Verbatim;
+
+  impl OutcomeFingerprinter for Verbatim {
+      fn fingerprint(&self, outcome: &str) -> String {
+          outcome.to_string()
+      }
+  }
+
+  let tracker = NoProgressTracker::new(3).with_fingerprinter(
+      std::sync::Arc::new(Verbatim),
+  );
+  ```
 - [`ClassifiedFailureTracker`] — an additive ledger for equivalent failures
   keyed by class, operation, and resource or permission scope. `record` accepts
   a class-specific recovery budget; `clear` removes one group only after an
