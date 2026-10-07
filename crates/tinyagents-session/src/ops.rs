@@ -358,7 +358,7 @@ pub fn list_sessions(
         let (sessions, total) = crate::paging::PagedQuery::default()
             .eq("status", status.map(str::to_owned))
             .eq("parent_session_id", parent_id.map(str::to_owned))
-            .page(lim, off)
+            .page(lim, off)?
             .fetch(
                 conn,
                 "sessions",
@@ -425,7 +425,7 @@ pub(super) fn search_sessions_inner(
         .eq("s.parent_session_id", params.parent_session_id.clone())
         .eq("s.status", params.status.clone())
         .eq("s.thread_id", params.thread_id.clone())
-        .page(lim, off)
+        .page(lim, off)?
         .fetch(
             conn,
             "sessions s",

@@ -16,6 +16,7 @@ fn table() -> Connection {
 fn ids(query: &mut PagedQuery, limit: i64, offset: i64) -> (Vec<i64>, u64) {
     query
         .page(limit, offset)
+        .unwrap()
         .fetch(&table(), "items", "id", "rank DESC", |row| row.get(0))
         .unwrap()
 }
@@ -63,7 +64,7 @@ fn repeated_fetch_does_not_accumulate_pagination_parameters() {
     let mut query = PagedQuery::default();
     query.eq("kind", Some("a"));
 
-    query.page(2, 0);
+    query.page(2, 0).unwrap();
     assert_eq!(
         query
             .fetch(&conn, "items", "id", "rank DESC", |row| row.get(0))
@@ -71,11 +72,19 @@ fn repeated_fetch_does_not_accumulate_pagination_parameters() {
         (vec![4, 1], 3)
     );
 
-    query.page(1, 2);
+    query.page(1, 2).unwrap();
     assert_eq!(
         query
             .fetch(&conn, "items", "id", "rank DESC", |row| row.get(0))
             .unwrap(),
         (vec![3], 3)
     );
+}
+
+#[test]
+fn rejects_negative_pagination_values_before_storing_them() {
+    let mut query = PagedQuery::default();
+
+    assert!(query.page(-1, 0).is_err());
+    assert!(query.page(1, -1).is_err());
 }

@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
 
-use tinyagents_harness::error::Result;
+use tinyagents_harness::error::{Result, TinyAgentsError};
 
 /// Filters for a paged query, each clause numbered after the values before it.
 #[derive(Default)]
@@ -53,10 +53,20 @@ impl PagedQuery {
     }
 
     /// Sets the page: at most `limit` rows, skipping the first `offset`.
-    pub(crate) fn page(&mut self, limit: i64, offset: i64) -> &mut Self {
+    pub(crate) fn page(&mut self, limit: i64, offset: i64) -> Result<&mut Self> {
+        if limit < 0 {
+            return Err(TinyAgentsError::Storage(format!(
+                "pagination limit must be non-negative: {limit}"
+            )));
+        }
+        if offset < 0 {
+            return Err(TinyAgentsError::Storage(format!(
+                "pagination offset must be non-negative: {offset}"
+            )));
+        }
         self.limit = limit;
         self.offset = offset;
-        self
+        Ok(self)
     }
 
     /// Counts every row of `from` matching the filters, then maps `columns`

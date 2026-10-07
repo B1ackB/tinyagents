@@ -652,7 +652,7 @@ pub fn list_agent_runs(
             .eq_nonblank("kind", request.kind.as_deref())
             .eq_nonblank("parent_run_id", request.parent_run_id.as_deref())
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
-            .page(limit, offset)
+            .page(limit, offset)?
             .fetch(
                 conn,
                 "agent_runs",
@@ -778,7 +778,7 @@ pub fn list_workflow_runs(
             .eq_nonblank("definition_id", request.definition_id.as_deref())
             .eq_nonblank("status", request.status.as_deref())
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
-            .page(limit, offset)
+            .page(limit, offset)?
             .fetch(
                 conn,
                 "workflow_runs",
@@ -874,7 +874,7 @@ pub fn list_agent_teams(
         let (teams, count) = crate::paging::PagedQuery::default()
             .eq_nonblank("parent_thread_id", request.parent_thread_id.as_deref())
             .eq_nonblank("status", request.status.as_deref())
-            .page(limit, offset)
+            .page(limit, offset)?
             .fetch(
                 conn,
                 "agent_teams",
