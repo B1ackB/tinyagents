@@ -96,6 +96,9 @@ loop.
 | `render.rs` | `render_message_for_summary`. |
 | `trim.rs` | `trim_messages`/`trim_messages_with`/`trim_messages_to_token_budget_with`. |
 | `compaction.rs` | `find_cut_point`, `summarize_with_split`, `OverflowClassifier`, `CompactionContext`/`CompactionDecision`. |
+| `response_overflow.rs` | `detect_response_overflow`, `ResponseOverflowDetection`: overflow read from a successful response (usage above the window, zero-output `length` stop, opt-in short `length` stop). |
+| `file_ops.rs` | `FileOpExtractor`, `DefaultFileOpExtractor`, `FileOperations`, and the `<read-files>` / `<modified-files>` section writer/parser carried by compaction summaries. |
+| `split_turn.rs` | `split_turn_start`, `summarize_split_turn`: a cut inside a turn summarizes the turn prefix with its own `SummaryKind::TurnPrefix` request. |
 | `test.rs` | Coverage for token estimation, trim strategies, pairing repair, policy triggering/planning, and `ConcatSummarizer`. |
 | `compaction/test.rs` | Coverage for cut points, split-turn merge, iterative summaries, `OverflowClassifier`. |
 

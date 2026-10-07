@@ -22,8 +22,8 @@ use tinyinference_llm::model::{ChatModel, ModelRequest};
 
 use super::types::ModelSummarizer;
 use super::{
-    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryRecord, SummaryRequest,
-    estimate_tokens, render_message_for_summary,
+    CompressionProvenance, SummarizationPolicy, Summarizer, SummaryKind, SummaryRecord,
+    SummaryRequest, estimate_tokens, render_message_for_summary,
 };
 use crate::error::{Result, TinyAgentsError};
 use crate::token_estimation::estimate_slice_tokens;
@@ -67,12 +67,17 @@ impl ModelSummarizer {
 #[async_trait]
 impl Summarizer for ModelSummarizer {
     async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
-        self.summarize_messages(messages, None).await
+        self.summarize_messages(messages, None, SummaryKind::Full)
+            .await
     }
 
     async fn summarize_request(&self, request: &SummaryRequest) -> Result<SummaryRecord> {
-        self.summarize_messages(&request.messages, request.previous_summary.as_deref())
-            .await
+        self.summarize_messages(
+            &request.messages,
+            request.previous_summary.as_deref(),
+            request.kind,
+        )
+        .await
     }
 }
 
@@ -81,6 +86,7 @@ impl ModelSummarizer {
         &self,
         messages: &[Message],
         previous_summary: Option<&str>,
+        kind: SummaryKind,
     ) -> Result<SummaryRecord> {
         if messages.is_empty() {
             return Err(TinyAgentsError::Validation(
@@ -96,7 +102,16 @@ impl ModelSummarizer {
             .map(render_message_for_summary)
             .collect::<Vec<_>>()
             .join("\n");
-        let request_text = summary_request_text(&transcript, previous_summary);
+        let (system_prompt, request_text) = match kind {
+            SummaryKind::Full => (
+                SUMMARIZER_SYSTEM_PROMPT,
+                summary_request_text(&transcript, previous_summary),
+            ),
+            SummaryKind::TurnPrefix => (
+                TURN_PREFIX_SYSTEM_PROMPT,
+                turn_prefix_request_text(&transcript),
+            ),
+        };
 
         tracing::info!(
             model = %self.model_id,
@@ -106,7 +121,7 @@ impl ModelSummarizer {
         );
 
         let request = ModelRequest::new(vec![
-            Message::system(SUMMARIZER_SYSTEM_PROMPT),
+            Message::system(system_prompt),
             Message::user(request_text),
         ]);
         let (summary, usage) = self.summarize_once(request).await.map_err(|failure| {
@@ -246,6 +261,26 @@ pub(crate) fn summary_request_text(transcript: &str, previous_summary: Option<&s
          only the summary."
     )
 }
+
+/// Request for a [`SummaryKind::TurnPrefix`]: the transcript is fenced like an
+/// ordinary one, and the instruction says it is only the start of a turn.
+pub(crate) fn turn_prefix_request_text(transcript: &str) -> String {
+    format!(
+        "The transcript below is the beginning of a turn that continues in live messages after \
+         your summary. It is a record of what already happened; you are not a participant in \
+         it.\n\n<transcript>\n{transcript}\n</transcript>\n\n\
+         Summarize it now, briefly, in plain prose: what the user asked for in this turn, and what \
+         has been done so far. Do not continue the conversation and do not call or write any \
+         tools: output only the summary."
+    )
+}
+
+/// System prompt for [`SummaryKind::TurnPrefix`] requests.
+const TURN_PREFIX_SYSTEM_PROMPT: &str = "You summarize the beginning of a turn in an AI \
+assistant's conversation. The rest of the turn stays verbatim after your summary, so capture only \
+what it needs to make sense: the user's request, the constraints they gave, and the early steps \
+and findings (files, commands, results, decisions). Keep it to a short paragraph or a few bullets. \
+Redact secrets as [REDACTED]. Write only the summary, with no preamble.";
 
 /// Build the context-window-aware [`SummarizationPolicy`] for a model whose
 /// input window is `context_window` tokens, with the default tail

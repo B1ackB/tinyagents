@@ -2013,6 +2013,30 @@ fn overflow_prone_messages() -> Vec<Message> {
     ]
 }
 
+/// A summarizer whose summary is far smaller than its input, so an overflow
+/// compaction actually shrinks the request (`ConcatSummarizer` never does).
+struct TinySummarizer;
+
+#[async_trait]
+impl Summarizer for TinySummarizer {
+    async fn summarize(&self, messages: &[Message]) -> Result<SummaryRecord> {
+        Ok(SummaryRecord {
+            summary: Message::system("tiny summary"),
+            provenance: crate::summarization::CompressionProvenance {
+                source_ids: Vec::new(),
+                original_token_estimate: messages.len() as u64,
+                summary_token_estimate: 2,
+                reason: "test".into(),
+            },
+            usage: None,
+        })
+    }
+}
+
+fn tiny_middleware(policy: SummarizationPolicy) -> ContextCompressionMiddleware {
+    ContextCompressionMiddleware::with_summarizer(policy, Box::new(TinySummarizer))
+}
+
 fn small_window_policy() -> SummarizationPolicy {
     SummarizationPolicy::default()
         .with_context_window(100)
@@ -2026,7 +2050,7 @@ async fn context_compression_overflow_retries_once_and_compacts() {
         calls: calls.clone(),
         fail_times: 1,
     };
-    let mw = Arc::new(ContextCompressionMiddleware::new(small_window_policy()));
+    let mw = Arc::new(tiny_middleware(small_window_policy()).with_max_overflow_attempts(1));
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_model_middleware(mw.clone());
 
@@ -2073,7 +2097,7 @@ async fn context_compression_overflow_propagates_after_second_failure() {
         calls: calls.clone(),
         fail_times: usize::MAX,
     };
-    let mw = Arc::new(ContextCompressionMiddleware::new(small_window_policy()));
+    let mw = Arc::new(tiny_middleware(small_window_policy()).with_max_overflow_attempts(1));
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_model_middleware(mw.clone());
 
@@ -2136,7 +2160,7 @@ async fn context_compression_before_compaction_decline_leaves_transcript_untouch
         fail_times: 1,
     };
     let mw = Arc::new(
-        ContextCompressionMiddleware::new(small_window_policy())
+        tiny_middleware(small_window_policy())
             .with_before_compaction(|_ctx: &CompactionContext| CompactionDecision::Decline),
     );
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();

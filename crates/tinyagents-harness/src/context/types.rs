@@ -501,6 +501,23 @@ pub struct RunContext<Ctx = ()> {
     /// `None` outside that window, and always `None` for a caller that never
     /// goes through the agent loop.
     pub active_model_call: Option<CallId>,
+    /// Whether the model call most recently dispatched by the agent loop used
+    /// the streaming path. Set by the loop's innermost model call before the
+    /// wrap middleware sees the result, so a middleware can tell that
+    /// discarding a response would also discard output a consumer already
+    /// received as deltas.
+    pub call_streamed: bool,
+    /// Identifies the current shape of the prompt prefix: `0` until a
+    /// middleware that rewrites it (a compaction, a truncation) calls
+    /// [`RunContext::mark_prompt_prefix_changed`], then a process-unique
+    /// value. Provider cache accounting keys on it so the uncached tokens of a
+    /// deliberately rewritten prefix are not reported as a miss.
+    pub(crate) prefix_epoch: u64,
+    /// Usage of responses a wrap middleware paid for and then discarded (a
+    /// retry after an overflow reported by a successful response). The agent
+    /// loop folds it into the run's totals and the host budget at its next
+    /// accounting point; see [`RunContext::record_discarded_usage`].
+    pub(crate) discarded_usage: Vec<tinyinference_llm::usage::Usage>,
     /// Resolutions for the deferred tool calls left pending on the transcript
     /// this run is resuming (A2). Taken by the agent loop before its first
     /// model call and applied to the unanswered tool calls on the last

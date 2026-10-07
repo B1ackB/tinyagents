@@ -25,10 +25,13 @@
 
 mod checkpoint;
 pub mod compaction;
+mod file_ops;
 mod model_summarizer;
 pub mod pairing;
 mod render;
 mod resilient;
+mod response_overflow;
+mod split_turn;
 pub mod task_state;
 mod trim;
 mod types;
@@ -36,7 +39,11 @@ mod types;
 pub use checkpoint::{CHECKPOINT_PREFIX, checkpoint_body, checkpoint_message, is_checkpoint};
 pub use compaction::{
     CompactionContext, CompactionDecision, CutPoint, OverflowClassifier, OverflowInfo,
-    OverflowProbe, find_cut_point, summarize_with_split,
+    OverflowProbe, find_cut_point, summarize_kind_with_split, summarize_with_split,
+};
+pub use file_ops::{
+    DefaultFileOpExtractor, FileOpExtractor, FileOperations, MAX_LISTED_FILES,
+    append_file_sections, extract_file_operations, split_file_sections,
 };
 pub use model_summarizer::{
     DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,
@@ -49,6 +56,8 @@ pub use pairing::{
 };
 pub use render::render_message_for_summary;
 pub use resilient::FaultTolerantCachingSummarizer;
+pub use response_overflow::{ResponseOverflowDetection, detect_response_overflow};
+pub use split_turn::{SPLIT_TURN_HEADING, split_turn_start, summarize_split_turn};
 pub use task_state::{DEFAULT_TASK_STATE_CHUNK_TOKENS, TaskLedger, TaskState, TaskStateSummarizer};
 pub use trim::{trim_messages, trim_messages_to_token_budget_with, trim_messages_with};
 pub use types::*;

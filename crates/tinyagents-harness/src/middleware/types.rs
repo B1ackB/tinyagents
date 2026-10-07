@@ -917,7 +917,30 @@ pub struct ContextCompressionMiddleware {
     /// the policy's `keep_last` messages (see
     /// [`crate::summarization::SummarizationPolicy::plan_recent_tokens`]).
     pub(crate) keep_recent_tokens: Option<u64>,
+    /// Compaction attempts one model call may make when the provider reports
+    /// an overflow. See [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`].
+    pub(crate) max_overflow_attempts: u32,
+    /// Which successful-response signals count as an overflow. See
+    /// [`crate::summarization::ResponseOverflowDetection`].
+    pub(crate) response_overflow: crate::summarization::ResponseOverflowDetection,
+    /// Byte cap for the truncate-oversized-tool-results route; `None` (the
+    /// default) never truncates. See
+    /// [`ContextCompressionMiddleware::with_tool_result_truncation`].
+    pub(crate) tool_result_truncation: Option<usize>,
+    /// Whether a cut inside a turn gives the turn's prefix its own summary
+    /// request. See
+    /// [`ContextCompressionMiddleware::with_split_turn_prefix`].
+    pub(crate) split_turn_prefix: bool,
+    /// Derives the `<read-files>` / `<modified-files>` lists appended to each
+    /// compaction summary; `None` appends nothing. See
+    /// [`crate::summarization::FileOpExtractor`].
+    pub(crate) file_ops: Option<std::sync::Arc<dyn crate::summarization::FileOpExtractor>>,
 }
+
+/// Default number of compaction attempts one model call may make after the
+/// provider reports a context overflow. Each attempt must shrink the request,
+/// so the budget bounds cost, not correctness.
+pub const DEFAULT_MAX_OVERFLOW_ATTEMPTS: u32 = 3;
 
 /// Default number of ineffective compactions in a row (the next real prompt
 /// still at or above the trigger) that engage the anti-thrash guard.
@@ -953,6 +976,10 @@ pub(crate) struct RunCompaction {
     /// Once the host has persisted a compressed transcript, subsequent
     /// boundaries are in that shortened transcript's coordinates.
     pub(crate) boundary_unaligned: bool,
+    /// Set once a truncate route has run for this run: every later request has
+    /// its oversized tool results cut again (a pure, idempotent rewrite), so
+    /// the prompt prefix stays byte-stable and the measured size stays valid.
+    pub(crate) truncating: bool,
     /// Monotonic touch stamp for least-recently-used eviction.
     pub(crate) touched: u64,
     /// Usage-based trigger and anti-thrash state. See [`CompactionPressure`].
@@ -1141,6 +1168,13 @@ pub struct PromptCacheGuardMiddleware {
     pub(crate) events: Mutex<VecDeque<CacheLayoutEvent>>,
     /// Eviction cap for `events`.
     pub(crate) max_events: usize,
+    /// Per-conversation prompt-cache miss accounting, fed from each
+    /// response's usage. See [`crate::cache::PromptCacheTracker`].
+    pub(crate) cache_misses: Mutex<crate::cache::PromptCacheTracker>,
+    /// Latest rewritten-prefix epoch for each durable conversation thread.
+    /// Fresh run contexts start at epoch zero, so this preserves the cache key
+    /// after a compacted transcript is carried into a later run.
+    pub(crate) thread_epochs: Mutex<std::collections::HashMap<crate::ids::ThreadId, u64>>,
 }
 
 // ── UsageAccountingMiddleware ─────────────────────────────────────────────────

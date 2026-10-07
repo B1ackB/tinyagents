@@ -244,6 +244,39 @@ events.
 The usage feature should record provider prompt-cache hits separately from local
 response-cache hits.
 
+### Prompt-cache miss accounting
+
+`PromptCacheGuardMiddleware` also watches the *provider's* prompt cache. After
+each model call, `PromptCacheTracker` (`cache::miss`, a port of pi's
+`cache-stats.ts`) compares `usage.cache_read_tokens` with the previous call's
+prompt size for the same conversation. The expected read is the smaller of the
+previous and current prompt; when the cache read falls short of it by more than
+the noise floor, `AgentEvent::PromptCacheMiss { call_id, expected_cached_tokens,
+cached_tokens, wasted_input_tokens }` (`cache.prompt_miss`) is emitted. The
+extra tokens were re-billed as fresh input. Distinct from `CacheMiss`, which is
+a *response*-cache lookup miss. Reporting only: nothing warms or retries a cache.
+
+- **Key:** the run's thread id when it has one (a provider cache spans the runs
+  of a thread), else the run *instance* id (a run id is a label two runs may
+  share), plus the context's prompt-prefix epoch
+  (`RunContext::mark_prompt_prefix_changed`). `ContextCompressionMiddleware`
+  bumps the epoch whenever it rewrites the prefix on purpose (a compaction,
+  including an overflow retry, a deterministic trim, a tool-result truncation),
+  so the next call starts a fresh baseline instead of reporting a miss. The
+  baseline is also per resolved model: a call answered by a different model than
+  the previous one has none. At most 256 keys are tracked.
+- **Noise floor:** 1 024 tokens by default
+  (`DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS`): providers cache in blocks and place
+  breakpoints at fixed granularity, so a shortfall at or below it is normal.
+  `with_cache_miss_noise_floor` changes it.
+- **Not a miss:** the first call of a key; a provider that has never reported
+  `cache_read`/`cache_creation` tokens for the key (it does not cache, or does
+  not say so); a cache-served response; and the call after the guard saw the
+  stable prefix change (the `CacheLayoutEvent` already explains it, and a
+  compaction legitimately rewrites the prefix).
+- `usage.input_tokens` is taken as the whole prompt, with cache reads a subset
+  of it, as the rest of the crate does.
+
 ## Backends
 
 - `InMemoryResponseCache` — bounded on **both** an entry count and an
