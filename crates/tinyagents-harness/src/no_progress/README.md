@@ -44,6 +44,9 @@ hook" section in `mod.rs` for that contract.
   are usually the result itself. An outcome that is *only*
   volatile (a bare commit id or checksum: fewer than four alphanumeric
   characters left outside the spans) is compared verbatim. The normalizer is
+  deliberately identity-preserving for explicit state timestamps in
+  `event_at`, `eventat`, `created_at`, `updated_at`, and `timestamp` fields;
+  this includes quoted JSON forms and whitespace before the colon.
   text-based and does not parse JSON, so a volatile field is only blanked when
   its value matches one of those patterns (a counter or opaque message id
   under an arbitrary key is not). `NoProgressTracker` uses it on the first

@@ -49,6 +49,14 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
         "event_at: 2026-10-06T12:34:57Z",
     );
     differ(
+        "event_at : 2026-10-06T12:34:56Z",
+        "event_at : 2026-10-06T12:34:57Z",
+    );
+    differ(
+        r#"{"event_at" : "2026-10-06T12:34:56Z"}"#,
+        r#"{"event_at" : "2026-10-06T12:34:57Z"}"#,
+    );
+    differ(
         "2026-10-06T12:34:56Z started",
         "2026-10-06T12:34:56Z stopped",
     );
@@ -70,6 +78,10 @@ fn clock_times_are_normalized() {
         "position (00:00:01) processed",
         "position (00:00:02) processed",
     );
+    differ(
+        "position [00:00:01] processed",
+        "position [00:00:02] processed",
+    );
     same("logged at (12:34:56) ready", "logged at (01:02:03) ready");
 }
 
@@ -87,6 +99,10 @@ fn epoch_numbers_are_normalized_only_under_a_time_key() {
         "updated_at: 1759752999 saved",
     );
     differ("event_at : 1759752896 x", "event_at : 1759752999 x");
+    differ(
+        "updated_at : 1759752896 saved",
+        "updated_at : 1759752999 saved",
+    );
     differ(
         r#"{"status":"running","updated_at":1759752896}"#,
         r#"{"status":"running","updated_at":1759752999}"#,
@@ -198,6 +214,10 @@ fn uuids_are_normalized_but_long_hex_ids_are_content() {
     differ(
         r#"{"event_id": "123e4567-e89b-12d3-a456-426614174000", "status":"ready"}"#,
         r#"{"event_id": "00000000-1111-2222-3333-444444444444", "status":"ready"}"#,
+    );
+    differ(
+        r#"{"event_id" : "123e4567-e89b-12d3-a456-426614174000", "status":"ready"}"#,
+        r#"{"event_id" : "00000000-1111-2222-3333-444444444444", "status":"ready"}"#,
     );
     differ(
         r#"{"session_id":"123e4567-e89b-12d3-a456-426614174000","status":"started"}"#,
