@@ -12,6 +12,8 @@
 //! kind of turn boundary, replacing the field-by-field resets that used to be
 //! repeated at each exit of the loop body.
 
+use super::types::TurnRecovery;
+
 impl TurnRecovery {
     /// Grows the next request's output cap after a length-truncated reply:
     /// double the cap last sent, clamped at 4x the original. An unset cap

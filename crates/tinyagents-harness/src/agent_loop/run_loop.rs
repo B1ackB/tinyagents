@@ -6,8 +6,8 @@
 //! the full loop lifecycle, limits, and backoff design.
 
 use super::handoff_transform;
-use super::types::{MixedStructuredTurn, ResponseTurn, ToolSurface, TruncationOutcome, TurnFlow, TurnRecovery};
 use super::model_call::ModelCallBase;
+use super::types::{MixedStructuredTurn, ResponseTurn, TruncationOutcome, TurnFlow, TurnRecovery};
 use super::*;
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
