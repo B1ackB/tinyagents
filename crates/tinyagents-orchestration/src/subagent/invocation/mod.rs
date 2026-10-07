@@ -724,11 +724,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         // Reserve the slot atomically before anything is spawned. The guard
         // refunds on every early return below; it is committed once the child
         // is registered and then lives exactly as long as the child runs.
-        let mut reservation = match self.admission.try_reserve(
-            parent.lineage().root_run_id.as_str(),
-            parent.run_id().as_str(),
-            self.subagent.name(),
-        ) {
+        let mut reservation = match self
+            .admission
+            .try_reserve(&parent.config, self.subagent.name())
+        {
             Ok(reservation) => reservation,
             Err(rejection) => {
                 tracing::debug!(

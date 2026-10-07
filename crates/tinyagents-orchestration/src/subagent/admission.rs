@@ -226,32 +226,31 @@ impl SpawnAdmission {
     }
 
     /// Atomically checks every limit and, if all pass, reserves a slot for a
-    /// new child of `parent_run_id` in the tree rooted at `root_run_id`.
+    /// new child spawned by the parent described by `parent` (its config; the
+    /// scope is resolved from it).
     pub fn try_reserve(
         &self,
-        root_run_id: &str,
-        parent_run_id: &str,
+        parent: &RunConfig,
         target: &str,
     ) -> Result<SpawnReservation, SpawnRejection> {
-        self.reserve(root_run_id, parent_run_id, target, true)
+        self.reserve(self.scope_of(parent), target, true)
     }
 
     /// Like [`Self::try_reserve`] for resuming an *existing* child: it takes a
-    /// live slot (so the resumed run counts against the parent cap) but not
-    /// another unit of the root's total budget, which the original spawn paid.
+    /// live slot (so the resumed run counts against the scope's live cap) but
+    /// not another unit of the total budget, which the original spawn paid. The
+    /// scope is resolved exactly as for a fresh spawn.
     pub fn try_reserve_continuation(
         &self,
-        root_run_id: &str,
-        parent_run_id: &str,
+        parent: &RunConfig,
         target: &str,
     ) -> Result<SpawnReservation, SpawnRejection> {
-        self.reserve(root_run_id, parent_run_id, target, false)
+        self.reserve(self.scope_of(parent), target, false)
     }
 
     fn reserve(
         &self,
-        root_run_id: &str,
-        parent_run_id: &str,
+        scope: String,
         target: &str,
         counts_toward_total: bool,
     ) -> Result<SpawnReservation, SpawnRejection> {
@@ -262,62 +261,43 @@ impl SpawnAdmission {
                 SpawnRejection::TargetNotAllowed {
                     target: target.to_owned(),
                 },
-                parent_run_id,
+                &scope,
             ));
         }
         let mut ledger = self.ledger.lock();
         if counts_toward_total && let Some(max) = self.policy.max_total_per_root {
-            let spawned = ledger
-                .spawned_per_scope
-                .get(root_run_id)
-                .copied()
-                .unwrap_or(0);
+            let spawned = ledger.spawned_per_scope.get(&scope).copied().unwrap_or(0);
             if spawned >= max {
                 drop(ledger);
-                return Err(self.reject(
-                    SpawnRejection::MaxTotalPerRoot { spawned, max },
-                    parent_run_id,
-                ));
+                return Err(self.reject(SpawnRejection::MaxTotalPerRoot { spawned, max }, &scope));
             }
         }
         if let Some(max) = self.policy.max_children_per_parent {
-            let active = ledger
-                .active_per_scope
-                .get(parent_run_id)
-                .copied()
-                .unwrap_or(0);
+            let active = ledger.active_per_scope.get(&scope).copied().unwrap_or(0);
             if active >= max {
                 drop(ledger);
                 return Err(self.reject(
                     SpawnRejection::MaxChildrenPerParent { active, max },
-                    parent_run_id,
+                    &scope,
                 ));
             }
         }
-        *ledger
-            .active_per_scope
-            .entry(parent_run_id.to_owned())
-            .or_default() += 1;
+        *ledger.active_per_scope.entry(scope.clone()).or_default() += 1;
         if counts_toward_total {
-            *ledger
-                .spawned_per_scope
-                .entry(root_run_id.to_owned())
-                .or_default() += 1;
+            *ledger.spawned_per_scope.entry(scope.clone()).or_default() += 1;
         }
-        tracing::debug!(
-            "{LOG_PREFIX} reserved parent={parent_run_id} root={root_run_id} target={target}"
-        );
+        drop(ledger);
+        tracing::debug!("{LOG_PREFIX} reserved scope={scope} target={target}");
         Ok(SpawnReservation {
             admission: self.clone(),
-            root_run_id: root_run_id.to_owned(),
-            parent_run_id: parent_run_id.to_owned(),
+            scope,
             counts_toward_total,
             committed: false,
         })
     }
 
-    fn reject(&self, rejection: SpawnRejection, parent_run_id: &str) -> SpawnRejection {
-        tracing::debug!("{LOG_PREFIX} rejected parent={parent_run_id} reason={rejection}");
+    fn reject(&self, rejection: SpawnRejection, scope: &str) -> SpawnRejection {
+        tracing::debug!("{LOG_PREFIX} rejected scope={scope} reason={rejection}");
         rejection
     }
 }
@@ -327,15 +307,14 @@ impl SpawnAdmission {
 #[derive(Debug)]
 pub struct SpawnReservation {
     admission: SpawnAdmission,
-    root_run_id: String,
-    parent_run_id: String,
+    scope: String,
     counts_toward_total: bool,
     committed: bool,
 }
 
 impl SpawnReservation {
     /// Marks the spawn as having happened. The live slot is still released on
-    /// drop (the child's terminal state), but the root's total budget stays
+    /// drop (the child's terminal state), but the scope's total budget stays
     /// spent.
     pub fn commit(&mut self) {
         self.committed = true;
@@ -345,13 +324,14 @@ impl SpawnReservation {
 impl Drop for SpawnReservation {
     fn drop(&mut self) {
         let mut ledger = self.admission.ledger.lock();
-        decrement(&mut ledger.active_per_scope, &self.parent_run_id);
+        decrement(&mut ledger.active_per_scope, &self.scope);
         if self.counts_toward_total && !self.committed {
-            decrement(&mut ledger.spawned_per_scope, &self.root_run_id);
+            decrement(&mut ledger.spawned_per_scope, &self.scope);
         }
+        drop(ledger);
         tracing::debug!(
-            "{LOG_PREFIX} released parent={} committed={}",
-            self.parent_run_id,
+            "{LOG_PREFIX} released scope={} committed={}",
+            self.scope,
             self.committed
         );
     }

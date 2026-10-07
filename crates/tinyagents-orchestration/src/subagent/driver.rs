@@ -294,21 +294,30 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
 
         // Reserve before any planner/executor work. A resumed lifecycle is an
         // existing child, so it takes a live slot but no new total budget.
-        let target = match (request.target(), &self.admission.policy().allowed_targets) {
-            (Some(target), _) => target.to_owned(),
+        // The scope resolves from the parent as the key describes it: the
+        // durable thread when there is one, else the parent run id. Fresh spawns
+        // and continuations resolve identically.
+        let mut parent_config = RunConfig::new(task_key.parent_run_id.as_str());
+        if let Some(thread) = &task_key.thread_id {
+            parent_config = parent_config.with_thread(thread.as_str());
+        }
+        let target = match request.target() {
+            Some(target) => target,
             // Fail closed: an allowlist cannot vet a target it was never told.
-            (None, Some(_)) => "<unspecified>".to_owned(),
-            (None, None) => String::new(),
+            None if self.admission.policy().allowed_targets.is_some() => {
+                return Err(SubagentError::SpawnRejected(
+                    SpawnRejection::TargetNotAllowed {
+                        target: String::new(),
+                    },
+                ));
+            }
+            None => "",
         };
         let reservation = if request.resume().is_some() {
-            self.admission.try_reserve_continuation(
-                &task_key.root_run_id,
-                &task_key.parent_run_id,
-                &target,
-            )
-        } else {
             self.admission
-                .try_reserve(&task_key.root_run_id, &task_key.parent_run_id, &target)
+                .try_reserve_continuation(&parent_config, target)
+        } else {
+            self.admission.try_reserve(&parent_config, target)
         };
         let mut reservation = reservation.map_err(SubagentError::SpawnRejected)?;
 

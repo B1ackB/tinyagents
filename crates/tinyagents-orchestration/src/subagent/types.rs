@@ -435,6 +435,7 @@ pub enum SubagentTerminalPersistenceDisposition {
 /// Typed lifecycle failures. Adapters classify their errors at the seam that
 /// owns them; the driver never flattens them into an untyped host error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubagentError {
     /// A supplied context or durable key violates neutral lifecycle invariants.
     InvalidRequest(String),
