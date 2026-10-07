@@ -721,23 +721,44 @@ async fn cancellation_during_the_idle_wait_is_cancelled_not_a_timeout() {
     assert_eq!(began.elapsed(), Duration::from_millis(300));
 }
 
+/// Burns **real** time (not virtual) before every model call, standing in for
+/// scheduling delay on a loaded CI box.
+struct RealStall(Duration);
+
+#[async_trait]
+impl crate::middleware::Middleware<(), ()> for RealStall {
+    fn name(&self) -> &str {
+        "real_stall"
+    }
+    async fn before_model(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        _request: &mut ModelRequest,
+    ) -> crate::error::Result<()> {
+        std::thread::sleep(self.0);
+        Ok(())
+    }
+}
+
 /// The run deadline is measured by the limit tracker on the **real** clock
-/// (`std::time::Instant`), while this test's stream runs on tokio's paused
-/// virtual clock. Real time spent between building the context and issuing the
-/// call (scheduling, a loaded CI box) is therefore subtracted from the budget
-/// the call gets, so the virtual time to the timeout is `500ms - real_elapsed`,
-/// not exactly `500ms`. The test used to assert exact equality and failed
-/// whenever more than ~1ms of real time passed. `stall` makes that real delay
-/// explicit and deterministic.
+/// (`std::time::Instant`, restarted when the run begins), while this test's
+/// stream runs on tokio's paused virtual clock. Real time spent between the run
+/// starting and the call being issued (scheduling, a loaded CI box) is
+/// therefore subtracted from the budget the call gets, so the virtual time to
+/// the timeout is `500ms - real_elapsed`, not exactly `500ms`. The test used to
+/// assert exact equality and failed whenever more than ~1ms of real time passed
+/// (it passed locally only because the loop is that fast). `stall` makes that
+/// real delay explicit and deterministic.
 async fn run_against_a_500ms_deadline(stall: Duration) -> (usize, Duration, TinyAgentsError) {
     let model = ScriptedStreams::new(vec![vec![started(), delta("a"), Step::Hang]]);
-    let harness = harness_with(
+    let mut harness = harness_with(
         model.clone(),
         RunLimits::default().with_stream_idle_timeout_ms(Some(60_000)),
         3,
     );
+    harness.push_middleware(Arc::new(RealStall(stall)));
     let ctx = RunContext::new(RunConfig::new("deadline-run").with_timeout_ms(500), ());
-    std::thread::sleep(stall);
 
     let began = Instant::now();
     let err = tokio::time::timeout(
