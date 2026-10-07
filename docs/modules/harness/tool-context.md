@@ -25,12 +25,20 @@ pub struct ToolExecutionContext {
     pub workspace: Option<tinytools::WorkspaceDescriptor>,
     pub store: Option<Arc<dyn NamespacedStore>>,        // RunContext::with_namespaced_store
     pub state_view: Option<Arc<dyn Any + Send + Sync>>, // RunContext::with_state_view
+    pub progress: Option<tinytools::ProgressSink>,      // sink behind report_progress (captured from the loop's gate)
 }
 impl ToolExecutionContext {
     pub fn state<S: 'static>(&self) -> Option<&S>;   // None on absent or mismatched type
     pub fn custom(&self, payload: serde_json::Value); // emits AgentEvent::Custom { call_id, payload }
 }
 ```
+
+A tool streams progress with the portable
+`ToolRunContext::report_progress(ToolProgress::message("...").with_fraction(0.4))`
+(no downcast needed); the loop emits `AgentEvent::ToolProgressDetail` between the
+call's `ToolStarted` and terminal event and drops anything reported after the
+call has settled (see `streaming.md`). `custom` remains the channel for
+application-defined payloads the harness attaches no meaning to.
 
 `call_id` is the same id the transcript row and the `ToolStarted` /
 `ToolCompleted` events carry, so anything a tool records or emits correlates

@@ -782,16 +782,45 @@ pub enum AgentEvent {
     /// Defined for future emit when memory wiring lands.
     MemorySaved,
 
-    /// A long-running tool reported incremental progress before completing.
+    /// Legacy message-only progress shape. **The agent loop does not emit this
+    /// variant**; it emits [`AgentEvent::ToolProgressDetail`]. It is kept so
+    /// existing enum literals compile, and shares the `tool.progress` wire kind.
     ///
-    /// Defined for future emit: a tool that streams progress can surface it
-    /// here so UIs render activity between [`AgentEvent::ToolStarted`] and
-    /// [`AgentEvent::ToolCompleted`].
+    /// The ordering and flooding guarantees below describe the emitted
+    /// [`AgentEvent::ToolProgressDetail`]. Ordering guarantee: every progress event for a call falls between that call's
+    /// [`AgentEvent::ToolStarted`] and its terminal
+    /// [`AgentEvent::ToolCompleted`] / [`AgentEvent::ToolFailed`]; an update the
+    /// tool reports after the call has returned is dropped, never emitted late.
+    /// Calls in one concurrent batch interleave their progress freely. A tool
+    /// that floods is coalesced (see `crate::tool::ToolProgressLimits`), so the
+    /// stream is a faithful but possibly thinned view of what the tool reported.
     ToolProgress {
         /// Identifier for the in-flight tool call.
         call_id: CallId,
         /// Human-readable progress message.
         message: String,
+    },
+
+    /// A running tool reported incremental progress before completing, with
+    /// optional fraction and partial output. This is the variant the agent loop
+    /// emits (through [`tinytools::ToolRunContext::report_progress`]).
+    ///
+    /// The gate clamps `fraction` to `0.0..=1.0` (and drops NaN) before
+    /// emitting. The legacy [`AgentEvent::ToolProgress`] shape stays unchanged
+    /// so downstream enum literals continue to compile.
+    ToolProgressDetail {
+        /// Identifier for the in-flight tool call.
+        call_id: CallId,
+        /// Human-readable progress message; empty when the update carried only
+        /// a fraction or partial output.
+        #[serde(default)]
+        message: String,
+        /// Completion in `0.0..=1.0`, when the tool reported one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fraction: Option<f32>,
+        /// Partial output reported so far, passed through verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<serde_json::Value>,
     },
 
     /// An application-defined event a tool (or any holder of the run's
@@ -946,7 +975,9 @@ impl AgentEvent {
             AgentEvent::LimitReached { .. } => "limit.reached",
             AgentEvent::MemoryLoaded => "memory.loaded",
             AgentEvent::MemorySaved => "memory.saved",
-            AgentEvent::ToolProgress { .. } => "tool.progress",
+            AgentEvent::ToolProgress { .. } | AgentEvent::ToolProgressDetail { .. } => {
+                "tool.progress"
+            }
             AgentEvent::Custom { .. } => "custom",
             AgentEvent::MiddlewareFailed { .. } => "middleware.failed",
             AgentEvent::HandoffTransformApplied { .. } => "handoff.transform_applied",

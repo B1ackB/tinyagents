@@ -89,7 +89,7 @@ use super::model_call::ToolCallBase;
 use super::*;
 use crate::tool::{
     DeferredToolRequests, LedgerFailure, ToolDispatch, ToolEffectSettle, ToolEffectStart,
-    ToolEffectStatus, provider_schema,
+    ToolEffectStatus, ToolProgressGate, ToolProgressLimits, provider_schema,
 };
 use sha2::{Digest, Sha256};
 use tinyinference_llm::message::ContentBlock;
@@ -1475,6 +1475,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             timeout_settings: self.tool_timeouts.clone(),
         };
         let run_id = ctx.run_id().as_str().to_string();
+        let gate = self.open_progress_gate(ctx, &prepared);
         let fut = self.middleware.run_wrapped_tool(ctx, state, call, &base);
         // TinyTools distinguishes a fatal execution `Err` from a
         // recoverable `ToolResult::error`; no harness error-policy facade
@@ -1487,9 +1488,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             &run_id,
             "tool call",
             super::model_call::RUN_BOUND_LABEL,
-            guarded,
+            gate.scope(guarded),
         )
         .await;
+        // The call has settled (returned, failed, timed out): stop accepting
+        // progress and replay what it reported to middleware, all before the
+        // terminal event below.
+        gate.close();
+        self.replay_tool_progress(state, ctx, &gate).await;
         let (result, wrap_control) = match outcome {
             Ok(pair) => pair,
             Err(err) => {
@@ -1528,6 +1534,50 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             .await;
         self.finish_tool_call(state, ctx, run, status, messages, prepared, result)
             .await
+    }
+
+    /// Opens the progress gate for one executing call: the sink behind
+    /// `ToolRunContext::report_progress`. See [`ToolProgressGate`] for the
+    /// ordering guarantees the loop relies on.
+    fn open_progress_gate(
+        &self,
+        ctx: &RunContext<Ctx>,
+        prepared: &PreparedToolCall,
+    ) -> Arc<ToolProgressGate> {
+        ToolProgressGate::new(
+            prepared.call_id.clone(),
+            prepared.tool_name.clone(),
+            ctx.events.clone(),
+            ToolProgressLimits::default(),
+            // Nothing reads the replay queue when no middleware is registered.
+            !self.middleware.is_empty(),
+        )
+    }
+
+    /// Replays the progress a settled call reported to the middleware stack's
+    /// `on_tool_delta`, in order. Progress is advisory, so a failing hook is
+    /// logged (the stack has already fanned it out to `on_error`) and does not
+    /// fail the call.
+    async fn replay_tool_progress(
+        &self,
+        state: &State,
+        ctx: &mut RunContext<Ctx>,
+        gate: &ToolProgressGate,
+    ) {
+        for mut delta in gate.take_pending() {
+            if let Err(error) = self
+                .middleware
+                .run_on_tool_delta(ctx, state, &mut delta)
+                .await
+            {
+                tracing::warn!(
+                    target: "tinyagents::tool_progress",
+                    call_id = %delta.call_id,
+                    %error,
+                    "[tool_progress] on_tool_delta middleware failed; continuing"
+                );
+            }
+        }
     }
 
     /// Records a call deferred at admission (A2): emits `ToolDeferred` and
@@ -1710,6 +1760,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let mut slots: Vec<ToolSlot> = Vec::with_capacity(admitted.len());
         let mut prepared: Vec<PreparedToolCall> = Vec::new();
         let mut futures: Vec<_> = Vec::new();
+        // One progress gate per executing call, aligned with `prepared`.
+        let mut gates: Vec<Arc<ToolProgressGate>> = Vec::new();
         // Concurrent dispatch receives a shared parent snapshot; the mutable
         // run context stays with the fold phase after all futures complete.
         let parent_ctx: &RunContext<Ctx> = ctx;
@@ -1760,6 +1812,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 return Err(err);
             }
             slots.push(ToolSlot::Execute);
+            let gate = self.open_progress_gate(ctx, prepared.last().expect("just pushed"));
+            gates.push(Arc::clone(&gate));
 
             // Each call is bounded by its recoverable tool policy inside the
             // run's hard remaining wall-clock budget, mirroring serial mode.
@@ -1771,24 +1825,33 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();
             futures.push(async move {
-                let fut = execute_tool_recovering_model_retry(dispatch.execute(
-                    state,
-                    CallId::new(call.id),
-                    call.arguments,
-                    options,
-                    parent_ctx,
-                ));
-                let fut = Self::with_tool_policy_timeout(tool_timeout, timeout_result, fut);
-                // As in serial mode, canonical execution errors remain fatal;
-                // reported tool errors travel in `ToolResult::is_error`.
-                Self::with_call_budget(
-                    run_budget,
-                    &run_id,
-                    "tool call",
-                    super::model_call::RUN_BOUND_LABEL,
-                    fut,
-                )
-                .await
+                let body = async move {
+                    let fut = execute_tool_recovering_model_retry(dispatch.execute(
+                        state,
+                        CallId::new(call.id),
+                        call.arguments,
+                        options,
+                        parent_ctx,
+                    ));
+                    let fut = Self::with_tool_policy_timeout(tool_timeout, timeout_result, fut);
+                    // As in serial mode, canonical execution errors remain
+                    // fatal; reported tool errors travel in
+                    // `ToolResult::is_error`.
+                    Self::with_call_budget(
+                        run_budget,
+                        &run_id,
+                        "tool call",
+                        super::model_call::RUN_BOUND_LABEL,
+                        fut,
+                    )
+                    .await
+                };
+                let outcome = gate.scope(body).await;
+                // Close the moment *this* call settles, not when the whole
+                // batch has: a late update must not slip in while siblings
+                // are still running.
+                gate.close();
+                outcome
             });
         }
 
@@ -1810,7 +1873,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // Phase 4 — fold in original call order: the first call whose policy
         // kept its failure fatal (in that order) fails the turn; siblings
         // already ran to completion.
-        let mut executed = prepared.into_iter().zip(results);
+        let mut executed = prepared.into_iter().zip(gates).zip(results);
         let mut follow_ups = Vec::new();
         for slot in slots {
             match slot {
@@ -1824,9 +1887,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     self.defer_tool_call(ctx, status, request, &mut deferred);
                 }
                 ToolSlot::Execute => {
-                    let (prepared, result) = executed
+                    let ((prepared, gate), result) = executed
                         .next()
                         .expect("every Execute slot has a prepared/result pair");
+                    // Replay this call's progress to middleware before any
+                    // terminal event for it (its live events are already out).
+                    self.replay_tool_progress(state, ctx, &gate).await;
                     let result = match result {
                         Ok(result) => result,
                         Err(err) => {
@@ -1868,7 +1934,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             let aborted = TinyAgentsError::Tool(
                                 "aborted: sibling tool call failed".to_string(),
                             );
-                            for (sibling_prepared, _) in executed {
+                            for ((sibling_prepared, sibling_gate), _) in executed {
+                                self.replay_tool_progress(state, ctx, &sibling_gate).await;
                                 self.record_tool_effect_settled(
                                     ctx,
                                     &sibling_prepared,
@@ -2438,6 +2505,10 @@ pub(super) fn timeout_result(
 #[cfg(test)]
 #[path = "tools_canonical_result_tests.rs"]
 mod canonical_result_tests;
+
+#[cfg(test)]
+#[path = "tools_progress_tests.rs"]
+mod progress_tests;
 
 /// Stamps the metadata a refusing `before_tool` hook queued for `call_id`
 /// ([`RunContext::set_refusal_metadata`]) onto the result that answers it.

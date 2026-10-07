@@ -417,6 +417,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
     /// Runs every middleware's [`Middleware::on_tool_delta`] in registration
     /// order for one streamed tool-progress delta.
     ///
+    /// The agent loop calls this for every [`AgentEvent::ToolProgressDetail`] a
+    /// running tool produced through
+    /// [`tinytools::ToolRunContext::report_progress`]. The hook needs
+    /// `&mut RunContext`, which is lent to the tool for the duration of the
+    /// call, so the loop replays a call's deltas in order right after the call
+    /// settles and before its terminal event — see the `crate::tool` progress
+    /// gate for the full ordering contract.
+    ///
     /// Like [`Self::run_on_model_delta`], and for the same reason (M-12):
     /// this is **not** bracketed by `MiddlewareStarted`/`MiddlewareCompleted`
     /// events. It used to be the one delta hook still routed through

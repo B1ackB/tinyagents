@@ -114,15 +114,12 @@ Detailed lifecycle:
     `RunLimits::max_tool_concurrency` (`futures::stream::iter(..)
     .buffered(n)`; `None`, the default, is unbounded). Results always fold
     back in original call order.
-15. `on_tool_delta` middleware exists on the `Middleware` trait and
-    `MiddlewareChain::run_on_tool_delta` is implemented, but the agent loop
-    does not call it yet — no tool progress stream is wired up today.
-16. Run `after_tool` middleware per result.
-17. Append tool messages.
-18. Repeat until no tool calls remain.
-19. Validate structured output if configured.
-20. Registered host middleware may persist short-term memory.
-21. Emit final event and return `AgentRun`.
+15. Run `after_tool` middleware per result.
+16. Append tool messages.
+17. Repeat until no tool calls remain.
+18. Validate structured output if configured.
+19. Registered host middleware may persist short-term memory.
+20. Emit final event and return `AgentRun`.
 
 Hard limits:
 
