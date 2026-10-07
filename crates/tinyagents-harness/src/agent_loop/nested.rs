@@ -18,9 +18,27 @@
 //!   atomic in [`crate::limits::LimitTracker`], so concurrent parents cannot
 //!   overspend it, and model-issued admission counts reserved nested slots.
 //! - **Cancellation and wall clock**: the run's; a cancelled run refuses the
-//!   next nested call, and dropping the parent drops its in-flight nested calls.
+//!   next nested call, and dropping the parent drops its in-flight nested calls
+//!   (each gets a `ToolFailed`, so every `ToolStarted` has a terminal event).
 //! - **Events**: `ToolStarted`/`ToolCompleted`/`ToolFailed` with
-//!   `parent_call_id`, under the id `<parent call id>/<n>`.
+//!   `parent_call_id` (the *immediate* parent), under the id
+//!   `<parent call id>/<n>`.
+//! - **Effect ledger**: one row per nested call, keyed by the nested id.
+//!
+//! # What applies to a nested call, exactly
+//!
+//! Applies: tool lookup and the host allow-list, argument preparation and
+//! validation, the approval refusal, [`Middleware::check_nested_tool`] on every
+//! registered middleware, host authorization (with
+//! `ToolCallRequest::parent_call_id` set), the tool-wrap onion
+//! (`ToolMiddleware::wrap_tool`), timeouts, the run budget,
+//! [`Middleware::observe_nested_result`] after the call.
+//!
+//! Does **not** apply: `Middleware::before_tool` / `after_tool` proper (they
+//! take `&mut RunContext`, which a tool future holding `&RunContext` cannot
+//! lend), so enforcement that lives only in `before_tool` is *not* applied
+//! unless the middleware also implements `check_nested_tool`; the progress
+//! gate; host output screening; a result's `ToolControl`.
 //!
 //! # What a nested call deliberately does not do
 //!
@@ -29,13 +47,9 @@
 //!   attached to the *parent's* result metadata instead.
 //! - **No deferral.** The parent is mid-execution, so a nested call that would
 //!   need approval (or be deferred) fails with a clear error.
-//! - **No lifecycle hooks.** `before_tool`/`after_tool` take `&mut RunContext`,
-//!   which a tool future (holding `&RunContext`) cannot lend; the tool-wrap
-//!   onion (`ToolMiddleware::wrap_tool`, `&RunContext`) does run. Policy that
-//!   must hold for nested calls belongs in a wrap middleware.
-//! - **No progress gate, effect ledger, host output screening or tool control.**
-//!   The parent's gate, ledger row and screening cover the call as a whole; a
-//!   nested result's `ToolControl` is ignored.
+//! - **Unbounded refusals.** After [`MAX_NESTED_REFUSALS`] refused nested
+//!   calls a parent gets no more answers but a refusal, so a tool cannot loop
+//!   on free refusals (a refused call releases its budget slot).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,10 +61,15 @@ use futures::stream::FuturesUnordered;
 use serde_json::{Value, json};
 
 use super::model_call::ToolCallBase;
+use super::tools::PreparedToolCall;
+use crate::middleware::Middleware;
 use super::*;
-use crate::tool::{NestedToolRunner, provider_schema};
+use crate::tool::{NestedToolRunner, ToolEffectStatus, provider_schema};
 use tinytools::{ToolCall as CanonicalToolCall, ToolCallId};
 
+/// Refused nested calls one parent call may make before every further call is
+/// refused outright.
+const MAX_NESTED_REFUSALS: usize = 8;
 /// Longest `nested_calls` summary kept on a parent result's metadata.
 const MAX_NESTED_SUMMARIES: usize = 32;
 /// Longest serialized arguments kept in one summary entry, in bytes.
@@ -129,6 +148,7 @@ pub(super) struct NestedCalls<'a, State: Send + Sync, Ctx: Send + Sync> {
     /// Nesting level of that call: `0` for a model-issued call.
     level: usize,
     issued: AtomicUsize,
+    refused: AtomicUsize,
     summaries: std::sync::Mutex<Vec<NestedSummary>>,
     dropped_summaries: AtomicUsize,
 }
@@ -148,6 +168,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             parent,
             level,
             issued: AtomicUsize::new(0),
+            refused: AtomicUsize::new(0),
             summaries: std::sync::Mutex::new(Vec::new()),
             dropped_summaries: AtomicUsize::new(0),
         }
@@ -174,20 +195,28 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         }
     }
 
-    /// Runs one nested call, records its summary, and answers the tool.
+    /// Runs one nested call, records its summary, and answers the tool. If the
+    /// tool drops its `call_tool` future first, the nested call is dropped with
+    /// it (and reports a terminal event).
     async fn serve(&self, request: NestedRequest) {
         let NestedRequest {
             name,
             arguments,
-            reply,
+            mut reply,
         } = request;
         let index = self.issued.fetch_add(1, Ordering::SeqCst) + 1;
         let id = CallId::new(format!("{}/{index}", self.parent));
         let args = truncated_json(&arguments);
         let started = std::time::Instant::now();
-        let outcome = self
-            .harness
-            .run_nested_tool(
+        let refused_so_far = self.refused.load(Ordering::SeqCst);
+        let outcome = if refused_so_far >= MAX_NESTED_REFUSALS {
+            Some(Err(TinyAgentsError::ToolFailed(format!(
+                "nested call '{name}' refused: tool call '{}' already had {MAX_NESTED_REFUSALS} \
+                 nested calls refused",
+                self.parent
+            ))))
+        } else {
+            let run = self.harness.run_nested_tool(
                 self.state,
                 self.ctx,
                 &self.parent,
@@ -195,12 +224,26 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
                 self.level + 1,
                 &name,
                 arguments,
-            )
-            .await;
+            );
+            tokio::pin!(run);
+            tokio::select! {
+                (refused, outcome) = &mut run => {
+                    if refused {
+                        self.refused.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Some(outcome)
+                }
+                () = reply.cancellation() => None,
+            }
+        };
         let (status, error) = match &outcome {
-            Ok(result) if result.is_error => ("error", Some(truncate(&result.output(), 256))),
-            Ok(_) => ("ok", None),
-            Err(error) => ("failed", Some(truncate(&error.to_string(), 256))),
+            Some(Ok(result)) if result.is_error => ("error", Some(truncate(&result.output(), 256))),
+            Some(Ok(_)) => ("ok", None),
+            Some(Err(error)) => ("failed", Some(truncate(&error.to_string(), 256))),
+            None => (
+                "abandoned",
+                Some("the calling tool stopped waiting for the call".to_string()),
+            ),
         };
         self.record(NestedSummary {
             id: id.to_string(),
@@ -210,9 +253,11 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             args,
             error,
         });
-        // The tool may have been dropped (timeout, cancellation); nobody left
-        // to answer is not an error.
-        let _ = reply.send(outcome);
+        if let Some(outcome) = outcome {
+            // The tool may have been dropped (timeout, cancellation); nobody
+            // left to answer is not an error.
+            let _ = reply.send(outcome);
+        }
     }
 
     fn record(&self, summary: NestedSummary) {
@@ -281,12 +326,50 @@ fn truncated_json(value: &Value) -> String {
     )
 }
 
+/// Terminal-event guard for a started nested call: if the call's future is
+/// dropped before it settles (its parent timed out, was cancelled, or stopped
+/// waiting), the call still gets a `ToolFailed`, so every `ToolStarted` has
+/// exactly one terminal partner.
+struct StartedNested {
+    events: crate::events::EventSink,
+    call_id: CallId,
+    tool_name: String,
+    parent: CallId,
+    started_at_ms: u64,
+    armed: bool,
+}
+
+impl StartedNested {
+    fn settle(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StartedNested {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.events.emit(AgentEvent::ToolFailed {
+            call_id: self.call_id.clone(),
+            tool_name: self.tool_name.clone(),
+            started_at_ms: Some(self.started_at_ms),
+            duration_ms: Some(crate::ids::now_ms().saturating_sub(self.started_at_ms)),
+            error: "parent settled: the nested call was dropped before completing".to_string(),
+            parent_call_id: Some(self.parent.clone()),
+        });
+    }
+}
+
+type Admitted<State, Ctx> = (Arc<dyn crate::tool::ToolDispatch<State, Ctx>>, ToolCall);
+
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Admits and executes one nested call of `parent`, as nesting `level`.
     ///
-    /// The nested counterpart of `admit_tool_call` + the execution half of
-    /// `execute_tool_serially`; see the module docs for what it shares with
-    /// the model-issued path and what it leaves out.
+    /// Returns whether the call was *refused* before it ran (it counts toward
+    /// [`MAX_NESTED_REFUSALS`]) alongside the outcome. The nested counterpart
+    /// of `admit_tool_call` + the execution half of `execute_tool_serially`;
+    /// see the module docs for what it shares with the model-issued path.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_nested_tool(
         &self,
@@ -297,7 +380,163 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         level: usize,
         name: &str,
         arguments: Value,
-    ) -> Result<tinytools::ToolResult> {
+    ) -> (bool, Result<tinytools::ToolResult>) {
+        let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
+        let (dispatch, call) = match self.admit_nested(state, ctx, parent, level, call).await {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                tracing::debug!(
+                    target: "tinyagents::nested_tools",
+                    parent = %parent,
+                    call_id = %call_id,
+                    tool = name,
+                    %error,
+                    "[nested_tools] nested call refused at admission"
+                );
+                return (true, Err(error));
+            }
+        };
+
+        let options = dispatch.call_options(&call.arguments);
+        let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
+        let started_at_ms = crate::ids::now_ms();
+        let prepared = PreparedToolCall {
+            call_id: call_id.clone(),
+            tool_name: name.to_string(),
+            call: call.clone(),
+            options,
+            captured_input: captured_input.clone(),
+            started_at_ms,
+            executed: true,
+            output_origin: dispatch.output_origin(),
+        };
+        ctx.emit(AgentEvent::ToolStarted {
+            call_id: call_id.clone(),
+            tool_name: name.to_string(),
+            input: captured_input.clone(),
+            parent_call_id: Some(parent.clone()),
+        });
+        let mut guard = StartedNested {
+            events: ctx.events.clone(),
+            call_id: call_id.clone(),
+            tool_name: name.to_string(),
+            parent: parent.clone(),
+            started_at_ms,
+            armed: true,
+        };
+        // A durable row per nested call, so recovery sees the effects a parent
+        // had through `call_tool`, not only the parent's own row.
+        if let Err(error) = self
+            .record_tool_effect_started(ctx, &call.arguments, &prepared)
+            .await
+        {
+            guard.settle();
+            ctx.limits.release_nested_tool_call();
+            return (true, Err(self.fail_nested(ctx, &prepared, parent, error)));
+        }
+        let base = ToolCallBase {
+            harness: self,
+            dispatch,
+            options,
+            timeout_settings: self.tool_timeouts.clone(),
+            level,
+        };
+        let execution = futures::FutureExt::map(
+            self.middleware
+                .run_wrapped_tool(ctx, state, call.clone(), &base),
+            |result| result.map(|wrapped| wrapped.into_result_with_control()),
+        );
+        let outcome = Self::with_call_budget(
+            self.call_budget(ctx),
+            ctx.run_id().as_str(),
+            "nested tool call",
+            super::model_call::RUN_BOUND_LABEL,
+            execution,
+        )
+        .await;
+        guard.settle();
+        let duration_ms = crate::ids::now_ms().saturating_sub(started_at_ms);
+
+        match outcome {
+            Ok((result, control)) => {
+                if control.is_some() {
+                    tracing::debug!(
+                        target: "tinyagents::nested_tools",
+                        call_id = %call_id,
+                        tool = name,
+                        "[nested_tools] a wrap middleware's control request on a nested call is ignored"
+                    );
+                }
+                self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Completed)
+                    .await;
+                self.middleware
+                    .run_observe_nested_result(ctx, state, &call, &result)
+                    .await;
+                let output = result.output_for_llm(options.prefer_markdown);
+                let output_bytes = output.len() as u64;
+                ctx.emit(AgentEvent::ToolCompleted {
+                    call_id,
+                    tool_name: name.to_string(),
+                    started_at_ms: Some(started_at_ms),
+                    input: captured_input,
+                    output: self
+                        .policy
+                        .capture
+                        .tool_io
+                        .then(|| Value::String(output.clone())),
+                    duration_ms: Some(duration_ms),
+                    output_bytes: Some(output_bytes),
+                    error: result.is_error.then_some(output),
+                    metadata: result.metadata.clone(),
+                    parent_call_id: Some(parent.clone()),
+                });
+                (false, Ok(result))
+            }
+            Err(error) => {
+                // A tool the nested call reached may itself ask to be deferred;
+                // the parent cannot pause, so that is the same refusal.
+                let error = match error {
+                    TinyAgentsError::ApprovalRequired { .. }
+                    | TinyAgentsError::CallDeferred { .. } => approval_error(name),
+                    other => other,
+                };
+                self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Failed)
+                    .await;
+                (false, Err(self.fail_nested(ctx, &prepared, parent, error)))
+            }
+        }
+    }
+
+    /// Emits the terminal `ToolFailed` of a started nested call.
+    fn fail_nested(
+        &self,
+        ctx: &RunContext<Ctx>,
+        prepared: &PreparedToolCall,
+        parent: &CallId,
+        error: TinyAgentsError,
+    ) -> TinyAgentsError {
+        ctx.emit(AgentEvent::ToolFailed {
+            call_id: prepared.call_id.clone(),
+            tool_name: prepared.tool_name.clone(),
+            started_at_ms: Some(prepared.started_at_ms),
+            duration_ms: Some(crate::ids::now_ms().saturating_sub(prepared.started_at_ms)),
+            error: error.to_string(),
+            parent_call_id: Some(parent.clone()),
+        });
+        error
+    }
+
+    /// Depth, cancellation, deadline and budget checks, then admission. Holds
+    /// a budget slot on success; releases it on a refusal.
+    async fn admit_nested(
+        &self,
+        state: &State,
+        ctx: &RunContext<Ctx>,
+        parent: &CallId,
+        level: usize,
+        call: ToolCall,
+    ) -> Result<Admitted<State, Ctx>> {
+        let name = call.name.clone();
         let max_depth = self.policy.limits.max_nested_depth;
         if level > max_depth {
             return Err(TinyAgentsError::ToolFailed(format!(
@@ -322,113 +561,25 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             });
             return Err(error);
         }
-        let call = ToolCall::new(call_id.to_string(), name.to_string(), arguments);
-        let (dispatch, call) = match self.admit_nested_tool(ctx, call).await {
-            Ok(admitted) => admitted,
+        match self.admit_nested_tool(state, ctx, parent, call).await {
+            Ok(admitted) => Ok(admitted),
             Err(error) => {
                 // A refused call never ran: give the slot back.
                 ctx.limits.release_nested_tool_call();
-                tracing::debug!(
-                    target: "tinyagents::nested_tools",
-                    parent = %parent,
-                    call_id = %call_id,
-                    tool = name,
-                    %error,
-                    "[nested_tools] nested call refused at admission"
-                );
-                return Err(error);
-            }
-        };
-
-        let options = dispatch.call_options(&call.arguments);
-        let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
-        let started_at_ms = crate::ids::now_ms();
-        ctx.emit(AgentEvent::ToolStarted {
-            call_id: call_id.clone(),
-            tool_name: name.to_string(),
-            input: captured_input.clone(),
-            parent_call_id: Some(parent.clone()),
-        });
-        let base = ToolCallBase {
-            harness: self,
-            dispatch,
-            options,
-            timeout_settings: self.tool_timeouts.clone(),
-            level,
-        };
-        let execution = futures::FutureExt::map(
-            self.middleware
-                .run_wrapped_tool(ctx, state, call.clone(), &base),
-            |result| result.map(|wrapped| wrapped.into_result_with_control()),
-        );
-        let outcome = Self::with_call_budget(
-            self.call_budget(ctx),
-            ctx.run_id().as_str(),
-            "nested tool call",
-            super::model_call::RUN_BOUND_LABEL,
-            execution,
-        )
-        .await;
-        let duration_ms = crate::ids::now_ms().saturating_sub(started_at_ms);
-
-        match outcome {
-            Ok((result, control)) => {
-                if control.is_some() {
-                    tracing::debug!(
-                        target: "tinyagents::nested_tools",
-                        call_id = %call_id,
-                        tool = name,
-                        "[nested_tools] a wrap middleware's control request on a nested call is ignored"
-                    );
-                }
-                let output = result.output_for_llm(options.prefer_markdown);
-                let output_bytes = output.len() as u64;
-                ctx.emit(AgentEvent::ToolCompleted {
-                    call_id,
-                    tool_name: name.to_string(),
-                    started_at_ms: Some(started_at_ms),
-                    input: captured_input,
-                    output: self
-                        .policy
-                        .capture
-                        .tool_io
-                        .then(|| Value::String(output.clone())),
-                    duration_ms: Some(duration_ms),
-                    output_bytes: Some(output_bytes),
-                    error: result.is_error.then_some(output),
-                    metadata: result.metadata.clone(),
-                    parent_call_id: Some(parent.clone()),
-                });
-                Ok(result)
-            }
-            Err(error) => {
-                // A tool the nested call reached may itself ask to be deferred;
-                // the parent cannot pause, so that is the same refusal.
-                let error = match error {
-                    TinyAgentsError::ApprovalRequired { .. }
-                    | TinyAgentsError::CallDeferred { .. } => approval_error(name),
-                    other => other,
-                };
-                ctx.emit(AgentEvent::ToolFailed {
-                    call_id,
-                    tool_name: name.to_string(),
-                    started_at_ms: Some(started_at_ms),
-                    duration_ms: Some(duration_ms),
-                    error: error.to_string(),
-                    parent_call_id: Some(parent.clone()),
-                });
                 Err(error)
             }
         }
     }
 
-    /// Lookup, argument preparation and validation, the approval refusal and
-    /// host authorization for one nested call.
+    /// Lookup, argument preparation and validation, the approval refusal,
+    /// middleware admission checks and host authorization for one nested call.
     async fn admit_nested_tool(
         &self,
+        state: &State,
         ctx: &RunContext<Ctx>,
+        parent: &CallId,
         mut call: ToolCall,
-    ) -> Result<(Arc<dyn crate::tool::ToolDispatch<State, Ctx>>, ToolCall)> {
+    ) -> Result<Admitted<State, Ctx>> {
         let name = call.name.clone();
         let allowed_tools = self.resolve_tool_allowlist(ctx)?;
         let is_allowed = allowed_tools
@@ -489,13 +640,33 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             return Err(approval_error(&name));
         }
 
+        // The enforcement `before_tool` would have applied, over `&RunContext`.
+        if let Err(error) = self
+            .middleware
+            .run_check_nested_tool(ctx, state, &call)
+            .await
+        {
+            return Err(match error {
+                TinyAgentsError::ToolFailed(_)
+                | TinyAgentsError::Cancelled
+                | TinyAgentsError::Timeout(_) => error,
+                TinyAgentsError::ApprovalRequired { .. }
+                | TinyAgentsError::CallDeferred { .. }
+                | TinyAgentsError::Interrupted { .. } => approval_error(&name),
+                other => TinyAgentsError::ToolFailed(format!(
+                    "nested call '{name}' refused: {other}"
+                )),
+            });
+        }
+
         if let Some(binding) = crate::runtime::host_invocation_binding::<State, Ctx>(ctx)? {
             let request = crate::host::ToolCallRequest::new(
                 name.clone(),
                 model_arguments,
                 binding.agent_id.clone(),
             )
-            .with_call_id(CallId::new(call.id.clone()));
+            .with_call_id(CallId::new(call.id.clone()))
+            .with_parent_call_id(parent.clone());
             let authorization = binding.host.security.authorize_tool(&request);
             let decision = ctx
                 .bounded(self.call_budget(ctx), authorization, || {
