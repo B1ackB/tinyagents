@@ -105,6 +105,24 @@ tool calling must not silently fall back to a model without tool calling.
 Fallback events should include the failed model, selected model, error class,
 and attempt count.
 
+### Reason-aware failover
+
+Retry and fallback are not one boolean. The model call classifies each failure
+into a `FailoverReason` and applies `decide(reason, state)`:
+
+| Reason | Decision |
+| --- | --- |
+| `RateLimit`, `Overloaded`, `Timeout`, `Transport`, `EmptyResponse`, `Unknown` | retry the same model while the retry policy allows, then fall back |
+| `Auth`, `Billing`, `ModelNotFound` | fall back immediately (a retry cannot change the answer) |
+| `AuthPermanent` | fall back immediately and skip the model for the rest of the run |
+| `Format` | surface immediately, unless the failure is model-specific capability (then fall back) |
+| `ContextOverflow` | surface immediately (compaction handles it) |
+
+Host impact: a fallback chain is no longer walked for malformed requests or
+context overflows, and a rejected credential is attempted once per model per
+call instead of `max_attempts` times. Classification and the table live in
+`crates/tinyagents-harness/src/retry/failover.rs`.
+
 ## Rate Limiting
 
 Rate limiting should be separate from LLM token accounting. It paces requests;

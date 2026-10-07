@@ -44,6 +44,9 @@ taxonomy and `Retry-After` parsing are consumed directly from
   message-text parsing.
 - [`FallbackPolicy`] — `new`, `next_after` (advance to the next model on
   failure).
+- [`FailoverReason`], [`decide`], [`FailoverDecision`], [`FailoverState`] —
+  reason-aware failover (`failover.rs`): classify *why* a call failed and
+  choose retry-same / fallback / surface. See the table below.
 - [`RateLimiter`] — `new(capacity, refill_per_sec)`, `try_acquire(tokens,
   now)`, `available(now)`, `capacity`, `refill_per_sec`, `can_ever_acquire`.
 - [`JITTER_FRACTION`] — the ± band jitter spreads backoff over.
@@ -54,8 +57,28 @@ taxonomy and `Retry-After` parsing are consumed directly from
 | --- | --- |
 | `mod.rs` | Method implementations for all three policies, `is_retryable`, `retry_after_hint`. |
 | `types.rs` | The declarative structs/type aliases (`RetryPolicy`, `FallbackPolicy`, `RateLimiter`, `RetryPredicate`) plus hand-written `Debug`/`PartialEq` where a boxed closure blocks the derive. |
+| `failover.rs` | `FailoverReason` classification (reusing `classify_provider_failure` and the provider-body matchers), the pure `decide` table, `is_model_specific_format`. |
+| `failover_tests.rs` | Classification and decision-table tests. |
 | `jitter.rs` | A minimal, dependency-free `xorshift64*` RNG used only for backoff jitter spread — never security-relevant, and always bypassable in tests via an explicit `rand01`. |
 | `test.rs` | Backoff growth/capping, jitter scaling/clamping, `should_retry` boundaries, `is_retryable` classification, `FallbackPolicy` traversal, and token-bucket behavior. |
+
+## Reason-aware failover
+
+The agent loop's model call asks `decide(reason, state)` after every failed
+attempt; the same reason is logged (`[failover]` target lines) and drives:
+
+| Reason | Decision |
+| --- | --- |
+| `RateLimit`, `Overloaded`, `Timeout`, `Transport`, `EmptyResponse`, `Unknown` | `RetrySame` while the retry policy calls the error transient and attempts remain, then `Fallback` |
+| `Auth`, `Billing`, `ModelNotFound` | `Fallback` at once; no same-model retry |
+| `AuthPermanent` (revoked / deactivated / suspended credential) | `Fallback` at once and the model is skipped for the rest of the run (`LimitTracker::skip_model_for_run`; surfaced as `FallbackSkipped`) |
+| `Format` | `Surface` (another model will not fix a malformed request), unless `is_model_specific_format` (tools / vision / a parameter the model does not support) — then `Fallback` |
+| `ContextOverflow` | `Surface`; compaction, not another model, is the remedy |
+
+A custom `RetryPolicy::retry_on` still vetoes retries for the transient
+reasons but cannot re-enable same-model retries for the permanent ones.
+The skip hint is advisory: a skipped model is still tried when no eligible
+fallback remains. A hosted resolver's single decision is never failed over.
 
 ## Operational constraints
 
