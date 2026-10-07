@@ -88,7 +88,12 @@ impl InMemoryTranscriptHistory {
 
     /// Returns the transcript's session ID, if set.
     pub fn session_id(&self) -> Option<String> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).meta.session_id.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .meta
+            .session_id
+            .clone()
     }
 
     /// Records the display-only `partial` of an interrupted turn.
