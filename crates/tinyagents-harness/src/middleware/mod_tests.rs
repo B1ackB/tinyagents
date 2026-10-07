@@ -1578,7 +1578,7 @@ struct CountingModelBase {
 impl ModelBaseCall<(), ()> for CountingModelBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a RunContext,
+        _ctx: &'a mut RunContext,
         _state: &'a (),
         _request: ModelRequest,
     ) -> BoxModelFuture<'a> {
@@ -1899,7 +1899,7 @@ async fn wrap_tool_short_circuits_without_calling_base() {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_tool_middleware(Arc::new(ShortCircuitTool { content: "canned" }));
 
-    let mut c = ctx();
+    let c = ctx();
     let result = stack
         .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
@@ -1921,7 +1921,7 @@ async fn wrap_tool_calls_next_then_mutates_result() {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_tool_middleware(Arc::new(MutateAfterTool));
 
-    let mut c = ctx();
+    let c = ctx();
     let result = stack
         .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
@@ -1943,7 +1943,7 @@ async fn wrap_tool_retries_next_until_success() {
     let mut stack: MiddlewareStack<()> = MiddlewareStack::new();
     stack.push_tool_middleware(Arc::new(RetryTool { max: 5 }));
 
-    let mut c = ctx();
+    let c = ctx();
     let result = stack
         .run_wrapped_tool(&c, &(), tool_call(), &base)
         .await
@@ -1975,7 +1975,7 @@ struct OverflowThenSucceedBase {
 impl ModelBaseCall<(), ()> for OverflowThenSucceedBase {
     fn call<'a>(
         &'a self,
-        _ctx: &'a RunContext,
+        _ctx: &'a mut RunContext,
         _state: &'a (),
         _request: ModelRequest,
     ) -> BoxModelFuture<'a> {
@@ -2124,7 +2124,7 @@ async fn context_compression_wrap_model_ignores_unrelated_errors() {
     impl ModelBaseCall<(), ()> for AlwaysFailsBase {
         fn call<'a>(
             &'a self,
-            _ctx: &'a RunContext,
+            _ctx: &'a mut RunContext,
             _state: &'a (),
             _request: ModelRequest,
         ) -> BoxModelFuture<'a> {

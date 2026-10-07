@@ -135,7 +135,7 @@ fn decision_helpers_expose_the_blocking_reason() {
 #[tokio::test]
 async fn gate_check_passes_the_host_context_and_waives_only_approval() {
     let gate = ToolPolicyGate::new(Arc::new(NamePolicy));
-    let c = ctx();
+    let mut c = ctx();
     assert_eq!(gate.policy_name(), "name_policy");
     assert_eq!(
         gate.check(&c, &call("read"), false).await,
