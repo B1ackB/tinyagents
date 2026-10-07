@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tinystoragedrivers_core::{
-    Capabilities, CollectionSpec, DocumentStore, ErrorKind, Filter, Page, Precondition, Query,
+    Blocking, Capabilities, CollectionSpec, DocumentStore, ErrorKind, Filter, Page, Precondition, Query,
     Result, Sort, StorageError, StreamEntry, StreamStore, Version, Versioned, async_trait,
 };
 
@@ -27,17 +27,20 @@ impl Refused {
 }
 
 /// Stores over [`Refused`], reporting `error` on every call.
-pub(super) fn stores(error: &StorageError) -> AgentStores {
+pub(super) fn stores(error: &StorageError, bridge: &Blocking) -> AgentStores {
     let refused = Arc::new(Refused {
         kind: error.kind(),
         message: format!("session stores unavailable: {}", error.message()),
     });
-    let bridge = tinystoragedrivers_core::Blocking::new();
     let docs: Arc<dyn DocumentStore> = refused.clone();
     let streams: Arc<dyn StreamStore> = refused;
     AgentStores {
-        transcripts: Arc::new(DriverTranscriptLocator::refused(Arc::clone(&docs), bridge.as_ref().ok().cloned())),
-        turn_states: Arc::new(DriverTurnStates::refused(Arc::clone(&docs), bridge.ok())),
+        transcripts: Arc::new(DriverTranscriptLocator::new(
+            Arc::clone(&docs),
+            bridge.clone(),
+            "refused",
+        )),
+        turn_states: Arc::new(DriverTurnStates::new(Arc::clone(&docs), bridge.clone())),
         kv: Arc::new(DriverStore::new(docs)),
         journal: Arc::new(DriverAppendStore::new(streams)),
     }

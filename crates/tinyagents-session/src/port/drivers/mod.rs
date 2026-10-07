@@ -202,7 +202,7 @@ impl SessionStoreProvider for DriverSessionStores {
                 %error,
                 "[session-store] backend refused the agent's scope"
             );
-            refused::stores(&error)
+            refused::stores(&error, &self.bridge)
         })
     }
 
@@ -230,11 +230,6 @@ impl SessionStoreProvider for DriverSessionStores {
     fn destination_key(&self) -> Option<String> {
         Some(format!("{}://{:p}", self.backend.driver(), Arc::as_ptr(&self.backend)))
     }
-}
-
-/// Map a driver failure onto the `String` errors of the turn-state seam.
-fn describe(error: &StorageError) -> String {
-    error.to_string()
 }
 
 #[cfg(test)]
