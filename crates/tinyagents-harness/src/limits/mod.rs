@@ -288,25 +288,29 @@ impl LimitTracker {
     /// [`LimitTracker::release_nested_tool_call`] when the call never runs.
     pub fn try_reserve_nested_tool_call(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
-        let nested = self.nested_tool_calls.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.tool_calls + nested > self.limits.max_tool_calls {
-            self.nested_tool_calls.fetch_sub(1, Ordering::SeqCst);
-            return Err(TinyAgentsError::LimitExceeded(format!(
-                "max tool calls ({}) exceeded by a nested tool call",
-                self.limits.max_tool_calls
-            )));
+        // One compare-and-update: the slot is taken only if the combined count
+        // is still under the cap, so a rejected reservation never touches the
+        // counter and concurrent reservations cannot overspend it.
+        let reserved = self
+            .nested_tool_calls
+            .compare_exchange_loop(|nested| {
+                (self.tool_calls + nested < self.limits.max_tool_calls).then_some(nested + 1)
+            });
+        let _ = Ordering::SeqCst;
+        if reserved {
+            return Ok(());
         }
-        Ok(())
+        Err(TinyAgentsError::LimitExceeded(format!(
+            "max tool calls ({}) exceeded by a nested tool call",
+            self.limits.max_tool_calls
+        )))
     }
 
     /// Releases a slot taken by [`LimitTracker::try_reserve_nested_tool_call`]
     /// for a call that never ran. Saturates at zero.
     pub fn release_nested_tool_call(&self) {
-        let _ = self.nested_tool_calls.fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |n| n.checked_sub(1),
-        );
+        self.nested_tool_calls
+            .compare_exchange_loop(|nested| nested.checked_sub(1));
     }
 
     /// Returns the number of nested tool calls counted against the cap so far.
