@@ -30,13 +30,14 @@ A host switches by changing the import path and the two type names:
 | Old | New |
 | --- | --- |
 | `tinymemory_conversations::X` | `tinyagents_session::threads::X` |
-| `tinymemory_conversations::bus::X` | `tinyagents_session::threads::bus::X` |
 | `ConversationMessage` | `ThreadMessage` |
 | `ConversationMessagePatch` | `ThreadMessagePatch` |
 
 Every other name (`ConversationStore`, `ConversationThread`,
 `CreateConversationThread`, `ConversationPurgeStats`, `CrossThreadHit`, the
-free functions, and the `bus` items) is unchanged. A host that wants to keep
+and the free functions) is unchanged. The `bus` persistence subscriber was
+not carried over: hosts keep their own (OpenHuman's lives in
+`openhuman-core`'s `threads::store::bus`). A host that wants to keep
 its own spelling can import `ThreadMessage as ConversationMessage`.
 
 The store, its wire types, and `CrossThreadHit` are also re-exported from the
@@ -141,21 +142,6 @@ an in-memory inverted index over message content:
   journal is folded in when the built index is published, so no message is
   missed and unrelated writers are never blocked by the scan.
 
-## Channel persistence (`bus`)
-
-`bus::register_conversation_persistence_subscriber(bus, workspace_dir)`
-subscribes a `ConversationPersistenceSubscriber` through the host's
-`ConversationEventBus` implementation. Each `ChannelEvent::Received` (role
-`user`) or `ChannelEvent::Processed` (role `assistant`) becomes a message in
-the thread `channel:{channel}_{sender}_{reply_target}[_thread:{ts}]`, with a
-hash suffix when a component contains `_`. Redelivered events are dropped by
-the `{role}:{message_id}` id. Calling register again rebinds the workspace
-without subscribing twice; events for another workspace are ignored.
-The registration helper assumes one long-lived event bus per process. Hosts
-that replace a bus or run multiple independent buses must subscribe separate
-`ConversationPersistenceSubscriber` instances through their bus implementations.
-Failures are logged with `tracing::warn!` (no message content) and swallowed.
-
 ## Public surface
 
 - **Store:** `ConversationStore` (`new`, `ensure_thread`, `list_threads`,
@@ -171,9 +157,6 @@ Failures are logged with `tracing::warn!` (no message content) and swallowed.
   `CreateConversationThread`, `ThreadMessagePatch`, `CrossThreadHit`.
 - **Deterministic ids:** `DETERMINISTIC_MESSAGE_ID_PREFIX`,
   `run_reply_message_id`, `is_deterministic_message_id`, `reply_run_id`.
-- **`bus`:** `ChannelEvent`, `ChannelEventHandler`, `ConversationEventBus`,
-  `ConversationPersistenceSubscriber`,
-  `register_conversation_persistence_subscriber`.
 
 ## Files
 
@@ -187,5 +170,4 @@ Failures are logged with `tracing::warn!` (no message content) and swallowed.
 | `store/ops.rs` | public CRUD and search methods |
 | `store/index.rs` | log folding, stat repair, cold index build |
 | `store/locks.rs` | per-root lock registry |
-| `bus.rs` | channel persistence subscriber |
 | `*_tests.rs` | unit tests; `store/mod_compat_tests.rs` is the legacy-format fixture |
