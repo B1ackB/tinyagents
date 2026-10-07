@@ -203,11 +203,11 @@ fn middleware_balance(recorder: &EventRecorder) -> (usize, usize) {
     let events = recorder.events();
     let started = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::MiddlewareStarted { name } if name == "probe_wrap"))
+        .filter(|e| matches!(e, AgentEvent::MiddlewareStarted { name, .. } if name == "probe_wrap"))
         .count();
     let completed = events
         .iter()
-        .filter(|e| matches!(e, AgentEvent::MiddlewareCompleted { name } if name == "probe_wrap"))
+        .filter(|e| matches!(e, AgentEvent::MiddlewareCompleted { name, .. } if name == "probe_wrap"))
         .count();
     (started, completed)
 }
