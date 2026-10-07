@@ -665,6 +665,7 @@ fn stamped_lines(
 /// a reader would return them: what a non-file transcript backend stores so
 /// its replay carries the same per-turn provenance (usage, request ids,
 /// step stamps) as a transcript file.
+#[cfg(feature = "storage-drivers")]
 pub(crate) fn stamped_rows(
     messages: &[TranscriptMessage],
     last_assistant_turn_usage: Option<&TurnUsage>,

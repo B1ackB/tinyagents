@@ -152,6 +152,7 @@ mod writer;
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
 pub use background::{append_background_message, append_background_message_with_lock_notification};
 pub(crate) use history::same_transcript_messages;
+#[cfg(feature = "storage-drivers")]
 pub(crate) use jsonl::stamped_rows;
 pub use history::{
     FileTranscriptHistory, FileTranscriptLocator, TranscriptHistory, TranscriptLocator,
