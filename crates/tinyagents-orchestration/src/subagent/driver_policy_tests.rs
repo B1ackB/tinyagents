@@ -408,7 +408,13 @@ async fn artifact_overflow_without_a_store_surfaces_artifact_error_on_the_outcom
         .run(request("t-artifact"), CancellationToken::new())
         .await
         .unwrap();
-    assert!(result.outcome.artifact_error.unwrap().contains("no artifact store"));
+    assert!(
+        result
+            .outcome
+            .artifact_error
+            .unwrap()
+            .contains("no artifact store")
+    );
 }
 
 #[tokio::test]

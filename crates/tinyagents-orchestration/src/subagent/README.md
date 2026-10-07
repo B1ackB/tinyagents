@@ -188,8 +188,37 @@ orchestration depends on graph).
   `subagent_framing(role, depth, task)` is an optional neutral preamble hosts
   may prepend; nothing applies it by default.
 
-**API note.** `PreparedSubagent` gained fields (use `PreparedSubagent::new`),
-`SubagentOutcome` gained `schema_error`, `SubagentIncomplete` gained `kind`,
-`SubagentError` gained `Transient`, `SubAgentBudget` gained token/cost fields
-(use `..SubAgentBudget::unlimited()`), and the view `SubagentStatus` gained
-`Incomplete`.
+**Retry notes.** Subagent retry compounds with the harness's per-call model
+retry (each attempt may retry model calls first), so keep one of the two low.
+`SubAgentTool` attempts after the first get run ids `{first}-a{n}` (no extra
+child ordinals are consumed, so sibling ids do not depend on retry) and the job's
+`subagent_run_id` follows the attempt that is running. The retry predicate
+(`RetryPolicy::retry_on`) sees the real error on the tool path; the driver only
+has the `Transient` message, so it sees a synthetic tool error. Usage of a failed
+or timed-out attempt is not reported (an error carries no run).
+
+## Breaking changes
+
+None of the new structs hosts build is `#[non_exhaustive]`; use the constructors
+and `..Default::default()`.
+
+- `PreparedSubagent` gained `role`, `tool_ceiling`, `delegation_tools`,
+  `policy`, `result_policy`, `retry_context`: build it with
+  `PreparedSubagent::new(..)` and the `with_*` builders.
+- `SubagentOutcome` gained `schema_error` and `artifact_error` (use
+  `SubagentOutcome::completed` / `cancelled` / `incomplete`).
+- `SubagentIncomplete` gained `kind: IncompleteKind` (use
+  `SubagentIncomplete::new(..).with_kind(..)`).
+- `SubagentError` gained `Transient` (already `#[non_exhaustive]`).
+- `SubAgentBudget` gained `max_input_tokens`, `max_output_tokens`, `max_cost`
+  (struct literals need `..SubAgentBudget::unlimited()`) and **lost `Eq`**
+  (the cost cap is an `f64`). `SubAgentPolicy` gained `retry_after_tool_calls`.
+- `SubAgentJob` gained `incomplete_kind`, `artifacts`, `schema_error`,
+  `artifact_error`; `SubAgentJobStatus` gained `Incomplete`. **Behaviour change:**
+  a job whose child fails with `LimitExceeded` or `Timeout` now ends
+  `Incomplete` (with `incomplete_kind`) instead of `Failed`; it is still
+  terminal and still returned as a tool error.
+- The transcript view's `SubagentStatus` gained `Incomplete`, and a legacy
+  `[SUBAGENT_INCOMPLETE]` result now projects as `Incomplete` instead of
+  `Failed`.
+- `tinyagents-runtime`: new `ToolSnapshot::retaining`.

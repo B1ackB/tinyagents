@@ -672,7 +672,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
     /// refused per call, and this logs the cause once up front.
     fn warn_if_leaf_misconfigured(&self) {
         if let Some(message) = self.leaf_violation() {
-            tracing::warn!("{LOG_PREFIX} leaf_misconfigured tool={} {message}", self.tool_name);
+            tracing::warn!(
+                "{LOG_PREFIX} leaf_misconfigured tool={} {message}",
+                self.tool_name
+            );
         }
     }
 

@@ -191,7 +191,12 @@ pub fn truncate_head_tail(text: &str, max_chars: usize) -> (String, usize) {
         .nth(total - tail)
         .map_or(text.len(), |(i, _)| i);
     (
-        format!("{}{}{}", &text[..head_end], marker(omitted), &text[tail_start..]),
+        format!(
+            "{}{}{}",
+            &text[..head_end],
+            marker(omitted),
+            &text[tail_start..]
+        ),
         omitted,
     )
 }

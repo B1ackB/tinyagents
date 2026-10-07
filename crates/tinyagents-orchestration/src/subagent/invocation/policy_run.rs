@@ -71,7 +71,10 @@ pub(crate) enum Finished {
     /// A run within budget.
     Run(AgentRun),
     /// The run completed but overshot a token/call budget: its work is kept.
-    OverBudget { run: AgentRun, error: TinyAgentsError },
+    OverBudget {
+        run: AgentRun,
+        error: TinyAgentsError,
+    },
     /// No attempt produced a run.
     Failed(TinyAgentsError),
 }
@@ -206,7 +209,8 @@ pub(crate) fn delegation_tools_exposed<State: Send + Sync + 'static, Ctx: Send +
         .names()
         .into_iter()
         .filter(|name| {
-            name == own_tool_name || crate::subagent::is_delegation_tool(name, host_delegation_tools)
+            name == own_tool_name
+                || crate::subagent::is_delegation_tool(name, host_delegation_tools)
         })
         .collect()
 }
