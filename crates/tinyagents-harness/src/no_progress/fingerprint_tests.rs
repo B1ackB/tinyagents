@@ -145,6 +145,14 @@ fn pids_are_normalized() {
 }
 
 #[test]
+fn creation_results_keep_the_pid_identity() {
+    differ("worker started pid 123", "worker started pid 124");
+    differ("created pid=123", "created pid=124");
+    differ("spawned pid 123", "spawned pid 124");
+    differ("launched pid 123", "launched pid 124");
+}
+
+#[test]
 fn uuids_are_normalized_but_long_hex_ids_are_content() {
     same(
         "request 123e4567-e89b-12d3-a456-426614174000 failed",

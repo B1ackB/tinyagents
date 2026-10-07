@@ -147,6 +147,23 @@ fn state_timestamp_context(text: &str, found: &Match<'_>) -> bool {
     .any(|field| field_prefix.ends_with(field))
 }
 
+/// Keeps PIDs that identify a newly created process rather than describing a
+/// diagnostic observation about an existing one.
+fn pid_context(text: &str, found: &Match<'_>) -> bool {
+    let before = text[..found.start()].to_ascii_lowercase();
+    let context = before
+        .rsplit(['\n', '.', '!', '?'])
+        .next()
+        .unwrap_or(&before);
+    !["started", "created", "spawned", "launched"]
+        .iter()
+        .any(|verb| {
+            context
+                .split(|character: char| !character.is_ascii_alphabetic())
+                .any(|word| word == *verb)
+        })
+}
+
 /// Accepts clock-shaped values only when their surrounding syntax indicates a
 /// timestamp or log time, rather than a semantic position or counter.
 fn clock_context(text: &str, found: &Match<'_>) -> bool {
@@ -231,7 +248,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r"(?i)(?-u:\b)pid(?:\s*[=:]\s*|\s+)\d+(?-u:\b)",
             "<pid>",
-            accept_all,
+            pid_context,
         ),
     ]
 });
@@ -246,7 +263,8 @@ const MIN_RESIDUE_CHARS: usize = 4;
 /// Rewritten: ISO-8601 / RFC 3339 timestamps, `HH:MM:SS(.fff)` clock times,
 /// 10- and 13-digit unix epochs that are the value of a time-like key (`ts=`,
 /// `"timestamp":`, `updated_at:`), durations attached to their unit (`123ms`,
-/// `1.2s`), `attempt N` / `retry N of M` counters, `pid N` and UUIDs. Long hex
+/// `1.2s`), `attempt N` / `retry N of M` counters, diagnostic `pid N` values,
+/// and UUIDs. Long hex
 /// ids are kept, because they are usually content. Everything else, including every other number, is
 /// kept verbatim.
 ///

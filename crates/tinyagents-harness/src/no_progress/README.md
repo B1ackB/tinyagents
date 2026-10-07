@@ -37,7 +37,8 @@ hook" section in `mod.rs` for that contract.
   blanks timestamps, clock times, 10/13-digit epochs that are the value of a
   time-like key (`ts=`, `"timestamp":`, `updated_at:`; a bare 10-digit number
   is a byte count or an id as often as a clock), measurement durations (`took
-  123ms`, `duration=1.2s`), `attempt N` / `retry N of M`, `pid N`, and UUIDs in
+  123ms`, `duration=1.2s`), `attempt N` / `retry N of M`, diagnostic `pid N`
+  values (while preserving PIDs in process-creation results), and UUIDs in
   request/trace-style fields, and leaves every other
   number alone, including long hex ids such as commit SHAs and checksums, which
   are usually the result itself. An outcome that is *only*
