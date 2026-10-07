@@ -88,7 +88,7 @@ one instance across every tool/driver whose spawns should count together).
 **What the caps bound.** Hosts mint run ids fresh per turn, and background
 children outlive the turn that spawned them, so counts are keyed on a stable
 *scope key* resolved from the **parent's** `RunConfig`: its `thread_id` (the
-conversation) when set, else its `run_id`. Two turns with different run ids on
+conversation) when set, else its `run_id` (keys are `thread:<id>` / `run:<id>`, so the two id spaces never alias). Two turns with different run ids on
 one thread share their caps; a child from turn 1 still alive in turn 2 still
 holds its slot. Override the rule with `SpawnAdmission::with_scope_key(|cfg|
 ...)` (for example one key per tenant, or one key for a whole run tree). The
