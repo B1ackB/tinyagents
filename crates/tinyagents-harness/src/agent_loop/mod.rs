@@ -167,3 +167,7 @@ mod test;
 #[cfg(test)]
 #[path = "unknown_tool_tests.rs"]
 mod unknown_tool_test;
+
+#[cfg(test)]
+#[path = "wrap_concurrency_tests.rs"]
+mod wrap_concurrency_test;

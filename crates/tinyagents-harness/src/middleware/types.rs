@@ -698,6 +698,11 @@ pub trait ToolMiddleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync
     /// `MiddlewareStarted`/`MiddlewareCompleted` events.
     fn name(&self) -> &str;
 
+    /// Whether this wrap may run for several calls of one batch at once.
+    fn concurrent_safe(&self) -> bool {
+        true
+    }
+
     /// Wraps the inner tool pipeline. Call `next.run(ctx, state, call)` to
     /// proceed (zero or more times), or return a [`MiddlewareToolOutcome`]
     /// without calling it to short-circuit.
