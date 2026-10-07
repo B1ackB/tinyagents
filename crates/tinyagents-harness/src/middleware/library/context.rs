@@ -1198,6 +1198,7 @@ impl ContextCompressionMiddleware {
         request: &mut ModelRequest,
         from_tokens: u64,
     ) {
+        ctx.mark_prompt_prefix_changed();
         let message_budget = self
             .policy
             .trigger_budget()

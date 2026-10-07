@@ -393,6 +393,7 @@ impl ContextCompressionMiddleware {
             return false;
         }
         self.engage_truncation(ctx.instance_id());
+        ctx.mark_prompt_prefix_changed();
         tracing::info!(
             from_tokens,
             to_tokens,
@@ -458,6 +459,7 @@ impl ContextCompressionMiddleware {
             return false;
         }
         self.engage_truncation(ctx.instance_id());
+        ctx.mark_prompt_prefix_changed();
         if route != CompactionRoute::TruncateToolResults {
             return false;
         }
