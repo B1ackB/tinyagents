@@ -394,11 +394,7 @@ async fn a_batch_of_halting_refusals_pauses_the_run_once() {
 async fn compaction_drops_warnings_that_were_waiting() {
     let handle = SteeringHandle::allow_all();
     let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
-    mw.state
-        .take_one_note(1, vec!["first".into(), "stale".into()]);
-    compact(&mw).await;
-    // The queue is cleared only when something was evicted; `compact` evicts
-    // the one recorded result, so record one first.
+    // `compact` evicts the one recorded result, so record one first.
     same_turn(&mw, "ok").await;
     mw.state
         .take_one_note(1, vec!["first".into(), "stale".into()]);
