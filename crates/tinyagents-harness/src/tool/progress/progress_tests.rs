@@ -215,6 +215,18 @@ fn a_huge_partial_is_truncated_in_the_delta_not_serialized_in_full() {
     gate.sink()
         .report(ToolProgress::default().with_partial(json!({ "blob": huge })));
     gate.close();
+    let live_partial_len = recorder
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolProgressDetail {
+                partial: Some(partial),
+                ..
+            } => Some(partial.to_string().len()),
+            _ => None,
+        })
+        .expect("live progress event");
+    assert!(live_partial_len <= 4096);
     let deltas = gate.take_pending();
     assert_eq!(deltas.len(), 1);
     assert!(

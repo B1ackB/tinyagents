@@ -415,7 +415,7 @@ async fn progress_from_a_call_that_then_fails_still_precedes_its_failure() {
         .unwrap_or_else(|| panic!("progress missing from {events:?} (run: {outcome:?})"));
     let terminal_at = events
         .iter()
-        .position(|e| matches!(e, Seen::Failed(_) | Seen::Completed(_)))
+        .position(|e| e == &Seen::Failed("c1".into()))
         .expect("the call has a terminal event");
     assert!(progress_at < terminal_at, "{events:?}");
 }
