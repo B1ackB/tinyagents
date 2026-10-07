@@ -57,6 +57,12 @@ fn iso_and_rfc3339_timestamps_are_normalized() {
 #[test]
 fn clock_times_are_normalized() {
     same("[12:34:56] ready", "[01:02:03] ready");
+    same("INFO [12:34:56] ready", "INFO [01:02:03] ready");
+    same("line one\n[12:34:56] ready", "line one\n[01:02:03] ready");
+    differ(
+        "position [00:00:01] processed",
+        "position [00:00:02] processed",
+    );
     same("[12:34:56.789] ready", "[01:02:03.1] ready");
     differ("[12:34:56] ready", "[12:34:56] failed");
     differ("position=00:00:01 processed", "position=00:00:02 processed");
@@ -76,10 +82,11 @@ fn epoch_numbers_are_normalized_only_under_a_time_key() {
         r#"{"timestamp": 1759752896, "ok": true}"#,
         r#"{"timestamp": 1759752999, "ok": true}"#,
     );
-    same(
+    differ(
         "updated_at: 1759752896 saved",
         "updated_at: 1759752999 saved",
     );
+    differ("event_at : 1759752896 x", "event_at : 1759752999 x");
     differ(
         r#"{"status":"running","updated_at":1759752896}"#,
         r#"{"status":"running","updated_at":1759752999}"#,
@@ -243,6 +250,22 @@ fn literal_placeholder_text_counts_as_residue() {
     same(
         "<timestamp> <duration> 2026-10-06T12:34:56Z",
         "<timestamp> <duration> 2026-10-07T01:02:03Z",
+    );
+}
+
+#[test]
+fn state_fields_tolerate_whitespace_around_the_separator() {
+    differ(
+        r#"{"event_at" : "2026-10-06T12:34:56Z", "ok": true}"#,
+        r#"{"event_at" : "2026-10-06T12:34:57Z", "ok": true}"#,
+    );
+    differ(
+        "event_at : 2026-10-06T12:34:56Z ok",
+        "event_at : 2026-10-06T12:34:57Z ok",
+    );
+    differ(
+        r#"{"event_id" : "123e4567-e89b-12d3-a456-426614174000","status":"ready"}"#,
+        r#"{"event_id" : "00000000-1111-2222-3333-444444444444","status":"ready"}"#,
     );
 }
 

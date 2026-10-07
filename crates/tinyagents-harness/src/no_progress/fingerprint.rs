@@ -59,11 +59,7 @@ fn accept_all(_: &str, _: &Match<'_>) -> bool {
 /// Keeps UUIDs that identify returned entities, such as `event_id`, in the
 /// outcome identity. Request and correlation identifiers remain volatile.
 fn uuid_context(text: &str, found: &Match<'_>) -> bool {
-    let field_prefix = field_prefix(text, found);
-    !field_prefix.ends_with("event_id\":")
-        && !field_prefix.ends_with("eventid\":")
-        && !field_prefix.ends_with("event_id:")
-        && !field_prefix.ends_with("eventid:")
+    !field_key(text, found).is_some_and(|key| key.ends_with("event_id") || key.ends_with("eventid"))
 }
 
 /// Rejects a match glued to a preceding `.`, e.g. the tail of `1.2.3s` or
@@ -109,46 +105,45 @@ fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
-fn field_prefix(text: &str, found: &Match<'_>) -> String {
-    text[..found.start()]
-        .to_ascii_lowercase()
-        .trim_end_matches(|character: char| character.is_ascii_whitespace())
-        .trim_end_matches(['"', '\''])
-        .trim_end_matches(|character: char| character.is_ascii_whitespace())
-        .to_string()
+/// The lowercased field name a value is assigned to, tolerating optional
+/// quotes and whitespace on either side of the `:` / `=` separator
+/// (`"event_at":`, `event_at :`, `event_at = `). `None` when the value is not
+/// preceded by a separator.
+fn field_key(text: &str, found: &Match<'_>) -> Option<String> {
+    let lower = text[..found.start()].to_ascii_lowercase();
+    let before = lower
+        .trim_end_matches(|c: char| c.is_ascii_whitespace() || c == '"' || c == '\'')
+        .strip_suffix([':', '='])?;
+    Some(
+        before
+            .trim_end_matches(|c: char| c.is_ascii_whitespace() || c == '"' || c == '\'')
+            .to_string(),
+    )
 }
 
-/// Keeps timestamps that are explicit state fields, such as `event_at`, in
-/// the outcome identity. Log prose still falls through to normalization.
+/// State-field names whose timestamps identify the returned state and are
+/// preserved: `event_at`, `created_at`, `updated_at` and `timestamp`, in
+/// snake or camel case, quoted or bare, with any whitespace around the
+/// separator.
+fn is_state_timestamp_field(text: &str, found: &Match<'_>) -> bool {
+    field_key(text, found).is_some_and(|key| {
+        [
+            "event_at",
+            "eventat",
+            "created_at",
+            "updated_at",
+            "timestamp",
+        ]
+        .iter()
+        .any(|field| key.ends_with(field))
+    })
+}
+
+/// Keeps timestamps that are explicit state fields (see
+/// [`is_state_timestamp_field`]) in the outcome identity. Log prose still falls
+/// through to normalization.
 fn iso_timestamp_context(text: &str, found: &Match<'_>) -> bool {
-    let field_prefix = field_prefix(text, found);
-    ![
-        "event_at\":",
-        "event_at:",
-        "eventat\":",
-        "eventat:",
-        "created_at\":",
-        "created_at:",
-        "updated_at\":",
-        "updated_at:",
-        "timestamp\":",
-        "timestamp:",
-    ]
-    .iter()
-    .any(|field| field_prefix.ends_with(field))
-}
-
-fn quoted_state_timestamp_context(text: &str, found: &Match<'_>) -> bool {
-    let field_prefix = field_prefix(text, found);
-    [
-        "event_at\":",
-        "eventat\":",
-        "created_at\":",
-        "updated_at\":",
-        "timestamp\":",
-    ]
-    .iter()
-    .any(|field| field_prefix.ends_with(field))
+    !is_state_timestamp_field(text, found)
 }
 
 /// Keeps PIDs that identify a newly created process rather than describing a
@@ -168,13 +163,33 @@ fn pid_context(text: &str, found: &Match<'_>) -> bool {
         })
 }
 
+/// A `[` opens a log timestamp only at the start of a line, after another
+/// bracketed or parenthesised prefix, or after a log level; `position [00:00:01]`
+/// is a semantic position and stays content.
+fn bracket_is_log_prefix(before: &str) -> bool {
+    let line = before.rsplit('\n').next().unwrap_or(before).trim_end();
+    if line.is_empty() || line.ends_with([']', ')']) {
+        return true;
+    }
+    let word = line
+        .rsplit(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    [
+        "trace", "debug", "info", "warn", "warning", "error", "fatal",
+    ]
+    .contains(&word.as_str())
+}
+
 /// Accepts clock-shaped values only when their surrounding syntax indicates a
 /// timestamp or log time, rather than a semantic position or counter.
 fn clock_context(text: &str, found: &Match<'_>) -> bool {
     let before = &text[..found.start()];
     let after = &text[found.end()..];
     let lower_before = before.to_ascii_lowercase();
-    let preceded_by_context = before.ends_with('[')
+    let preceded_by_context = (before.ends_with('[')
+        && bracket_is_log_prefix(&before[..before.len() - 1]))
         || ["at ", "on ", "time ", "timestamp "]
             .iter()
             .any(|prefix| lower_before.ends_with(prefix))
@@ -243,9 +258,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r#"(?-u:\b)(?:(?i:ts|time|timestamp|epoch|mtime|ctime|atime)|[A-Za-z0-9]*(?:[_-](?i:ts|time|timestamp|epoch|at)|At|Time|Ts|Timestamp))["']?\s*[=:]\s*["']?(?P<span>1\d{9}(?:\d{3})?(?:\.\d+)?)(?-u:\b)"#,
             "<epoch>",
-            |text, found| {
-                not_after_dot(text, found) && !quoted_state_timestamp_context(text, found)
-            },
+            |text, found| not_after_dot(text, found) && !is_state_timestamp_field(text, found),
         ),
         // Measurement fields and phrases such as `duration=123ms`,
         // `elapsed 1.2s`, `took 1h2m3.5s`, and log phrases such as
@@ -289,7 +302,7 @@ const MIN_RESIDUE_CHARS: usize = 4;
 ///
 /// Rewritten: ISO-8601 / RFC 3339 timestamps, `HH:MM:SS(.fff)` clock times,
 /// 10- and 13-digit unix epochs that are the value of a time-like key (`ts=`,
-/// `"timestamp":`, `updated_at:`), durations attached to their unit (`123ms`,
+/// `createdAt=`, `mtime=`), durations attached to their unit (`123ms`,
 /// `1.2s`), `attempt N` / `retry N of M` counters, diagnostic `pid N` values,
 /// and UUIDs. Long hex
 /// ids are kept, because they are usually content. Everything else, including every other number, is
@@ -315,7 +328,8 @@ pub fn normalize_volatile(text: &str) -> String {
     }
     let residue = alnum_count(text).saturating_sub(removed);
     if !rewritten || residue < MIN_RESIDUE_CHARS {
-        return text.to_string();
+        // Escaped, so a literal `<timestamp>` never equals a generated one.
+        return escape_literal_placeholders(text);
     }
     current.into_owned()
 }
