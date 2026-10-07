@@ -133,6 +133,7 @@ mod tool_changes;
 mod tool_surface;
 mod tool_timing;
 mod tools;
+mod turn_control;
 mod turn_recovery;
 mod unknown_tool;
 

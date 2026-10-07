@@ -9,16 +9,11 @@ use super::*;
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Acquires the host budget permit for the call about to be dispatched.
     ///
-    /// A host budget is acquired only for an explicit host-driven run.
-    /// Do it after structured-output planning: a synthetic schema tool
-    /// is part of the provider request and must be included in its
-    /// estimate. The permit remains alive through response accounting,
-    /// so cancellation or a provider error still releases it through
-    /// Drop.
-    ///
-    /// Returns `None` for a run with no host budget. The permit stays alive
-    /// through response accounting, so cancellation or a provider error still
-    /// releases it through `Drop`.
+    /// The permit is acquired after structured-output planning: a synthetic
+    /// schema tool is part of the provider request and must be included in its
+    /// estimate. Returns `None` for a run with no host budget. The permit stays
+    /// alive through response accounting, so cancellation or a provider error
+    /// still releases it through `Drop`.
     pub(super) async fn admit_host_budget(
         &self,
         ctx: &mut RunContext<Ctx>,
