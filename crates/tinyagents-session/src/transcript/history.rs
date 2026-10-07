@@ -624,12 +624,12 @@ impl TranscriptLocator for FileTranscriptLocator {
         // never written again. Keep the initial root path so both successor
         // resolution and the append happen under the same write locks.
         let root_path = path;
+        let path = head_generation_path(&root_path);
         let history = FileTranscriptHistory::opened_at(
-            root_path.clone(),
+            path.clone(),
             seed_meta_for_discovered(thread_id),
         );
         history.with_write_locks(|| {
-            let path = head_generation_path(&root_path);
             crate::transcript::append_interrupted_partial(
                 &path,
                 &partial.content,
