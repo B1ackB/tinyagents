@@ -383,51 +383,14 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             surface.assemble_turn_schemas();
 
             // Build the request from the working transcript, tool schemas, and
-            // policy response format.  Go through `PromptBuilder` rather than
-            // constructing `ModelRequest` directly: a provider KV cache needs
-            // an explicit stable prefix, and the system instructions plus the
-            // name-sorted tool schemas are stable between discoveries.
-            status.mark_running(HarnessPhase::BuildingRequest);
-            let system_end = cacheable_system_prefix_end(messages, ctx.frozen_system_prefix_len);
-            let mut prompt = crate::prompt::PromptBuilder::new();
-            prompt.push_system_messages(&messages[..system_end]);
-            if !surface.tool_schemas.is_empty() {
-                prompt.push_tools_segment("tools", surface.tool_schemas.clone());
-            }
-            let mut request = prompt.build(messages[system_end..].to_vec());
-            mark_empty_frozen_prefix(&mut request, ctx.frozen_system_prefix_len);
-            // Provider adapters that maintain an external conversation (for
-            // example Claude Code's resumable CLI session) need the caller's
-            // logical thread id, not a hash of prompt text. Carry the harness
-            // thread through request metadata while preserving an explicit
-            // caller-supplied value.
-            if let Some(thread_id) = ctx.thread_id() {
-                if request.metadata.is_null() {
-                    request.metadata = serde_json::json!({
-                        "thread_id": thread_id.as_str(),
-                    });
-                } else if let Some(metadata) = request.metadata.as_object_mut() {
-                    metadata.entry("thread_id").or_insert_with(|| {
-                        serde_json::Value::String(thread_id.as_str().to_string())
-                    });
-                }
-            }
-            if let Some(format) = &self.policy.default_response_format {
-                request = request.with_response_format(format.clone());
-            }
-            if let Some(cap) = ctx.config.max_turn_output_tokens {
-                request.max_tokens =
-                    Some(request.max_tokens.map_or(cap, |current| current.min(cap)));
-            }
-            // Truncated-empty recovery: a prior attempt this turn exhausted its
-            // token budget on the (hidden) reasoning channel and returned no
-            // usable content, so re-issue the call with a larger cap. The boost
-            // deliberately wins over the per-turn cap above — that cap is what
-            // truncated the response — and was already clamped to 4x the
-            // original budget when it was computed below.
-            if let Some(boost) = turn_recovery.boosted_max_tokens {
-                request.max_tokens = Some(boost);
-            }
+            // policy response format (see `model_turn.rs`).
+            let mut request = self.build_turn_request(
+                ctx,
+                status,
+                messages,
+                &surface.tool_schemas,
+                turn_recovery.boosted_max_tokens,
+            );
 
             // Known tool requirements must shape the hosted profile seen by
             // middleware. The later gate below still catches tools added by
@@ -816,49 +779,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             }
 
             // Account for the completed provider response before fallible
-            // response middleware. A middleware rejection must not erase
-            // usage already incurred, and the host admission permit covers
-            // provider work rather than post-processing.
-            run.model_calls += 1;
-            run.steps += 1;
-            status.model_calls = run.model_calls;
-            status.active_model_call = None;
-            ctx.active_model_call = None;
-            // A cache replay consumed no provider tokens, so folding its usage
-            // into the run's totals reports spend that never happened. The
-            // saving is surfaced through the cache-hit event instead of being
-            // buried in the spend total.
-            if let Some(usage) = response.usage {
-                if response.served_from_cache {
-                    tracing::debug!(
-                        target: "tinyagents::agent_loop",
-                        run_id = %ctx.run_id(),
-                        call_id = %call_id,
-                        saved_input_tokens = usage.input_tokens,
-                        saved_output_tokens = usage.output_tokens,
-                        "[agent_loop] cache-served response; usage not billed to the run"
-                    );
-                } else {
-                    run.usage.record(usage);
-                    status.usage = run.usage;
-                    let record = ctx.emit(AgentEvent::UsageRecorded { usage });
-                    status.set_last_event(record.id);
-                }
-                if !response.served_from_cache
-                    && let Some((budget, _permit)) = &host_budget
-                    && let Err(error) = self.record_host_usage(ctx, budget, &usage).await
-                {
-                    let record = ctx.emit(AgentEvent::ModelFailed {
-                        call_id: call_id.clone(),
-                        model: model_name.clone(),
-                        started_at_ms: Some(model_started_at_ms),
-                        attempts: None,
-                        error: error.to_string(),
-                    });
-                    status.set_last_event(record.id);
-                    return Err(error);
-                }
-            }
+            // response middleware (see `model_turn.rs`). A middleware rejection
+            // must not erase usage already incurred, and the host admission
+            // permit covers provider work rather than post-processing.
+            self.account_model_response(
+                ctx,
+                run,
+                status,
+                &response,
+                &call_id,
+                &model_name,
+                model_started_at_ms,
+                &host_budget,
+            )
+            .await?;
             // The permit guards a provider call, not the tools it may request.
             // Keeping a parent permit while awaiting a sub-agent tool can
             // deadlock a one-slot gate: the child needs that same slot for its
