@@ -1399,6 +1399,86 @@ async fn concurrency_safe_nested_tools_may_overlap_and_are_not_spuriously_refuse
     assert!(target.peak() > 1, "safe tools run concurrently");
 }
 
+#[tokio::test]
+async fn concurrency_unsafe_nested_tools_do_not_overlap_across_concurrent_parents() {
+    let target = Overlap::new("serial_tool", false);
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = harness_with(
+        vec![parent_call("pa", "fan_to"), parent_call("pb", "fan_to")],
+        enabled(),
+    );
+    harness.register_tool(Arc::new(FanTo {
+        target: target.name,
+        count: 1,
+        outcomes: Arc::clone(&outcomes),
+    }));
+    harness.register_tool(Arc::clone(&target));
+    run(&harness, &EventRecorder::new()).await.unwrap();
+    assert_eq!(outcomes.lock().unwrap().len(), 2);
+    assert_eq!(target.peak(), 1, "two parents share one run-wide gate");
+}
+
+/// A concurrency-unsafe tool that calls `next` (when set) and returns.
+struct UnsafeLink {
+    name: &'static str,
+    next: Option<&'static str>,
+}
+
+#[async_trait]
+impl Tool for UnsafeLink {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "unsafe link"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn policy(&self) -> ToolPolicy {
+        ToolPolicy::read_only()
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        if let Some(next) = self.next {
+            harness_extension(context)
+                .call_tool(next, json!({}))
+                .await?;
+        }
+        Ok(ToolResult::success("link-out"))
+    }
+}
+
+#[tokio::test]
+async fn a_chain_of_unsafe_nested_tools_does_not_deadlock_on_the_run_gate() {
+    let mut harness = harness_with(vec![parent_call("p1", "link_a")], enabled());
+    harness.register_tool(Arc::new(UnsafeLink {
+        name: "link_a",
+        next: Some("link_b"),
+    }));
+    harness.register_tool(Arc::new(UnsafeLink {
+        name: "link_b",
+        next: Some("link_c"),
+    }));
+    harness.register_tool(Arc::new(UnsafeLink {
+        name: "link_c",
+        next: None,
+    }));
+    let recorder = EventRecorder::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), run(&harness, &recorder))
+        .await
+        .expect("no deadlock")
+        .unwrap();
+    assert_eq!(started(&recorder).len(), 3);
+}
+
 // ── In-flight nested calls dropped with their parent ────────────────────────
 
 /// Sleeps far longer than any test waits, with no timeout of its own.
