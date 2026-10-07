@@ -8,13 +8,29 @@
 //!
 //! Extraction is pluggable ([`FileOpExtractor`]). [`DefaultFileOpExtractor`]
 //! reads the common path arguments (`path`, `file`, `file_path`, `paths`) and
-//! classifies the call by tool name: names containing a mutating verb
-//! (`write`, `edit`, `patch`, `create`, `delete`, `remove`, `append`,
-//! `replace`, `move`, `rename`, `save`, `touch`, `mkdir`) are modifications,
-//! every other path-carrying call is a read. A host with differently named
-//! tools supplies its own extractor.
-
-use std::collections::BTreeSet;
+//! classifies the call from its tool name, split into words (`apply_patch` is
+//! `apply`, `patch`):
+//!
+//! * a **search or listing** tool (`search`, `grep`, `glob`, `find`, `list`,
+//!   `ls`) contributes nothing: its path is a scope, not a file it read;
+//! * a tool with a **mutating verb** (`write`, `edit`, `patch`, `create`,
+//!   `delete`, `remove`, `append`, `replace`, `move`, `rename`, `save`,
+//!   `touch`, `mkdir`) is a *modification* only when it is plainly about
+//!   files: the verb is `write`/`edit`/`patch`, or the name also says `file`,
+//!   `dir`, `folder`, `fs`, `path` or `notebook`, or the name is the bare verb.
+//!   Any other mutating tool (`create_issue`, `github_create_pr`,
+//!   `memory_save`) contributes nothing, even with a `path` argument;
+//! * every other path-carrying call is a *read*.
+//!
+//! A host with differently named tools supplies its own extractor.
+//!
+//! ## Bounds and safety
+//!
+//! Each list shows its [`MAX_LISTED_FILES`] most recently touched files and a
+//! `…and K more` line for the rest (the count carries across compactions).
+//! Path strings are sanitized before they are stored: control characters
+//! become `?` and `<` / `>` become `&lt;` / `&gt;`, so a hostile file name can
+//! neither forge a section nor add lines to one.
 
 use tinyinference_llm::message::Message;
 use tinyinference_llm::tool::ToolCall;
@@ -24,49 +40,118 @@ const READ_CLOSE: &str = "\n</read-files>";
 const MODIFIED_OPEN: &str = "<modified-files>\n";
 const MODIFIED_CLOSE: &str = "\n</modified-files>";
 
+/// Files each list shows; older ones collapse into a `…and K more` line.
+pub const MAX_LISTED_FILES: usize = 50;
+
+/// Longest path kept; longer ones are cut (a path this long is not a path).
+const MAX_PATH_CHARS: usize = 300;
+
 /// Argument names [`DefaultFileOpExtractor`] treats as file paths.
 const PATH_ARGS: [&str; 4] = ["path", "file", "file_path", "paths"];
 
-/// Tool-name fragments [`DefaultFileOpExtractor`] treats as modifying.
+/// Tool-name words that make a call a listing/search, which touches no file.
+const SEARCH_WORDS: [&str; 6] = ["search", "grep", "glob", "find", "list", "ls"];
+
+/// Tool-name word prefixes that mark a mutating call.
 const MUTATING_VERBS: [&str; 13] = [
     "write", "edit", "patch", "create", "delete", "remove", "append", "replace", "move", "rename",
     "save", "touch", "mkdir",
 ];
 
-/// Files touched by the tool calls of a stretch of conversation.
+/// Verbs that modify files whatever else the name says.
+const FILE_VERBS: [&str; 3] = ["write", "edit", "patch"];
+
+/// Tool-name word prefixes that say the tool works on files.
+const FILE_WORDS: [&str; 5] = ["file", "dir", "folder", "path", "notebook"];
+
+/// How [`DefaultFileOpExtractor`] reads a tool name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Touch {
+    Read,
+    Modify,
+    Ignore,
+}
+
+fn classify_tool(name: &str) -> Touch {
+    let lower = name.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.iter().any(|w| SEARCH_WORDS.contains(w)) {
+        return Touch::Ignore;
+    }
+    let starts = |set: &[&str]| words.iter().any(|w| set.iter().any(|p| w.starts_with(p)));
+    if !starts(&MUTATING_VERBS) {
+        return Touch::Read;
+    }
+    if starts(&FILE_VERBS) || starts(&FILE_WORDS) || words.contains(&"fs") || words.len() == 1 {
+        Touch::Modify
+    } else {
+        Touch::Ignore
+    }
+}
+
+/// Neutralizes what would let a path break out of its list line or section.
+fn sanitize_path(path: &str) -> String {
+    path.chars()
+        .take(MAX_PATH_CHARS)
+        .map(|c| if c.is_control() { "?".to_string() } else { c.to_string() })
+        .collect::<String>()
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Files touched by the tool calls of a stretch of conversation, each list in
+/// order of recency (a file touched again moves to the end).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileOperations {
-    read: BTreeSet<String>,
-    modified: BTreeSet<String>,
+    read: Vec<String>,
+    modified: Vec<String>,
+    /// Older reads already collapsed into a `…and K more` line.
+    read_omitted: usize,
+    /// Older modifications already collapsed likewise.
+    modified_omitted: usize,
+}
+
+fn touch(list: &mut Vec<String>, path: &str) {
+    let path = sanitize_path(path);
+    if path.is_empty() {
+        return;
+    }
+    list.retain(|existing| *existing != path);
+    list.push(path);
 }
 
 impl FileOperations {
     /// Records a file that was read.
     pub fn add_read(&mut self, path: &str) {
-        if !path.is_empty() {
-            self.read.insert(path.to_string());
-        }
+        touch(&mut self.read, path);
     }
 
     /// Records a file that was created, written, edited or otherwise changed.
     pub fn add_modified(&mut self, path: &str) {
-        if !path.is_empty() {
-            self.modified.insert(path.to_string());
-        }
+        touch(&mut self.modified, path);
     }
 
-    /// Unions `other` into `self`.
+    /// Unions `other` into `self`; `other`'s files count as more recent.
     pub fn merge(&mut self, other: &FileOperations) {
-        self.read.extend(other.read.iter().cloned());
-        self.modified.extend(other.modified.iter().cloned());
+        for path in &other.read {
+            self.add_read(path);
+        }
+        for path in &other.modified {
+            self.add_modified(path);
+        }
+        self.read_omitted += other.read_omitted;
+        self.modified_omitted += other.modified_omitted;
     }
 
-    /// Files that were modified, sorted.
+    /// Files that were modified, oldest first.
     pub fn modified(&self) -> Vec<&str> {
         self.modified.iter().map(String::as_str).collect()
     }
 
-    /// Files that were read and never modified, sorted.
+    /// Files that were read and never modified, oldest first.
     pub fn read_only(&self) -> Vec<&str> {
         self.read
             .iter()
@@ -96,14 +181,13 @@ impl FileOpExtractor for DefaultFileOpExtractor {
         if call.invalid.is_some() {
             return;
         }
-        let name = call.name.to_lowercase();
-        let mutating = MUTATING_VERBS.iter().any(|verb| name.contains(verb));
-        let mut record = |path: &str| {
-            if mutating {
-                ops.add_modified(path);
-            } else {
-                ops.add_read(path);
-            }
+        let kind = classify_tool(&call.name);
+        if kind == Touch::Ignore {
+            return;
+        }
+        let mut record = |path: &str| match kind {
+            Touch::Modify => ops.add_modified(path),
+            _ => ops.add_read(path),
         };
         for arg in PATH_ARGS {
             match call.arguments.get(arg) {
@@ -134,27 +218,47 @@ pub fn extract_file_operations(
     ops
 }
 
+/// One section body: the most recent [`MAX_LISTED_FILES`] paths, then the
+/// `…and K more` line when any were left out.
+fn render_list(paths: &[&str], already_omitted: usize) -> String {
+    let shown = &paths[paths.len().saturating_sub(MAX_LISTED_FILES)..];
+    let omitted = already_omitted + (paths.len() - shown.len());
+    let mut lines = shown.join("\n");
+    if omitted > 0 {
+        lines.push_str(&format!("\n{OMITTED_PREFIX}{omitted}{OMITTED_SUFFIX}"));
+    }
+    lines
+}
+
+const OMITTED_PREFIX: &str = "…and ";
+const OMITTED_SUFFIX: &str = " more";
+
 /// Appends `<read-files>` / `<modified-files>` sections to `summary`; returns
-/// it unchanged when `ops` is empty.
+/// it unchanged when `ops` is empty. Each list is capped at
+/// [`MAX_LISTED_FILES`] (most recent kept).
 pub fn append_file_sections(summary: &str, ops: &FileOperations) -> String {
     let mut text = summary.trim_end().to_string();
     let read = ops.read_only();
     if !read.is_empty() {
-        text.push_str(&format!("\n\n{READ_OPEN}{}{READ_CLOSE}", read.join("\n")));
+        text.push_str(&format!(
+            "\n\n{READ_OPEN}{}{READ_CLOSE}",
+            render_list(&read, ops.read_omitted)
+        ));
     }
     let modified = ops.modified();
     if !modified.is_empty() {
         text.push_str(&format!(
             "\n\n{MODIFIED_OPEN}{}{MODIFIED_CLOSE}",
-            modified.join("\n")
+            render_list(&modified, ops.modified_omitted)
         ));
     }
     text
 }
 
 /// Splits the file sections [`append_file_sections`] wrote off `text`,
-/// returning the remaining body and the operations they listed. Text without
-/// sections comes back unchanged with an empty set.
+/// returning the remaining body and the operations they listed (including the
+/// `…and K more` counts). Text without sections comes back unchanged with an
+/// empty set.
 pub fn split_file_sections(text: &str) -> (String, FileOperations) {
     let mut ops = FileOperations::default();
     let mut body = text.to_string();
@@ -167,11 +271,16 @@ pub fn split_file_sections(text: &str) -> (String, FileOperations) {
             let Some(len) = body[list_start..].find(close) else {
                 break;
             };
-            for path in body[list_start..list_start + len].lines() {
-                if is_modified {
-                    ops.add_modified(path);
-                } else {
-                    ops.add_read(path);
+            for line in body[list_start..list_start + len].lines() {
+                let omitted = line
+                    .strip_prefix(OMITTED_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(OMITTED_SUFFIX))
+                    .and_then(|count| count.parse::<usize>().ok());
+                match (omitted, is_modified) {
+                    (Some(n), true) => ops.modified_omitted += n,
+                    (Some(n), false) => ops.read_omitted += n,
+                    (None, true) => ops.add_modified(line),
+                    (None, false) => ops.add_read(line),
                 }
             }
             body.replace_range(start..list_start + len + close.len(), "");

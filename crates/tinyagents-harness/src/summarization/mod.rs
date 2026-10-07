@@ -42,7 +42,7 @@ pub use compaction::{
     OverflowProbe, find_cut_point, summarize_with_split,
 };
 pub use file_ops::{
-    DefaultFileOpExtractor, FileOpExtractor, FileOperations, append_file_sections,
+    DefaultFileOpExtractor, FileOpExtractor, FileOperations, MAX_LISTED_FILES, append_file_sections,
     extract_file_operations, split_file_sections,
 };
 pub use model_summarizer::{
