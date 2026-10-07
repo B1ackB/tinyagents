@@ -233,6 +233,9 @@ pub struct SuccessfulRepeatTracker {
     /// Call-signature hash → times that call was blocked (survives context
     /// eviction; cleared when the call returns a new result).
     pub(super) blocks: Mutex<HashMap<u64, u32>>,
+    /// Serializes a whole `record_call_identity` with `reset`/`reset_ledger`,
+    /// so a reset never lands between the recurrence and prediction updates.
+    pub(super) ops: Mutex<()>,
 }
 
 /// Staged escalation of a successful repeat: **warn**, then **block**, then

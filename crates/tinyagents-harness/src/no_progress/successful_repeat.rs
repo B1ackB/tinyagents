@@ -75,6 +75,7 @@ impl SuccessfulRepeatTracker {
             last_outcome: std::sync::Mutex::new(std::collections::HashMap::new()),
             predictable: std::sync::Mutex::new(std::collections::HashSet::new()),
             blocks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            ops: std::sync::Mutex::new(()),
         }
     }
 
@@ -212,6 +213,7 @@ impl SuccessfulRepeatTracker {
         call_signature: &str,
         outcome_identity: &str,
     ) -> SuccessfulRepeat {
+        let _op = lock(&self.ops);
         let call = hash_of(call_signature);
         let key = hash_pair(call_signature, outcome_identity);
         let count = {
@@ -355,8 +357,8 @@ impl SuccessfulRepeatTracker {
     /// Clears both streaks, the recurrence ledger and the block counts, for
     /// example when a paused run is resumed.
     pub fn reset(&self) {
-        self.reset_ledger();
-        lock(&self.last_outcome).clear();
+        let _op = lock(&self.ops);
+        self.clear_ledger();
         lock(&self.blocks).clear();
     }
 
@@ -364,6 +366,14 @@ impl SuccessfulRepeatTracker {
     /// block counts: for a context eviction, where the model forgets the
     /// results it repeated but has still already been blocked once.
     pub fn reset_ledger(&self) {
+        let _op = lock(&self.ops);
+        self.clear_ledger();
+    }
+
+    /// Body of the resets; the caller holds `ops`. Remembered results go too
+    /// (the model no longer sees them), which also frees prediction capacity.
+    fn clear_ledger(&self) {
+        lock(&self.last_outcome).clear();
         lock(&self.output).reset();
         lock(&self.calls).reset();
         lock(&self.recurrences).clear();
