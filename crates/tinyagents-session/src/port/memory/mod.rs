@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use tinyagents_harness::store::{InMemoryAppendStore, InMemoryStore};
 
@@ -55,11 +55,14 @@ impl SessionStoreProvider for InMemorySessionStores {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(agent_id.to_string())
-            .or_insert_with(|| AgentStores {
-                transcripts: Arc::new(InMemoryTranscriptLocator::new(agent_id)),
-                turn_states: Arc::new(InMemoryTurnStates::default()),
-                kv: Arc::new(InMemoryStore::new()),
-                journal: Arc::new(InMemoryAppendStore::new()),
+            .or_insert_with(|| {
+                let transcripts = Arc::new(InMemoryTranscriptLocator::new(agent_id));
+                AgentStores {
+                    transcripts: transcripts.clone(),
+                    turn_states: Arc::new(InMemoryTurnStates::with_transcripts(&transcripts)),
+                    kv: Arc::new(InMemoryStore::new()),
+                    journal: Arc::new(InMemoryAppendStore::new()),
+                }
             })
             .clone()
     }
@@ -94,7 +97,7 @@ impl SessionStoreProvider for InMemorySessionStores {
 /// means most recently created.
 pub struct InMemoryTranscriptLocator {
     label: String,
-    stems: Mutex<Vec<(String, Arc<InMemoryTranscriptHistory>)>>,
+    stems: Mutex<Vec<(String, bool, Arc<InMemoryTranscriptHistory>)>>,
     reserved_generations: Mutex<HashSet<String>>,
 }
 
@@ -115,12 +118,19 @@ impl InMemoryTranscriptLocator {
         stems
             .iter()
             .rev()
-            .filter(|(stem, _)| !stem.contains("__"))
-            .filter_map(|(_, history)| {
+            .filter(|(_, is_subagent, _)| !is_subagent)
+            .filter_map(|(_, _, history)| {
                 let session = history.read_session().ok().flatten()?;
                 Some((session.meta, history.clone()))
             })
             .collect()
+    }
+
+    fn clear_partials(&self) {
+        let histories = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
+        for (_, _, history) in histories.iter() {
+            history.clear_partials();
+        }
     }
 }
 
@@ -140,8 +150,14 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
             .reserved_generations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let already_exists = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(known, _, _)| known == &stem);
         anyhow::ensure!(
-            !self.session_exists(&successor) && reservations.insert(stem.clone()),
+            !already_exists && reservations.insert(stem.clone()),
             "session generation already exists or is reserved"
         );
         let mut meta = seed;
@@ -149,12 +165,12 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         meta.parent_session_id = successor.parent_session_id();
         match self.open_session(&successor, meta) {
             Ok(handle) => {
-                if let Some((_, predecessor)) = self
+                if let Some((_, _, predecessor)) = self
                     .stems
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .iter()
-                    .find(|(known, _)| known == &session_stem(session))
+                    .find(|(known, _, _)| known == &session_stem(session))
                 {
                     predecessor.seal();
                 }
@@ -208,14 +224,21 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         seed: TranscriptMeta,
     ) -> anyhow::Result<Arc<dyn TranscriptHistory>> {
         let mut stems = self.stems.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, history)) = stems.iter().find(|(known, _)| known == stem) {
+        if let Some((_, _, history)) = stems.iter().find(|(known, _, _)| known == stem) {
             return Ok(history.clone());
         }
+        // A root key may itself contain `__`; only classify the separator as
+        // lineage when the encoded parent stem is already known. This keeps
+        // the classification explicit in the locator index rather than
+        // treating a substring as proof of ancestry.
+        let is_subagent = stem
+            .split_once("__")
+            .is_some_and(|(parent, _)| stems.iter().any(|(known, _, _)| known == parent));
         let history = Arc::new(InMemoryTranscriptHistory::new(
             format!("{}/{stem}", self.label),
             seed,
         ));
-        stems.push((stem.to_string(), history.clone()));
+        stems.push((stem.to_string(), is_subagent, history.clone()));
         Ok(history)
     }
 
@@ -226,6 +249,13 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         partial: &TranscriptPartial,
         request_id: Option<&str>,
     ) -> anyhow::Result<bool> {
+        if partial.content.is_empty() {
+            return Ok(false);
+        }
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return Ok(false);
+        }
         let roots = self.written_roots();
         let Some((_, history)) = roots.into_iter().find(|(meta, _)| {
             meta.thread_id.as_deref() == Some(thread_id)
@@ -233,8 +263,9 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         }) else {
             return Ok(false);
         };
+        let before = history.partials().len();
         history.record_partial(partial.clone(), request_id.map(str::to_string));
-        Ok(true)
+        Ok(history.partials().len() > before)
     }
 }
 
@@ -245,9 +276,17 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
 #[derive(Debug, Default)]
 pub struct InMemoryTurnStates {
     turns: Mutex<HashMap<(String, String), TurnState>>,
+    transcripts: Option<Weak<InMemoryTranscriptLocator>>,
 }
 
 impl InMemoryTurnStates {
+    fn with_transcripts(transcripts: &Arc<InMemoryTranscriptLocator>) -> Self {
+        Self {
+            turns: Mutex::new(HashMap::new()),
+            transcripts: Some(Arc::downgrade(transcripts)),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), TurnState>> {
         self.turns.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -372,6 +411,9 @@ impl TurnStates for InMemoryTurnStates {
         let mut turns = self.lock();
         let removed = turns.len();
         turns.clear();
+        if let Some(transcripts) = self.transcripts.as_ref().and_then(Weak::upgrade) {
+            transcripts.clear_partials();
+        }
         Ok(removed)
     }
 

@@ -79,6 +79,9 @@ impl InMemoryTranscriptHistory {
     /// Records the display-only `partial` of an interrupted turn.
     pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.sealed || partial.content.is_empty() {
+            return;
+        }
         state.partials.push((partial, request_id));
         state.written = true;
     }
@@ -93,8 +96,12 @@ impl InMemoryTranscriptHistory {
             .clone()
     }
 
-    fn mark_written(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).written = true;
+    pub(crate) fn clear_partials(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .partials
+            .clear();
     }
 
     pub(crate) fn seal(&self) {
@@ -170,7 +177,7 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages.push(message.normalized());
-        self.mark_written();
+        state.written = true;
         Ok(())
     }
 
@@ -178,7 +185,7 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         state.messages = normalized_rows(messages);
-        self.mark_written();
+        state.written = true;
         Ok(())
     }
 
