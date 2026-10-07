@@ -422,6 +422,10 @@ impl ContextCompressionMiddleware {
             );
         }
 
+        // A run that already truncated keeps its tool results cut, before the
+        // size is measured, so the measurement matches what was sent.
+        self.apply_run_truncation(ctx, request);
+
         // Below the threshold: pass through (no new compaction, no event).
         // Prefer the provider's own count of the previous request plus an
         // estimate of what was appended since; the tool declarations count
@@ -442,6 +446,12 @@ impl ContextCompressionMiddleware {
             trigger = self.policy.trigger_budget(),
             "[context_compression] request over the trigger"
         );
+
+        // The cheaper route first: cutting oversized tool results can cover the
+        // overflow without a summary.
+        if self.route_over_trigger(ctx, request, prompt_tokens) {
+            return Ok(());
+        }
 
         // Anti-thrash: summaries that did not bring the prompt under the
         // trigger are not bought again during the cooldown.

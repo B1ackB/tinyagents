@@ -363,6 +363,73 @@ impl ContextCompressionMiddleware {
         true
     }
 
+    /// Re-applies the run's truncation to a request rebuilt from the full
+    /// transcript, once a route has engaged it. Silent (the engagement was
+    /// announced) and idempotent.
+    pub(super) fn apply_run_truncation<Ctx: Send + Sync>(
+        &self,
+        ctx: &RunContext<Ctx>,
+        request: &mut ModelRequest,
+    ) {
+        let Some(cap) = self.tool_result_truncation else {
+            return;
+        };
+        let engaged = self
+            .runs
+            .lock()
+            .expect("runs mutex poisoned")
+            .get(&ctx.instance_id())
+            .is_some_and(|state| state.truncating);
+        if engaged {
+            truncate_tool_results(&mut request.messages, cap);
+        }
+    }
+
+    /// The preemptive route decision for a request `prompt_tokens` big that is
+    /// over the trigger. Engages truncation when the route calls for it and
+    /// returns `true` when truncation alone has already brought the request
+    /// under budget (the caller then skips compaction).
+    pub(super) fn route_over_trigger<Ctx: Send + Sync>(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &mut ModelRequest,
+        prompt_tokens: u64,
+    ) -> bool {
+        let Some(cap) = self.tool_result_truncation else {
+            return false;
+        };
+        let reducible = tokens_for_bytes(reducible_tool_result_bytes(&request.messages, cap));
+        let route =
+            CompactionPressure::route(prompt_tokens, self.policy.trigger_budget(), reducible);
+        tracing::debug!(
+            route = route.as_str(),
+            prompt_tokens,
+            reducible_tokens = reducible,
+            trigger = self.policy.trigger_budget(),
+            "[context_compression] preemptive route"
+        );
+        if !route.truncates() {
+            return false;
+        }
+        self.engage_truncation(ctx.instance_id());
+        if route != CompactionRoute::TruncateToolResults {
+            return false;
+        }
+        let from_tokens = total_message_tokens(&request.messages);
+        truncate_tool_results(&mut request.messages, cap);
+        let to_tokens = total_message_tokens(&request.messages);
+        tracing::info!(
+            from_tokens,
+            to_tokens,
+            "[context_compression] truncated oversized tool results instead of summarizing"
+        );
+        ctx.emit(AgentEvent::Compressed {
+            from_tokens,
+            to_tokens,
+        });
+        true
+    }
+
     /// Marks `run` as truncating. Only a run `before_model` already tracks is
     /// marked: a run seen only here has no later `before_model` to apply it.
     pub(super) fn engage_truncation(&self, run: u64) {
