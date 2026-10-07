@@ -311,3 +311,56 @@ async fn middleware_observes_concurrent_progress_per_call_in_order() {
     assert!(index("a:alpha:a1") < index("a:alpha:a2") && index("a:alpha:a2") < index("after:a"));
     assert!(index("b:beta:b1") < index("b:beta:b2") && index("b:beta:b2") < index("after:b"));
 }
+
+/// Reports once, then fails the way a crashed tool does.
+struct ReportThenFail;
+
+#[async_trait]
+impl Tool for ReportThenFail {
+    fn name(&self) -> &str {
+        "crash"
+    }
+    fn description(&self) -> &str {
+        "reports then fails"
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: serde_json::Value,
+        _options: ToolCallOptions,
+        context: Option<&dyn ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        if let Some(context) = context {
+            context.report_progress(ToolProgress::message("about to fail"));
+        }
+        Err(anyhow::anyhow!("boom"))
+    }
+}
+
+#[tokio::test]
+async fn progress_from_a_call_that_then_fails_still_precedes_its_failure() {
+    let mut fx = fixture(calls(&[("c1", "crash")]));
+    fx.harness.register_tool(Arc::new(ReportThenFail));
+    let ctx =
+        RunContext::new(RunConfig::new("run-progress"), ()).with_events(fx.recorder.sink());
+    let outcome = fx
+        .harness
+        .invoke_in_context(&(), ctx, vec![Message::user("go")])
+        .await;
+
+    let events = seen(&fx.recorder);
+    let progress_at = events
+        .iter()
+        .position(|e| e == &progress("c1", "about to fail"))
+        .unwrap_or_else(|| panic!("progress missing from {events:?} (run: {outcome:?})"));
+    let terminal_at = events
+        .iter()
+        .position(|e| matches!(e, Seen::Failed(_) | Seen::Completed(_)))
+        .expect("the call has a terminal event");
+    assert!(progress_at < terminal_at, "{events:?}");
+}
