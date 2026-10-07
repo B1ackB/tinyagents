@@ -141,6 +141,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn account_discarded_usage(
         &self,
         ctx: &mut RunContext<Ctx>,
