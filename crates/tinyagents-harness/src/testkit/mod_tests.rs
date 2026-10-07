@@ -322,11 +322,13 @@ fn make_trajectory() -> Vec<AgentEvent> {
             output: None,
         },
         AgentEvent::ToolStarted {
+            parent_call_id: None,
             call_id: CallId::new("t1"),
             tool_name: "search".into(),
             input: None,
         },
         AgentEvent::ToolCompleted {
+            parent_call_id: None,
             call_id: CallId::new("t1"),
             tool_name: "search".into(),
             started_at_ms: None,
@@ -379,6 +381,7 @@ fn trajectory_tool_call_count() {
     let mut events = make_trajectory();
     // Add a second call to 'search'.
     events.push(AgentEvent::ToolStarted {
+        parent_call_id: None,
         call_id: CallId::new("t2"),
         tool_name: "search".into(),
         input: None,

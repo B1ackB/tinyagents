@@ -66,6 +66,14 @@
 //! Lifecycle `before_tool`/`after_tool` hooks never forced serial execution:
 //! they run in the admission/fold phases and still bracket each call.
 //!
+//! ## Nested calls
+//!
+//! A tool may call another tool through
+//! [`ToolExecutionContext::call_tool`][crate::tool::ToolExecutionContext::call_tool];
+//! those calls are admitted and executed by `super::nested`, share this
+//! module's `max_tool_calls` budget, and never touch the transcript. See
+//! `docs/modules/harness/nested-tool-calls.md`.
+//!
 //! ## Semantics preserved (and one deliberate difference)
 //!
 //! - **Event ordering**: every call's `ToolStarted` precedes its
@@ -206,18 +214,18 @@ enum ToolSlot {
 
 /// Admission metadata for one executable call, paired 1:1 (in order) with its
 /// execution future/result on the concurrent path.
-struct PreparedToolCall {
-    call_id: CallId,
-    tool_name: String,
+pub(super) struct PreparedToolCall {
+    pub(super) call_id: CallId,
+    pub(super) tool_name: String,
     /// The admitted call, kept so an execution-time deferral
     /// (`ApprovalRequired`/`CallDeferred` raised by the tool) can hand the
     /// original request back through [`DeferredToolRequests`].
-    call: ToolCall,
-    options: ToolCallOptions,
-    captured_input: Option<Value>,
-    started_at_ms: u64,
-    executed: bool,
-    output_origin: crate::host::ContentOrigin,
+    pub(super) call: ToolCall,
+    pub(super) options: ToolCallOptions,
+    pub(super) captured_input: Option<Value>,
+    pub(super) started_at_ms: u64,
+    pub(super) executed: bool,
+    pub(super) output_origin: crate::host::ContentOrigin,
 }
 
 /// Derives a best-effort deduplication key for one tool call from its name
@@ -953,6 +961,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // call starts) and the fold-phase `ToolCompleted` event.
         let captured_input = self.policy.capture.tool_io.then(|| call.arguments.clone());
         let record = ctx.emit(AgentEvent::ToolStarted {
+            parent_call_id: None,
             call_id: call_id.clone(),
             tool_name: tool_name.clone(),
             input: captured_input.clone(),
@@ -988,7 +997,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// whether that is fatal ([`LedgerFailure::Abort`], the default — the
     /// caller must fail the call and propagate the error) or merely logged
     /// ([`LedgerFailure::Continue`] — the call proceeds unrecorded).
-    async fn record_tool_effect_started(
+    pub(super) async fn record_tool_effect_started(
         &self,
         ctx: &RunContext<Ctx>,
         arguments: &Value,
@@ -1033,7 +1042,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// discard a real result rather than merely skip recording one. A failed
     /// settle write is logged; the row stays `started` and will surface again
     /// from [`crate::tool::ToolEffectLedger::unresolved`] on the next resume.
-    async fn record_tool_effect_settled(
+    pub(super) async fn record_tool_effect_settled(
         &self,
         ctx: &RunContext<Ctx>,
         prepared: &PreparedToolCall,
@@ -1084,6 +1093,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             call_id.as_str()
         );
         let record = ctx.emit(AgentEvent::ToolFailed {
+            parent_call_id: None,
             call_id: call_id.clone(),
             tool_name: tool_name.to_string(),
             started_at_ms: Some(started_at_ms),
@@ -1301,6 +1311,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let event_call_id = prepared.call_id.clone();
         let event_tool_name = prepared.tool_name.clone();
         let record = ctx.emit(AgentEvent::ToolCompleted {
+            parent_call_id: None,
             call_id: event_call_id,
             tool_name: event_tool_name,
             started_at_ms: Some(prepared.started_at_ms),
@@ -1434,9 +1445,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // outer run budget still aborts when the whole run is exhausted.
         let run_budget = self.call_budget(ctx);
         let base = ToolCallBase {
+            harness: self,
             dispatch,
             options,
             timeout_settings: self.tool_timeouts.clone(),
+            level: 0,
+            nested_state: Default::default(),
+            gate_held: super::nested::GateHold::None,
         };
         let run_id = ctx.run_id().as_str().to_string();
         let gate = self.open_progress_gate(ctx, &prepared);
@@ -1778,9 +1793,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // bounds the whole wrapped call. The future owns its call and base
             // and shares only `&RunContext`, so it runs alongside its siblings.
             let base = ToolCallBase {
+                harness: self,
                 dispatch,
                 options,
                 timeout_settings: self.tool_timeouts.clone(),
+                level: 0,
+                nested_state: Default::default(),
+                gate_held: super::nested::GateHold::None,
             };
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();
@@ -2375,7 +2394,7 @@ pub(super) fn map_tool_dispatch_error(error: anyhow::Error) -> TinyAgentsError {
 /// This is host policy, not parsing: it runs only under a recovering
 /// [`InvalidArgsPolicy`](crate::runtime::InvalidArgsPolicy), and the schema
 /// validator that gates every rewrite is the harness's.
-fn normalize_tool_arguments(call: &mut ToolCall, schema: &ToolSchema) {
+pub(super) fn normalize_tool_arguments(call: &mut ToolCall, schema: &ToolSchema) {
     use tinytools_agent::repair::args;
 
     // Never rewrite a value the declared schema already accepts. In

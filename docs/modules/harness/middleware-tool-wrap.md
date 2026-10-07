@@ -106,3 +106,11 @@ policy `Allow`/`Deny`) never take the lock, and an approved call runs its tool
 outside it. A host that calls `ToolPolicyGate::evaluate` directly (instead of
 the middleware) owns that serialisation itself. These middleware do **not**
 set `concurrent_safe() == false`.
+
+## Nested calls
+
+A call a tool makes with `ToolExecutionContext::call_tool` runs the wrap onion
+too, so a policy wrap can deny it. `before_tool`/`after_tool` proper take
+`&mut RunContext` and do not run for nested calls; `Middleware::check_nested_tool`
+and `observe_nested_result` are their shared-reference counterparts. See
+[nested-tool-calls.md](nested-tool-calls.md).

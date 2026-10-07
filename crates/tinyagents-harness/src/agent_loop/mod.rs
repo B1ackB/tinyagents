@@ -126,6 +126,7 @@ mod mixed_turn;
 mod model_call;
 mod model_switch;
 mod model_turn;
+mod nested;
 pub mod phases;
 mod response_recovery;
 mod run_loop;
@@ -152,6 +153,9 @@ mod model_profile_preview_test;
 #[cfg(test)]
 #[path = "model_switch_tests.rs"]
 mod model_switch_test;
+#[cfg(test)]
+#[path = "nested_tests.rs"]
+mod nested_test;
 #[cfg(test)]
 #[path = "rich_tool_tests.rs"]
 mod rich_tool_test;
