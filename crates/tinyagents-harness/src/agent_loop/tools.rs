@@ -53,14 +53,17 @@
 //! sanitized before leaving this boundary; cancellation and timeout retain
 //! their typed classifications.
 //!
-//! ## Why tool-wrap middleware forces serial execution
+//! ## Tool-wrap middleware runs inside each concurrent call
 //!
-//! [`crate::middleware::ToolMiddleware::wrap_tool`] holds
-//! `&mut RunContext` across the entire wrapped call — that exclusive borrow is
-//! part of its public contract (it may mutate limits, request control, etc.).
-//! Two wrapped calls therefore cannot be in flight at once without changing
-//! the trait, so a harness with tool-wrap middleware keeps the serial path.
-//! Lifecycle `before_tool`/`after_tool` hooks do *not* force serial execution:
+//! [`crate::middleware::ToolMiddleware::wrap_tool`] receives a shared
+//! `&RunContext` (it may read it, emit events, request control, or use
+//! interior-mutable handles). The concurrent path therefore runs the whole
+//! wrap onion — wrap layers around the real tool — inside each call's own
+//! future, so wrapped calls overlap exactly like unwrapped ones. A wrap that
+//! cannot tolerate overlap opts out with
+//! [`crate::middleware::ToolMiddleware::concurrent_safe`]` -> false`, and any
+//! such wrap keeps every batch on the serial path.
+//! Lifecycle `before_tool`/`after_tool` hooks never forced serial execution:
 //! they run in the admission/fold phases and still bracket each call.
 //!
 //! ## Semantics preserved (and one deliberate difference)
@@ -377,44 +380,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         }
     }
 
-    /// Resolves this tool's own timeout policy. The separate run wall-clock
-    /// budget remains the outer hard deadline: a per-tool timeout becomes a
-    /// recoverable tool-error result, while exhausting the run budget aborts.
-    fn resolved_tool_timeout(
-        &self,
-        tool: &dyn tinytools::Tool,
-        call: &ToolCall,
-    ) -> Option<crate::tool::ResolvedToolTimeout> {
-        self.tool_timeouts
-            .as_ref()
-            .map(|settings| settings.resolve(tool.timeout_policy(&call.arguments)))
-    }
-
-    /// Races `fut` against `timeout`'s deadline (if any), returning
-    /// `timeout_value` instead of an error when the deadline elapses first.
-    ///
-    /// This is the crate-owned tool-timeout policy: unlike
-    /// [`Self::with_call_budget`], which surfaces a run-level
-    /// [`TinyAgentsError::Timeout`] and aborts the run, an elapsed per-tool
-    /// deadline here becomes a *recoverable* `Ok(timeout_value)` (a
-    /// `ToolResult::error`) so the run continues and the model can react.
-    async fn with_tool_policy_timeout<T, F>(
-        timeout: Option<crate::tool::ResolvedToolTimeout>,
-        timeout_value: T,
-        fut: F,
-    ) -> Result<T>
-    where
-        F: Future<Output = Result<T>>,
-    {
-        match timeout.and_then(|resolved| resolved.deadline) {
-            Some(deadline) => match tokio::time::timeout(deadline, fut).await {
-                Ok(result) => result,
-                Err(_) => Ok(timeout_value),
-            },
-            None => fut.await,
-        }
-    }
-
     /// Executes one assistant turn's requested tool calls, appending each
     /// result to `messages` in the calls' original order.
     ///
@@ -453,7 +418,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let deferred = if should_execute_tools_concurrently(
             tool_calls.len(),
             canonical_parallel_safe,
-            self.middleware.tool_middleware_len(),
+            self.middleware.tool_middleware_concurrent_safe(),
         ) {
             self.execute_tools_concurrently(
                 state,
@@ -1712,11 +1677,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         Ok(())
     }
 
-    /// Executes a multi-call turn concurrently (`join_all`), so turn latency
-    /// is the slowest tool instead of the sum. Only reachable when no
-    /// tool-wrap middleware is registered (see the module docs); execution
-    /// therefore drives each tool directly — exactly what the empty wrap
-    /// onion would have done — via a future that borrows no `RunContext`.
+    /// Executes a multi-call turn concurrently, so turn latency is the
+    /// slowest tool instead of the sum. Each call's future runs the tool-wrap
+    /// onion around the real tool on a shared `&RunContext` (see the module
+    /// docs); only reachable when every wrap is `concurrent_safe`.
     #[allow(clippy::too_many_arguments)]
     async fn execute_tools_concurrently(
         &self,
@@ -1815,34 +1779,33 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let gate = self.open_progress_gate(ctx, prepared.last().expect("just pushed"));
             gates.push(Arc::clone(&gate));
 
-            // Each call is bounded by its recoverable tool policy inside the
-            // run's hard remaining wall-clock budget, mirroring serial mode.
-            // The future owns everything it needs (tool Arc, call, a
-            // non-generic `ToolExecutionContext` snapshot), so it does not
-            // borrow the `RunContext` and can run alongside its siblings.
-            let tool_timeout = self.resolved_tool_timeout(tool.as_ref(), &call);
-            let timeout_result = timeout_result(&call, tool_timeout);
+            // Each call runs the full wrap onion around the real tool, exactly
+            // as the serial path does: the recoverable per-tool timeout lives
+            // in `ToolCallBase`, the run's hard remaining wall-clock budget
+            // bounds the whole wrapped call. The future owns its call and base
+            // and shares only `&RunContext`, so it runs alongside its siblings.
+            let base = ToolCallBase {
+                dispatch,
+                options,
+                timeout_settings: self.tool_timeouts.clone(),
+            };
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();
             futures.push(async move {
                 let body = async move {
-                    let fut = execute_tool_recovering_model_retry(dispatch.execute(
-                        state,
-                        CallId::new(call.id),
-                        call.arguments,
-                        options,
-                        parent_ctx,
-                    ));
-                    let fut = Self::with_tool_policy_timeout(tool_timeout, timeout_result, fut);
+                    let wrapped = self.middleware.run_wrapped_tool(parent_ctx, state, call, &base);
                     // As in serial mode, canonical execution errors remain
                     // fatal; reported tool errors travel in
                     // `ToolResult::is_error`.
+                    let guarded = futures::FutureExt::map(wrapped, |result| {
+                        result.map(|outcome| outcome.into_result_with_control())
+                    });
                     Self::with_call_budget(
                         run_budget,
                         &run_id,
                         "tool call",
                         super::model_call::RUN_BOUND_LABEL,
-                        fut,
+                        guarded,
                     )
                     .await
                 };
@@ -1893,8 +1856,8 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // Replay this call's progress to middleware before any
                     // terminal event for it (its live events are already out).
                     self.replay_tool_progress(state, ctx, &gate).await;
-                    let result = match result {
-                        Ok(result) => result,
+                    let (result, wrap_control) = match result {
+                        Ok(pair) => pair,
                         Err(err) => {
                             if let Some(request) = execution_deferral(&prepared.call, &err) {
                                 self.defer_started_tool_call(
@@ -1954,6 +1917,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                             return Err(err);
                         }
                     };
+                    // A wrap that short-circuited with `Command` carries no
+                    // real result; queue its control as the serial path does.
+                    if let Some(control) = wrap_control {
+                        ctx.request_control(control);
+                    }
                     self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Completed)
                         .await;
                     follow_ups.extend(
@@ -2216,25 +2184,21 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
 /// Decides whether a batch may leave the serial path.
 ///
-/// Lifecycle middleware used to force serial execution unconditionally
-/// (`lifecycle_middleware == 0`), but that precondition never actually
-/// applied: lifecycle `before_tool` hooks that can rewrite a call's name or
-/// arguments run during **admission** (`admit_tool_call`, phase 1 of
-/// [`AgentHarness::execute_tools_concurrently`]), which is already serial and
+/// Lifecycle middleware never forced serial execution: `before_tool` hooks
+/// that can rewrite a call run during **admission** (`admit_tool_call`, phase 1
+/// of [`AgentHarness::execute_tools_concurrently`]), which is serial and
 /// completes in full — for every call in the batch — before any concurrent
-/// future is built. By the time phase 3 runs the futures, every call has its
-/// final, lifecycle-rewritten name and arguments; there is nothing left for a
-/// lifecycle middleware to still mutate concurrently (I-8). Tool-*wrap*
-/// middleware (`tool_wrap_middleware`) is a separate concern: the concurrent
-/// path drives each tool directly, bypassing the wrap onion entirely (see
-/// that method's docs), so a registered `ToolMiddleware` still forces serial
-/// execution — dropping it silently would skip the middleware.
+/// future is built (I-8). Tool-*wrap* middleware used to force it because
+/// `wrap_tool` held `&mut RunContext`; it now takes `&RunContext` and runs
+/// inside each concurrent future, so only a wrap that opts out through
+/// [`crate::middleware::ToolMiddleware::concurrent_safe`] keeps the serial
+/// route (`tool_wraps_concurrent_safe == false`).
 fn should_execute_tools_concurrently(
     calls: usize,
     canonical_parallel_safe: bool,
-    tool_wrap_middleware: usize,
+    tool_wraps_concurrent_safe: bool,
 ) -> bool {
-    calls > 1 && canonical_parallel_safe && tool_wrap_middleware == 0
+    calls > 1 && canonical_parallel_safe && tool_wraps_concurrent_safe
 }
 
 /// A batch may leave the serial path only when every registered declaration
