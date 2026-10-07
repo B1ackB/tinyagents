@@ -19,32 +19,9 @@
 use tinyagents_graph::orchestration::OrchestrationTaskStatus;
 use tinyagents_session::run_ledger::AgentRunStatus;
 
-/// A status has no counterpart in the target vocabulary.
-///
-/// Returned by the fallible (`TryFrom`) conversions, never for a status that
-/// has a lossy-but-sensible mapping.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("status `{from}` has no equivalent in {target}")]
-pub struct NoEquivalentStatus {
-    from: &'static str,
-    target: &'static str,
-}
+mod types;
 
-impl NoEquivalentStatus {
-    pub(crate) fn new(from: &'static str, target: &'static str) -> Self {
-        Self { from, target }
-    }
-
-    /// Wire label of the status that could not be converted.
-    pub fn from_status(&self) -> &'static str {
-        self.from
-    }
-
-    /// Name of the vocabulary that has no equivalent.
-    pub fn target(&self) -> &'static str {
-        self.target
-    }
-}
+pub use types::NoEquivalentStatus;
 
 /// Maps a managed-task status onto the run-ledger status.
 ///

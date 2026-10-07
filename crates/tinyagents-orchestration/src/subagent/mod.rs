@@ -70,5 +70,5 @@ mod test;
 mod driver_policy_test;
 
 #[cfg(test)]
-#[path = "outcome_kind_tests.rs"]
+#[path = "mod_outcome_kind_tests.rs"]
 mod outcome_kind_test;

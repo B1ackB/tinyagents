@@ -150,5 +150,5 @@ mod prompt_tools_tests;
 mod ordering_tests;
 
 #[cfg(test)]
-#[path = "status_alias_tests.rs"]
+#[path = "mod_status_alias_tests.rs"]
 mod status_alias_tests;
