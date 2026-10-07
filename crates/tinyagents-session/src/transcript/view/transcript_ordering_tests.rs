@@ -400,10 +400,30 @@ fn subagent_of_a_session_root_is_discovered_and_placed_after_its_spawning_call()
     );
 }
 
-/// A delegation reported incomplete by the runner is a failed run, whatever
-/// the child's last row says.
+/// A delegation reported incomplete is an incomplete run, whatever the
+/// child's last row says. The legacy text marker is still honoured.
 #[test]
-fn subagent_status_follows_an_incomplete_delegation_result() {
+fn subagent_status_follows_a_legacy_incomplete_marker() {
+    assert_eq!(
+        status_for_delegation_result("[SUBAGENT_INCOMPLETE] gave up"),
+        SubagentStatus::Incomplete
+    );
+}
+
+/// The typed `"status": "incomplete"` payload replaces the text marker.
+#[test]
+fn subagent_status_follows_a_typed_incomplete_result() {
+    assert_eq!(
+        status_for_delegation_result(r#"{"job_id":"j","status":"incomplete","incomplete_kind":"timeout"}"#),
+        SubagentStatus::Incomplete
+    );
+    assert_eq!(
+        status_for_delegation_result(r#"{"job_id":"j","status":"completed"}"#),
+        SubagentStatus::Completed
+    );
+}
+
+fn status_for_delegation_result(result: &str) -> SubagentStatus {
     let dir = TempDir::new().unwrap();
     let root_stem = "900_orchestrator";
     let thread_id = "thr_sub_fail";
@@ -414,7 +434,7 @@ fn subagent_status_follows_an_incomplete_delegation_result() {
         &[
             TranscriptMessage::new("user", "go"),
             envelope("", &[("c1", "delegate_coder", "{}")], ""),
-            tool_result("c1", "[SUBAGENT_INCOMPLETE] gave up"),
+            tool_result("c1", result),
             final_answer("Sorry.", ""),
         ],
         &meta(thread_id, None, None),
@@ -451,7 +471,8 @@ fn subagent_status_follows_an_incomplete_delegation_result() {
             _ => None,
         })
         .expect("sub-agent projected");
-    assert_eq!(status, (SubagentStatus::Failed, Some("c1".to_string())));
+    assert_eq!(status.1, Some("c1".to_string()));
+    status.0
 }
 
 /// A compaction opens `{stem}.g1`, which inherits `created` and starts with
