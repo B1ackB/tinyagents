@@ -261,7 +261,13 @@ async fn a_different_call_after_compaction_is_left_alone() {
 #[tokio::test]
 async fn compaction_does_not_forgive_an_earlier_block() {
     let handle = SteeringHandle::allow_all();
-    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None)));
+    // The guard would escalate sooner; isolate the run-wide block count.
+    let mw = mw(&handle, &Arc::new(std::sync::Mutex::new(None))).with_config(
+        RepeatProgressConfig {
+            post_compaction_window: 0,
+            ..RepeatProgressConfig::default()
+        },
+    );
     for _ in 0..4 {
         same_turn(&mw, "ok").await;
     }

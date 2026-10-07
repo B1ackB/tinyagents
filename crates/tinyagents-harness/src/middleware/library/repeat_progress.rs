@@ -9,16 +9,17 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::context::RunContext;
-use crate::error::Result as TaResult;
+use crate::error::{Result as TaResult, TinyAgentsError};
 use crate::middleware::{Middleware, ToolInvocationIdentity};
 use crate::no_progress::{
-    OutcomeFingerprinter, SuccessfulRepeat, SuccessfulRepeatTracker, VolatileSpanNormalizer,
-    fingerprint_arguments,
+    CallGate, OutcomeFingerprinter, RepeatMonitor, RepeatProgressConfig, SuccessfulRepeat,
+    VolatileSpanNormalizer, fingerprint_arguments,
 };
 use crate::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::message::{ContentBlock, Message};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
-use tinytools::ToolResult as TaToolResult;
+use tinyinference_llm::tool::ToolCall;
+use tinytools::{ToolContent, ToolResult as TaToolResult};
 
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
 
@@ -59,9 +60,9 @@ struct PendingCallBatch {
     all_ok: bool,
     /// `true` when every call in the batch is a polling/wait exemption.
     exempt: bool,
-    /// `call_id` → per-call `(tool, argument fingerprint)` signature for the
-    /// recurrence ledger. Polling/wait calls are left out.
-    call_sigs: HashMap<String, VecDeque<String>>,
+    /// `call_id` → per-call `(tool, argument fingerprint)` for the recurrence
+    /// ledger. Polling/wait calls are left out.
+    call_sigs: HashMap<String, VecDeque<(String, String)>>,
     /// `true` once a result in this batch has already halted the run, so the
     /// batch does not pause it a second time.
     halted: bool,
@@ -70,7 +71,8 @@ struct PendingCallBatch {
 /// Tracker state shared between [`RepeatProgressMiddleware`] and its
 /// [`RepeatEvictionObserver`].
 struct RepeatState {
-    tracker: Mutex<HashMap<u64, SuccessfulRepeatTracker>>,
+    monitors: Mutex<HashMap<u64, RepeatMonitor>>,
+    config: RepeatProgressConfig,
     /// The body a cleared tool result carries.
     cleared_placeholder: String,
     /// `call_id`s of the results fed to the recurrence ledger since its last reset.
@@ -81,9 +83,10 @@ struct RepeatState {
 }
 
 impl RepeatState {
-    fn new(placeholder: impl Into<String>) -> Self {
+    fn new(placeholder: impl Into<String>, config: RepeatProgressConfig) -> Self {
         Self {
-            tracker: Mutex::default(),
+            monitors: Mutex::default(),
+            config,
             cleared_placeholder: placeholder.into(),
             recorded: Mutex::default(),
             visible_before_reduction: Mutex::default(),
@@ -165,7 +168,10 @@ impl RepeatProgressMiddleware {
             handle,
             halt_summary,
             exempt,
-            state: Arc::new(RepeatState::new(DEFAULT_CLEARED_PLACEHOLDER)),
+            state: Arc::new(RepeatState::new(
+                DEFAULT_CLEARED_PLACEHOLDER,
+                RepeatProgressConfig::default(),
+            )),
             fingerprinter: Arc::new(VolatileSpanNormalizer),
             pending: Mutex::default(),
         }
@@ -183,7 +189,19 @@ impl RepeatProgressMiddleware {
     /// Override the placeholder body treated as an evicted tool result. Must be
     /// called before [`eviction_observer`](Self::eviction_observer).
     pub fn with_cleared_placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.state = Arc::new(RepeatState::new(placeholder));
+        let config = self.state.config.clone();
+        self.state = Arc::new(RepeatState::new(placeholder, config));
+        self
+    }
+
+    /// Replaces the thresholds and escalation settings (see
+    /// [`RepeatProgressConfig`]). The default stages escalation (warn, block,
+    /// halt); pass [`RepeatProgressConfig::immediate_halt`] for the historical
+    /// halt at the first threshold. Must be called before
+    /// [`eviction_observer`](Self::eviction_observer).
+    pub fn with_config(mut self, config: RepeatProgressConfig) -> Self {
+        let placeholder = self.state.cleared_placeholder.clone();
+        self.state = Arc::new(RepeatState::new(placeholder, config));
         self
     }
 
@@ -220,8 +238,8 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         _run: &mut crate::middleware::AgentRun,
     ) -> TaResult<()> {
         let run_id = ctx.instance_id();
-        if let Ok(mut trackers) = self.state.tracker.lock() {
-            trackers.remove(&run_id);
+        if let Ok(mut monitors) = self.state.monitors.lock() {
+            monitors.remove(&run_id);
         }
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(&run_id);
