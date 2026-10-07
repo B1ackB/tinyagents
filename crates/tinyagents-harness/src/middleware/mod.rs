@@ -489,6 +489,34 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
             .after_tool_control(ctx, state, invocation, result))
     }
 
+    /// Runs every middleware's [`Middleware::check_nested_tool`] in
+    /// registration order; the first refusal wins.
+    pub async fn run_check_nested_tool(
+        &self,
+        ctx: &RunContext<Ctx>,
+        state: &State,
+        call: &ToolCall,
+    ) -> Result<()> {
+        for mw in self.middlewares.iter() {
+            mw.check_nested_tool(ctx, state, call).await?;
+        }
+        Ok(())
+    }
+
+    /// Runs every middleware's [`Middleware::observe_nested_result`] in
+    /// registration order.
+    pub async fn run_observe_nested_result(
+        &self,
+        ctx: &RunContext<Ctx>,
+        state: &State,
+        call: &ToolCall,
+        result: &ToolResult,
+    ) {
+        for mw in self.middlewares.iter() {
+            mw.observe_nested_result(ctx, state, call, result).await;
+        }
+    }
+
     /// Runs every middleware's [`Middleware::on_error`] in registration order,
     /// bracketing each with start/completed events. Inner errors are ignored so
     /// the originating error is never masked; this method always returns `Ok`.

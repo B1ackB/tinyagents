@@ -110,6 +110,15 @@ pub struct ToolCallRequest {
     /// attacker-influenced in exactly the same way the arguments are.
     #[serde(default)]
     pub call_id: Option<CallId>,
+    /// The call this one is nested under, when a running tool made it through
+    /// `ToolExecutionContext::call_tool` rather than the model.
+    ///
+    /// `None` for a model-issued call. A nested call cannot be deferred or
+    /// prompted for: the parent is mid-execution. A host gate that would
+    /// normally ask a human should **fail closed** when this is `Some`, and
+    /// authorize only what its policy allows without asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<CallId>,
 }
 
 impl ToolCallRequest {
@@ -125,6 +134,7 @@ impl ToolCallRequest {
             arguments,
             agent_id: agent_id.into(),
             call_id: None,
+            parent_call_id: None,
         }
     }
 
