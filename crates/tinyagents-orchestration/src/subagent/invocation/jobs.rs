@@ -15,6 +15,8 @@ use tinyagents_harness::tool::{ToolDispatch, ToolRegistry};
 use tinyinference_llm::message::Message;
 use tinytools::{Tool, ToolResult};
 
+use crate::subagent::{AppliedResult, IncompleteKind};
+
 use super::{
     JobLink, SubAgentJob, SubAgentJobEntry, SubAgentJobError, SubAgentJobId, SubAgentJobRegistry,
     SubAgentJobStatus,
@@ -85,6 +87,10 @@ impl SubAgentJobRegistry {
                 error: None,
                 subagent_run_id: link.subagent_run_id,
                 parent_tool_call_id: link.parent_tool_call_id,
+                incomplete_kind: None,
+                artifacts: Vec::new(),
+                schema_error: None,
+                artifact_error: None,
             },
             owner,
             steering: steering.clone(),
@@ -109,6 +115,18 @@ impl SubAgentJobRegistry {
         id: &SubAgentJobId,
         result: Result<tinyagents_harness::middleware::AgentRun, TinyAgentsError>,
     ) {
+        self.mark_result_applied(id, result, None);
+    }
+
+    /// Settles a job like [`Self::mark_result`], publishing the
+    /// result-policy-applied output in the same registry write so no reader
+    /// ever sees a terminal job with the raw, unpolicied output.
+    pub(crate) fn mark_result_applied(
+        &self,
+        id: &SubAgentJobId,
+        result: Result<tinyagents_harness::middleware::AgentRun, TinyAgentsError>,
+        applied: Option<AppliedResult>,
+    ) {
         let mut entries = self.write();
         let Some(entry) = entries.get_mut(id) else {
             return;
@@ -132,17 +150,74 @@ impl SubAgentJobRegistry {
                 } else {
                     entry.job.status = SubAgentJobStatus::Completed;
                     entry.job.output = run.text();
+                    if let Some(applied) = applied {
+                        entry.job.output = Some(applied.text);
+                        entry.job.artifacts.extend(applied.artifact);
+                        entry.job.schema_error = applied.schema_error;
+                        entry.job.artifact_error = applied.artifact_error;
+                    }
                 }
             }
             Err(TinyAgentsError::Cancelled) => {
                 entry.job.status = SubAgentJobStatus::Cancelled;
                 entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
             }
+            Err(error @ TinyAgentsError::LimitExceeded(_)) => {
+                entry.job.status = SubAgentJobStatus::Incomplete;
+                entry.job.incomplete_kind = Some(IncompleteKind::BudgetExceeded);
+                entry.job.error = Some(error.to_string());
+            }
+            Err(error @ TinyAgentsError::Timeout(_)) => {
+                entry.job.status = SubAgentJobStatus::Incomplete;
+                entry.job.incomplete_kind = Some(IncompleteKind::Timeout);
+                entry.job.error = Some(error.to_string());
+            }
             Err(error) => {
                 entry.job.status = SubAgentJobStatus::Failed;
                 entry.job.error = Some(error.to_string());
             }
         }
+    }
+
+    /// Points the job link at the attempt that is now running.
+    pub(crate) fn set_attempt_run_id(&self, id: &SubAgentJobId, run_id: &str) {
+        if let Some(entry) = self.write().get_mut(id)
+            && !entry.job.status.is_terminal()
+        {
+            entry.job.subagent_run_id = Some(run_id.to_owned());
+        }
+    }
+
+    /// Settles a job whose run finished but overshot a budget: it keeps the
+    /// (policy-applied) output and ends `Incomplete(BudgetExceeded)`.
+    pub(crate) fn mark_budget_overrun(
+        &self,
+        id: &SubAgentJobId,
+        applied: AppliedResult,
+        reason: String,
+    ) {
+        let mut entries = self.write();
+        let Some(entry) = entries.get_mut(id) else {
+            return;
+        };
+        if entry.job.status.is_terminal() {
+            return;
+        }
+        entry.cancellation = None;
+        if entry.cancellation_requested {
+            // An owner cancellation that raced the finish wins, as in
+            // `mark_result`.
+            entry.job.status = SubAgentJobStatus::Cancelled;
+            entry.job.error = Some(TinyAgentsError::Cancelled.to_string());
+            return;
+        }
+        entry.job.status = SubAgentJobStatus::Incomplete;
+        entry.job.incomplete_kind = Some(IncompleteKind::BudgetExceeded);
+        entry.job.error = Some(reason);
+        entry.job.output = Some(applied.text);
+        entry.job.artifacts.extend(applied.artifact);
+        entry.job.schema_error = applied.schema_error;
+        entry.job.artifact_error = applied.artifact_error;
     }
 
     /// Marks a job `Failed` because its child task panicked or was aborted

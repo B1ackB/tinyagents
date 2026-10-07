@@ -9,7 +9,7 @@
 //!
 //! All public items are re-exported through [`super`] so callers import from
 //! `tinyagents_orchestration::subagent` directly. Implementations and tests live in the
-//! sibling `mod.rs` and `test.rs`.
+//! sibling `mod.rs` and its `*_tests.rs` files.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -179,6 +179,14 @@ pub struct SubAgentTool<State: Send + Sync, Ctx: Send + Sync = ()> {
     pub(crate) jobs: SubAgentJobRegistry,
     /// Spawn admission ledger; unlimited unless the host injects a policy.
     pub(crate) admission: crate::subagent::SpawnAdmission,
+    /// Timeout, retry and budget applied around each spawned child.
+    pub(crate) policy: crate::subagent::SubAgentPolicy,
+    /// Whether the child may delegate; a leaf must not expose delegation tools.
+    pub(crate) role: crate::subagent::SubagentRole,
+    /// Names of the host's own delegation tools a leaf child must not expose.
+    pub(crate) delegation_tools: Vec<String>,
+    /// Trim/check applied to the child's final output.
+    pub(crate) result_policy: crate::subagent::ResultPolicy,
 }
 
 /// Stable identifier returned immediately when a subagent job is spawned.
@@ -210,6 +218,9 @@ pub enum SubAgentJobStatus {
     Completed,
     /// The child failed.
     Failed,
+    /// The child stopped without a complete answer (timeout or budget); see
+    /// [`SubAgentJob::incomplete_kind`].
+    Incomplete,
     /// The child observed cooperative cancellation.
     Cancelled,
 }
@@ -217,7 +228,10 @@ pub enum SubAgentJobStatus {
 impl SubAgentJobStatus {
     /// Whether no further execution transition can occur.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Incomplete | Self::Cancelled
+        )
     }
 }
 
@@ -249,6 +263,18 @@ pub struct SubAgentJob {
     /// supplied one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_tool_call_id: Option<String>,
+    /// Typed cause when [`Self::status`] is `Incomplete`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_kind: Option<crate::subagent::IncompleteKind>,
+    /// Artifacts the result policy stored for an oversized output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<crate::subagent::ArtifactReference>,
+    /// Why the output failed the result policy's schema, if one was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_error: Option<String>,
+    /// Why an oversized output could not be stored as an artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_error: Option<String>,
 }
 
 /// Explicit link from a spawned job back to the parent call and child run.

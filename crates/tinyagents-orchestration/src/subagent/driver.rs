@@ -6,13 +6,17 @@ use std::{
 
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
+use super::policy::{AttemptSource, apply_outcome_policies, may_retry};
+use super::{IncompleteKind, SpawnAdmission, SpawnRejection, SubagentIncomplete, restrict_tools};
 use super::{
     PersistedSubagentPause, SubagentError, SubagentExecution, SubagentExecutor, SubagentOutcome,
     SubagentPausePersistenceDisposition, SubagentPersistence, SubagentPersistenceDisposition,
     SubagentPlanner, SubagentRequest, SubagentRunResult, SubagentStatus, SubagentTaskKey,
     SubagentTerminalPersistenceDisposition,
 };
-use super::{SpawnAdmission, SpawnRejection};
+use tinyagents_harness::error::TinyAgentsError;
+
+const LOG_PREFIX: &str = "[subagent-driver]";
 use tinyagents_harness::{CancellationToken, context::RunConfig, ids::RunId};
 
 /// Optional host seams accepted by [`SubagentDriver::new`].
@@ -344,18 +348,86 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                 )
                 .await;
         }
-        prepared.run_context = prepared.run_context.with_cancellation(cancellation.clone());
+        prepared.tools = restrict_tools(
+            &prepared.tools,
+            prepared.role,
+            prepared.tool_ceiling.as_ref(),
+            &prepared.delegation_tools,
+        );
+        prepared
+            .policy
+            .budget
+            .apply_call_caps(&mut prepared.run_context.config);
+        // The child runs under its own token, linked to the lifecycle's: a
+        // lifecycle cancellation reaches it, but a policy timeout cancels only
+        // the child and never the caller's token.
+        let child_token = cancellation.child_token();
+        prepared.run_context = prepared.run_context.with_cancellation(child_token.clone());
         // The child is about to launch: from here its total-budget unit stays
         // spent, and the live slot is released when this function returns.
         reservation.commit();
 
-        let executed = self
-            .executor
-            .execute(SubagentExecution {
-                prepared,
-                cancellation: cancellation.clone(),
-            })
-            .await;
+        let policy = prepared.policy.clone();
+        let result_policy = prepared.result_policy.clone();
+        let mut attempts = AttemptSource::from_prepared(&prepared);
+        let mut attempt = 0usize;
+        let mut execution = SubagentExecution {
+            prepared,
+            cancellation: child_token,
+        };
+        let mut timed_out = false;
+        let mut token;
+        let executed = loop {
+            token = execution.cancellation.clone();
+            let run = self.executor.execute(execution);
+            let result = match policy.timeout {
+                Some(limit) => match tokio::time::timeout(limit, run).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        token.cancel();
+                        timed_out = true;
+                        tracing::debug!(
+                            "{LOG_PREFIX} timeout task_id={task_id} after_ms={}",
+                            limit.as_millis()
+                        );
+                        break Ok(SubagentOutcome::incomplete(
+                            task_id.clone(),
+                            SubagentIncomplete::new(format!("subagent timed out after {limit:?}"))
+                                .with_kind(IncompleteKind::Timeout),
+                        ));
+                    }
+                },
+                None => run.await,
+            };
+            let Err(SubagentError::Transient { message, tools_ran }) = &result else {
+                break result;
+            };
+            let error = TinyAgentsError::Tool(message.clone());
+            if cancellation.is_cancelled()
+                || token.is_cancelled()
+                || !may_retry(&policy, attempt, &error, *tools_ran)
+                || !attempts.can_retry()
+            {
+                break result;
+            }
+            attempt += 1;
+            tracing::debug!("{LOG_PREFIX} retry task_id={task_id} attempt={attempt}");
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => break Err(SubagentError::Cancelled),
+                _ = policy.retry.sleep_backoff(attempt) => {}
+            }
+            let next_token = cancellation.child_token();
+            match attempts.next(attempt as u32, next_token.clone()) {
+                Ok(next) => {
+                    execution = SubagentExecution {
+                        prepared: next,
+                        cancellation: next_token,
+                    };
+                }
+                Err(error) => break Err(error),
+            }
+        };
 
         let outcome = match executed {
             Ok(outcome) => {
@@ -365,10 +437,13 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
                         actual: outcome.task_id,
                     });
                 }
-                if cancellation.is_cancelled() {
+                // The execution token is the lifecycle's own or a child of it;
+                // an executor that cancels it has cancelled the run, but the
+                // driver's own timeout cancel is not a cancellation.
+                if cancellation.is_cancelled() || (!timed_out && token.is_cancelled()) {
                     outcome.cancelled_preserving()
                 } else {
-                    outcome
+                    apply_outcome_policies(outcome, &policy, &result_policy).await
                 }
             }
             Err(SubagentError::Cancelled) => SubagentOutcome::cancelled(task_id),
