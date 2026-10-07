@@ -109,8 +109,7 @@ parent's next turn (wiring it into a host is the host's job):
   `RecoveryChild` carries `task_id`, `kind`, `label` (the `label` metadata, else
   the agent/graph/tool name), `last_status`, and `interrupted_reason`.
 - `build_restart_recovery_note(children)` — a capped roster (at most
-  `MAX_RECOVERY_CHILDREN` = 32 rows, labels and reasons at most
-  `MAX_RECOVERY_LABEL_CHARS` = 256 chars, then a `+N more` line) as JSON inside
+  `MAX_RECOVERY_CHILDREN` = 32 rows, then a `+N more` line) as JSON inside
   a `<child_task_facts>` block (`<` is escaped so labels cannot close it),
   followed by `RESTART_RECOVERY_INSTRUCTION`: reconcile against saved results,
   verify uncertain side effects, never blindly re-run. Empty input gives `""`.

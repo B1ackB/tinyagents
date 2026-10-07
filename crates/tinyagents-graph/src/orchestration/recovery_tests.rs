@@ -230,7 +230,7 @@ fn a_failed_task_reports_the_reason_the_sweep_persisted_not_a_re_evaluation() {
             agent: "a".into(),
         },
     );
-    store.create(spec).unwrap();
+    store.insert(spec).unwrap();
     store.mark_running(&TaskId::new("t")).unwrap();
     let calls = AtomicUsize::new(0);
     let drifting = |_: &OrchestrationTaskRecord| {
