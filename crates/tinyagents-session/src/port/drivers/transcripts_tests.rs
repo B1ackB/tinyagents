@@ -244,10 +244,10 @@ fn a_generation_is_opened_once() {
         .append(message("user", "a"))
         .unwrap();
     let (successor, next) = locator.begin_generation(&session, meta("t")).unwrap();
-    let error = locator.begin_generation(&session, meta("t")).unwrap_err();
+    let error = locator.begin_generation(&session, meta("t")).err().unwrap();
     assert!(error.to_string().contains("reserved"), "{error}");
     next.append(message("user", "summary")).unwrap();
-    let error = locator.begin_generation(&session, meta("t")).unwrap_err();
+    let error = locator.begin_generation(&session, meta("t")).err().unwrap();
     assert!(error.to_string().contains("already exists"), "{error}");
     assert_eq!(locator.head_generation(&session), successor);
     let read = next.read_session().unwrap().unwrap();
@@ -287,7 +287,8 @@ fn the_generation_limit_holds() {
     session.generation = MAX_GENERATIONS;
     let error = locator(&docs)
         .begin_generation(&session, meta("t"))
-        .unwrap_err();
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("limit"), "{error}");
 }
 
