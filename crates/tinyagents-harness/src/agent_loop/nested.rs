@@ -28,11 +28,11 @@
 //! # What applies to a nested call, exactly
 //!
 //! Applies: tool lookup and the host allow-list, argument preparation and
-//! validation, the approval refusal, [`Middleware::check_nested_tool`] on every
+//! validation, the approval refusal, [`check_nested_tool`](crate::middleware::Middleware::check_nested_tool) on every
 //! registered middleware, host authorization (with
 //! `ToolCallRequest::parent_call_id` set), the tool-wrap onion
 //! (`ToolMiddleware::wrap_tool`), timeouts, the run budget,
-//! [`Middleware::observe_nested_result`] after the call.
+//! [`observe_nested_result`](crate::middleware::Middleware::observe_nested_result) after the call.
 //!
 //! Does **not** apply: `Middleware::before_tool` / `after_tool` proper (they
 //! take `&mut RunContext`, which a tool future holding `&RunContext` cannot
@@ -62,7 +62,6 @@ use serde_json::{Value, json};
 
 use super::model_call::ToolCallBase;
 use super::tools::PreparedToolCall;
-use crate::middleware::Middleware;
 use super::*;
 use crate::tool::{NestedToolRunner, ToolEffectStatus, provider_schema};
 use tinytools::{ToolCall as CanonicalToolCall, ToolCallId};

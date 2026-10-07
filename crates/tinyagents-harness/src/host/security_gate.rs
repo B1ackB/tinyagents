@@ -152,6 +152,7 @@ impl ToolCallRequest {
             arguments: call.arguments.clone(),
             agent_id: agent_id.into(),
             call_id: Some(CallId::new(call.id.clone())),
+            parent_call_id: None,
         }
     }
 
