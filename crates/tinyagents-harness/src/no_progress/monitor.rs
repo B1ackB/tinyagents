@@ -8,7 +8,7 @@ use super::loop_patterns::{
     ArgumentChurnDetector, DEFAULT_CHURN_CALLS_PER_VARIANT, DEFAULT_CHURN_VARIANTS,
     DEFAULT_PING_PONG_ALTERNATIONS, PingPongDetector,
 };
-use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, PostCompactionGuard};
+use super::post_compaction::{DEFAULT_POST_COMPACTION_WINDOW, PostCompactionGuard, REPEATING_AT};
 use super::successful_repeat::{DEFAULT_REPEAT_CALL_THRESHOLD, DEFAULT_REPEAT_OUTPUT_THRESHOLD};
 use super::types::{CallGate, SuccessfulRepeat, SuccessfulRepeatTracker};
 
@@ -20,6 +20,7 @@ use super::types::{CallGate, SuccessfulRepeat, SuccessfulRepeatTracker};
 /// the post-compaction guard. [`immediate_halt`](Self::immediate_halt) restores
 /// the historical halt-at-the-first-threshold behaviour.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RepeatProgressConfig {
     /// Consecutive identical output batches that trigger the first stage.
     pub output_threshold: u32,
@@ -35,7 +36,7 @@ pub struct RepeatProgressConfig {
     /// Calls per variant, with one result, that make a variant count.
     pub churn_calls_per_variant: u32,
     /// Calls watched after a compaction (and remembered before it); `0`
-    /// disables the guard. It escalates by blocking, so it needs `escalation`.
+    /// disables the guard (warning-only).
     pub post_compaction_window: u32,
 }
 
@@ -64,6 +65,46 @@ impl RepeatProgressConfig {
             post_compaction_window: 0,
             ..Self::default()
         }
+    }
+}
+
+impl RepeatProgressConfig {
+    /// Sets the identical-output streak that triggers the first stage.
+    pub fn with_output_threshold(mut self, threshold: u32) -> Self {
+        self.output_threshold = threshold;
+        self
+    }
+
+    /// Sets the identical-call recurrence and batch streak that trigger the
+    /// first stage.
+    pub fn with_call_threshold(mut self, threshold: u32) -> Self {
+        self.call_threshold = threshold;
+        self
+    }
+
+    /// Sets staged escalation (`None` halts at the first threshold).
+    pub fn with_escalation(mut self, escalation: Option<RepeatEscalation>) -> Self {
+        self.escalation = escalation;
+        self
+    }
+
+    /// Sets the ping-pong warning length; `0` disables it.
+    pub fn with_ping_pong_alternations(mut self, alternations: u32) -> Self {
+        self.ping_pong_alternations = alternations;
+        self
+    }
+
+    /// Sets the argument-churn warning; `variants` of `0` disables it.
+    pub fn with_churn(mut self, variants: u32, calls_per_variant: u32) -> Self {
+        self.churn_variants = variants;
+        self.churn_calls_per_variant = calls_per_variant;
+        self
+    }
+
+    /// Sets the post-compaction watch window; `0` disables it.
+    pub fn with_post_compaction_window(mut self, window: u32) -> Self {
+        self.post_compaction_window = window;
+        self
     }
 }
 
@@ -104,7 +145,7 @@ impl RepeatMonitor {
             churn: (config.churn_variants > 0).then(|| {
                 ArgumentChurnDetector::new(config.churn_variants, config.churn_calls_per_variant)
             }),
-            guard: (config.post_compaction_window > 0 && config.escalation.is_some())
+            guard: (config.post_compaction_window > 0)
                 .then(|| PostCompactionGuard::new(config.post_compaction_window)),
         }
     }
@@ -134,11 +175,17 @@ impl RepeatMonitor {
 
     /// Records one successful, non-exempt call and the fingerprint of its
     /// result.
+    ///
+    /// `read_only` says the call cannot have changed state. After any other
+    /// successful call the remembered results of the *other* calls are
+    /// discarded, so [`pre_call`](Self::pre_call) never blocks a read on the
+    /// prediction that an edit in between left it unchanged.
     pub fn record_call(
         &self,
         tool: &str,
         arguments_fingerprint: &str,
         outcome_identity: &str,
+        read_only: bool,
     ) -> CallObservation {
         let signature = call_signature(tool, arguments_fingerprint);
         let verdict = self
@@ -151,14 +198,18 @@ impl RepeatMonitor {
         if let Some(churn) = &self.churn {
             notes.extend(churn.record(tool, arguments_fingerprint, outcome_identity));
         }
-        if let Some(guard) = &self.guard
-            && guard.record(&signature, outcome_identity)
-        {
-            self.tracker.escalate_to_block(&signature, outcome_identity);
-            notes.push(
-                "this call and its result repeat what you were doing right before the context was compacted; you may be looping. Do not issue it again: it will be blocked. Use the result or take a different action."
-                    .to_string(),
-            );
+        if let Some(guard) = &self.guard {
+            let repeating =
+                self.tracker.recurrence_count(&signature, outcome_identity) >= REPEATING_AT;
+            if guard.record(&signature, outcome_identity, repeating) {
+                notes.push(
+                    "this call and its result repeat what you were doing, over and over, right before the context was compacted; you may be looping. Use the result you have or take a different action."
+                        .to_string(),
+                );
+            }
+        }
+        if !read_only {
+            self.tracker.invalidate_predictions_except(&signature);
         }
         CallObservation { verdict, notes }
     }

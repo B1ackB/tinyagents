@@ -36,7 +36,7 @@ fn a_call_outside_the_tail_is_not_flagged() {
 fn only_the_window_after_compaction_is_watched() {
     let guard = guard_with_tail(3);
     for i in 0..3 {
-        assert!(!guard.record("other\u{1}x", &format!("r{i}")));
+        assert!(!guard.record("other\u{1}x", &format!("r{i}"), false));
     }
     assert!(
         !guard.record("search\u{1}b", "hits-b", true),
@@ -82,4 +82,15 @@ fn reset_forgets_everything() {
     let guard = guard_with_tail(3);
     guard.reset();
     assert!(!guard.record("search\u{1}b", "hits-b", true));
+}
+
+#[test]
+fn a_tail_that_was_not_repeating_is_not_remembered() {
+    let guard = PostCompactionGuard::new(3);
+    assert!(!guard.record("read\u{1}a", "doc-a", false));
+    guard.arm();
+    assert!(
+        !guard.record("read\u{1}a", "doc-a", false),
+        "one re-read of evicted content is correct behaviour"
+    );
 }
