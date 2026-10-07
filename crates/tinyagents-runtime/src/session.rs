@@ -714,6 +714,7 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             sessions.push(selected);
         }
         sessions.sort_by_key(|session| session_stem(&session.first_generation()));
+        sessions.dedup_by_key(|session| session_stem(&session.first_generation()));
         let mut guards = Vec::with_capacity(sessions.len());
         for session in sessions {
             if let Some(guard) = lock_session_turn(target.locator.as_ref(), session).await {
