@@ -1756,16 +1756,16 @@ fn map_agent_team_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTea
 /// Connection-scoped agent-run lookup, so an upsert can read its own write
 /// back inside the same transaction.
 fn get_agent_run_inner(conn: &Connection, id: &str) -> Result<Option<AgentRun>> {
-    let mut stmt = conn.prepare(
+    get_row_by_id(
+        conn,
         "SELECT id, kind, parent_run_id, parent_thread_id, agent_id, status,
                 prompt_ref, worker_thread_id,
                 checkpoint_path, checkpoint_json, summary, error, metadata_json,
                 started_at, updated_at, completed_at
          FROM agent_runs WHERE id = ?1",
-    )?;
-    stmt.query_row(params![id], |row| map_agent_run_row(conn, row))
-        .optional()
-        .map_err(Into::into)
+        id,
+        |row| map_agent_run_row(conn, row),
+    )
 }
 
 /// Connection-scoped telemetry lookup that errors when the row is absent —
