@@ -27,7 +27,7 @@ OpenAI Responses API still has no true incremental SSE path in this crate
 yet. `ProviderFailed` now also carries `partial_message`/`stop_reason` for a
 mid-stream failure on both adapters. Mid-execution *tool* progress streaming
 is now wired (C2): `tinytools::ToolRunContext::report_progress` is the surface,
-and the loop emits `AgentEvent::ToolProgress` and calls `run_on_tool_delta`.
+and the loop emits `AgentEvent::ToolProgressDetail` and calls `run_on_tool_delta`.
 
 Remaining work:
 

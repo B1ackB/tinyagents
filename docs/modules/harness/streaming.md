@@ -125,11 +125,11 @@ reduces to a consistent result.
 **Mid-tool progress (C2).** A running tool reports through
 `tinytools::ToolRunContext::report_progress(ToolProgress { message, fraction,
 partial })` (a default no-op, so existing tools are unchanged). The loop gives
-every executing call a progress gate (`crates/tinyagents-harness/src/tool/progress.rs`)
-that emits `AgentEvent::ToolProgress { call_id, message, fraction, partial }`
+every executing call a progress gate (`crates/tinyagents-harness/src/tool/progress/mod.rs`)
+that emits `AgentEvent::ToolProgressDetail { call_id, message, fraction, partial }`
 live and queues a `ToolDelta` for `Middleware::on_tool_delta`. Guarantees:
 
-- Every `ToolProgress` for a call falls between its `ToolStarted` and its
+- Every `ToolProgressDetail` for a call falls between its `ToolStarted` and its
   terminal `ToolCompleted`/`ToolFailed`, in the order the tool reported it.
 - The gate closes when the tool's future settles (return, error, timeout),
   before the terminal event. An update reported afterwards (for example from a
@@ -147,8 +147,9 @@ live and queues a `ToolDelta` for `Middleware::on_tool_delta`. Guarantees:
 - Flooding is coalesced: at most 32 events per second per call (fixed,
   crate-private `ToolProgressLimits`); beyond that the newest value of each
   field replaces the held update. There is no timer: the held update is emitted
-  on the first update of the next window or when the call settles, so the final
-  reported state is never lost.
+  on the first update of the next window or when the call settles (that final
+  flush is exempt from the window limit), so the final reported state is never
+  lost.
 - The middleware replay queue is bounded (newest 64 deltas, each `content`
   capped at 4 KiB, partials serialized only up to the cap) and is not filled at
   all when the run has no middleware.

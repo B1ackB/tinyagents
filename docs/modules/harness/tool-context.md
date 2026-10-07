@@ -25,7 +25,6 @@ pub struct ToolExecutionContext {
     pub workspace: Option<tinytools::WorkspaceDescriptor>,
     pub store: Option<Arc<dyn NamespacedStore>>,        // RunContext::with_namespaced_store
     pub state_view: Option<Arc<dyn Any + Send + Sync>>, // RunContext::with_state_view
-    pub progress: Option<tinytools::ProgressSink>,      // sink behind report_progress (set by the loop)
 }
 impl ToolExecutionContext {
     pub fn state<S: 'static>(&self) -> Option<&S>;   // None on absent or mismatched type
@@ -35,7 +34,7 @@ impl ToolExecutionContext {
 
 A tool streams progress with the portable
 `ToolRunContext::report_progress(ToolProgress::message("...").with_fraction(0.4))`
-(no downcast needed); the loop emits `AgentEvent::ToolProgress` between the
+(no downcast needed); the loop emits `AgentEvent::ToolProgressDetail` between the
 call's `ToolStarted` and terminal event and drops anything reported after the
 call has settled (see `streaming.md`). `custom` remains the channel for
 application-defined payloads the harness attaches no meaning to.

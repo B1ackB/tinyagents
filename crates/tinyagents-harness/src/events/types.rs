@@ -782,11 +782,12 @@ pub enum AgentEvent {
     /// Defined for future emit when memory wiring lands.
     MemorySaved,
 
-    /// A running tool reported incremental progress before completing.
+    /// Legacy message-only progress shape. **The agent loop does not emit this
+    /// variant**; it emits [`AgentEvent::ToolProgressDetail`]. It is kept so
+    /// existing enum literals compile, and shares the `tool.progress` wire kind.
     ///
-    /// Emitted by the agent loop when the tool reports through
-    /// [`tinytools::ToolRunContext::report_progress`]. Ordering guarantee: every
-    /// `ToolProgress` for a call falls between that call's
+    /// The ordering and flooding guarantees below describe the emitted
+    /// [`AgentEvent::ToolProgressDetail`]. Ordering guarantee: every progress event for a call falls between that call's
     /// [`AgentEvent::ToolStarted`] and its terminal
     /// [`AgentEvent::ToolCompleted`] / [`AgentEvent::ToolFailed`]; an update the
     /// tool reports after the call has returned is dropped, never emitted late.
@@ -800,10 +801,13 @@ pub enum AgentEvent {
         message: String,
     },
 
-    /// Progress with optional fraction and partial output fields.
+    /// A running tool reported incremental progress before completing, with
+    /// optional fraction and partial output. This is the variant the agent loop
+    /// emits (through [`tinytools::ToolRunContext::report_progress`]).
     ///
-    /// The original [`AgentEvent::ToolProgress`] shape remains unchanged so
-    /// downstream enum literals continue to compile.
+    /// The gate clamps `fraction` to `0.0..=1.0` (and drops NaN) before
+    /// emitting. The legacy [`AgentEvent::ToolProgress`] shape stays unchanged
+    /// so downstream enum literals continue to compile.
     ToolProgressDetail {
         /// Identifier for the in-flight tool call.
         call_id: CallId,

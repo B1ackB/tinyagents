@@ -272,7 +272,7 @@ pub trait Middleware<State: Send + Sync, Ctx: Send + Sync = ()>: Send + Sync {
     /// **Replayed, observe-only.** The hook needs `&mut RunContext`, which the
     /// executing tool holds, so the loop calls it for a call's deltas, in
     /// order, *after* the call settles and before `after_tool` and the terminal
-    /// event. The matching `AgentEvent::ToolProgress` was already emitted live,
+    /// event. The matching `AgentEvent::ToolProgressDetail` was already emitted live,
     /// so mutating `delta` changes nothing downstream. The replay queue is
     /// bounded (newest 64 deltas, `content` capped at 4 KiB) and is not filled
     /// at all for runs without middleware. An `Err` is logged, not propagated.

@@ -417,7 +417,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
     /// Runs every middleware's [`Middleware::on_tool_delta`] in registration
     /// order for one streamed tool-progress delta.
     ///
-    /// The agent loop calls this for every [`AgentEvent::ToolProgress`] a
+    /// The agent loop calls this for every [`AgentEvent::ToolProgressDetail`] a
     /// running tool produced through
     /// [`tinytools::ToolRunContext::report_progress`]. The hook needs
     /// `&mut RunContext`, which is lent to the tool for the duration of the

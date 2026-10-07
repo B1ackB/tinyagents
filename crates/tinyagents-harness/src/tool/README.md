@@ -47,10 +47,10 @@ scrub) lives in `tinytools-agent`, reached through
   `ToolRunContext::report_progress`; it is `None` for a context built outside
   a loop, where reporting is a no-op.
 
-### Progress (`progress.rs`)
+### Progress (`progress/mod.rs`)
 
 - `ToolProgressGate` (crate-private) — the per-call destination for a tool's
-  `report_progress` updates. Emits `AgentEvent::ToolProgress` live, queues a
+  `report_progress` updates. Emits `AgentEvent::ToolProgressDetail` live, queues a
   `ToolDelta` per event for the loop to replay to `on_tool_delta`, closes when
   the call settles so late updates are dropped, and coalesces floods. The loop
   scopes it in a task-local around the dispatch future and
