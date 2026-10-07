@@ -472,9 +472,10 @@ async fn when_truncation_cannot_cover_the_overflow_it_follows_the_compaction() {
 // ── preemptive route (before_model) ───────────────────────────────────────────
 
 fn truncating_policy() -> SummarizationPolicy {
-    // 1 000-token window, 50% trigger.
+    // 4 000-token window, 50% trigger: a 2 000-token budget, above the 512
+    // tokens of headroom the truncation route insists on.
     SummarizationPolicy::default()
-        .with_context_window(1_000)
+        .with_context_window(4_000)
         .with_threshold_fraction(0.5)
 }
 
@@ -487,7 +488,7 @@ async fn an_over_trigger_prompt_with_a_huge_tool_result_is_truncated_not_summari
     )
     .with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
-    messages.extend(call_and_result("c1", 40_000));
+    messages.extend(call_and_result("c1", 10_000));
     let mut request = ModelRequest {
         messages,
         ..Default::default()
@@ -506,7 +507,7 @@ async fn an_over_trigger_prompt_with_a_huge_tool_result_is_truncated_not_summari
 async fn once_truncation_engages_it_stays_applied_for_the_run() {
     let mw = ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
-    messages.extend(call_and_result("c1", 40_000));
+    messages.extend(call_and_result("c1", 10_000));
     let mut c = ctx();
 
     let mut first = ModelRequest {
