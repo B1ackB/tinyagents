@@ -194,10 +194,12 @@ async fn emits_started_and_completed_events() {
         kinds,
         vec![
             AgentEvent::MiddlewareStarted {
-                name: "logging".to_string()
+                name: "logging".to_string(),
+                call_id: None,
             },
             AgentEvent::MiddlewareCompleted {
-                name: "logging".to_string()
+                name: "logging".to_string(),
+                call_id: None,
             },
         ]
     );

@@ -481,10 +481,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> MiddlewareStack<State, Ctx> {
         for mw in self.middlewares.iter() {
             ctx.emit(AgentEvent::MiddlewareStarted {
                 name: mw.name().to_string(),
+                call_id: None,
             });
             let _ = mw.on_error(ctx, error).await;
             ctx.emit(AgentEvent::MiddlewareCompleted {
                 name: mw.name().to_string(),
+                call_id: None,
             });
         }
         Ok(())
@@ -638,11 +640,17 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolHandler<'_, State, Ctx> {
                     base: self.base,
                 };
                 let name = head.name().to_string();
-                ctx.emit(AgentEvent::MiddlewareStarted { name: name.clone(), call_id: None });
+                // Tagged with the call so consumers can correlate under
+                // concurrency, where events of different calls interleave.
+                let call_id = Some(CallId::new(call.id.clone()));
+                ctx.emit(AgentEvent::MiddlewareStarted {
+                    name: name.clone(),
+                    call_id: call_id.clone(),
+                });
                 // Balance `Started` with `Completed` even when the wrap layer
                 // errors (see `ModelHandler::run`).
                 let outcome = head.wrap_tool(ctx, state, call, next).await;
-                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id: None });
+                ctx.emit(AgentEvent::MiddlewareCompleted { name, call_id });
                 outcome
             }
             None => Ok(MiddlewareToolOutcome::Result(
