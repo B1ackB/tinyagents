@@ -1437,9 +1437,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         // outer run budget still aborts when the whole run is exhausted.
         let run_budget = self.call_budget(ctx);
         let base = ToolCallBase {
+            harness: self,
             dispatch,
             options,
             timeout_settings: self.tool_timeouts.clone(),
+            level: 0,
         };
         let run_id = ctx.run_id().as_str().to_string();
         let gate = self.open_progress_gate(ctx, &prepared);
@@ -1781,9 +1783,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // bounds the whole wrapped call. The future owns its call and base
             // and shares only `&RunContext`, so it runs alongside its siblings.
             let base = ToolCallBase {
+                harness: self,
                 dispatch,
                 options,
                 timeout_settings: self.tool_timeouts.clone(),
+                level: 0,
             };
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();
@@ -2378,7 +2382,7 @@ pub(super) fn map_tool_dispatch_error(error: anyhow::Error) -> TinyAgentsError {
 /// This is host policy, not parsing: it runs only under a recovering
 /// [`InvalidArgsPolicy`](crate::runtime::InvalidArgsPolicy), and the schema
 /// validator that gates every rewrite is the harness's.
-fn normalize_tool_arguments(call: &mut ToolCall, schema: &ToolSchema) {
+pub(super) fn normalize_tool_arguments(call: &mut ToolCall, schema: &ToolSchema) {
     use tinytools_agent::repair::args;
 
     // Never rewrite a value the declared schema already accepts. In
