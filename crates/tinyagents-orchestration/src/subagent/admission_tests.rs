@@ -37,7 +37,7 @@ fn per_parent_cap_rejects_then_admits_after_release() {
 
     drop(first);
     assert_eq!(admission.active_children("p"), 1);
-    admission.try_reserve("r", "p", "w").unwrap();
+    drop(admission.try_reserve("r", "p", "w").unwrap());
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn total_per_root_counts_spawned_children_even_after_they_finish() {
         SpawnRejection::MaxTotalPerRoot { spawned: 2, max: 2 }
     );
     // A different root has its own budget.
-    admission.try_reserve("other-root", "p", "w").unwrap();
+    drop(admission.try_reserve("other-root", "p", "w").unwrap());
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn uncommitted_reservation_refunds_both_counters() {
     drop(reservation); // spawn failed before the child started
     assert_eq!(admission.active_children("p"), 0);
     assert_eq!(admission.spawned_in_root("root"), 0);
-    admission.try_reserve("root", "p", "w").unwrap();
+    drop(admission.try_reserve("root", "p", "w").unwrap());
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn continuation_reservation_takes_an_active_slot_but_no_total_budget() {
 #[test]
 fn allowed_targets_gate_the_target_name() {
     let admission = admission(None, None, Some(&["researcher"]));
-    admission.try_reserve("r", "p", "researcher").unwrap();
+    drop(admission.try_reserve("r", "p", "researcher").unwrap());
     assert_eq!(
         admission.try_reserve("r", "p", "coder").unwrap_err(),
         SpawnRejection::TargetNotAllowed {
@@ -116,7 +116,7 @@ fn rejected_target_does_not_consume_a_slot() {
     assert!(admission.try_reserve("r", "p", "nope").is_err());
     assert_eq!(admission.active_children("p"), 0);
     assert_eq!(admission.spawned_in_root("r"), 0);
-    admission.try_reserve("r", "p", "w").unwrap();
+    drop(admission.try_reserve("r", "p", "w").unwrap());
 }
 
 #[test]
