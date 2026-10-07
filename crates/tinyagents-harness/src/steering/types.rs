@@ -55,6 +55,7 @@ pub enum SteeringTarget {
 /// logged, transported across a control channel, and replayed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command")]
+#[non_exhaustive]
 pub enum SteeringCommand {
     /// Cooperatively pause the run: the loop stops issuing further model and
     /// tool work at the next checkpoint, and **stays** paused until a
@@ -107,6 +108,36 @@ pub enum SteeringCommand {
         /// The new metadata value.
         metadata: serde_json::Value,
     },
+
+    /// Switch the model used for every subsequent model call in this run.
+    ///
+    /// `model` is a registry name, the same namespace as
+    /// [`crate::retry::FallbackPolicy::models`] and
+    /// [`tinyinference_llm::model::ModelRequest::model`]. The command is
+    /// recorded at the steering checkpoint and applied at the **next model-call
+    /// boundary, before the model binding is resolved**, so the call's
+    /// `ModelStarted`/`ModelFailed` events, `ctx.model_profile`, the
+    /// cross-provider handoff transform, the host budget estimate and the
+    /// tool-dialect decision all see the new model.
+    ///
+    /// The switch is **sticky** for the rest of the run (the latest accepted
+    /// one wins) and does not touch the transcript. A name that is unknown,
+    /// ineligible for the call's capability/lifecycle gate, or addressed to a
+    /// host-routed run is rejected: the run keeps its current model and emits
+    /// [`crate::events::AgentEvent::ModelOverrideSkipped`] plus an
+    /// [`crate::events::AgentEvent::Steered`] with `accepted = false`. A blank
+    /// name is rejected immediately.
+    ///
+    /// # Opt-in
+    ///
+    /// A switch changes cost, rate limits and which provider sees the
+    /// transcript, so [`SteeringPolicy::allow_all`] deliberately does **not**
+    /// grant it. Use [`SteeringPolicy::allow_all_with_model_switch`] or
+    /// `allow(SteeringCommandKind::SwitchModel)`.
+    SwitchModel {
+        /// Registry name of the model to switch to.
+        model: String,
+    },
 }
 
 impl SteeringCommand {
@@ -121,6 +152,7 @@ impl SteeringCommand {
             SteeringCommand::InjectMessage(_) => SteeringCommandKind::InjectMessage,
             SteeringCommand::Redirect { .. } => SteeringCommandKind::Redirect,
             SteeringCommand::SetMetadata { .. } => SteeringCommandKind::SetMetadata,
+            SteeringCommand::SwitchModel { .. } => SteeringCommandKind::SwitchModel,
         }
     }
 }
@@ -129,6 +161,7 @@ impl SteeringCommand {
 /// [`SteeringPolicy`] allowlist and to label observability events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SteeringCommandKind {
     /// See [`SteeringCommand::Pause`].
     Pause,
@@ -142,17 +175,21 @@ pub enum SteeringCommandKind {
     Redirect,
     /// See [`SteeringCommand::SetMetadata`].
     SetMetadata,
+    /// See [`SteeringCommand::SwitchModel`]. Not part of
+    /// [`SteeringPolicy::allow_all`]; it needs an explicit opt-in.
+    SwitchModel,
 }
 
 impl SteeringCommandKind {
     /// Every steering command kind, in declaration order.
-    pub const ALL: [SteeringCommandKind; 6] = [
+    pub const ALL: [SteeringCommandKind; 7] = [
         SteeringCommandKind::Pause,
         SteeringCommandKind::Resume,
         SteeringCommandKind::Cancel,
         SteeringCommandKind::InjectMessage,
         SteeringCommandKind::Redirect,
         SteeringCommandKind::SetMetadata,
+        SteeringCommandKind::SwitchModel,
     ];
 
     /// Returns a stable, lower-snake-case name for this kind, suitable for
@@ -165,6 +202,7 @@ impl SteeringCommandKind {
             SteeringCommandKind::InjectMessage => "inject_message",
             SteeringCommandKind::Redirect => "redirect",
             SteeringCommandKind::SetMetadata => "set_metadata",
+            SteeringCommandKind::SwitchModel => "switch_model",
         }
     }
 }
@@ -298,6 +336,11 @@ pub(crate) struct SteeringLocal {
     /// How many steering checkpoints this handle has processed. Recorded into
     /// [`PauseState::paused_at_checkpoint`].
     pub(crate) checkpoints: Mutex<usize>,
+    /// The model a [`SteeringCommand::SwitchModel`] selected for *this* run,
+    /// sticky until replaced or rejected by the model call. Per run like the
+    /// pause latch, so it never crosses a [`SteeringHandle::for_child`]
+    /// boundary in either direction.
+    pub(crate) model_override: Mutex<Option<String>>,
 }
 
 /// Bounded memory of recently applied steering `request_id`s, used to make a

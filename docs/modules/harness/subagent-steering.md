@@ -107,14 +107,69 @@ side-effecting tool call.
 Two mechanisms implement this today, side by side:
 
 - `SteeringHandle` / `SteeringCommand` — the **control** channel (pause,
-  resume, cancel, `InjectMessage`, `Redirect`, `SetMetadata`), policy-gated
-  and drained before each model call.
+  resume, cancel, `InjectMessage`, `Redirect`, `SetMetadata`, and the opt-in
+  `SwitchModel`), policy-gated and drained before each model call.
 - `RunQueue<Message>` via `RunContext::with_run_queue` — the **content**
   channel (A4): `Steer` messages land after a tool batch or at a natural
   finish, `Followup` messages add a turn once the model has finished,
   `Collect` messages come back on `AgentRun::collected`. `RunPolicy::
   queue_mode` (`All` | `OneAtATime`) sets how many a boundary takes. See
   [runtime.md](runtime.md#queued-steering-and-follow-ups-a4).
+
+### Live model switch
+
+`SteeringCommand::SwitchModel { model }` switches the run to another registry
+model mid-run. It is **not** granted by `SteeringPolicy::allow_all()` -- it
+changes spend, rate limits and which provider sees the transcript, so a host
+opts in with `SteeringPolicy::allow_all_with_model_switch()` or
+`.allow(SteeringCommandKind::SwitchModel)`.
+
+- **When:** recorded at the steering checkpoint, applied at the next model-call
+  boundary *before* the model binding is resolved (as `request.model`, the same
+  override an SDK caller uses; it wins over a middleware-selected model). The
+  call's `ModelStarted`/`ModelFailed`, `ctx.model_profile`, the handoff
+  transform, the host budget estimate and the dialect decision all use the new
+  model. The call already in flight is not interrupted.
+- **Sticky:** every later call uses it; the latest accepted switch wins. The
+  transcript is untouched.
+- **Rejection:** an unknown, capability-ineligible or retired model, a blank
+  name, or a host-routed run (the host resolver owns routing) emits
+  `Steered { accepted: false }` and, from the loop, `ModelOverrideSkipped`; the
+  run continues on its current model and the name is dropped.
+- **Fallback:** a switched model that is in `RunPolicy::fallback` falls back
+  from its own position in the chain. One that is not in the chain falls back
+  through the whole chain from its head, i.e. the original primary's chain.
+- **Fallback stickiness:** the switch is sticky even when the switched model
+  fails. A fallback answers *that* call only, so a model that keeps failing
+  (rate limits, outages) is tried first again on every turn. A permanently
+  revoked credential is written off for the run (`FallbackSkipped`), so later
+  calls go straight to the fallback and the revoked key is not re-sent; the
+  override is deliberately not cleared then, because clearing it would send the
+  run to the registry default instead of the chain.
+- **Precedence:** the switch wins over a model a `before_model` middleware put
+  in `request.model` (logged at debug as an override). If it has to be rejected
+  after middleware ran (middleware raised the capability requirements), the
+  request keeps what it held before the switch: the middleware's pick, or
+  nothing. The rejected name never reaches resolution or an adapter that honours
+  `request.model`, and exactly one rejection is reported. The `ModelMiddleware`
+  wrap layer runs after resolution and may still replace `request.model` for
+  its inner call; the switch does not constrain it.
+- **Hosted runs:** a run whose model routing is owned by a host resolver always
+  rejects a switch -- the resolver, not the registry, decides which model
+  serves it, so a registry name cannot be honoured.
+- **Prompt cache:** `PromptCacheGuardMiddleware` runs before the binding is
+  known and does not record a layout change at a switch, though a provider
+  prefix cache is per model and goes cold. Treat the switch as the cause.
+- **Isolation and lifetime:** the override is per-run state (like the pause
+  latch), not shared across `for_child`; a parent's switch does not reach
+  children and a child's rejection does not clear the parent's switch.
+  Attaching a handle to a new root run (`RunContext::with_steering`) clears any
+  switch a previous run on that handle left behind.
+- `SteeringCommand` and `SteeringCommandKind` are now `#[non_exhaustive]`
+  (adding `SwitchModel` is itself an additive variant); downstream exhaustive
+  matches need a wildcard arm.
+- The orchestration `steer_agent` tool does not expose `switch_model`; it is a
+  host-level control for now.
 
 ## Graph-Level Steering
 

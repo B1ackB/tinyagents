@@ -233,6 +233,7 @@ error surfaced by a model, tool, middleware, or structured-output extraction.
 | `run_loop.rs` | The core loop body (`run_loop`), response-cache decision logic, and host budget/prompt-cache helpers. |
 | `tools.rs` | Tool execution for one turn: serial admission, serial or concurrent execution, ordered fold. |
 | `model_call.rs` | Cache-aware retry/fallback model dispatch, the streaming variant, host model resolution, and the innermost `ModelBaseCall`/`ToolBaseCall` impls the middleware wrap-onion terminates into. |
+| `model_switch.rs` | Applies a steered `SwitchModel` to the turn request before binding resolution, and decides where a fallback walk starts for a switched model. |
 | `stream.rs` | Caller-consumable streaming entry point (`invoke_stream`/`invoke_stream_in_context`) that projects the run's `EventSink` into an `AgentStreamItem` stream. |
 | `types.rs` | `AgentLoopResult`, `PartialRunOutcome`, and the private `LoopExit`. |
 | `test.rs` | Unit tests (limits, retry/fallback, tool execution, structured extraction). |

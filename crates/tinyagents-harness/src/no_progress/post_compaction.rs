@@ -12,9 +12,9 @@
 //! behaviour, so a single repeat is never blocked, and a pair that was not
 //! repeating before the compaction is not remembered at all.
 
-use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use super::types::{GuardState, PostCompactionGuard};
 use super::util::{hash_pair, lock};
 
 /// Recurrences of a `(call, result)` pair before a compaction that make it
@@ -22,23 +22,6 @@ use super::util::{hash_pair, lock};
 pub const REPEATING_AT: u32 = 2;
 /// Tool calls watched after a compaction, and recent calls remembered before it.
 pub const DEFAULT_POST_COMPACTION_WINDOW: u32 = 3;
-
-#[derive(Default)]
-struct GuardState {
-    /// Repeating `(call, result)` hashes with the call number they were seen
-    /// at, oldest first. Only pairs from the last `window` calls are kept.
-    tail: VecDeque<(u64, u64)>,
-    /// Successful calls recorded so far, repeating or not.
-    calls: u64,
-    /// The tail captured at compaction and the calls still to watch.
-    armed: Option<(Vec<u64>, u32)>,
-}
-
-/// Flags calls that repeat the pre-compaction tail. See the module docs.
-pub struct PostCompactionGuard {
-    window: u32,
-    state: Mutex<GuardState>,
-}
 
 impl Default for PostCompactionGuard {
     fn default() -> Self {
