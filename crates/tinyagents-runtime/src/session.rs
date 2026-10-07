@@ -531,7 +531,8 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         // partial persist on failure), so an out-of-band transcript append
         // (`append_background_message`) lands between turns rather than
         // staling this turn's baseline. See `lock_session_turn`.
-        let _turn_lock = cancelable(&cancellation, async { Ok(self.lock_turn().await) }).await?;
+        let _turn_lock =
+            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resumed = if options.resume == ResumeMode::Never {
             false
         } else {
@@ -680,9 +681,13 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
     /// Takes the session's turn lock when the target is session-bound and its
     /// locator names a destination; otherwise there is nothing to share it
     /// with and the turn runs unlocked.
-    async fn lock_turn(&self) -> Option<SessionTurnGuard> {
+    async fn lock_turn(&self, options: &TurnOptions<C>) -> Option<SessionTurnGuard> {
         let target = self.target.as_ref()?;
-        let session = target.session.as_ref()?;
+        let session = if options.resume == ResumeMode::Session {
+            options.session.as_ref().or(target.session.as_ref())
+        } else {
+            target.session.as_ref()
+        }?;
         lock_session_turn(target.locator.as_ref(), session).await
     }
 

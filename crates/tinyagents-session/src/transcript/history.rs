@@ -536,7 +536,13 @@ impl TranscriptLocator for FileTranscriptLocator {
     /// The workspace root every lookup and bind resolves under, which is
     /// this locator's only field and therefore its whole identity.
     fn destination_key(&self) -> Option<String> {
-        Some(self.workspace_dir.to_string_lossy().into_owned())
+        Some(
+            self.workspace_dir
+                .canonicalize()
+                .unwrap_or_else(|_| self.workspace_dir.clone())
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     fn latest_for_agent(&self, agent_name: &str) -> Option<Arc<dyn TranscriptRead>> {

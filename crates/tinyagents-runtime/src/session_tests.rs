@@ -1,11 +1,13 @@
 use super::*;
 use crate::{DriverFailure, DriverOutcome, SessionBuilder, TranscriptCodec};
 use async_trait::async_trait;
+use std::sync::Arc;
 use tinyagents_session::transcript::{
-    BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionTranscript,
-    TranscriptMeta, append_background_message, read_transcript, resolve_keyed_transcript_path,
-    session_stem,
+    BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionRef,
+    SessionTranscript, TranscriptMessage, TranscriptMeta, append_background_message,
+    read_transcript, resolve_keyed_transcript_path, session_stem,
 };
+use tinyinference_llm::message::Message;
 use tokio::sync::Notify;
 
 fn meta() -> TranscriptMeta {
@@ -134,7 +136,10 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
 
     let delivery_locator = locator.clone();
     let delivery_session = session_ref.clone();
+    let delivery_started = Arc::new(Notify::new());
+    let delivery_started_signal = delivery_started.clone();
     let delivery = tokio::spawn(async move {
+        delivery_started_signal.notify_one();
         append_background_message(
             &delivery_locator,
             &delivery_session,
@@ -143,9 +148,7 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
         )
         .await
     });
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
+    delivery_started.notified().await;
     assert!(!delivery.is_finished(), "delivery must wait for the turn");
 
     release.notify_one();
