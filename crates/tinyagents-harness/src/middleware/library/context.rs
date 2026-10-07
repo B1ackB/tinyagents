@@ -194,7 +194,7 @@ impl ContextCompressionMiddleware {
 
     /// Sets the token budget above which a single turn handed to the
     /// summarizer is split into two halves and merged (see
-    /// [`summarize_with_split`]). Unset (the default) never splits.
+    /// [`summarize_with_split`][crate::summarization::summarize_with_split]). Unset (the default) never splits.
     pub fn with_max_turn_tokens(mut self, max_turn_tokens: u64) -> Self {
         self.max_turn_tokens = Some(max_turn_tokens);
         self

@@ -53,7 +53,7 @@ struct Previous {
     reported_cache: bool,
 }
 
-/// Per-conversation prompt-cache miss detector. See the [module docs](self).
+/// Per-conversation prompt-cache miss detector. See the module docs.
 #[derive(Clone, Debug)]
 pub struct PromptCacheTracker {
     noise_floor: u64,

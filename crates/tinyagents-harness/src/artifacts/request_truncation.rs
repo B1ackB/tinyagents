@@ -12,7 +12,7 @@
 //! idempotent (a result that already carries the notice is left alone), so a
 //! host that re-applies it to every request keeps a byte-stable prompt prefix.
 //!
-//! Never cut: results flagged [`ToolMessage::trusted_verbatim`], non-text
+//! Never cut: results flagged `ToolMessage::trusted_verbatim`, non-text
 //! blocks, and `[tool_result_preview]` envelopes (already bounded, and they
 //! carry the artifact pointer the model needs).
 

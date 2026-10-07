@@ -87,7 +87,7 @@ pub trait FileOpExtractor: Send + Sync {
     fn extract(&self, call: &ToolCall, ops: &mut FileOperations);
 }
 
-/// The default extractor; see the [module docs](self).
+/// The default extractor; see the module docs.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultFileOpExtractor;
 
