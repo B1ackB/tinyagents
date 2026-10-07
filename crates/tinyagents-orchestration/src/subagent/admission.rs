@@ -53,8 +53,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tinyagents_harness::context::RunConfig;
 use serde::{Deserialize, Serialize};
+use tinyagents_harness::context::RunConfig;
 
 const LOG_PREFIX: &str = "[subagent-admission]";
 
@@ -276,10 +276,9 @@ impl SpawnAdmission {
             let active = ledger.active_per_scope.get(&scope).copied().unwrap_or(0);
             if active >= max {
                 drop(ledger);
-                return Err(self.reject(
-                    SpawnRejection::MaxChildrenPerParent { active, max },
-                    &scope,
-                ));
+                return Err(
+                    self.reject(SpawnRejection::MaxChildrenPerParent { active, max }, &scope)
+                );
             }
         }
         *ledger.active_per_scope.entry(scope.clone()).or_default() += 1;

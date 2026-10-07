@@ -69,7 +69,9 @@ fn turns_with_different_run_ids_on_one_thread_share_the_cap() {
         "thread-A",
         "the thread, not the run id, is the scope"
     );
-    let mut first = admission.try_reserve(&turn("run-1", "thread-A"), "w").unwrap();
+    let mut first = admission
+        .try_reserve(&turn("run-1", "thread-A"), "w")
+        .unwrap();
     first.commit();
 
     // A later turn mints a new run id, but the first child is still alive.
@@ -79,10 +81,18 @@ fn turns_with_different_run_ids_on_one_thread_share_the_cap() {
             .is_err()
     );
     // Another conversation is independent.
-    drop(admission.try_reserve(&turn("run-3", "thread-B"), "w").unwrap());
+    drop(
+        admission
+            .try_reserve(&turn("run-3", "thread-B"), "w")
+            .unwrap(),
+    );
 
     // Reused run ids on different threads do not collide either.
-    drop(admission.try_reserve(&turn("run-1", "thread-C"), "w").unwrap());
+    drop(
+        admission
+            .try_reserve(&turn("run-1", "thread-C"), "w")
+            .unwrap(),
+    );
     drop(first);
 }
 
@@ -148,9 +158,7 @@ fn continuation_takes_an_active_slot_but_no_total_budget() {
     drop(first);
     assert!(admission.try_reserve(&cfg("p"), "w").is_err());
 
-    let mut resumed = admission
-        .try_reserve_continuation(&cfg("p"), "w")
-        .unwrap();
+    let mut resumed = admission.try_reserve_continuation(&cfg("p"), "w").unwrap();
     resumed.commit();
     assert_eq!(admission.active_children("p"), 1);
     assert!(admission.try_reserve_continuation(&cfg("p"), "w").is_err());
@@ -161,7 +169,9 @@ fn continuation_takes_an_active_slot_but_no_total_budget() {
 #[test]
 fn continuation_resolves_the_same_scope_as_a_fresh_spawn() {
     let admission = admission(Some(1), None, None);
-    let _fresh = admission.try_reserve(&turn("run-1", "thread-A"), "w").unwrap();
+    let _fresh = admission
+        .try_reserve(&turn("run-1", "thread-A"), "w")
+        .unwrap();
     assert!(
         admission
             .try_reserve_continuation(&turn("run-2", "thread-A"), "w")

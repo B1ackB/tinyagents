@@ -1600,8 +1600,11 @@ async fn driver_total_budget_is_spent_by_completed_children() {
 #[tokio::test]
 async fn driver_continuation_takes_a_live_slot_but_no_total_budget() {
     let (planner, executor, persistence, _) = fakes(ExecutorMode::Completed);
-    let driver = driver(planner, executor, persistence)
-        .with_spawn_admission(admission_policy(Some(1), Some(1), None));
+    let driver = driver(planner, executor, persistence).with_spawn_admission(admission_policy(
+        Some(1),
+        Some(1),
+        None,
+    ));
 
     driver
         .run(sibling_request("original"), CancellationToken::new())
@@ -1640,8 +1643,11 @@ async fn driver_continuation_takes_a_live_slot_but_no_total_budget() {
 async fn driver_scope_is_the_thread_so_turn_run_ids_share_the_cap() {
     let (planner, executor, persistence, _) = fakes(ExecutorMode::WaitForCancellation);
     let driver = Arc::new(
-        driver(planner, executor.clone(), persistence)
-            .with_spawn_admission(admission_policy(Some(1), None, None)),
+        driver(planner, executor.clone(), persistence).with_spawn_admission(admission_policy(
+            Some(1),
+            None,
+            None,
+        )),
     );
     let (started_tx, started) = tokio::sync::oneshot::channel();
     *executor.started.lock().unwrap() = Some(started_tx);
