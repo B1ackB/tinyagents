@@ -888,4 +888,4 @@ impl TranscriptLocator for DriverTranscriptLocator {
 
 #[cfg(test)]
 #[path = "transcripts_tests.rs"]
-mod tests;
+pub(super) mod tests;

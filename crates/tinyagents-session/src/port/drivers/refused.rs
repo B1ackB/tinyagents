@@ -131,3 +131,7 @@ impl StreamStore for Refused {
         Err(self.error())
     }
 }
+
+#[cfg(test)]
+#[path = "refused_tests.rs"]
+mod tests;
