@@ -220,3 +220,59 @@ pub(crate) struct RateLimiterState {
     /// Last time the bucket was refilled.
     pub(crate) last_refill: std::time::Instant,
 }
+
+/// Why a model call failed, as far as failover policy is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailoverReason {
+    /// Credentials were rejected (`401`/`403`, invalid key). May be fixed by a
+    /// credential refresh, so it is not remembered across calls.
+    Auth,
+    /// Credentials are permanently unusable (revoked, deactivated, suspended).
+    AuthPermanent,
+    /// Billing or quota is exhausted (`402`, no credits, plan quota).
+    Billing,
+    /// A transient throttle (`429`).
+    RateLimit,
+    /// The provider is at capacity (`503`, `529`, "overloaded").
+    Overloaded,
+    /// The call or the provider timed out.
+    Timeout,
+    /// The request was rejected (`4xx` without a more specific cause, adapter
+    /// validation). Often specific to the provider, so it falls back.
+    Format,
+    /// The request did not fit the model's context window.
+    ContextOverflow,
+    /// The model does not exist (or is not loaded) at the provider.
+    ModelNotFound,
+    /// The model answered with nothing usable.
+    EmptyResponse,
+    /// Network failure or a `5xx` without a more specific cause.
+    Transport,
+    /// Not attributable to any of the above.
+    Unknown,
+}
+
+/// What the loop should do after a failed model attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailoverDecision {
+    /// Try the same model again (after backoff).
+    RetrySame,
+    /// Give up on this model and walk the fallback chain.
+    Fallback,
+    /// Fail the call now; no other model on the chain would help.
+    Surface,
+}
+
+/// The per-attempt facts [`decide`][crate::retry::decide] combines with the [`FailoverReason`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FailoverState {
+    /// The retry policy ([`RetryPolicy::is_retryable_error`], honouring a
+    /// custom `retry_on`) considers the error transient.
+    pub retryable: bool,
+    /// The retry policy still permits another attempt on this model.
+    pub attempts_remaining: bool,
+    /// A fallback candidate with a strictly larger context window than the
+    /// current model exists. Consulted only for
+    /// [`FailoverReason::ContextOverflow`]; `false` by default.
+    pub larger_window_available: bool,
+}
