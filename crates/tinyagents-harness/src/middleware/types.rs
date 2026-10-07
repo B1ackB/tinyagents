@@ -927,13 +927,13 @@ pub struct ContextCompressionMiddleware {
     /// default) never truncates. See
     /// [`ContextCompressionMiddleware::with_tool_result_truncation`].
     pub(crate) tool_result_truncation: Option<usize>,
-    /// Derives the `<read-files>` / `<modified-files>` lists appended to each
-    /// compaction summary; `None` appends nothing. See
-    /// [`crate::summarization::FileOpExtractor`].
     /// Whether a cut inside a turn gives the turn's prefix its own summary
     /// request. See
     /// [`ContextCompressionMiddleware::with_split_turn_prefix`].
     pub(crate) split_turn_prefix: bool,
+    /// Derives the `<read-files>` / `<modified-files>` lists appended to each
+    /// compaction summary; `None` appends nothing. See
+    /// [`crate::summarization::FileOpExtractor`].
     pub(crate) file_ops: Option<std::sync::Arc<dyn crate::summarization::FileOpExtractor>>,
 }
 

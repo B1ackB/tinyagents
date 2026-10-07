@@ -95,6 +95,7 @@ impl ContextCompressionMiddleware {
             max_overflow_attempts: DEFAULT_MAX_OVERFLOW_ATTEMPTS,
             response_overflow: ResponseOverflowDetection::default(),
             tool_result_truncation: None,
+            split_turn_prefix: true,
             file_ops: Some(std::sync::Arc::new(DefaultFileOpExtractor)),
         }
     }
@@ -106,6 +107,16 @@ impl ContextCompressionMiddleware {
     /// `paths` arguments and classifies the call by tool name.
     pub fn with_file_op_extractor(mut self, extractor: impl FileOpExtractor + 'static) -> Self {
         self.file_ops = Some(std::sync::Arc::new(extractor));
+        self
+    }
+
+    /// Chooses whether a compaction cut inside a turn summarizes that turn's
+    /// prefix with its own request (default `true`). The prefix is an *extra*
+    /// summarizer call on top of the history's (still bounded by
+    /// [`with_max_turn_tokens`][Self::with_max_turn_tokens]); turn it off to
+    /// summarize the folded messages in one call as before.
+    pub fn with_split_turn_prefix(mut self, enabled: bool) -> Self {
+        self.split_turn_prefix = enabled;
         self
     }
 

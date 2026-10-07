@@ -36,7 +36,9 @@ impl ContextCompressionMiddleware {
         let mut record = summarize_split_turn(
             self.summarizer.as_ref(),
             to_summarize,
-            split_turn_start(to_summarize, to_keep),
+            self.split_turn_prefix
+                .then(|| split_turn_start(to_summarize, to_keep))
+                .flatten(),
             self.max_turn_tokens.unwrap_or(u64::MAX),
             previous_summary,
             crate::token_estimation::estimate_message_tokens,

@@ -218,3 +218,19 @@ async fn a_cut_at_a_turn_boundary_is_one_ordinary_summary() {
     assert_eq!(summarizer.seen.lock().unwrap().len(), 1);
     assert!(!text.contains("split turn"));
 }
+
+#[tokio::test]
+async fn the_turn_prefix_request_can_be_turned_off() {
+    let summarizer = Recording::default();
+    let mw = middleware(&summarizer).with_split_turn_prefix(false);
+    let messages = vec![
+        chunk("u1"),
+        Message::assistant(format!("a1 {}", "x".repeat(236))),
+        chunk("u2"),
+        Message::assistant(format!("a2 {}", "x".repeat(236))),
+        Message::assistant(format!("a3 {}", "x".repeat(236))),
+    ];
+    compact(&mw, messages).await;
+    let kinds: Vec<SummaryKind> = summarizer.seen.lock().unwrap().iter().map(|r| r.kind).collect();
+    assert_eq!(kinds, vec![SummaryKind::Full]);
+}
