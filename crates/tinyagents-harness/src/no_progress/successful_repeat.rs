@@ -246,7 +246,10 @@ impl SuccessfulRepeatTracker {
             // count where a second block would have happened rather than
             // loop on.
             Some(escalation)
-                if count >= self.block_count(escalation).saturating_add(escalation.halt_block() - 1) =>
+                if count
+                    >= self
+                        .block_count(escalation)
+                        .saturating_add(escalation.halt_block() - 1) =>
             {
                 SuccessfulRepeat::Halt(halt())
             }
