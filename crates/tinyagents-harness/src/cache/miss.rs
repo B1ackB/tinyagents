@@ -20,6 +20,8 @@
 //! * The first call of a key (nothing to compare).
 //! * A provider that has never reported cache activity for the key (it does
 //!   not cache, or does not say so).
+//! * A call answered by a different model than the previous one (each model
+//!   has its own cache).
 //! * A call after [`PromptCacheTracker::reset`], which the caller uses when the
 //!   prefix legitimately changed (compaction, edited system prompt).
 
@@ -46,8 +48,10 @@ pub struct PromptCacheMiss {
     pub wasted_input_tokens: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Previous {
+    /// The model that answered; a different one has a different cache.
+    model: String,
     prompt_tokens: u64,
     /// Sticky: some call of this key reported cache activity.
     reported_cache: bool,
@@ -95,17 +99,22 @@ impl PromptCacheTracker {
         }
     }
 
-    /// Records `usage` for `key` and returns the miss it shows against the
-    /// key's previous call, if any. `usage.input_tokens` is the whole prompt
+    /// Records `usage` (answered by `model`) for `key` and returns the miss it
+    /// shows against the key's previous call, if any. A call answered by a
+    /// different model than the previous one has no baseline. `usage.input_tokens` is the whole prompt
     /// (cache reads are a subset of it); a call reporting none is ignored and
     /// leaves the baseline alone.
-    pub fn observe(&mut self, key: &str, usage: &Usage) -> Option<PromptCacheMiss> {
+    pub fn observe(&mut self, key: &str, model: &str, usage: &Usage) -> Option<PromptCacheMiss> {
         let prompt_tokens = usage.input_tokens.max(usage.cache_read_tokens);
         if prompt_tokens == 0 {
             return None;
         }
         let cache_activity = usage.cache_read_tokens + usage.cache_creation_tokens > 0;
-        let previous = self.entries.get(key).copied();
+        let previous = self
+            .entries
+            .get(key)
+            .filter(|prev| prev.model == model)
+            .cloned();
         let miss = previous.and_then(|prev| {
             if !cache_activity && !prev.reported_cache {
                 return None;
@@ -119,8 +128,9 @@ impl PromptCacheTracker {
             })
         });
         let entry = Previous {
+            model: model.to_string(),
             prompt_tokens,
-            reported_cache: cache_activity || previous.is_some_and(|prev| prev.reported_cache),
+            reported_cache: cache_activity || previous.as_ref().is_some_and(|prev| prev.reported_cache),
         };
         if self.entries.insert(key.to_string(), entry).is_none() {
             self.order.push_back(key.to_string());
