@@ -1868,6 +1868,9 @@ pub(super) struct ToolCallBase<'h, State: Send + Sync, Ctx: Send + Sync> {
     pub(super) dispatch: Arc<dyn crate::tool::ToolDispatch<State, Ctx>>,
     pub(super) options: tinytools::ToolCallOptions,
     pub(super) timeout_settings: Option<crate::tool::ToolTimeoutSettings>,
+    /// Nested-call ids, refusal budget and summaries for this logical call,
+    /// kept across every attempt a wrap middleware makes (retries).
+    pub(super) nested_state: super::nested::NestedState,
 }
 
 impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
@@ -1890,6 +1893,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
                 state,
                 CallId::new(call.id.clone()),
                 self.level,
+                &self.nested_state,
             );
             let future = super::tools::execute_tool_recovering_model_retry(self.dispatch.execute(
                 state,

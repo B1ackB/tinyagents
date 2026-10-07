@@ -137,6 +137,61 @@ impl NestedSummary {
     }
 }
 
+/// Counters and summaries of one **logical** tool call.
+///
+/// Owned by the call's `ToolCallBase`, not by the per-attempt
+/// [`NestedCalls`]: a tool-wrap middleware may invoke the base several times
+/// (retries), and every attempt must keep numbering nested ids, spending the
+/// refusal cap and appending summaries on the same state, or retried attempts
+/// would reuse ids (`p1/1` twice) and reset the refusal bound.
+#[derive(Default)]
+pub(super) struct NestedState {
+    issued: AtomicUsize,
+    /// Refusal slots taken: refused calls, plus calls whose admission is in
+    /// flight (refunded when the call is admitted and runs).
+    refused: AtomicUsize,
+    summaries: std::sync::Mutex<Vec<NestedSummary>>,
+    dropped_summaries: AtomicUsize,
+}
+
+impl NestedState {
+    /// Takes one refusal slot atomically; `false` when the cap is spent.
+    fn reserve_refusal(&self) -> bool {
+        let mut current = self.refused.load(Ordering::SeqCst);
+        loop {
+            if current >= MAX_NESTED_REFUSALS {
+                return false;
+            }
+            match self.refused.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Gives back a slot taken by [`Self::reserve_refusal`] for a call that
+    /// was admitted (or abandoned) rather than refused.
+    fn refund_refusal(&self) {
+        let mut current = self.refused.load(Ordering::SeqCst);
+        while current > 0 {
+            match self.refused.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
 /// Everything needed to service the nested calls of one executing call.
 pub(super) struct NestedCalls<'a, State: Send + Sync, Ctx: Send + Sync> {
     harness: &'a AgentHarness<State, Ctx>,
@@ -146,10 +201,7 @@ pub(super) struct NestedCalls<'a, State: Send + Sync, Ctx: Send + Sync> {
     parent: CallId,
     /// Nesting level of that call: `0` for a model-issued call.
     level: usize,
-    issued: AtomicUsize,
-    refused: AtomicUsize,
-    summaries: std::sync::Mutex<Vec<NestedSummary>>,
-    dropped_summaries: AtomicUsize,
+    shared: &'a NestedState,
 }
 
 impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
@@ -159,6 +211,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         state: &'a State,
         parent: CallId,
         level: usize,
+        shared: &'a NestedState,
     ) -> Self {
         Self {
             harness,
@@ -166,10 +219,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             state,
             parent,
             level,
-            issued: AtomicUsize::new(0),
-            refused: AtomicUsize::new(0),
-            summaries: std::sync::Mutex::new(Vec::new()),
-            dropped_summaries: AtomicUsize::new(0),
+            shared,
         }
     }
 
@@ -209,12 +259,14 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             arguments,
             mut reply,
         } = request;
-        let index = self.issued.fetch_add(1, Ordering::SeqCst) + 1;
+        let index = self.shared.issued.fetch_add(1, Ordering::SeqCst) + 1;
         let id = CallId::new(format!("{}/{index}", self.parent));
         let args = truncated_json(&arguments);
         let started = std::time::Instant::now();
-        let refused_so_far = self.refused.load(Ordering::SeqCst);
-        let outcome = if refused_so_far >= MAX_NESTED_REFUSALS {
+        // Reserve the refusal slot *before* admission: calls admitted
+        // concurrently must not all read a count under the cap and then all be
+        // refused past it.
+        let outcome = if !self.shared.reserve_refusal() {
             Some(Err(TinyAgentsError::ToolFailed(format!(
                 "nested call '{name}' refused: tool call '{}' already had {MAX_NESTED_REFUSALS} \
                  nested calls refused",
@@ -233,12 +285,15 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             tokio::pin!(run);
             tokio::select! {
                 (refused, outcome) = &mut run => {
-                    if refused {
-                        self.refused.fetch_add(1, Ordering::SeqCst);
+                    if !refused {
+                        self.shared.refund_refusal();
                     }
                     Some(outcome)
                 }
-                () = reply.cancellation() => None,
+                () = reply.cancellation() => {
+                    self.shared.refund_refusal();
+                    None
+                }
             }
         };
         let (status, error) = match &outcome {
@@ -267,13 +322,14 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
 
     fn record(&self, summary: NestedSummary) {
         let mut summaries = self
+            .shared
             .summaries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if summaries.len() < MAX_NESTED_SUMMARIES {
             summaries.push(summary);
         } else {
-            self.dropped_summaries.fetch_add(1, Ordering::SeqCst);
+            self.shared.dropped_summaries.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -281,6 +337,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
     /// metadata (host-only, never rendered into the transcript).
     pub(super) fn attach_summary(&self, result: &mut tinytools::ToolResult) {
         let summaries = self
+            .shared
             .summaries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -300,7 +357,7 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
             "nested_calls".to_string(),
             Value::Array(summaries.iter().map(NestedSummary::to_json).collect()),
         );
-        let dropped = self.dropped_summaries.load(Ordering::SeqCst);
+        let dropped = self.shared.dropped_summaries.load(Ordering::SeqCst);
         if dropped > 0 {
             object.insert("nested_calls_truncated".to_string(), json!(dropped));
         }
@@ -503,15 +560,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             Err(error) => {
                 // A tool the nested call reached may itself ask to be deferred;
                 // the parent cannot pause, so that is the same refusal.
-                let error = match error {
+                // That counts toward the refusal cap like an admission refusal.
+                let deferred = matches!(
+                    error,
                     TinyAgentsError::ApprovalRequired { .. }
-                    | TinyAgentsError::CallDeferred { .. } => approval_error(name),
-                    other => other,
-                };
+                        | TinyAgentsError::CallDeferred { .. }
+                );
+                let error = if deferred { approval_error(name) } else { error };
                 self.record_tool_effect_settled(ctx, &prepared, ToolEffectStatus::Failed)
                     .await;
                 guard.settle();
-                (false, Err(self.fail_nested(ctx, &prepared, parent, error)))
+                (
+                    deferred,
+                    Err(self.fail_nested(ctx, &prepared, parent, error)),
+                )
             }
         }
     }
