@@ -102,7 +102,11 @@ pub(crate) async fn run_attempts<State: Send + Sync + 'static, Ctx: Send + Sync 
                     && !cancel.is_cancelled()
                     && may_retry(policy, index, &error, tools_ran.load(Ordering::SeqCst)) =>
             {
-                tracing::debug!("{LOG_PREFIX} retry agent={} attempt={}", subagent.name(), index + 1);
+                tracing::debug!(
+                    "{LOG_PREFIX} retry agent={} attempt={}",
+                    subagent.name(),
+                    index + 1
+                );
                 policy.retry.sleep_backoff(index + 1).await;
             }
             Err(error) => return Err(error),

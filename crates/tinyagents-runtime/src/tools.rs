@@ -58,7 +58,12 @@ impl ToolSnapshot {
     /// one-off ([`Self::exact`]) marker preserved. The source is untouched.
     pub fn retaining(&self, keep: impl Fn(&ToolSpec) -> bool) -> Self {
         Self {
-            specs: self.specs.iter().filter(|spec| keep(spec)).cloned().collect(),
+            specs: self
+                .specs
+                .iter()
+                .filter(|spec| keep(spec))
+                .cloned()
+                .collect(),
             exact: self.exact,
         }
     }

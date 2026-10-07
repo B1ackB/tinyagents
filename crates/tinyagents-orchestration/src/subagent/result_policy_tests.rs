@@ -24,7 +24,9 @@ fn truncate_is_a_noop_within_the_cap_and_counts_chars_not_bytes() {
 
 #[tokio::test]
 async fn the_default_policy_changes_nothing() {
-    let applied = ResultPolicy::default().apply("t", "x".repeat(10_000).as_str(), None).await;
+    let applied = ResultPolicy::default()
+        .apply("t", "x".repeat(10_000).as_str(), None)
+        .await;
     assert_eq!(applied.text.len(), 10_000);
     assert_eq!(applied.omitted_chars, 0);
     assert!(applied.artifact.is_none() && applied.schema_error.is_none());
@@ -91,14 +93,25 @@ async fn artifact_without_a_store_falls_back_to_truncation_and_says_so() {
     let applied = policy.apply("t", "0123456789", None).await;
     assert!(applied.artifact.is_none());
     assert!(applied.text.contains("omitted"));
-    assert!(applied.artifact_error.unwrap().contains("no artifact store"));
+    assert!(
+        applied
+            .artifact_error
+            .unwrap()
+            .contains("no artifact store")
+    );
 }
 
 #[tokio::test]
 async fn schema_validates_the_final_output_as_json() {
     let schema = json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]});
     let policy = ResultPolicy::new().with_schema(schema);
-    assert!(policy.apply("t", r#"{"n": 3}"#, None).await.schema_error.is_none());
+    assert!(
+        policy
+            .apply("t", r#"{"n": 3}"#, None)
+            .await
+            .schema_error
+            .is_none()
+    );
     let wrong = policy.apply("t", r#"{"n": "x"}"#, None).await;
     assert!(wrong.schema_error.unwrap().contains("integer"));
     let not_json = policy.apply("t", "plain prose", None).await;
