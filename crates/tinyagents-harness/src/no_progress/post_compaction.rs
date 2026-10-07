@@ -9,17 +9,12 @@
 //! instead of letting the ledger count up from zero again.
 
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
+
+use super::util::{hash_pair, lock};
 
 /// Tool calls watched after a compaction, and recent calls remembered before it.
 pub const DEFAULT_POST_COMPACTION_WINDOW: u32 = 3;
-
-fn hash_pair(call_signature: &str, outcome_identity: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (call_signature, outcome_identity).hash(&mut hasher);
-    hasher.finish()
-}
 
 #[derive(Default)]
 struct GuardState {
@@ -59,7 +54,7 @@ impl PostCompactionGuard {
             return false;
         }
         let pair = hash_pair(call_signature, outcome_identity);
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock(&self.state);
         if let Some((tail, remaining)) = state.armed.as_mut() {
             let repeated = tail.contains(&pair);
             *remaining -= 1;
@@ -82,7 +77,7 @@ impl PostCompactionGuard {
         if self.window == 0 {
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock(&self.state);
         if state.tail.is_empty() {
             return;
         }
@@ -92,7 +87,7 @@ impl PostCompactionGuard {
 
     /// Forgets the tail and disarms.
     pub fn reset(&self) {
-        *self.state.lock().unwrap() = GuardState::default();
+        *lock(&self.state) = GuardState::default();
     }
 }
 

@@ -14,8 +14,9 @@
 //! do not hide a repeat.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
+
+use super::util::{hash_of, lock};
 
 /// Alternations (A,B,A,B,A,B is six) before [`PingPongDetector`] warns.
 pub const DEFAULT_PING_PONG_ALTERNATIONS: u32 = 6;
@@ -23,12 +24,6 @@ pub const DEFAULT_PING_PONG_ALTERNATIONS: u32 = 6;
 pub const DEFAULT_CHURN_VARIANTS: u32 = 3;
 /// Calls each variant needs, all with the same result, to count as a variant.
 pub const DEFAULT_CHURN_CALLS_PER_VARIANT: u32 = 3;
-
-fn hash_of(value: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
 
 /// One call and the result it produced, as hashes.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,7 +72,7 @@ impl PingPongDetector {
             call: hash_of(call_signature),
             outcome: hash_of(outcome_identity),
         };
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock(&self.state);
         state.tail = match (state.prev, state.last) {
             // Same two calls with the same results as two steps ago.
             (Some(prev), Some(last)) if prev == step && last.call != step.call => state.tail + 1,
@@ -103,7 +98,7 @@ impl PingPongDetector {
 
     /// Forgets the tail and the pairs already warned about.
     pub fn reset(&self) {
-        *self.state.lock().unwrap() = PingPongState::default();
+        *lock(&self.state) = PingPongState::default();
     }
 }
 
@@ -147,7 +142,7 @@ impl ArgumentChurnDetector {
     ) -> Option<String> {
         let key = (tool.to_string(), hash_of(outcome_identity));
         let qualifying = {
-            let mut groups = self.groups.lock().unwrap();
+            let mut groups = lock(&self.groups);
             let variants = groups.entry(key.clone()).or_default();
             *variants.entry(hash_of(arguments_fingerprint)).or_insert(0) += 1;
             variants
@@ -155,7 +150,7 @@ impl ArgumentChurnDetector {
                 .filter(|calls| **calls >= self.calls_per_variant)
                 .count() as u32
         };
-        if qualifying < self.variants || !self.warned.lock().unwrap().insert(key) {
+        if qualifying < self.variants || !lock(&self.warned).insert(key) {
             return None;
         }
         Some(format!(
@@ -166,8 +161,8 @@ impl ArgumentChurnDetector {
 
     /// Forgets every count and warning.
     pub fn reset(&self) {
-        self.groups.lock().unwrap().clear();
-        self.warned.lock().unwrap().clear();
+        lock(&self.groups).clear();
+        lock(&self.warned).clear();
     }
 }
 

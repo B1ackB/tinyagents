@@ -120,7 +120,7 @@ impl SuccessfulRepeatTracker {
     /// [`record_call_batch`](Self::record_call_batch) confirms that the
     /// associated batch succeeded and is not exempt.
     pub fn record_output(&self, signature: &str, exempt: bool) -> SuccessfulRepeat {
-        let mut output = self.output.lock().unwrap();
+        let mut output = lock(&self.output);
         if exempt {
             output.reset();
             return SuccessfulRepeat::Continue;
@@ -142,11 +142,11 @@ impl SuccessfulRepeatTracker {
             // An exempt polling batch or a failure therefore resets both
             // trackers so its preceding output cannot leak into the next
             // progress-eligible iteration.
-            self.output.lock().unwrap().reset();
-            self.calls.lock().unwrap().reset();
+            lock(&self.output).reset();
+            lock(&self.calls).reset();
             return SuccessfulRepeat::Continue;
         }
-        let output_consecutive = self.output.lock().unwrap().consecutive;
+        let output_consecutive = lock(&self.output).consecutive;
         let output_verdict = self.streak_verdict(
             output_consecutive,
             self.output_threshold,
@@ -155,7 +155,7 @@ impl SuccessfulRepeatTracker {
         );
         // The call streak is recorded even when the output streak already
         // decided, so a warning does not leave it a batch behind.
-        let consecutive = self.calls.lock().unwrap().record(signature);
+        let consecutive = lock(&self.calls).record(signature);
         let call_verdict = self.streak_verdict(
             consecutive,
             self.call_threshold,
@@ -211,14 +211,12 @@ impl SuccessfulRepeatTracker {
         outcome_identity: &str,
     ) -> SuccessfulRepeat {
         let key = ledger_key(call_signature, outcome_identity);
-        let mut recurrences = self.recurrences.lock().unwrap();
+        let mut recurrences = lock(&self.recurrences);
         let count = recurrences.entry(key).or_insert(0);
         *count += 1;
         let count = *count;
         drop(recurrences);
-        self.last_outcome
-            .lock()
-            .unwrap()
+        lock(&self.last_outcome)
             .insert(hash_of(call_signature), key);
         let warn = || {
             format!(
@@ -262,25 +260,21 @@ impl SuccessfulRepeatTracker {
             return CallGate::Allow;
         };
         let Some(key) = self
-            .last_outcome
-            .lock()
-            .unwrap()
+            .lock(&last_outcome)
             .get(&hash_of(call_signature))
             .copied()
         else {
             return CallGate::Allow;
         };
         let count = self
-            .recurrences
-            .lock()
-            .unwrap()
+            .lock(&recurrences)
             .get(&key)
             .copied()
             .unwrap_or(0);
         if count + 1 < self.block_count(escalation) {
             return CallGate::Allow;
         }
-        let mut blocks = self.blocks.lock().unwrap();
+        let mut blocks = lock(&self.blocks);
         *blocks += 1;
         if *blocks >= escalation.halt_block() {
             return CallGate::Halt(format!(
@@ -300,13 +294,11 @@ impl SuccessfulRepeatTracker {
             return;
         };
         let key = ledger_key(call_signature, outcome_identity);
-        let mut recurrences = self.recurrences.lock().unwrap();
+        let mut recurrences = lock(&self.recurrences);
         let count = recurrences.entry(key).or_insert(0);
         *count = (*count).max(self.block_count(escalation) - 1);
         drop(recurrences);
-        self.last_outcome
-            .lock()
-            .unwrap()
+        lock(&self.last_outcome)
             .insert(hash_of(call_signature), key);
     }
 
@@ -314,17 +306,17 @@ impl SuccessfulRepeatTracker {
     /// example when a paused run is resumed.
     pub fn reset(&self) {
         self.reset_ledger();
-        *self.blocks.lock().unwrap() = 0;
+        *lock(&self.blocks) = 0;
     }
 
     /// Clears the streaks and the recurrence ledger but keeps the run-wide
     /// block count: for a context eviction, where the model forgets the
     /// results it repeated but has still already been blocked once.
     pub fn reset_ledger(&self) {
-        self.output.lock().unwrap().reset();
-        self.calls.lock().unwrap().reset();
-        self.recurrences.lock().unwrap().clear();
-        self.last_outcome.lock().unwrap().clear();
+        lock(&self.output).reset();
+        lock(&self.calls).reset();
+        lock(&self.recurrences).clear();
+        lock(&self.last_outcome).clear();
     }
 }
 
