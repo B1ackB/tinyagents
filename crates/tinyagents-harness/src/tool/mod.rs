@@ -32,8 +32,8 @@ pub use effects::{
     LedgerFailure, ToolEffect, ToolEffectLedger, ToolEffectSettle, ToolEffectStart,
     ToolEffectStatus,
 };
-pub use progress::ToolProgressLimits;
 pub(crate) use progress::ToolProgressGate;
+pub use progress::ToolProgressLimits;
 pub use prompt::*;
 pub use schema::*;
 pub use schema_compact::*;

@@ -1563,7 +1563,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         gate: &ToolProgressGate,
     ) {
         for mut delta in gate.take_pending() {
-            if let Err(error) = self.middleware.run_on_tool_delta(ctx, state, &mut delta).await {
+            if let Err(error) = self
+                .middleware
+                .run_on_tool_delta(ctx, state, &mut delta)
+                .await
+            {
                 tracing::warn!(
                     target: "tinyagents::tool_progress",
                     call_id = %delta.call_id,
