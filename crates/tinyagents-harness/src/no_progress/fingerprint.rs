@@ -110,14 +110,33 @@ fn not_followed_by_word(text: &str, found: &Match<'_>) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
+fn field_prefix(text: &str, found: &Match<'_>) -> String {
+    text[..found.start()]
+        .to_ascii_lowercase()
+        .trim_end_matches(|character: char| character.is_ascii_whitespace())
+        .trim_end_matches(['"', '\''])
+        .trim_end_matches(|character: char| character.is_ascii_whitespace())
+        .to_string()
+}
+
 /// Keeps timestamps that are explicit state fields, such as `event_at`, in
 /// the outcome identity. Log prose still falls through to normalization.
 fn iso_timestamp_context(text: &str, found: &Match<'_>) -> bool {
-    let before = text[..found.start()].to_ascii_lowercase();
-    let field_prefix = before
-        .trim_end_matches(|character: char| character.is_ascii_whitespace())
-        .trim_end_matches('"');
+    let field_prefix = field_prefix(text, found);
     ![
+        "event_at\":",
+        "eventat\":",
+        "created_at\":",
+        "updated_at\":",
+        "timestamp\":",
+    ]
+    .iter()
+    .any(|field| field_prefix.ends_with(field))
+}
+
+fn state_timestamp_context(text: &str, found: &Match<'_>) -> bool {
+    let field_prefix = field_prefix(text, found);
+    [
         "event_at\":",
         "eventat\":",
         "created_at\":",
@@ -194,7 +213,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r#"(?-u:\b)(?:(?i:ts|time|timestamp|epoch|mtime|ctime|atime)|[A-Za-z0-9]*(?:[_-](?i:ts|time|timestamp|epoch|at)|At|Time|Ts|Timestamp))["']?\s*[=:]\s*["']?(?P<span>1\d{9}(?:\d{3})?(?:\.\d+)?)(?-u:\b)"#,
             "<epoch>",
-            not_after_dot,
+            |text, found| not_after_dot(text, found) && !state_timestamp_context(text, found),
         ),
         // Measurement fields and phrases such as `duration=123ms`,
         // `elapsed 1.2s`, `took 1h2m3.5s`, and log phrases such as

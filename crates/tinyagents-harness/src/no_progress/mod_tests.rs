@@ -623,6 +623,33 @@ fn genuinely_different_failures_are_not_identical() {
 }
 
 #[test]
+fn multiline_failures_keep_stable_context_after_volatile_first_lines() {
+    let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD);
+
+    assert_eq!(
+        t.record(
+            1,
+            &fail("fetch", "a", "2026-10-06T12:00:01Z\nconnection refused")
+        ),
+        NoProgress::Continue
+    );
+    assert!(matches!(
+        t.record(
+            2,
+            &fail("fetch", "a", "2026-10-06T12:00:09Z\nconnection refused")
+        ),
+        NoProgress::Nudge(_)
+    ));
+    assert!(matches!(
+        t.record(
+            3,
+            &fail("fetch", "a", "2026-10-06T12:00:17Z\nconnection refused")
+        ),
+        NoProgress::Halt(_)
+    ));
+}
+
+#[test]
 fn custom_fingerprinter_is_honored_by_the_failure_ladder() {
     let t = NoProgressTracker::new(DEFAULT_IDENTICAL_HALT_THRESHOLD)
         .with_fingerprinter(Arc::new(ConstantFingerprinter));

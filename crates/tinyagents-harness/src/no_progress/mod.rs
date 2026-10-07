@@ -200,10 +200,7 @@ impl NoProgressTracker {
     /// reset for the caller.
     pub fn record(&self, step: usize, attempt: &ToolAttempt) -> NoProgress {
         // Fingerprint before taking the lock: it scans the whole line.
-        let err_identity = attempt.error.map(|err| {
-            self.fingerprinter
-                .fingerprint(err.lines().next().unwrap_or(err))
-        });
+        let err_identity = attempt.error.map(|err| self.fingerprinter.fingerprint(err));
         let mut state = self.state.lock().unwrap();
 
         let Some(err) = attempt.error else {
@@ -212,10 +209,10 @@ impl NoProgressTracker {
             return NoProgress::Continue;
         };
 
-        // Signature: tool name + argument fingerprint + the fingerprinted first
-        // error line (the deterministic parts; a huge payload tail must not
-        // dominate the identical-repeat comparison, and a volatile span such as
-        // a timestamp must not make a repeated failure look novel).
+        // Signature: tool name + argument fingerprint + the fingerprinted error
+        // (the deterministic parts; volatile spans such as timestamps must not
+        // make a repeated failure look novel, including when stable context is
+        // on a later line).
         let err_identity = err_identity.unwrap_or_default();
         let sig = format!(
             "{}\u{1f}{}\u{1f}{err_identity}",
