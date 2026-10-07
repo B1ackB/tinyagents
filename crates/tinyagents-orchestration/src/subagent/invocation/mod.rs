@@ -74,6 +74,7 @@
 //! - `test.rs` holds focused tests.
 
 mod jobs;
+mod policy_run;
 mod types;
 
 const LOG_PREFIX: &str = "[subagent-tool]";
@@ -613,7 +614,42 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             declaration: std::sync::OnceLock::new(),
             jobs: SubAgentJobRegistry::new(),
             admission: SpawnAdmission::default(),
+            policy: crate::subagent::SubAgentPolicy::default(),
+            role: crate::subagent::SubagentRole::default(),
+            delegation_tools: Vec::new(),
+            result_policy: crate::subagent::ResultPolicy::default(),
         }
+    }
+
+    /// Applies a timeout/retry/budget policy to every spawned child.
+    ///
+    /// Call caps tighten the child's run limits; token caps are checked when it
+    /// finishes; a retry needs `retry.max_attempts > 1` and re-runs a fresh
+    /// child only after a retryable failure that ran no tools (unless
+    /// [`SubAgentPolicy::retry_after_tool_calls`](crate::subagent::SubAgentPolicy)).
+    pub fn with_policy(mut self, policy: crate::subagent::SubAgentPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Declares the child's role. A [`SubagentRole::Leaf`](crate::subagent::SubagentRole)
+    /// child's harness must not expose delegation tools: the spawn is refused
+    /// otherwise (the shared harness cannot be filtered per call).
+    pub fn with_role(mut self, role: crate::subagent::SubagentRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Names the host's own delegation tools, which a leaf must not expose.
+    pub fn with_delegation_tools(mut self, names: Vec<String>) -> Self {
+        self.delegation_tools = names;
+        self
+    }
+
+    /// Trims and schema-checks each child's final output.
+    pub fn with_result_policy(mut self, policy: crate::subagent::ResultPolicy) -> Self {
+        self.result_policy = policy;
+        self
     }
 
     /// Enforces spawn limits through `admission` (see [`super::SpawnPolicy`]).
@@ -723,6 +759,17 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 return Ok(tinytools::ToolResult::error(message));
             }
         };
+        if !self.role.can_delegate() {
+            let exposed =
+                policy_run::delegation_tools_exposed(&self.subagent, &self.delegation_tools);
+            if !exposed.is_empty() {
+                tracing::debug!("{LOG_PREFIX} leaf_violation tool={} exposed={exposed:?}", self.tool_name);
+                return Ok(tinytools::ToolResult::error(format!(
+                    "Sub-agent `{}` is a leaf but its harness exposes delegation tools {exposed:?}; it was not started.",
+                    self.tool_name
+                )));
+            }
+        }
         // Reserve the slot atomically before anything is spawned. The guard
         // refunds on every early return below; it is committed once the child
         // is registered and then lives exactly as long as the child runs.
@@ -742,7 +789,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 )));
             }
         };
-        let config = match self.subagent.child_config(
+        let mut config = match self.subagent.child_config(
             parent.depth(),
             parent.thread_id(),
             parent.config.max_turn_output_tokens,
@@ -756,6 +803,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 )));
             }
         };
+        self.policy.budget.apply_call_caps(&mut config);
         let child_data = self.child_data.child_data(&parent.data);
         let child = match parent.child(config, child_data) {
             Ok(child) => child,
@@ -781,13 +829,52 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         tracing::debug!(
             "{LOG_PREFIX} spawn job_id={job_id} subagent_run_id={subagent_run_id} tool_call_id={tool_call_id:?}"
         );
-        let mut child = child.with_steering(steering);
+        let mut child = child.with_steering(steering.clone());
         stamp_link_metadata(
             &mut child.config.metadata,
             &subagent_run_id,
             job_id.as_str(),
             tool_call_id.as_deref(),
         );
+        // Retries need fresh child contexts, and a background child outlives the
+        // borrow of `parent`, so every possible attempt is minted up front.
+        let attempt_count = self.policy.retry.max_attempts.max(1);
+        let watch = attempt_count > 1;
+        let job_token = child.cancellation.clone();
+        let mut attempts = vec![policy_run::Attempt::new(child, watch)];
+        for _ in 1..attempt_count {
+            let spare = self
+                .subagent
+                .child_config(
+                    parent.depth(),
+                    parent.thread_id(),
+                    parent.config.max_turn_output_tokens,
+                    Some((parent.run_id().as_str(), parent.next_child_ordinal())),
+                )
+                .and_then(|mut config| {
+                    self.policy.budget.apply_call_caps(&mut config);
+                    parent.child(config, self.child_data.child_data(&parent.data))
+                });
+            match spare {
+                Ok(spare) => {
+                    let spare_id = spare.run_id().as_str().to_owned();
+                    let mut spare = spare
+                        .with_cancellation(job_token.clone())
+                        .with_steering(steering.clone());
+                    stamp_link_metadata(
+                        &mut spare.config.metadata,
+                        &spare_id,
+                        job_id.as_str(),
+                        tool_call_id.as_deref(),
+                    );
+                    attempts.push(policy_run::Attempt::new(spare, watch));
+                }
+                Err(error) => {
+                    tracing::debug!("{LOG_PREFIX} retry_context_unavailable error={error}");
+                    break;
+                }
+            }
+        }
         reservation.commit();
         let streaming = parent.streaming;
         if mode == SubAgentMode::Inline {
