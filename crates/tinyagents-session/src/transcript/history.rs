@@ -559,7 +559,29 @@ impl TranscriptLocator for FileTranscriptLocator {
     }
 
     fn latest_for_agent(&self, agent_name: &str) -> Option<Arc<dyn TranscriptRead>> {
-        let path = find_latest_transcript(&self.workspace_dir, agent_name)?;
+        let path = find_latest_transcript(&self.workspace_dir, agent_name).or_else(|| {
+            let dir = self.workspace_dir.join("session_raw");
+            let mut best: Option<(String, PathBuf)> = None;
+            for entry in fs::read_dir(dir).ok()?.flatten() {
+                let candidate = entry.path();
+                if candidate.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Ok(transcript) = read_transcript(&candidate) else {
+                    continue;
+                };
+                if transcript.meta.parent_session_id.is_none()
+                    && (transcript.meta.agent_name == agent_name
+                        || transcript.meta.agent_id.as_deref() == Some(agent_name))
+                    && best
+                        .as_ref()
+                        .is_none_or(|(updated, _)| transcript.meta.updated > *updated)
+                {
+                    best = Some((transcript.meta.updated, candidate));
+                }
+            }
+            best.map(|(_, path)| path)
+        })?;
         tracing::debug!(
             "[transcript-history] locator latest_for_agent agent={agent_name} path={}",
             path.display()
@@ -583,6 +605,41 @@ impl TranscriptLocator for FileTranscriptLocator {
             return Ok(false);
         };
         if partial.content.is_empty() {
+            return Ok(false);
+        }
+        if read_transcript(&path).ok().is_some_and(|transcript| {
+            transcript.meta.session_id.as_deref().is_some_and(|id| {
+                id.rsplit_once(".g")
+                    .is_some_and(|(_, generation)| generation.parse::<u32>().is_ok())
+            })
+        }) {
+            return Ok(false);
+        }
+        // A root generation is immutable once its successor exists. Late
+        // interruption callbacks must not append display-only data to the
+        // sealed predecessor.
+        if path
+            .parent()
+            .and_then(|parent| std::fs::read_dir(parent).ok())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .path()
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| {
+                        let base = path
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default();
+                        stem.strip_prefix(base).is_some_and(|suffix| {
+                            suffix.starts_with(".g") && suffix[2..].parse::<u32>().is_ok()
+                        })
+                    })
+            })
+        {
             return Ok(false);
         }
         crate::transcript::append_interrupted_partial(

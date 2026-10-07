@@ -87,13 +87,18 @@ impl InMemoryTranscriptHistory {
     }
 
     /// Records the display-only `partial` of an interrupted turn.
-    pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) {
+    pub fn record_partial(&self, partial: TranscriptPartial, request_id: Option<String>) -> bool {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.sealed || partial.content.is_empty() {
-            return;
+            return false;
         }
         state.partials.push((partial, request_id));
         state.written = true;
+        true
     }
 
     /// The display-only partials recorded so far, oldest first, with their
@@ -104,14 +109,6 @@ impl InMemoryTranscriptHistory {
             .unwrap_or_else(|e| e.into_inner())
             .partials
             .clone()
-    }
-
-    pub(crate) fn clear_partials(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .partials
-            .clear();
     }
 
     pub(crate) fn seal(&self) {
@@ -220,6 +217,10 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
     }
 
     fn clear(&self) -> anyhow::Result<()> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         anyhow::ensure!(!state.sealed, "transcript generation is sealed");
         if !state.written {
