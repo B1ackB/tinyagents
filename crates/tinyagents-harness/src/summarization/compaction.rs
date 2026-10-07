@@ -148,6 +148,28 @@ pub async fn summarize_with_split(
     previous_summary: Option<String>,
     estimator: impl Fn(&Message) -> u64,
 ) -> Result<SummaryRecord> {
+    summarize_kind_with_split(
+        summarizer,
+        messages,
+        max_turn_tokens,
+        previous_summary,
+        estimator,
+        SummaryKind::Full,
+    )
+    .await
+}
+
+/// [`summarize_with_split`] for requests of a given [`SummaryKind`], which
+/// every half it makes inherits (so an oversized turn *prefix* is halved into
+/// turn-prefix requests).
+pub async fn summarize_kind_with_split(
+    summarizer: &dyn Summarizer,
+    messages: &[Message],
+    max_turn_tokens: u64,
+    previous_summary: Option<String>,
+    estimator: impl Fn(&Message) -> u64,
+    kind: SummaryKind,
+) -> Result<SummaryRecord> {
     if messages.is_empty() {
         return Err(TinyAgentsError::Validation(
             "cannot summarize an empty turn".into(),
@@ -160,7 +182,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
-                kind: SummaryKind::Full,
+                kind,
             })
             .await;
     }
@@ -174,7 +196,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
-                kind: SummaryKind::Full,
+                kind,
             })
             .await;
     }
@@ -185,14 +207,14 @@ pub async fn summarize_with_split(
         .summarize_request(&SummaryRequest {
             messages: first_half.to_vec(),
             previous_summary,
-            kind: SummaryKind::Full,
+            kind,
         })
         .await?;
     let second_summary = summarizer
         .summarize_request(&SummaryRequest {
             messages: second_half.to_vec(),
             previous_summary: None,
-            kind: SummaryKind::Full,
+            kind,
         })
         .await?;
 

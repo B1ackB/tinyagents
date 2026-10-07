@@ -39,7 +39,7 @@ mod types;
 pub use checkpoint::{CHECKPOINT_PREFIX, checkpoint_body, checkpoint_message, is_checkpoint};
 pub use compaction::{
     CompactionContext, CompactionDecision, CutPoint, OverflowClassifier, OverflowInfo,
-    OverflowProbe, find_cut_point, summarize_with_split,
+    OverflowProbe, find_cut_point, summarize_kind_with_split, summarize_with_split,
 };
 pub use file_ops::{
     DefaultFileOpExtractor, FileOpExtractor, FileOperations, MAX_LISTED_FILES, append_file_sections,

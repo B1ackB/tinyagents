@@ -111,3 +111,26 @@ async fn without_a_split_the_whole_slice_is_one_full_summary() {
     assert_eq!(summarizer.seen.lock().unwrap().len(), 1);
     assert_eq!(record.summary.text(), "Full:u1");
 }
+
+#[tokio::test]
+async fn an_oversized_turn_prefix_is_halved_into_turn_prefix_requests() {
+    let summarizer = Recording::default();
+    let summarized = vec![
+        user("u1"),
+        assistant("a1"),
+        user("u2"),
+        assistant("a2"),
+        user("u3"),
+        assistant("a3"),
+    ];
+    // Each message is 10 tokens; the 4-message prefix (40) is over the 25 cap.
+    summarize_split_turn(&summarizer, &summarized, Some(2), 25, None, |_| 10)
+        .await
+        .unwrap();
+    let seen = summarizer.seen.lock().unwrap();
+    let prefix_requests = seen
+        .iter()
+        .filter(|r| r.kind == SummaryKind::TurnPrefix)
+        .count();
+    assert_eq!(prefix_requests, 2, "{seen:?}");
+}

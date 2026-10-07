@@ -18,8 +18,8 @@ use tinyinference_llm::message::Message;
 
 use crate::error::Result;
 
-use super::compaction::summarize_with_split;
-use super::types::{CompressionProvenance, Summarizer, SummaryRecord, SummaryRequest};
+use super::compaction::{summarize_kind_with_split, summarize_with_split};
+use super::types::{CompressionProvenance, SummaryKind, Summarizer, SummaryRecord};
 
 /// Heading that introduces the turn-prefix summary inside a merged summary.
 pub const SPLIT_TURN_HEADING: &str = "**Turn Context (split turn):**";
@@ -78,9 +78,18 @@ pub async fn summarize_split_turn(
         estimator,
     )
     .await?;
-    let prefix = summarizer
-        .summarize_request(&SummaryRequest::turn_prefix(prefix.to_vec()))
-        .await?;
+    // The prefix can itself be too big for one call (a huge tool result in the
+    // first steps): it is halved like any other oversized slice, each half
+    // still a turn-prefix request.
+    let prefix = summarize_kind_with_split(
+        summarizer,
+        prefix,
+        max_turn_tokens,
+        None,
+        estimator,
+        SummaryKind::TurnPrefix,
+    )
+    .await?;
 
     let text = format!(
         "{}\n\n---\n\n{SPLIT_TURN_HEADING}\n\n{}",
