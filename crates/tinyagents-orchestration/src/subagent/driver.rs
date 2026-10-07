@@ -411,7 +411,11 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
             }
             attempt += 1;
             tracing::debug!("{LOG_PREFIX} retry task_id={task_id} attempt={attempt}");
-            policy.retry.sleep_backoff(attempt).await;
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => break Err(SubagentError::Cancelled),
+                _ = policy.retry.sleep_backoff(attempt) => {}
+            }
             let next_token = cancellation.child_token();
             match attempts.next(attempt as u32, next_token.clone()) {
                 Ok(next) => {
