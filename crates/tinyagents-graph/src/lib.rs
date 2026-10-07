@@ -60,6 +60,8 @@ pub use channel::{
 };
 #[cfg(feature = "sqlite")]
 pub use checkpoint::SqliteCheckpointer;
+#[cfg(feature = "storage-drivers")]
+pub use checkpoint::DriverCheckpointer;
 pub use checkpoint::{
     BarrierArrivals, CHECKPOINT_FORMAT_VERSION, Checkpoint, CheckpointConfig, CheckpointMetadata,
     CheckpointSource, CheckpointTuple, Checkpointer, CompletedTask, DurabilityMode,
