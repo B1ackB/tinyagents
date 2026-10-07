@@ -91,13 +91,14 @@ impl SessionDriver for GatedDriver {
 }
 
 /// A background delivery issued while a turn is running waits for that turn
-/// to persist, then lands after it — instead of staling the turn's baseline
-/// and failing its persist.
+/// to persist, then lands after it — including when resume selects an absent
+/// session and the write falls back to the target's existing session.
 #[tokio::test]
 async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let directory = tempfile::tempdir().unwrap();
     let locator = Arc::new(FileTranscriptLocator::new(directory.path()));
     let session_ref = SessionRef::scoped("thread-1", "agent");
+    let selected_session = SessionRef::scoped("thread-2", "agent");
     let path =
         resolve_keyed_transcript_path(directory.path(), &session_stem(&session_ref)).unwrap();
     tinyagents_session::transcript::write_transcript(
@@ -127,6 +128,8 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
                 SessionTurnRequest::new(Message::user("weather?")),
                 TurnOptions {
                     resume: ResumeMode::Session,
+                    session: Some(selected_session),
+                    thread_id: Some("thread-2".into()),
                     ..TurnOptions::default()
                 },
             )
