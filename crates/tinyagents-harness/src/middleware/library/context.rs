@@ -581,7 +581,8 @@ impl ContextCompressionMiddleware {
                     &record.summary,
                     pinned.clone(),
                 );
-                let new_messages = splice_summary(to_keep, record.summary.clone());
+                let mut new_messages = splice_summary(to_keep, record.summary.clone());
+                self.cut_after_compaction(mixed, &mut new_messages);
                 let to_tokens = total_message_tokens(&new_messages);
                 self.finish_compaction(
                     ctx,
@@ -599,7 +600,6 @@ impl ContextCompressionMiddleware {
                     None,
                 );
                 request.messages = new_messages;
-                self.cut_after_compaction(mixed, request);
                 ctx.emit(AgentEvent::Compressed {
                     from_tokens,
                     to_tokens,
@@ -674,7 +674,8 @@ impl ContextCompressionMiddleware {
             &record.summary,
             pinned,
         );
-        let new_messages = splice_summary(to_keep, record.summary.clone());
+        let mut new_messages = splice_summary(to_keep, record.summary.clone());
+        self.cut_after_compaction(mixed, &mut new_messages);
         let to_tokens = total_message_tokens(&new_messages);
 
         self.finish_compaction(
@@ -693,7 +694,6 @@ impl ContextCompressionMiddleware {
             Some(latency_ms),
         );
         request.messages = new_messages;
-        self.cut_after_compaction(mixed, request);
 
         ctx.emit(AgentEvent::Compressed {
             from_tokens,
