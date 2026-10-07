@@ -17,7 +17,7 @@
 //! rewrite. [`TranscriptHistory::clear`] is therefore an empty compaction.
 //!
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -676,7 +676,9 @@ fn absolute_normalized_path(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                normalized.pop();
+                if normalized.components().count() > 1 {
+                    normalized.pop();
+                }
             }
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
                 normalized.push(component.as_os_str());
@@ -690,20 +692,78 @@ fn absolute_normalized_path(path: &Path) -> PathBuf {
 /// The final workspace directory may not exist yet, so canonicalizing the
 /// whole path is not sufficient for locator identity.
 fn symlink_normalized_path(path: &Path) -> PathBuf {
-    let normalized = absolute_normalized_path(path);
-    let mut existing = normalized.clone();
-    let mut missing = Vec::new();
-    while !existing.exists() {
-        if let Some(name) = existing.file_name().map(std::ffi::OsString::from) {
-            missing.push(name);
-        }
-        if !existing.pop() {
-            return normalized;
-        }
+    enum OwnedComponent {
+        CurDir,
+        ParentDir,
+        Prefix(std::ffi::OsString),
+        RootDir,
+        Normal(std::ffi::OsString),
     }
-    let mut resolved = existing.canonicalize().unwrap_or(existing);
-    for component in missing.iter().rev() {
-        resolved.push(component);
+
+    fn owned_components(path: &Path) -> VecDeque<OwnedComponent> {
+        path.components()
+            .map(|component| match component {
+                Component::CurDir => OwnedComponent::CurDir,
+                Component::ParentDir => OwnedComponent::ParentDir,
+                Component::Prefix(prefix) => {
+                    OwnedComponent::Prefix(prefix.as_os_str().to_os_string())
+                }
+                Component::RootDir => OwnedComponent::RootDir,
+                Component::Normal(name) => OwnedComponent::Normal(name.to_os_string()),
+            })
+            .collect()
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let fallback = absolute_normalized_path(&absolute);
+    let mut resolved = PathBuf::new();
+    let mut pending = owned_components(&absolute);
+    let mut symlink_hops = 0;
+
+    while let Some(component) = pending.pop_front() {
+        match component {
+            OwnedComponent::CurDir => {}
+            OwnedComponent::ParentDir => {
+                if resolved.components().count() > 1 {
+                    resolved.pop();
+                }
+            }
+            OwnedComponent::Prefix(prefix) => resolved.push(prefix),
+            OwnedComponent::RootDir => resolved.push(std::path::MAIN_SEPARATOR.to_string()),
+            OwnedComponent::Normal(name) => {
+                let candidate = resolved.join(&name);
+                match fs::symlink_metadata(&candidate) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        symlink_hops += 1;
+                        if symlink_hops > 40 {
+                            return fallback;
+                        }
+                        let target = match fs::read_link(&candidate) {
+                            Ok(target) => target,
+                            Err(_) => return fallback,
+                        };
+                        let mut replacement = if target.is_absolute() {
+                            owned_components(&target)
+                        } else {
+                            owned_components(&resolved)
+                        };
+                        if !target.is_absolute() {
+                            replacement.extend(owned_components(&target));
+                        }
+                        replacement.extend(pending);
+                        pending = replacement;
+                        resolved.clear();
+                    }
+                    _ => resolved.push(name),
+                }
+            }
+        }
     }
     resolved
 }

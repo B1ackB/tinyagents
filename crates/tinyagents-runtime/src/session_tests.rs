@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tinyagents_session::transcript::{
     BackgroundAppend, BackgroundAppendOutcome, FileTranscriptLocator, SessionRef,
-    SessionTranscript, TranscriptLocator, TranscriptMessage, TranscriptMeta,
-    append_background_message, read_transcript, resolve_keyed_transcript_path, session_stem,
+    SessionTranscript, TranscriptLocator, TranscriptMessage, TranscriptMeta, read_transcript,
+    resolve_keyed_transcript_path, session_stem,
 };
 use tinyinference_llm::message::Message;
 use tokio::sync::Notify;
@@ -155,16 +155,12 @@ async fn a_running_turn_holds_off_a_background_append_into_its_session() {
     let delivery_started = Arc::new(Notify::new());
     let delivery_started_signal = delivery_started.clone();
     let mut delivery = tokio::spawn(async move {
-        delivery_started_signal.notify_one();
-        // Let the append future be polled before the test observes the
-        // notification; the lock acquisition is the synchronization point
-        // being exercised, not task creation itself.
-        tokio::task::yield_now().await;
-        append_background_message(
+        tinyagents_session::transcript::append_background_message_with_lock_notification(
             &delivery_locator,
             &delivery_session,
             TranscriptMessage::assistant("Time to stretch!"),
             BackgroundAppend::new("run-1", serde_json::json!({"kind": "cron"})),
+            &delivery_started_signal,
         )
         .await
     });

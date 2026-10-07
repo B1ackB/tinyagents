@@ -85,6 +85,81 @@ async fn missing_workspace_below_a_symlink_is_normalized_for_locking() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn dangling_workspace_symlink_is_normalized_for_locking() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("future");
+    let link = dir.path().join("link");
+    symlink(&real, &link).unwrap();
+    let session = SessionRef::scoped("thread-1", "agent");
+
+    let _guard = lock_session_turn(&FileTranscriptLocator::new(&real), &session)
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            lock_session_turn(&FileTranscriptLocator::new(&link), &session),
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn parent_components_are_resolved_after_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(real.join("nested")).unwrap();
+    let link = dir.path().join("link");
+    symlink(real.join("nested"), &link).unwrap();
+    let session = SessionRef::scoped("thread-1", "agent");
+
+    let _guard = lock_session_turn(
+        &FileTranscriptLocator::new(real.join("workspace")),
+        &session,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            lock_session_turn(
+                &FileTranscriptLocator::new(link.join("..").join("workspace")),
+                &session,
+            ),
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn absolute_parent_components_clamp_at_root() {
+    let session = SessionRef::scoped("thread-1", "agent");
+    let _guard = lock_session_turn(
+        &FileTranscriptLocator::new(std::path::Path::new("/../tmp")),
+        &session,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            lock_session_turn(&FileTranscriptLocator::new("/tmp"), &session),
+        )
+        .await
+        .is_err()
+    );
+}
+
 #[tokio::test]
 async fn other_sessions_and_other_workspaces_are_independent() {
     let dir = tempfile::tempdir().unwrap();

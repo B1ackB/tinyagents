@@ -520,11 +520,6 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
             return Err(RuntimeError::Cancelled);
         }
         let cancellation = options.cancellation.clone();
-        // Hold the session lock before any resume preparation or transcript
-        // read. Background appends use the same lock and must not land after
-        // the baseline is read but before this turn acquires it.
-        let _turn_lock =
-            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resume_preparation = cancelable(
             &cancellation,
             self.hooks
@@ -532,6 +527,11 @@ impl<C: Clone + Send + Sync + 'static> Session<C> {
         )
         .await?;
         self.apply_resume_preparation(resume_preparation)?;
+        // Resume preparation may install a lazy target or change the selected
+        // session, so choose the shared locks only after applying it. The lock
+        // still covers the complete resume read and subsequent write.
+        let _turn_lock =
+            cancelable(&cancellation, async { Ok(self.lock_turn(options).await) }).await?;
         let resumed = if options.resume == ResumeMode::Never {
             false
         } else {

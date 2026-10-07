@@ -152,7 +152,7 @@ pub mod view;
 mod writer;
 
 pub use adoption::{SessionAdoption, adopt_legacy_session_transcripts};
-pub use background::append_background_message;
+pub use background::{append_background_message, append_background_message_with_lock_notification};
 pub use history::{
     FileTranscriptHistory, FileTranscriptLocator, TranscriptHistory, TranscriptLocator,
     TranscriptPartial, TranscriptRead, TranscriptTurn, TruncateCut,
