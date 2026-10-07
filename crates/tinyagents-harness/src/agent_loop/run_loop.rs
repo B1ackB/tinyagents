@@ -355,11 +355,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     crate::model_registry::ResolvedModelBinding<State>,
                 )>,
             ));
-            let mut patch_request = ModelRequest::default();
             // A pending steered model switch decides the model this call
             // uses, so the preview (and the tool-change patch shaped by it)
             // must be for that model, not the default.
-            patch_request.model = self.steered_model(ctx);
+            let patch_request = ModelRequest {
+                model: self.steered_model(ctx),
+                ..ModelRequest::default()
+            };
             let patch_profile =
                 if let Some(binding) = self.resolve_host_model(ctx, &patch_request).await? {
                     let profile = binding.model.profile().cloned();
