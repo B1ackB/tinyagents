@@ -160,6 +160,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
+                ..SummaryRequest::default()
             })
             .await;
     }
@@ -173,6 +174,7 @@ pub async fn summarize_with_split(
             .summarize_request(&SummaryRequest {
                 messages: messages.to_vec(),
                 previous_summary,
+                ..SummaryRequest::default()
             })
             .await;
     }
