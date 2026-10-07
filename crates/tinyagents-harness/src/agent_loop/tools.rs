@@ -85,8 +85,8 @@
 //!   exactly one terminal event, [`AgentEvent::ToolFailed`] with
 //!   `"aborted: sibling tool call failed"`, so the started/terminal invariant
 //!   above holds even on this path. Tools that must not observe a sibling's
-//!   failure should be run under a tool-wrap middleware (serial) or a harness
-//!   without parallel-capable turns.
+//!   failure should be run under a `concurrent_safe() == false` tool-wrap
+//!   middleware (serial) or a harness without parallel-capable turns.
 //!
 use super::model_call::ToolCallBase;
 use super::*;
