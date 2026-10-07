@@ -6,7 +6,8 @@
 //! helpers (`remember_fold`, `finish_compaction`, the fingerprint chain).
 
 use super::*;
-use crate::summarization::OverflowInfo;
+use crate::artifacts::{reducible_tool_result_bytes, truncate_tool_results};
+use crate::summarization::{OverflowInfo, detect_response_overflow};
 
 impl ContextCompressionMiddleware {
     /// Compacts `request` once for an overflow and returns the request to
@@ -263,4 +264,115 @@ impl ContextCompressionMiddleware {
         self.forget_pending(ctx.instance_id());
         Some(retried)
     }
+}
+
+impl ContextCompressionMiddleware {
+    /// The request to send for `base`: with its oversized tool results cut when
+    /// a truncation cap is in force. Pure and idempotent, so a retry loop (or
+    /// a later call of the same run) rebuilds the identical request.
+    pub(super) fn outgoing_request(base: &ModelRequest, truncate: Option<usize>) -> ModelRequest {
+        let mut outgoing = base.clone();
+        if let Some(cap) = truncate {
+            truncate_tool_results(&mut outgoing.messages, cap);
+        }
+        outgoing
+    }
+
+    /// Whether a model call's result reports a context overflow: an error the
+    /// classifier recognizes, or a successful response whose usage / stop
+    /// shows the window was exceeded (see [`ResponseOverflowDetection`]).
+    pub(super) fn classify_outcome(
+        &self,
+        result: &Result<MiddlewareModelOutcome>,
+        base: &ModelRequest,
+    ) -> Option<OverflowInfo> {
+        match result {
+            Err(error) => self.overflow_classifier.classify(error),
+            // A replayed cached response says nothing about this request.
+            Ok(MiddlewareModelOutcome::Response(response)) if !response.served_from_cache => {
+                let window = response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.context_window_tokens)
+                    .or(self.policy.context_window);
+                detect_response_overflow(
+                    self.response_overflow,
+                    response.usage.as_ref(),
+                    response.finish_reason.as_deref(),
+                    window,
+                    base.max_tokens,
+                )
+            }
+            Ok(_) => None,
+        }
+    }
+
+    /// The cheapest route for an overflow `overflow` reported against `base`.
+    /// Without a truncation cap (or once truncation is already in force) the
+    /// only remedy is compaction. The provider's word that the request did not
+    /// fit outranks our estimate, so a "fits" verdict still compacts.
+    pub(super) fn overflow_route(
+        &self,
+        base: &ModelRequest,
+        already_truncated: bool,
+        overflow: &OverflowInfo,
+    ) -> CompactionRoute {
+        let Some(cap) = self.tool_result_truncation.filter(|_| !already_truncated) else {
+            return CompactionRoute::Compact;
+        };
+        let prompt = overflow.requested.unwrap_or_else(|| {
+            total_message_tokens(&base.messages) + schema_tokens(&base.tools)
+        });
+        let budget = overflow
+            .limit
+            .unwrap_or_else(|| self.policy.trigger_budget());
+        let reducible = tokens_for_bytes(reducible_tool_result_bytes(&base.messages, cap));
+        match CompactionPressure::route(prompt, budget, reducible) {
+            CompactionRoute::Fits => CompactionRoute::Compact,
+            route => route,
+        }
+    }
+
+    /// Cuts `base`'s oversized tool results to `cap` bytes when that removes
+    /// anything, announcing it with [`AgentEvent::Compressed`] and switching
+    /// the run into truncating mode (so its later requests stay cut). Returns
+    /// whether anything was cut.
+    pub(super) fn announce_truncation<Ctx: Send + Sync>(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        base: &ModelRequest,
+        cap: usize,
+    ) -> bool {
+        let truncated = Self::outgoing_request(base, Some(cap));
+        let from_tokens = total_message_tokens(&base.messages);
+        let to_tokens = total_message_tokens(&truncated.messages);
+        if to_tokens >= from_tokens {
+            return false;
+        }
+        self.engage_truncation(ctx.instance_id());
+        tracing::info!(
+            from_tokens,
+            to_tokens,
+            cap,
+            "[context_compression] truncated oversized tool results in the request"
+        );
+        ctx.emit(AgentEvent::Compressed {
+            from_tokens,
+            to_tokens,
+        });
+        true
+    }
+
+    /// Marks `run` as truncating. Only a run `before_model` already tracks is
+    /// marked: a run seen only here has no later `before_model` to apply it.
+    pub(super) fn engage_truncation(&self, run: u64) {
+        if let Some(state) = self.runs.lock().expect("runs mutex poisoned").get_mut(&run) {
+            state.truncating = true;
+        }
+    }
+}
+
+/// Tokens the estimator charges for `bytes` of text.
+pub(super) fn tokens_for_bytes(bytes: usize) -> u64 {
+    (bytes as f64 / crate::token_estimation::DEFAULT_CHARS_PER_TOKEN) as u64
 }

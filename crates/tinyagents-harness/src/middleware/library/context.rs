@@ -4,17 +4,19 @@
 //! Split out of `middleware/mod.rs`; see that module's doc comment for the
 //! full middleware pipeline overview.
 
+use super::compaction_pressure::CompactionRoute;
 use super::*;
 use crate::cache::{CacheLayoutEvent, PromptCacheLayout};
 use crate::middleware::AgentRun;
+use crate::middleware::types::CompactionPressure;
 use crate::middleware::{
     CompressionFailurePolicy, ContextCompressionMiddleware, DEFAULT_CACHE_GUARD_EVENT_CAP,
-    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_THRASH_COOLDOWN_CALLS, DEFAULT_THRASH_STRIKES,
+    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_MAX_OVERFLOW_ATTEMPTS, DEFAULT_THRASH_COOLDOWN_CALLS, DEFAULT_THRASH_STRIKES,
     MessageTrimMiddleware, MicrocompactMiddleware, PromptCacheGuardMiddleware,
 };
 use crate::summarization::{
     CompactionContext, CompactionDecision, CompactionReason, CompactionRecord, ConcatSummarizer,
-    OverflowClassifier, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,
+    OverflowClassifier, ResponseOverflowDetection, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,
     TrimStrategy, checkpoint_body, checkpoint_message, find_cut_point, is_checkpoint,
     summarize_with_split, trim_messages,
 };
@@ -89,7 +91,45 @@ impl ContextCompressionMiddleware {
             thrash_strikes: DEFAULT_THRASH_STRIKES,
             thrash_cooldown_calls: DEFAULT_THRASH_COOLDOWN_CALLS,
             keep_recent_tokens: None,
+            max_overflow_attempts: DEFAULT_MAX_OVERFLOW_ATTEMPTS,
+            response_overflow: ResponseOverflowDetection::default(),
+            tool_result_truncation: None,
         }
+    }
+
+    /// Sets how many compaction (or truncation) attempts one model call may
+    /// make after the provider reports a context overflow. Each attempt must
+    /// shrink the request or recovery stops. Defaults to
+    /// [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`]; `0` disables overflow recovery.
+    pub fn with_max_overflow_attempts(mut self, attempts: u32) -> Self {
+        self.max_overflow_attempts = attempts;
+        self
+    }
+
+    /// Chooses which *successful-response* signals count as an overflow, in
+    /// addition to the errors [`OverflowClassifier`] recognizes. Defaults to
+    /// [`ResponseOverflowDetection::Usage`]: usage above the window, and a
+    /// zero-output `length` stop with the window full. Both need a known
+    /// context window ([`SummarizationPolicy::context_window`], or the
+    /// response's own `usage.context_window_tokens`).
+    pub fn with_response_overflow_detection(mut self, detection: ResponseOverflowDetection) -> Self {
+        self.response_overflow = detection;
+        self
+    }
+
+    /// Enables the cheap overflow route: when a request is over budget (before
+    /// the call, or after the provider reports an overflow) and cutting every
+    /// tool result longer than `max_bytes` would cover the overflow with
+    /// margin, the results are cut and no summary is bought. When cutting
+    /// would only partly cover it, compaction runs first and the cut follows.
+    ///
+    /// Opt-in: unset (the default) never truncates. The cut rewrites only the
+    /// outgoing request; the transcript keeps the full results, and a run that
+    /// has truncated once keeps truncating, so its prompt prefix stays
+    /// byte-stable. Results flagged `trusted_verbatim` are never cut.
+    pub fn with_tool_result_truncation(mut self, max_bytes: usize) -> Self {
+        self.tool_result_truncation = Some(max_bytes).filter(|bytes| *bytes > 0);
+        self
     }
 
     /// Keeps the most recent `tokens` of history verbatim at each compaction
@@ -255,6 +295,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         .pressure
         .begin_call();
         let result = self.compress_request(ctx, request, suppressed).await;
+        self.apply_run_truncation(ctx, request);
         // Whatever the outcome, this is the request whose provider usage the
         // next `after_model` attributes.
         let schema_tokens = schema_tokens(&request.tools);
@@ -616,6 +657,8 @@ impl ContextCompressionMiddleware {
         Ok(())
     }
 }
+
+mod overflow;
 
 #[async_trait]
 impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
