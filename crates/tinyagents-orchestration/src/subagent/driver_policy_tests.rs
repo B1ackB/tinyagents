@@ -43,7 +43,7 @@ struct Executor {
     attempts: AtomicU32,
     seen_tools: Mutex<Vec<Vec<String>>>,
     seen_caps: Mutex<Vec<(Option<usize>, Option<usize>)>>,
-    cancelled_by_driver: Arc<Mutex<bool>>,
+    child_tokens: Mutex<Vec<CancellationToken>>,
     hang: bool,
     behaviour: Behaviour,
 }
@@ -54,7 +54,7 @@ impl Executor {
             attempts: AtomicU32::new(0),
             seen_tools: Mutex::default(),
             seen_caps: Mutex::default(),
-            cancelled_by_driver: Arc::default(),
+            child_tokens: Mutex::default(),
             hang: false,
             behaviour,
         })
@@ -89,10 +89,12 @@ impl SubagentExecutor<String> for Executor {
             .lock()
             .unwrap()
             .push((config.max_model_calls, config.max_tool_calls));
+        self.child_tokens
+            .lock()
+            .unwrap()
+            .push(execution.cancellation.clone());
         if self.hang {
-            execution.cancellation.cancelled().await;
-            *self.cancelled_by_driver.lock().unwrap() = true;
-            return Err(SubagentError::Cancelled);
+            std::future::pending::<()>().await;
         }
         (self.behaviour)(attempt, &execution)
     }
@@ -217,7 +219,10 @@ async fn timeout_cancels_the_child_and_ends_incomplete_without_cancelling_the_li
         SubagentStatus::Incomplete(ref inc) => assert_eq!(inc.kind, IncompleteKind::Timeout),
         ref other => panic!("expected typed timeout, got {other:?}"),
     }
-    assert!(*executor.cancelled_by_driver.lock().unwrap(), "child was cancelled");
+    assert!(
+        executor.child_tokens.lock().unwrap()[0].is_cancelled(),
+        "the child was cancelled"
+    );
     assert!(!lifecycle.is_cancelled(), "the caller's token is untouched");
     assert_eq!(executor.attempts.load(Ordering::SeqCst), 1, "timeouts are not retried");
 }
