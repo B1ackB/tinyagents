@@ -1558,7 +1558,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     return Ok(LoopExit::Finished);
                 }
 
-                if matches!(self.policy.end_strategy, EndStrategy::Graceful) {
+                // A real call that a length stop cut off was answered with a
+                // "re-issue it" error, so finishing now would silently drop
+                // the action the model asked for. Such a turn takes the
+                // `Exhaustive` path below (answer not recorded, tools run,
+                // another turn) whatever the strategy; `Early` still wins
+                // outright because it discards the real calls by contract.
+                if matches!(self.policy.end_strategy, EndStrategy::Graceful)
+                    && !turn_had_truncated_calls
+                {
                     // Record the answer now (it will not be asked for again),
                     // but let the requested tools actually run before ending
                     // the run — their side effects and results are not
@@ -1623,13 +1631,20 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 // exactly as if only the real tool calls had been requested.
                 // It only finishes once a later turn's output-tool call has
                 // no accompanying function-tool calls.
-                debug_assert!(matches!(self.policy.end_strategy, EndStrategy::Exhaustive));
+                debug_assert!(
+                    matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
+                        || turn_had_truncated_calls
+                );
+                let not_final_note = if matches!(self.policy.end_strategy, EndStrategy::Exhaustive)
+                {
+                    "Structured output noted but not final yet; finish the remaining tool \
+                     calls first (EndStrategy::Exhaustive)."
+                } else {
+                    "Structured output noted but not final yet; a tool call in this turn was \
+                     cut off by the output token limit, so re-issue it and answer again."
+                };
                 for call in &structured_hits {
-                    messages.push(Message::tool(
-                        call.id.clone(),
-                        "Structured output noted but not final yet; finish the remaining tool \
-                         calls first (EndStrategy::Exhaustive).",
-                    ));
+                    messages.push(Message::tool(call.id.clone(), not_final_note));
                 }
 
                 // A mixed turn (structured payload alongside real tool calls)

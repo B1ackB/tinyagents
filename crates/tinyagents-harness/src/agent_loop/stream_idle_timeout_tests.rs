@@ -20,7 +20,7 @@ use crate::runtime::{AgentHarness, RunPolicy};
 use crate::testkit::{ScriptedModel, SlowModel};
 use tinyinference_llm::message::{Message, MessageDelta};
 use tinyinference_llm::model::{
-    ChatModel, ModelRequest, ModelResponse, ModelStream, ModelStreamItem,
+    BlockDelta, ChatModel, ModelRequest, ModelResponse, ModelStream, ModelStreamItem,
 };
 use tinyinference_llm::usage::Usage;
 
@@ -69,6 +69,9 @@ fn completed(text: &str) -> Step {
 struct ScriptedStreams {
     scripts: Mutex<VecDeque<Vec<Step>>>,
     calls: Mutex<usize>,
+    /// When set, `stream(...)` itself never resolves (a provider that hangs
+    /// while the stream is being opened).
+    hang_on_open: bool,
 }
 
 impl ScriptedStreams {
@@ -76,6 +79,16 @@ impl ScriptedStreams {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
             calls: Mutex::new(0),
+            hang_on_open: false,
+        })
+    }
+
+    /// A model whose `stream(...)` call never returns.
+    fn hanging_open() -> Arc<Self> {
+        Arc::new(Self {
+            scripts: Mutex::new(VecDeque::new()),
+            calls: Mutex::new(0),
+            hang_on_open: true,
         })
     }
 
@@ -100,6 +113,9 @@ impl<State: Send + Sync> ChatModel<State> for ScriptedStreams {
         _request: ModelRequest,
     ) -> tinyinference_llm::Result<ModelStream> {
         *self.calls.lock().unwrap() += 1;
+        if self.hang_on_open {
+            futures::future::pending::<()>().await;
+        }
         let script = {
             let mut scripts = self.scripts.lock().unwrap();
             if scripts.len() > 1 {
@@ -753,4 +769,246 @@ async fn non_streaming_calls_ignore_the_idle_timeout() {
         .await
         .expect("the idle timeout must not apply to non-streaming calls");
     assert_eq!(run.text().as_deref(), Some("done"));
+}
+
+// ── progress accounting ──────────────────────────────────────────────────────
+
+/// Chunks of a tool call a model writes as text (DeepSeek DSML). The streaming
+/// scrubber consumes every one of them, so none reaches a consumer, but each is
+/// real model output that proves the provider is alive.
+const DSML_CHUNKS: [&str; 6] = [
+    "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"shell\">\n",
+    "<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /app && ",
+    "grep -rn jsonpath pkg/ ",
+    "&& cat pkg/jsonpath/mod.rs ",
+    "</｜｜DSML｜｜ parameter>\n",
+    "</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+];
+
+/// `chunks` streamed 800ms apart, then the terminal response.
+fn slow_chunks(prefix: Vec<Step>, chunks: &[&str]) -> Vec<Step> {
+    let mut script = prefix;
+    for chunk in chunks {
+        script.push(Step::Sleep(Duration::from_millis(800)));
+        script.push(delta(chunk));
+    }
+    script.push(completed(&chunks.concat()));
+    script
+}
+
+#[tokio::test(start_paused = true)]
+async fn scrubbed_tool_call_text_keeps_the_idle_deadline_alive() {
+    // Visible text arms the 1s idle window; the 4.8s of tool-call writing that
+    // follows is entirely consumed by the scrubber, yet no gap exceeds 800ms.
+    let model = ScriptedStreams::new(vec![slow_chunks(
+        vec![started(), delta("Let me look. ")],
+        &DSML_CHUNKS,
+    )]);
+    let harness = harness_with(model.clone(), idle_1s().with_max_model_calls(1), 1);
+
+    let run = run(&harness, RunConfig::new("scrubbed-idle"))
+        .await
+        .expect("a model still writing a tool call as text is not idle");
+
+    assert_eq!(model.calls(), 1);
+    assert!(!run.text().unwrap_or_default().contains("DSML"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn scrubbed_tool_call_text_satisfies_the_first_event_window() {
+    // The very first output is a tool call written as text: no chunk survives
+    // scrubbing, but the 1s first-event window must still be satisfied.
+    let model = ScriptedStreams::new(vec![slow_chunks(vec![started()], &DSML_CHUNKS)]);
+    let harness = harness_with(
+        model.clone(),
+        idle_1s()
+            .with_stream_first_event_timeout_ms(Some(1_000))
+            .with_max_model_calls(1),
+        1,
+    );
+
+    run(&harness, RunConfig::new("scrubbed-first"))
+        .await
+        .expect("scrubbed tool-call text is output for the first-event window");
+    assert_eq!(model.calls(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn scrubbed_tool_call_text_resets_the_breaker() {
+    // Threshold 2. Attempt 1 is silent (count 1). Attempt 2 writes a tool call
+    // as text (fully scrubbed) before going silent: that output resets the
+    // count to 0, so attempt 3's silence only makes it 1 and attempt 4's
+    // makes it 2. Without the reset it would trip on attempt 2.
+    let model = ScriptedStreams::new(vec![
+        vec![Step::Hang],
+        vec![started(), delta(DSML_CHUNKS[0]), Step::Hang],
+        vec![Step::Hang],
+    ]);
+    let harness = harness_with(
+        model.clone(),
+        idle_1s()
+            .with_max_consecutive_stream_idle_timeouts(Some(2))
+            .with_stream_first_event_timeout_ms(Some(1_000))
+            .with_max_retries_per_call(10),
+        10,
+    );
+
+    let err = run(&harness, RunConfig::new("scrubbed-reset"))
+        .await
+        .expect_err("the breaker must eventually trip");
+
+    assert!(matches!(err, TinyAgentsError::LimitExceeded(_)), "{err:?}");
+    assert_eq!(model.calls(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn empty_deltas_do_not_extend_the_idle_deadline() {
+    // After the first token the provider sends only empty deltas, 900ms apart.
+    let mut script = vec![started(), delta("tok")];
+    for _ in 0..5 {
+        script.push(Step::Sleep(Duration::from_millis(900)));
+        script.push(delta(""));
+    }
+    script.push(Step::Hang);
+    let model = ScriptedStreams::new(vec![script]);
+    let harness = harness_with(model.clone(), idle_1s(), 1);
+
+    let began = Instant::now();
+    let err = run(&harness, RunConfig::new("empty-trickle"))
+        .await
+        .expect_err("empty deltas must not keep a stalled stream alive");
+
+    assert!(matches!(err, TinyAgentsError::CallTimeout(_)), "{err:?}");
+    assert_eq!(began.elapsed(), SECOND);
+}
+
+#[tokio::test(start_paused = true)]
+async fn block_deltas_rearm_the_idle_deadline_but_empty_ones_do_not() {
+    let block = |text: &str| {
+        Step::Item(Box::new(ModelStreamItem::BlockDelta {
+            index: 0,
+            delta: BlockDelta::Text(text.to_string()),
+        }))
+    };
+    // Non-empty block deltas 800ms apart keep a 1s window alive...
+    let mut alive = vec![started()];
+    for _ in 0..5 {
+        alive.push(Step::Sleep(Duration::from_millis(800)));
+        alive.push(block("x"));
+    }
+    alive.push(completed("xxxxx"));
+    let model = ScriptedStreams::new(vec![alive]);
+    let harness = harness_with(
+        model.clone(),
+        idle_1s().with_stream_first_event_timeout_ms(Some(1_000)),
+        1,
+    );
+    run(&harness, RunConfig::new("block-alive"))
+        .await
+        .expect("non-empty block deltas are progress");
+
+    // ...while empty ones do not.
+    let mut stalled = vec![started(), block("x")];
+    for _ in 0..5 {
+        stalled.push(Step::Sleep(Duration::from_millis(800)));
+        stalled.push(block(""));
+    }
+    stalled.push(Step::Hang);
+    let model = ScriptedStreams::new(vec![stalled]);
+    let harness = harness_with(model.clone(), idle_1s(), 1);
+    let err = run(&harness, RunConfig::new("block-empty"))
+        .await
+        .expect_err("empty block deltas are not progress");
+    assert!(matches!(err, TinyAgentsError::CallTimeout(_)), "{err:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn first_event_window_bounds_a_stream_that_hangs_while_opening() {
+    let model = ScriptedStreams::hanging_open();
+    let harness = harness_with(
+        model.clone(),
+        RunLimits::default().with_stream_first_event_timeout_ms(Some(3_000)),
+        1,
+    );
+
+    let began = Instant::now();
+    let err = run(&harness, RunConfig::new("hang-on-open"))
+        .await
+        .expect_err("a stream that never opens must hit the first-event window");
+
+    match &err {
+        TinyAgentsError::CallTimeout(message) => {
+            assert!(message.contains("first output event"), "{message}");
+            assert!(message.contains("3000 ms"), "{message}");
+        }
+        other => panic!("expected CallTimeout, got {other:?}"),
+    }
+    assert_eq!(model.calls(), 1);
+    assert_eq!(began.elapsed(), 3 * SECOND);
+}
+
+/// Blanks every delta's text and reasoning (a redaction policy), and gives an
+/// empty delta some text of its own (a middleware that injects content).
+struct BlankOrInject;
+
+#[async_trait]
+impl crate::middleware::Middleware<(), ()> for BlankOrInject {
+    fn name(&self) -> &str {
+        "blank-or-inject"
+    }
+
+    async fn on_model_delta(
+        &self,
+        _ctx: &mut RunContext<()>,
+        _state: &(),
+        delta: &mut tinyinference_llm::model::ModelDelta,
+    ) -> crate::error::Result<()> {
+        if delta.content.is_empty() && delta.reasoning.is_empty() {
+            delta.content = "injected".to_string();
+        } else {
+            delta.content.clear();
+            delta.reasoning.clear();
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn redacted_provider_output_still_counts_as_progress() {
+    // The provider keeps sending real text 800ms apart; the middleware blanks
+    // all of it, so no consumer sees anything, but the provider is not idle.
+    let model = ScriptedStreams::new(vec![slow_chunks(vec![started()], &["a", "b", "c", "d"])]);
+    let mut harness = harness_with(
+        model.clone(),
+        idle_1s().with_stream_first_event_timeout_ms(Some(1_000)),
+        1,
+    );
+    harness.push_middleware(Arc::new(BlankOrInject));
+
+    run(&harness, RunConfig::new("redacted-progress"))
+        .await
+        .expect("a provider streaming redacted text is not idle");
+    assert_eq!(model.calls(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn text_injected_by_middleware_into_an_empty_delta_is_not_progress() {
+    // Empty provider deltas arrive 900ms apart; the middleware turns each into
+    // visible text, which is the middleware's output, not the provider's.
+    let mut script = vec![started(), delta("tok")];
+    for _ in 0..5 {
+        script.push(Step::Sleep(Duration::from_millis(900)));
+        script.push(delta(""));
+    }
+    script.push(Step::Hang);
+    let model = ScriptedStreams::new(vec![script]);
+    let mut harness = harness_with(model.clone(), idle_1s(), 1);
+    harness.push_middleware(Arc::new(BlankOrInject));
+
+    let began = Instant::now();
+    let err = run(&harness, RunConfig::new("injected-progress"))
+        .await
+        .expect_err("injected text must not keep a stalled stream alive");
+    assert!(matches!(err, TinyAgentsError::CallTimeout(_)), "{err:?}");
+    assert_eq!(began.elapsed(), SECOND);
 }
