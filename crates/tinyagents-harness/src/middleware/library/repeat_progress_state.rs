@@ -15,7 +15,9 @@ const MAX_DEFERRED_NOTES: usize = 4;
 
 /// Extract the assistant's visible text (concatenated [`ContentBlock::Text`]
 /// blocks) from a model response message, for the repeat-output signature.
-pub(super) fn assistant_visible_text(message: &tinyinference_llm::message::AssistantMessage) -> String {
+pub(super) fn assistant_visible_text(
+    message: &tinyinference_llm::message::AssistantMessage,
+) -> String {
     let mut out = String::new();
     for block in &message.content {
         if let ContentBlock::Text(t) = block {
@@ -86,7 +88,11 @@ impl RepeatState {
 impl RepeatState {
     /// Runs `f` on the run's monitor, creating it on first use. `None` only if
     /// the lock is poisoned, in which case the guard stays out of the way.
-    pub(super) fn with_monitor<R>(&self, run_id: u64, f: impl FnOnce(&RepeatMonitor) -> R) -> Option<R> {
+    pub(super) fn with_monitor<R>(
+        &self,
+        run_id: u64,
+        f: impl FnOnce(&RepeatMonitor) -> R,
+    ) -> Option<R> {
         let mut monitors = self.monitors.lock().ok()?;
         let monitor = monitors
             .entry(run_id)
@@ -183,7 +189,7 @@ pub(super) fn tag_result(result: &mut TaToolResult, marker: &str) {
 
 /// Appends a warning to the result the model is about to read, in the plain
 /// blocks and in the markdown rendering.
-pub(super) fn append_notes(result: &mut TaToolResult, note: &str) {
+pub(super) fn append_note(result: &mut TaToolResult, note: &str) {
     let mut chars = note.chars();
     let Some(first) = chars.next() else {
         return;
@@ -217,4 +223,3 @@ pub(super) fn visible_tool_results(
         })
         .collect()
 }
-

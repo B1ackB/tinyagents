@@ -3,7 +3,7 @@
 //! make no progress (#4088 / #4095), including loops whose repeats are not
 //! back to back (#6275).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -12,8 +12,8 @@ use crate::context::RunContext;
 use crate::error::{Result as TaResult, TinyAgentsError};
 use crate::middleware::{Middleware, ToolInvocationIdentity};
 use crate::no_progress::{
-    CallGate, OutcomeFingerprinter, RepeatMonitor, RepeatProgressConfig, SuccessfulRepeat,
-    VolatileSpanNormalizer, fingerprint_arguments,
+    CallGate, OutcomeFingerprinter, RepeatProgressConfig, SuccessfulRepeat, VolatileSpanNormalizer,
+    fingerprint_arguments,
 };
 use crate::steering::{SteeringCommand, SteeringHandle};
 use tinyinference_llm::model::{ModelRequest, ModelResponse};
@@ -21,7 +21,7 @@ use tinyinference_llm::tool::ToolCall;
 use tinytools::ToolResult as TaToolResult;
 
 use super::repeat_progress_state::{
-    PendingCallBatch, REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, RepeatState, append_notes,
+    PendingCallBatch, REPEAT_GUARD_BLOCKED, REPEAT_GUARD_HALTED, RepeatState, append_note,
     assistant_visible_text, tag_result, visible_tool_results,
 };
 use super::wrap_up::DEFAULT_CLEARED_PLACEHOLDER;
@@ -417,11 +417,9 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
         // The per-call recurrence note is the more specific one: when it fires,
         // the batch streak that coincides with it adds nothing.
         let mut candidates = Vec::new();
-        if let SuccessfulRepeat::Warn(note) | SuccessfulRepeat::Halt(note) = &recurrence
-            && matches!(recurrence, SuccessfulRepeat::Warn(_))
+        if let (SuccessfulRepeat::Warn(note), _) | (_, SuccessfulRepeat::Warn(note)) =
+            (&recurrence, &batch_verdict)
         {
-            candidates.push(note.clone());
-        } else if let SuccessfulRepeat::Warn(note) = &batch_verdict {
             candidates.push(note.clone());
         }
         candidates.extend(notes);
@@ -433,7 +431,7 @@ impl<C: Send + Sync> Middleware<(), C> for RepeatProgressMiddleware {
                     tool = tool_name,
                     "[tinyagents::mw] repeat-progress appended a warning to the tool result"
                 );
-                append_notes(result, &note);
+                append_note(result, &note);
             }
         }
         if already_halted {
