@@ -14,8 +14,10 @@
 //!   `{ "ns": <namespace>, "key": <key>, "value": <value> }`, so a namespace
 //!   or key may hold any characters and `list` is an indexed query on `ns`.
 //! - [`DriverAppendStore`] maps each harness stream to a driver stream of the
-//!   same name, optionally prefixed. Offsets are the driver's dense offsets,
-//!   which already match the [`AppendStore`] contract.
+//!   same name, or with a prefix to `<len>:<prefix><stream>`; the length
+//!   keeps two prefixes from ever addressing one stream. Offsets are the
+//!   driver's dense offsets, which already match the [`AppendStore`]
+//!   contract.
 
 use std::sync::Arc;
 
@@ -160,8 +162,9 @@ impl DriverAppendStore {
         Self::with_prefix(streams, "")
     }
 
-    /// Map each harness stream to `<prefix><stream>`, so several independent
-    /// append stores can share one backend.
+    /// Map each harness stream to `<len>:<prefix><stream>`, so several
+    /// independent append stores can share one backend. The prefix length is
+    /// part of the name, so `("a", "bc")` and `("ab", "c")` stay apart.
     pub fn with_prefix(streams: Arc<dyn StreamStore>, prefix: impl Into<String>) -> Self {
         Self {
             streams,
@@ -170,7 +173,11 @@ impl DriverAppendStore {
     }
 
     fn name(&self, stream: &str) -> String {
-        format!("{}{stream}", self.prefix)
+        if self.prefix.is_empty() {
+            stream.to_owned()
+        } else {
+            format!("{}:{}{stream}", self.prefix.len(), self.prefix)
+        }
     }
 }
 
