@@ -1,7 +1,12 @@
 use super::*;
 use tinyinference_llm::model::ProviderError;
 
-fn provider(status: Option<u16>, code: Option<&str>, message: &str, retryable: bool) -> TinyAgentsError {
+fn provider(
+    status: Option<u16>,
+    code: Option<&str>,
+    message: &str,
+    retryable: bool,
+) -> TinyAgentsError {
     TinyAgentsError::Provider(Box::new(ProviderError {
         provider: "test".into(),
         model: None,
@@ -28,7 +33,11 @@ fn classifies_http_statuses_on_provider_errors() {
         (401, "unauthorized", FailoverReason::Auth),
         (403, "forbidden", FailoverReason::Auth),
         (402, "payment required", FailoverReason::Billing),
-        (404, "model `gpt-x` does not exist", FailoverReason::ModelNotFound),
+        (
+            404,
+            "model `gpt-x` does not exist",
+            FailoverReason::ModelNotFound,
+        ),
         (408, "request timeout", FailoverReason::Timeout),
         (429, "too many requests", FailoverReason::RateLimit),
         (503, "service unavailable", FailoverReason::Overloaded),
@@ -48,7 +57,12 @@ fn classifies_http_statuses_on_provider_errors() {
 fn business_rate_limits_and_exhausted_quota_are_billing_not_rate_limit() {
     let quota = provider(Some(429), None, "You exceeded your current quota", false);
     assert_eq!(reason_of(&quota), FailoverReason::Billing);
-    let credits = provider(Some(400), None, "Insufficient credits on this account", false);
+    let credits = provider(
+        Some(400),
+        None,
+        "Insufficient credits on this account",
+        false,
+    );
     assert_eq!(reason_of(&credits), FailoverReason::Billing);
 }
 
@@ -61,7 +75,11 @@ fn revoked_or_deactivated_keys_are_permanent_auth() {
         "organization suspended",
     ] {
         let error = provider(Some(401), None, message, false);
-        assert_eq!(reason_of(&error), FailoverReason::AuthPermanent, "{message}");
+        assert_eq!(
+            reason_of(&error),
+            FailoverReason::AuthPermanent,
+            "{message}"
+        );
     }
     let plain = provider(Some(401), None, "invalid api key", false);
     assert_eq!(reason_of(&plain), FailoverReason::Auth);
@@ -141,9 +159,19 @@ fn classifies_dedicated_error_variants() {
 fn model_specific_format_errors_are_recognised() {
     let tools = provider(Some(400), None, "model does not support tools", false);
     assert!(is_model_specific_format(&tools));
-    let vision = provider(Some(400), None, "This model does not support image input", false);
+    let vision = provider(
+        Some(400),
+        None,
+        "This model does not support image input",
+        false,
+    );
     assert!(is_model_specific_format(&vision));
-    let param = provider(Some(400), None, "Unsupported parameter: 'temperature'", false);
+    let param = provider(
+        Some(400),
+        None,
+        "Unsupported parameter: 'temperature'",
+        false,
+    );
     assert!(is_model_specific_format(&param));
     let malformed = provider(Some(400), None, "messages: field required", false);
     assert!(!is_model_specific_format(&malformed));
@@ -224,7 +252,10 @@ fn format_errors_surface_unless_the_failure_is_model_specific() {
 fn context_overflow_always_surfaces() {
     for model_specific in [false, true] {
         assert_eq!(
-            decide(FailoverReason::ContextOverflow, state(true, true, model_specific)),
+            decide(
+                FailoverReason::ContextOverflow,
+                state(true, true, model_specific)
+            ),
             FailoverDecision::Surface
         );
     }
