@@ -78,7 +78,7 @@ async fn artifact_overflow_stores_the_full_text_and_returns_a_preview() {
         .with_artifact_store(store.clone());
     let applied = policy.apply("task-1", "0123456789", None).await;
     assert_eq!(applied.artifact.as_ref().unwrap().id, "artifact-1");
-    assert!(applied.text.contains("omitted"));
+    assert!(applied.omitted_chars > 0 && applied.text.chars().count() <= 6);
     assert_eq!(
         store.0.lock().unwrap()[0],
         ("task-1".to_owned(), "0123456789".to_owned()),
@@ -105,7 +105,7 @@ async fn artifact_without_a_store_falls_back_to_truncation_and_says_so() {
         .with_overflow(ResultOverflow::Artifact);
     let applied = policy.apply("t", "0123456789", None).await;
     assert!(applied.artifact.is_none());
-    assert!(applied.text.contains("omitted"));
+    assert!(applied.omitted_chars > 0 && applied.text.chars().count() <= 4);
     assert!(
         applied
             .artifact_error
