@@ -1643,6 +1643,12 @@ impl PromptCacheGuardMiddleware {
             .lock()
             .expect("thread epochs mutex poisoned");
         if ctx.prompt_prefix_epoch() != 0 {
+            const MAX_THREAD_EPOCHS: usize = 256;
+            if !epochs.contains_key(thread) && epochs.len() >= MAX_THREAD_EPOCHS {
+                if let Some(evicted) = epochs.keys().next().cloned() {
+                    epochs.remove(&evicted);
+                }
+            }
             epochs.insert(thread.clone(), ctx.prompt_prefix_epoch());
         }
         epochs.get(thread).copied().unwrap_or(0)

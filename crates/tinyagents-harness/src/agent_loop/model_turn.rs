@@ -93,16 +93,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         status.active_model_call = None;
         // Responses a wrap middleware discarded and re-requested were billed
         // too: account them before the call that replaced them.
-        self.account_discarded_usage(
-            ctx,
-            run,
-            status,
-            call_id,
-            model_name,
-            model_started_at_ms,
-            host_budget,
-        )
-        .await?;
+        let discarded_error = self
+            .account_discarded_usage(
+                ctx,
+                run,
+                status,
+                call_id,
+                model_name,
+                model_started_at_ms,
+                host_budget,
+            )
+            .await
+            .err();
         // A cache replay consumed no provider tokens, so folding its usage
         // into the run's totals reports spend that never happened. The
         // saving is surfaced through the cache-hit event instead of being
@@ -135,8 +137,11 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     error: error.to_string(),
                 });
                 status.set_last_event(record.id);
-                return Err(error);
+                return Err(discarded_error.unwrap_or(error));
             }
+        }
+        if let Some(error) = discarded_error {
+            return Err(error);
         }
         Ok(())
     }
@@ -152,6 +157,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         model_started_at_ms: u64,
         host_budget: &Option<(Arc<dyn crate::host::BudgetGate>, crate::host::Permit)>,
     ) -> Result<()> {
+        let mut first_error = None;
         for usage in ctx.take_discarded_usage() {
             run.usage.record(usage);
             status.usage = run.usage;
@@ -168,9 +174,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     error: error.to_string(),
                 });
                 status.set_last_event(record.id);
-                return Err(error);
+                first_error.get_or_insert(error);
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
