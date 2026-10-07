@@ -128,13 +128,17 @@ pub struct FileOperations {
     modified_omitted: usize,
 }
 
-fn touch(list: &mut Vec<String>, path: &str) {
-    let path = sanitize_path(path);
+/// Moves an already-encoded `path` to the end of `list`.
+fn touch_encoded(list: &mut Vec<String>, path: &str) {
     if path.is_empty() {
         return;
     }
-    list.retain(|existing| *existing != path);
-    list.push(path);
+    list.retain(|existing| existing != path);
+    list.push(path.to_string());
+}
+
+fn touch(list: &mut Vec<String>, path: &str) {
+    touch_encoded(list, &sanitize_path(path));
 }
 
 impl FileOperations {
@@ -150,11 +154,13 @@ impl FileOperations {
 
     /// Unions `other` into `self`; `other`'s files count as more recent.
     pub fn merge(&mut self, other: &FileOperations) {
+        // `other`'s paths are already encoded; encoding them again would
+        // change them on every merge.
         for path in &other.read {
-            self.add_read(path);
+            touch_encoded(&mut self.read, path);
         }
         for path in &other.modified {
-            self.add_modified(path);
+            touch_encoded(&mut self.modified, path);
         }
         self.read_omitted = self.read_omitted.saturating_add(other.read_omitted);
         self.modified_omitted = self.modified_omitted.saturating_add(other.modified_omitted);
@@ -318,8 +324,9 @@ pub fn split_file_sections(text: &str) -> (String, FileOperations) {
             match (omitted, is_modified) {
                 (Some(n), true) => ops.modified_omitted = ops.modified_omitted.saturating_add(n),
                 (Some(n), false) => ops.read_omitted = ops.read_omitted.saturating_add(n),
-                (None, true) => ops.add_modified(line),
-                (None, false) => ops.add_read(line),
+                // The listed lines are already encoded.
+                (None, true) => touch_encoded(&mut ops.modified, line),
+                (None, false) => touch_encoded(&mut ops.read, line),
             }
         }
         body = prose;

@@ -278,7 +278,11 @@ fn escaped_paths_survive_repeated_compactions_unchanged() {
     ops.add_modified("a<b&c");
     let first = append_file_sections("s", &ops);
     let (body, parsed) = split_file_sections(&first);
-    assert_eq!(parsed.modified(), ops.modified(), "parsing keeps the encoding");
+    assert_eq!(
+        parsed.modified(),
+        ops.modified(),
+        "parsing keeps the encoding"
+    );
     let second = append_file_sections(&body, &parsed);
     assert_eq!(first, second, "a second round trip changes nothing");
     let mut merged = FileOperations::default();
