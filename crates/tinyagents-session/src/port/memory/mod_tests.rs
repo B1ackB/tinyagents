@@ -55,6 +55,21 @@ fn an_agent_gets_the_same_stores_every_time() {
 }
 
 #[test]
+fn clearing_in_memory_history_preserves_display_partials() {
+    let history = InMemoryTranscriptHistory::new("clear-partial", test_meta("clear-partial"));
+    history.record_partial(
+        TranscriptPartial::new("half an answer"),
+        Some("req-1".into()),
+    );
+
+    TranscriptHistory::clear(&history).unwrap();
+
+    assert!(TranscriptHistory::messages(&history).unwrap().is_empty());
+    assert_eq!(history.partials().len(), 1);
+    assert_eq!(history.partials()[0].0.content, "half an answer");
+}
+
+#[test]
 fn recovery_interrupts_every_agents_turns_in_flight() {
     let provider = InMemorySessionStores::new();
     for agent in ["a", "b"] {

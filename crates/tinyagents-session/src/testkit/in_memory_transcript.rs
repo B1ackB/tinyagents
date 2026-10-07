@@ -246,7 +246,6 @@ impl TranscriptHistory for InMemoryTranscriptHistory {
             return Ok(());
         }
         state.messages.clear();
-        state.partials.clear();
         Ok(())
     }
 }
