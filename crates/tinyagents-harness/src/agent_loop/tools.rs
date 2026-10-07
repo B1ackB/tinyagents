@@ -89,7 +89,7 @@ use super::model_call::ToolCallBase;
 use super::*;
 use crate::tool::{
     DeferredToolRequests, LedgerFailure, ToolDispatch, ToolEffectSettle, ToolEffectStart,
-    ToolEffectStatus, provider_schema,
+    ToolEffectStatus, ToolProgressGate, ToolProgressLimits, provider_schema,
 };
 use sha2::{Digest, Sha256};
 use tinyinference_llm::message::ContentBlock;
@@ -1818,7 +1818,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             let timeout_result = timeout_result(&call, tool_timeout);
             let run_budget = self.call_budget(ctx);
             let run_id = ctx.run_id().as_str().to_string();
-            let gate = Arc::clone(&gate);
             futures.push(async move {
                 let body = async move {
                     let fut = execute_tool_recovering_model_retry(dispatch.execute(
