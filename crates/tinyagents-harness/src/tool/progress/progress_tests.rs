@@ -127,14 +127,15 @@ fn coalescing_merges_so_a_later_fraction_does_not_erase_an_earlier_message() {
         &recorder,
         ToolProgressLimits {
             max_per_window: 1,
-            window: Duration::from_millis(1),
+            // Long enough that the window never rolls over mid-test.
+            window: Duration::from_secs(3600),
         },
     );
     let sink = gate.sink();
     sink.report(ToolProgress::message("started"));
     sink.report(ToolProgress::message("compiling"));
     sink.report(ToolProgress::default().with_fraction(0.9));
-    std::thread::sleep(Duration::from_millis(5));
+    // Close flushes the merged held update.
     gate.close();
     let events = recorder.events();
     assert!(matches!(

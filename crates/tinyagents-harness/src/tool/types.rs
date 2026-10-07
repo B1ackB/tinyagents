@@ -62,6 +62,11 @@ pub struct ToolExecutionContext {
     /// Type-erased application state snapshot, when the host attached one
     /// with [`RunContext::with_state_view`]. Read it through [`Self::state`].
     pub state_view: Option<Arc<dyn Any + Send + Sync>>,
+    /// Sink behind [`tinytools::ToolRunContext::report_progress`], captured
+    /// from the loop's scoped progress gate when the context is built. Being
+    /// held here (not looked up per report), it survives a move into a spawned
+    /// task; the gate's closed flag silences it once the call settles.
+    pub progress: Option<tinytools::ProgressSink>,
 }
 
 impl ToolExecutionContext {
@@ -80,6 +85,7 @@ impl ToolExecutionContext {
             workspace: ctx.workspace.clone(),
             store: ctx.namespaced_store.clone(),
             state_view: ctx.state_view.clone(),
+            progress: super::progress::ToolProgressGate::current_sink_for(&call_id),
         }
     }
 
@@ -132,7 +138,7 @@ impl tinytools::ToolRunContext for ToolExecutionContext {
     }
 
     fn report_progress(&self, update: tinytools::ToolProgress) {
-        if let Some(sink) = super::progress::ToolProgressGate::current_sink_for(&self.call_id) {
+        if let Some(sink) = &self.progress {
             sink.report(update);
         }
     }

@@ -187,6 +187,13 @@ impl ToolProgressGate {
         if update.is_empty() {
             return;
         }
+        // Bound before retaining: a held (coalesced) update must not pin an
+        // arbitrarily large allocation until the call settles.
+        let update = ToolProgress {
+            message: update.message.as_deref().map(bounded_text),
+            fraction: update.fraction,
+            partial: update.partial.as_ref().map(bounded_value),
+        };
         let mut state = self.lock();
         if state.closed {
             tracing::debug!(

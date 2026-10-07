@@ -25,6 +25,7 @@ pub struct ToolExecutionContext {
     pub workspace: Option<tinytools::WorkspaceDescriptor>,
     pub store: Option<Arc<dyn NamespacedStore>>,        // RunContext::with_namespaced_store
     pub state_view: Option<Arc<dyn Any + Send + Sync>>, // RunContext::with_state_view
+    pub progress: Option<tinytools::ProgressSink>,      // sink behind report_progress (captured from the loop's gate)
 }
 impl ToolExecutionContext {
     pub fn state<S: 'static>(&self) -> Option<&S>;   // None on absent or mismatched type
