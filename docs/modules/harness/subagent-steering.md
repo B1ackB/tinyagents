@@ -107,8 +107,12 @@ side-effecting tool call.
 Two mechanisms implement this today, side by side:
 
 - `SteeringHandle` / `SteeringCommand` — the **control** channel (pause,
-  resume, cancel, `InjectMessage`, `Redirect`, `SetMetadata`), policy-gated
-  and drained before each model call.
+  resume, cancel, `InjectMessage`, `Redirect`, `SetMetadata`,
+  `SwitchModel { model }`), policy-gated and drained before each model call.
+  `SwitchModel` changes the registry model used for every later model call in
+  the run; it is validated at the model-call boundary, so an unknown model
+  yields a rejected `Steered` event (plus `ModelOverrideSkipped`) instead of a
+  failure.
 - `RunQueue<Message>` via `RunContext::with_run_queue` — the **content**
   channel (A4): `Steer` messages land after a tool batch or at a natural
   finish, `Followup` messages add a turn once the model has finished,

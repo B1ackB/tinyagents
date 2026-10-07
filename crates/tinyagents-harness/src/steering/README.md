@@ -16,9 +16,19 @@ or mid-tool-call.
 
 - `SteeringCommand` — the typed instruction sent to a running loop: `Pause`,
   `PauseWith { reason }`, `Resume`, `Cancel`, `InjectMessage(Message)`,
-  `Redirect { instruction }`, `SetMetadata { metadata }`.
+  `Redirect { instruction }`, `SetMetadata { metadata }`,
+  `SwitchModel { model }`.
   `Serialize`/`Deserialize` so commands can be logged, transported, and
   replayed. `.kind()` returns the payload-free `SteeringCommandKind`.
+- `SwitchModel { model }` — live model switch. The checkpoint records the name
+  on the handle (`SteeringHandle::model_override`); the agent loop's model call
+  (`agent_loop/model_call.rs`, `apply_steered_model_switch`) consumes it at the
+  next call boundary and resolves it against the `ModelRegistry`. The switch is
+  sticky for the rest of the run. An unknown, capability-ineligible or
+  host-routed name is dropped (the run keeps its model) and reported as
+  `Steered { accepted: false }` + `ModelOverrideSkipped`; a blank name is
+  rejected at the checkpoint. It is policy-gated like every other kind, and
+  `SteeringPolicy::allow_all()` now includes it.
 - `SteeringCommandKind` — the policy-relevant discriminant of a command;
   `ALL` lists every kind, `as_str()` gives a stable lower-snake-case label for
   logging/events.
