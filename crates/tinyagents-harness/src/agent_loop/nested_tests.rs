@@ -1479,6 +1479,156 @@ async fn a_chain_of_unsafe_nested_tools_does_not_deadlock_on_the_run_gate() {
     assert_eq!(started(&recorder).len(), 3);
 }
 
+/// Tracks overlap; whether a call is concurrency-safe depends on its `safe` argument.
+struct ArgSafe {
+    now: std::sync::atomic::AtomicUsize,
+    unsafe_overlap: std::sync::atomic::AtomicBool,
+    unsafe_running: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Tool for ArgSafe {
+    fn name(&self) -> &str {
+        "arg_safe"
+    }
+    fn description(&self) -> &str {
+        "argument-dependent safety"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"safe": {"type": "boolean"}}})
+    }
+    fn policy(&self) -> ToolPolicy {
+        ToolPolicy::read_only()
+    }
+    fn is_concurrency_safe(&self, arguments: &Value) -> bool {
+        arguments["safe"].as_bool().unwrap_or(false)
+    }
+    async fn execute(&self, arguments: Value) -> anyhow::Result<ToolResult> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let is_safe = arguments["safe"].as_bool().unwrap_or(false);
+        let others = self.now.fetch_add(1, SeqCst);
+        if !is_safe {
+            self.unsafe_running.store(true, SeqCst);
+            if others > 0 {
+                self.unsafe_overlap.store(true, SeqCst);
+            }
+        } else if self.unsafe_running.load(SeqCst) {
+            self.unsafe_overlap.store(true, SeqCst);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        if !is_safe {
+            self.unsafe_running.store(false, SeqCst);
+        }
+        self.now.fetch_sub(1, SeqCst);
+        Ok(ToolResult::success("arg-safe-out"))
+    }
+}
+
+/// Calls `arg_safe` once as safe and once as unsafe, concurrently.
+struct MixedFan;
+
+#[async_trait]
+impl Tool for MixedFan {
+    fn name(&self) -> &str {
+        "mixed_fan"
+    }
+    fn description(&self) -> &str {
+        "mixed safety fan-out"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn is_concurrency_safe(&self, _arguments: &Value) -> bool {
+        true
+    }
+    async fn execute(&self, _arguments: Value) -> anyhow::Result<ToolResult> {
+        unreachable!("the harness dispatches through execute_with_context")
+    }
+    async fn execute_with_context(
+        &self,
+        _arguments: Value,
+        _options: tinytools::ToolCallOptions,
+        context: Option<&dyn tinytools::ToolRunContext>,
+    ) -> anyhow::Result<ToolResult> {
+        let harness = harness_extension(context);
+        let (a, b) = futures::join!(
+            harness.call_tool("arg_safe", json!({"safe": true})),
+            harness.call_tool("arg_safe", json!({"safe": false})),
+        );
+        a?;
+        b?;
+        Ok(ToolResult::success("mixed-out"))
+    }
+}
+
+#[tokio::test]
+async fn a_safe_nested_call_does_not_overlap_an_unsafe_sibling() {
+    let target = Arc::new(ArgSafe {
+        now: Default::default(),
+        unsafe_overlap: Default::default(),
+        unsafe_running: Default::default(),
+    });
+    let mut harness = harness_with(vec![parent_call("p1", "mixed_fan")], enabled());
+    harness.register_tool(Arc::new(MixedFan));
+    harness.register_tool(target.clone());
+    run(&harness, &EventRecorder::new()).await.unwrap();
+    assert!(
+        !target
+            .unsafe_overlap
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "an unsafe call ran alongside another call"
+    );
+}
+
+/// A ledger that reports `p1/1` as an unresolved `Started` row.
+struct CrashedLedger;
+
+#[async_trait]
+impl crate::tool::ToolEffectLedger for CrashedLedger {
+    async fn started(&self, _start: crate::tool::ToolEffectStart) -> Result<()> {
+        Ok(())
+    }
+    async fn settled(&self, _settle: crate::tool::ToolEffectSettle) -> Result<()> {
+        Ok(())
+    }
+    async fn unresolved(&self, run_id: &str) -> Result<Vec<crate::tool::ToolEffect>> {
+        Ok(vec![crate::tool::ToolEffect {
+            run_id: run_id.to_string(),
+            call_id: "p1/1".to_string(),
+            tool: "pay".to_string(),
+            status: crate::tool::ToolEffectStatus::Started,
+            idempotency_key: None,
+            effect_summary: None,
+            started_at: chrono::Utc::now(),
+            settled_at: None,
+        }])
+    }
+}
+
+#[tokio::test]
+async fn a_non_replayable_nested_call_is_refused_over_an_unresolved_ledger_row() {
+    let pay = Arc::new(Leaf {
+        name: "pay",
+        policy: ToolPolicy::classified(),
+        ran: Arc::default(),
+    });
+    let caller = Caller::new("caller", vec![("pay", json!({}))]);
+    let outcomes = caller.outcomes();
+    let mut harness = harness_with(vec![parent_call("p1", "caller")], enabled());
+    harness.register_tool(pay.clone());
+    harness.register_tool(Arc::new(caller));
+    let ctx = RunContext::new(RunConfig::new("nested"), ())
+        .with_tool_effect_ledger(Arc::new(CrashedLedger));
+    harness
+        .invoke_in_context(&(), ctx, vec![Message::user("go")])
+        .await
+        .unwrap();
+    let outcomes = outcomes.lock().unwrap();
+    let refused = outcomes[0].as_ref().expect_err("refused");
+    assert!(refused.contains("never settled"), "{refused}");
+    assert_eq!(pay.runs(), 0, "the effect must not run twice");
+}
+
 // ── In-flight nested calls dropped with their parent ────────────────────────
 
 /// Sleeps far longer than any test waits, with no timeout of its own.

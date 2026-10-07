@@ -197,7 +197,9 @@ impl NestedState {
     }
 }
 
-/// A shared or exclusive hold on a serialization gate.
+/// A shared or exclusive hold on a serialization gate. The payload is held
+/// only so that dropping the guard releases the gate.
+#[allow(dead_code)]
 enum NestedGuard<'a> {
     Shared(tokio::sync::RwLockReadGuard<'a, ()>),
     Exclusive(tokio::sync::RwLockWriteGuard<'a, ()>),
@@ -569,7 +571,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             && dispatch.tool().policy().runtime.replay != tinytools::ToolReplay::Safe
         {
             let unresolved = ledger.unresolved(ctx.run_id().as_str()).await?;
-            if unresolved.iter().any(|effect| effect.call_id == call_id.as_str()) {
+            if unresolved
+                .iter()
+                .any(|effect| effect.call_id == call_id.as_str())
+            {
                 slot.count_late_refusal();
                 return Err(TinyAgentsError::ToolFailed(format!(
                     "nested call '{name}' refused: an earlier attempt of '{call_id}' never \
