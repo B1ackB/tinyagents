@@ -447,9 +447,16 @@ async fn a_discarded_overflow_response_is_still_accounted_to_the_run() {
         ..Usage::default()
     });
     let fixture = fixture_with(
-        vec![silent_overflow, with_input_tokens(ModelResponse::assistant("ok"), 40)],
+        vec![
+            silent_overflow,
+            with_input_tokens(ModelResponse::assistant("ok"), 40),
+        ],
         10_000,
-        |mw| mw.with_response_overflow_detection(crate::summarization::ResponseOverflowDetection::Usage),
+        |mw| {
+            mw.with_response_overflow_detection(
+                crate::summarization::ResponseOverflowDetection::Usage,
+            )
+        },
     );
     let mut input = task();
     for i in 0..8 {
@@ -459,7 +466,10 @@ async fn a_discarded_overflow_response_is_still_accounted_to_the_run() {
     let run = fixture.run(input).await;
 
     assert_eq!(run.final_response.unwrap().text(), "ok");
-    assert_eq!(run.usage.usage.input_tokens, 9_040, "discarded usage is billed");
+    assert_eq!(
+        run.usage.usage.input_tokens, 9_040,
+        "discarded usage is billed"
+    );
     assert_eq!(run.usage.usage.output_tokens, 12);
     assert_eq!(fixture.model.requests().len(), 2);
 }

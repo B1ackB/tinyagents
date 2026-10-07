@@ -180,7 +180,10 @@ fn only_file_like_tools_modify_files() {
         ToolCall::new("7", "apply_patch", json!({"path": "p.rs"})),
     ])]);
     assert_eq!(ops.modified(), vec!["old.rs", "moved.rs", "e.rs", "p.rs"]);
-    assert!(ops.read_only().is_empty(), "other mutating tools are ignored, not reads");
+    assert!(
+        ops.read_only().is_empty(),
+        "other mutating tools are ignored, not reads"
+    );
 }
 
 #[test]

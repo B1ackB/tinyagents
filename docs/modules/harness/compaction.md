@@ -85,6 +85,11 @@ turn's user message is not itself kept/pinned), and `summarize_split_turn`
 summarizes the history before it as usual and the turn's prefix as its own
 request, `SummaryRequest { kind: SummaryKind::TurnPrefix, .. }`, then joins
 them: `<history>\n\n---\n\n**Turn Context (split turn):**\n\n<prefix>`.
+The prefix is an **extra summarizer call** on top of the history's, and it
+respects `with_max_turn_tokens`: an oversized prefix is halved into
+`TurnPrefix` requests like any other oversized slice
+(`summarize_kind_with_split`). `with_split_turn_prefix(false)` turns the extra
+call off (the folded messages are summarized in one request as before).
 `ModelSummarizer` answers a `TurnPrefix` request with a short-paragraph prompt
 (request, constraints, early steps) instead of the structured checkpoint
 sections; other summarizers may ignore `kind`. The middleware uses this in both
@@ -97,14 +102,26 @@ sections listing the files the folded tool calls touched (port of pi's
 `compaction/utils.ts`). They are derived from the *calls*, not the model's
 prose, and accumulate: the previous summary's lists are parsed off before it
 reaches the summarizer and unioned with the new ones, so each appears once and
-a summarizer cannot drop them. `FileOpExtractor` is pluggable
-(`with_file_op_extractor`); `DefaultFileOpExtractor` reads the `path`, `file`,
-`file_path` and `paths` arguments, and treats a tool whose name contains a
-mutating verb (`write`, `edit`, `patch`, `create`, `delete`, `remove`,
-`append`, `replace`, `move`, `rename`, `save`, `touch`, `mkdir`) as a
-modification and any other as a read; a file both read and modified is listed
-as modified. `without_file_operations()` turns it off. A summary supplied by a
-`before_compaction` hook (`UseSummary`) is used as given.
+a summarizer cannot drop them. A summary supplied by a `before_compaction`
+hook (`UseSummary`) gets this compaction's lists added the same way.
+
+- **Cap:** each list shows its 50 most recently touched files (a file touched
+  again counts as recent) and a `…and K more` line for the rest; the count
+  carries across compactions.
+- **Safety:** path strings are sanitized (control characters become `?`,
+  `<` / `>` become `&lt;` / `&gt;`, length capped), so a file name cannot forge
+  a section or add lines.
+- **Extraction** is pluggable (`with_file_op_extractor`).
+  `DefaultFileOpExtractor` reads `path`, `file`, `file_path` and `paths` and
+  classifies the tool by the words in its name: search/listing tools (`search`,
+  `grep`, `glob`, `find`, `list`, `ls`) contribute nothing (their path is a
+  scope); a tool with a mutating verb is a modification only if it is plainly a
+  file tool (`write`/`edit`/`patch`, or the name also says `file`, `dir`,
+  `folder`, `fs`, `path`, `notebook`, or it is the bare verb) — otherwise
+  (`create_issue`, `github_create_pr`, `memory_save`) it contributes nothing;
+  every other path-carrying call is a read. A file both read and modified is
+  listed as modified.
+- `without_file_operations()` turns the lists off.
 
 ## Iterative summaries
 
@@ -436,12 +453,15 @@ stack.push_model_middleware(mw.clone()); // wrap_model: overflow → compact →
    is returned). `Proceed`/`UseSummary` run the compaction
    (`CompactionReason::Overflow`), persist/emit as above, and retry the **same**
    turn with the compacted request.
-5. **Every attempt after the first must produce a strictly smaller request**
-   than the one it started from, or recovery stops and the original result is
-   returned. The first attempt is exempt: the provider has just refused the
-   request, and the default `ConcatSummarizer` (never smaller than its input)
-   would otherwise never recover. Together with the attempt budget this bounds
-   the loop even against a transcript that cannot be shrunk under the window.
+5. **No attempt may grow the request, and every attempt after the first must
+   produce a strictly smaller one**, or recovery stops and the original result
+   is returned. A compaction that grows the request is neither sent nor
+   persisted (no fold, boundary or record). Consequence: a summarizer whose
+   output is not smaller than its input — notably the default
+   `ConcatSummarizer`, which adds labels — cannot recover an overflow; hosts
+   that want overflow recovery configure a real summarizer. Together with the
+   attempt budget this bounds the loop even against a transcript that cannot
+   be shrunk under the window.
 
 The transcript is never rewritten. A retry is a rewrite of the *request*;
 compactions extend the run's fingerprint-chained fold exactly as `before_model`
@@ -454,12 +474,13 @@ usage above the window ("silent overflow"), or truncate the input to fit and
 stop with `length` and no output. `detect_response_overflow` (a port of the
 response cases of pi's `isContextOverflow` / `isRecoverableLength`) classifies
 these; `with_response_overflow_detection(ResponseOverflowDetection)` chooses
-how much to trust:
+how much to trust. **Off by default** (`Off`): discarding a successful
+response throws away billed work, so a host opts in.
 
 | Mode | Counts as overflow |
 | --- | --- |
-| `Off` | nothing (errors only, the pre-v2 behaviour) |
-| `Usage` (default) | `usage.input_tokens > window` on a non-`length` stop; a `length` stop with zero output and `input_tokens >= 0.99 * window` |
+| `Off` (default) | nothing (errors only) |
+| `Usage` | `usage.input_tokens > window` on a non-`length` stop; a `length` stop with zero output and `input_tokens >= 0.99 * window` |
 | `UsageAndShortLength` | the above, plus a `length` stop whose output is under half the request's `max_tokens` |
 
 The window is the response's `usage.context_window_tokens`, else
@@ -468,6 +489,21 @@ can fire. `input_tokens` is the whole prompt (cache reads are a subset). The
 short-`length` rule is opt-in because a model can stop short for its own
 reasons and each false positive costs a compaction. A cache-served response is
 never classified.
+
+When a response is discarded:
+
+- **Its usage is still accounted.** The middleware hands it to
+  `RunContext::record_discarded_usage`; the agent loop folds it into the run's
+  usage totals, emits `UsageRecorded` and records it with the host budget when
+  it accounts for the replacing call (`account_model_response`). A `Custom`
+  event `{"type": "overflow_discarded_response", input_tokens, output_tokens}`
+  marks the discard on the stream.
+- **Streamed calls are never discarded** (`RunContext::call_streamed`, set by
+  the loop's innermost model call): their deltas already reached the consumer,
+  and a retry would stream the answer twice. Error-level recovery is
+  unaffected.
+- A `warn!` is logged when the verdict rested on the policy's context window
+  because the response reported none (`usage.context_window_tokens`).
 
 ### Cheaper first: truncate tool results
 
@@ -493,9 +529,13 @@ the trigger; `budget` is the trigger budget) and on a reported overflow
 (`budget` is the provider's stated limit, or the trigger budget when none).
 The provider's word outranks the estimate, so a `Fits` verdict on a reported
 overflow still compacts. A route that truncates switches the run into
-*truncating mode*: every later request of the run has its oversized results cut
-again before it is measured, so the prompt prefix stays byte-stable and the
-measured prompt size stays valid. A compaction summarizes the **uncut**
+*truncating mode*, scoped to the run (a later run starts uncut): every later
+request of the run has its oversized results cut again before it is measured,
+so the measured prompt size stays valid. The cut spares the results after the
+last assistant message (what the model just asked for); each result is cut once
+a later assistant turn follows it, so the prefix changes once per result — a
+provider-cache cost bounded by one rewrite per tool result. A route that cuts
+the newest results too (the prompt is still over budget without them) does so. A compaction summarizes the **uncut**
 results; the cut is applied on top when sending.
 
 Limitation: in truncating mode `wrap_model` sees an already-cut request, which

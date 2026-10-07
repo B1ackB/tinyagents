@@ -574,7 +574,8 @@ async fn truncating_mode_spares_the_results_the_model_just_asked_for() {
         SummarizationPolicy::default()
             .with_context_window(8_000)
             .with_threshold_fraction(0.5),
-    ).with_tool_result_truncation(400);
+    )
+    .with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
     messages.extend(call_and_result("c1", 20_000));
     let mut c = ctx();
@@ -632,8 +633,7 @@ async fn a_streamed_response_is_never_discarded_for_its_usage() {
     // twice. Error-level recovery is unaffected.
     let base = silent_overflow_then_ok();
     let stack = stack_of(
-        short_mw(small_window())
-            .with_response_overflow_detection(ResponseOverflowDetection::Usage),
+        short_mw(small_window()).with_response_overflow_detection(ResponseOverflowDetection::Usage),
     );
     let mut c = ctx();
     c.call_streamed = true;

@@ -96,7 +96,13 @@ fn classify_tool(name: &str) -> Touch {
 fn sanitize_path(path: &str) -> String {
     path.chars()
         .take(MAX_PATH_CHARS)
-        .map(|c| if c.is_control() { "?".to_string() } else { c.to_string() })
+        .map(|c| {
+            if c.is_control() {
+                "?".to_string()
+            } else {
+                c.to_string()
+            }
+        })
         .collect::<String>()
         .replace('<', "&lt;")
         .replace('>', "&gt;")

@@ -19,7 +19,7 @@ use tinyinference_llm::message::Message;
 use crate::error::Result;
 
 use super::compaction::{summarize_kind_with_split, summarize_with_split};
-use super::types::{CompressionProvenance, SummaryKind, Summarizer, SummaryRecord};
+use super::types::{CompressionProvenance, Summarizer, SummaryKind, SummaryRecord};
 
 /// Heading that introduces the turn-prefix summary inside a merged summary.
 pub const SPLIT_TURN_HEADING: &str = "**Turn Context (split turn):**";

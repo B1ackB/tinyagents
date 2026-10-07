@@ -42,8 +42,8 @@ pub use compaction::{
     OverflowProbe, find_cut_point, summarize_kind_with_split, summarize_with_split,
 };
 pub use file_ops::{
-    DefaultFileOpExtractor, FileOpExtractor, FileOperations, MAX_LISTED_FILES, append_file_sections,
-    extract_file_operations, split_file_sections,
+    DefaultFileOpExtractor, FileOpExtractor, FileOperations, MAX_LISTED_FILES,
+    append_file_sections, extract_file_operations, split_file_sections,
 };
 pub use model_summarizer::{
     DEFAULT_SUMMARIZE_KEEP_LAST, DEFAULT_SUMMARIZE_THRESHOLD_FRACTION,

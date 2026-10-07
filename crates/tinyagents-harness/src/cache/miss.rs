@@ -130,7 +130,8 @@ impl PromptCacheTracker {
         let entry = Previous {
             model: model.to_string(),
             prompt_tokens,
-            reported_cache: cache_activity || previous.as_ref().is_some_and(|prev| prev.reported_cache),
+            reported_cache: cache_activity
+                || previous.as_ref().is_some_and(|prev| prev.reported_cache),
         };
         if self.entries.insert(key.to_string(), entry).is_none() {
             self.order.push_back(key.to_string());

@@ -113,5 +113,8 @@ fn older_truncation_spares_results_after_the_last_assistant_message() {
 #[test]
 fn older_truncation_with_no_assistant_message_cuts_nothing() {
     let mut messages = vec![Message::tool("c", big(10_000))];
-    assert_eq!(truncate_older_tool_results(&mut messages, 1_000).truncated, 0);
+    assert_eq!(
+        truncate_older_tool_results(&mut messages, 1_000).truncated,
+        0
+    );
 }

@@ -231,7 +231,13 @@ async fn the_turn_prefix_request_can_be_turned_off() {
         Message::assistant(format!("a3 {}", "x".repeat(236))),
     ];
     compact(&mw, messages).await;
-    let kinds: Vec<SummaryKind> = summarizer.seen.lock().unwrap().iter().map(|r| r.kind).collect();
+    let kinds: Vec<SummaryKind> = summarizer
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.kind)
+        .collect();
     assert_eq!(kinds, vec![SummaryKind::Full]);
 }
 
@@ -243,7 +249,16 @@ async fn a_hook_supplied_summary_still_gets_the_file_lists() {
     });
     let text = compact(&mw, transcript_with_file_calls()).await;
     assert!(text.contains("HOOK SUMMARY"), "{text}");
-    assert!(text.contains("<read-files>\nsrc/a.rs\n</read-files>"), "{text}");
-    assert!(text.contains("<modified-files>\nsrc/b.rs\n</modified-files>"), "{text}");
-    assert!(summarizer.seen.lock().unwrap().is_empty(), "the hook replaced the summarizer");
+    assert!(
+        text.contains("<read-files>\nsrc/a.rs\n</read-files>"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<modified-files>\nsrc/b.rs\n</modified-files>"),
+        "{text}"
+    );
+    assert!(
+        summarizer.seen.lock().unwrap().is_empty(),
+        "the hook replaced the summarizer"
+    );
 }
