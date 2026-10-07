@@ -582,6 +582,9 @@ impl TranscriptLocator for FileTranscriptLocator {
         else {
             return Ok(false);
         };
+        if partial.content.is_empty() {
+            return Ok(false);
+        }
         crate::transcript::append_interrupted_partial(
             &path,
             &partial.content,

@@ -67,5 +67,6 @@ whole provider: transcripts (sessions, thread and agent lookups, compaction
 generations, partials kept out of the replay), turn states (conditional
 writes, settling, interrupted-marking) and the key-value and journal stores.
 `session_store_isolation_conformance` checks that two agents cannot see each
-other's data. Both run here against `InMemorySessionStores` and the file
-building blocks, and in each host against its own provider.
+other's data. The store contract runs here against `InMemorySessionStores`
+and the file building blocks; the isolation check runs only against
+`InMemorySessionStores`, and in each host whose provider claims isolation.

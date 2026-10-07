@@ -22,6 +22,22 @@ use crate::store::{FileStore, Store};
 /// [`FileStore`] name sanitizer. Part of the on-disk format.
 pub const STATUS_NS: &str = "run_status";
 
+fn status_key(run_id: &str) -> String {
+    let safe = !run_id.is_empty()
+        && !run_id.bytes().all(|byte| byte == b'.')
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if safe && !run_id.starts_with("x-") {
+        return run_id.to_string();
+    }
+    let mut encoded = String::from("x-");
+    for byte in run_id.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
 /// Name fragments that mark an environment variable as credential material.
 const SECRET_NAME_MARKERS: [&str; 7] = [
     "KEY",
@@ -132,13 +148,13 @@ impl FileStatusStore {
 #[async_trait]
 impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
-        let key = status.run_id.as_str().to_string();
+        let key = status_key(status.run_id.as_str());
         let value = serde_json::to_value(&status)?;
         self.kv.put(STATUS_NS, &key, value).await
     }
 
     async fn get_status(&self, run_id: &str) -> Result<Option<HarnessRunStatus>> {
-        match self.kv.get(STATUS_NS, run_id).await? {
+        match self.kv.get(STATUS_NS, &status_key(run_id)).await? {
             Some(value) => Ok(Some(serde_json::from_value(value)?)),
             None => Ok(None),
         }

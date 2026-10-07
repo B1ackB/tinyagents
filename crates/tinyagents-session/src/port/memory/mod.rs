@@ -8,7 +8,7 @@
 //! own provider is held to by the conformance suite.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tinyagents_harness::store::{InMemoryAppendStore, InMemoryStore};
@@ -16,7 +16,8 @@ use tinyagents_harness::store::{InMemoryAppendStore, InMemoryStore};
 use super::{AgentStores, SessionStoreProvider, TurnStates};
 use crate::testkit::InMemoryTranscriptHistory;
 use crate::transcript::{
-    TranscriptHistory, TranscriptLocator, TranscriptMeta, TranscriptPartial, TranscriptRead,
+    SessionRef, TranscriptHistory, TranscriptLocator, TranscriptMeta, TranscriptPartial,
+    TranscriptRead, session_stem,
 };
 use crate::turn_state::{TurnLifecycle, TurnState};
 
@@ -92,6 +93,7 @@ impl SessionStoreProvider for InMemorySessionStores {
 pub struct InMemoryTranscriptLocator {
     label: String,
     stems: Mutex<Vec<(String, Arc<InMemoryTranscriptHistory>)>>,
+    reserved_generations: Mutex<HashSet<String>>,
 }
 
 impl InMemoryTranscriptLocator {
@@ -100,6 +102,7 @@ impl InMemoryTranscriptLocator {
         Self {
             label: label.into(),
             stems: Mutex::new(Vec::new()),
+            reserved_generations: Mutex::new(HashSet::new()),
         }
     }
 
@@ -120,6 +123,33 @@ impl InMemoryTranscriptLocator {
 }
 
 impl TranscriptLocator for InMemoryTranscriptLocator {
+    fn begin_generation(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let successor = session.next_generation();
+        let stem = session_stem(&successor);
+        let mut reservations = self
+            .reserved_generations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        anyhow::ensure!(
+            !self.session_exists(&successor) && reservations.insert(stem.clone()),
+            "session generation already exists or is reserved"
+        );
+        let mut meta = seed;
+        meta.session_id = Some(successor.session_id());
+        meta.parent_session_id = successor.parent_session_id();
+        match self.open_session(&successor, meta) {
+            Ok(handle) => Ok((successor, handle)),
+            Err(error) => {
+                reservations.remove(&stem);
+                Err(error)
+            }
+        }
+    }
+
     fn destination_key(&self) -> Option<String> {
         Some(format!("memory://{}/{:p}", self.label, self))
     }
@@ -212,6 +242,11 @@ fn newest_first(a: &TurnState, b: &TurnState) -> Ordering {
         .then_with(|| compare_rfc3339(&b.updated_at, &a.updated_at))
 }
 
+fn completed_newest_first(a: &TurnState, b: &TurnState) -> Ordering {
+    compare_rfc3339(&b.updated_at, &a.updated_at)
+        .then_with(|| compare_rfc3339(&b.started_at, &a.started_at))
+}
+
 fn compare_rfc3339(left: &str, right: &str) -> Ordering {
     match (
         chrono::DateTime::parse_from_rfc3339(left),
@@ -241,7 +276,7 @@ fn prune_completed(turns: &mut HashMap<(String, String), TurnState>, thread_id: 
         .filter(|turn| turn.thread_id == thread_id && turn.lifecycle == TurnLifecycle::Completed)
         .cloned()
         .collect();
-    completed.sort_by(newest_first);
+    completed.sort_by(completed_newest_first);
     for stale in completed.iter().skip(COMPLETED_RETENTION) {
         turns.remove(&key(&stale.thread_id, &stale.request_id));
     }
