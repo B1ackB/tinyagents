@@ -1,0 +1,275 @@
+//! The run's tool surface: which tool schemas the loop advertises, and how that
+//! set changes while the run is in flight.
+//!
+//! Split out of `run_loop.rs`. [`ToolSurface`] is built once at the top of a
+//! run ([`AgentHarness::build_tool_surface`]) and then adjusted at the start of
+//! every turn: a toolset chain whose live set changed is diffed and declared as
+//! a transcript patch ([`ToolSurface::declare_toolset_changes`]), tools a
+//! successful `tool_search` discovered are promoted
+//! ([`ToolSurface::promote_discovered`]), and the wire list for the turn is
+//! assembled ([`ToolSurface::assemble_turn_schemas`]).
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+use super::tool_changes;
+use super::*;
+
+/// The tool schemas a run advertises and the discovery state behind them.
+pub(super) struct ToolSurface {
+    /// The wire list for the turn in flight: direct tools, promoted tools,
+    /// then the discovery bridge schemas. Rebuilt by
+    /// [`ToolSurface::assemble_turn_schemas`] each turn.
+    pub(super) tool_schemas: Vec<ToolSchema>,
+    /// `Direct`-exposure count at run start, captured before the bridge
+    /// schemas are appended so `ToolsAdvertised.direct` is not inflated.
+    pub(super) direct_schema_count: usize,
+    /// The direct set (registry plus toolset chain); replaced when the
+    /// toolset's live set changes mid-run.
+    direct_tool_schemas: Vec<ToolSchema>,
+    /// What the transcript has actually been told about the toolset chain's
+    /// tools so far (B6). Starts empty so the first-turn diff always declares
+    /// the full initial set; bridge schemas are deliberately excluded.
+    declared_tool_schemas: Vec<ToolSchema>,
+    /// The intrinsic discovery-bridge schemas; constant within a run.
+    bridge_schemas: Vec<ToolSchema>,
+    /// Deferred tools reachable through `tool_search`.
+    pub(super) deferred_catalog: crate::tool::discover::DeferredCatalog,
+    /// Typed declarations of discovered tools already promoted.
+    promoted_schemas: BTreeMap<String, ToolSchema>,
+    /// Names returned by a successful intrinsic search; grown by tool
+    /// execution.
+    pub(super) promoted_names: BTreeSet<String>,
+    /// Promoted names already recorded on the transcript as a patch.
+    recorded_promotions: BTreeSet<String>,
+}
+
+impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
+    /// The direct tool schemas: the registry's `Direct` schemas filtered by the
+    /// host allow-list, extended by this run's toolset chain (B3), name-sorted,
+    /// then provider-projected.
+    ///
+    /// Additive: a name the registry already advertises keeps the registry's
+    /// declaration, so a registered tool always wins a collision. The sort is
+    /// what every consumer (and the provider prompt cache) relies on for
+    /// wire-byte stability.
+    async fn direct_tool_schemas(
+        &self,
+        ctx: &RunContext<Ctx>,
+        host_allows: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<ToolSchema>> {
+        let mut schemas = self
+            .tools
+            .schemas()
+            .into_iter()
+            .filter(|schema| host_allows(&schema.name))
+            .collect::<Vec<_>>();
+        if let Some(toolset) = &self.toolset {
+            let existing: HashSet<&str> = schemas.iter().map(|schema| schema.name.as_str()).collect();
+            let extra: Vec<_> = toolset
+                .tools(ctx)
+                .await?
+                .into_iter()
+                .filter(|tool| tool.exposure() == tinytools::ToolExposure::Direct)
+                .filter(|tool| host_allows(tool.name()))
+                .filter(|tool| !existing.contains(tool.name()))
+                .map(|tool| crate::tool::provider_schema(tool.as_ref()))
+                .collect();
+            schemas.extend(extra);
+            schemas.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        // Provider projection applies once, to the full combined set
+        // (registry + toolset), so a toolset-supplied schema reaches the wire
+        // cleaned exactly like a registered one.
+        if let Some(preparation) = &self.policy.tool_schemas {
+            schemas = crate::tool::prepare_tool_schemas(&schemas, preparation);
+        }
+        Ok(schemas)
+    }
+
+    /// Builds the run's tool surface once, at the top of the run.
+    ///
+    /// Only *direct* tools go on the initial wire request. Deferred tools are
+    /// indexed into the run's catalogue and reached through the `tool_search`
+    /// bridge; search matches are promoted on the next request. The same host
+    /// allow-list gates both halves: deferral only ever subtracts from what the
+    /// host admitted.
+    pub(super) async fn build_tool_surface(
+        &self,
+        ctx: &RunContext<Ctx>,
+        messages: &[Message],
+        host_allows: &dyn Fn(&str) -> bool,
+    ) -> Result<ToolSurface> {
+        let mut tool_schemas = self.direct_tool_schemas(ctx, host_allows).await?;
+        // Captured before the bridge schemas are appended below, so
+        // `ToolsAdvertised.direct` reports the actual `Direct`-exposure count.
+        let direct_schema_count = tool_schemas.len();
+        let direct_tool_schemas = tool_schemas.clone();
+        let mut bridge_schemas: Vec<ToolSchema> = Vec::new();
+        let deferred_catalog = self.deferred_catalog(host_allows);
+        // A resumed transcript carries promoted declarations in SystemMessage
+        // patches. Only restore names still admitted into this run's catalogue.
+        let promoted_schemas: BTreeMap<String, ToolSchema> =
+            tinyinference_llm::message::replay_system_state(messages)
+                .1
+                .into_iter()
+                .filter(|schema| deferred_catalog.get(&schema.name).is_some())
+                .map(|schema| (schema.name.clone(), schema))
+                .collect();
+        let promoted_names: BTreeSet<String> = promoted_schemas.keys().cloned().collect();
+        let recorded_promotions = promoted_names.clone();
+        if !deferred_catalog.is_empty() {
+            // A host-registered `tool_search` keeps its slot: the intrinsic
+            // bridge only fills a name nobody registered. Check the full
+            // registry (`self.tools.dispatch`), not just the direct set — a
+            // `Hidden` or `Deferred` registration under that name must also
+            // suppress the intrinsic schema, because admission's own collision
+            // rule (`answer_discovery_bridge`) checks the same full registry.
+            let mut bridge: Vec<_> =
+                crate::tool::discover::bridge_schemas(&deferred_catalog, &self.policy.discovery)
+                    .into_iter()
+                    .collect();
+            if let Some(preparation) = &self.policy.tool_schemas {
+                // The bridge schemas are generated here, after the direct set
+                // was prepared, so they need the same provider projection (for
+                // example Gemini's `minimum`/`maximum` removal) applied
+                // individually or they reach the wire raw.
+                bridge = bridge
+                    .into_iter()
+                    .map(|schema| crate::tool::prepare_tool_schema(&schema, preparation))
+                    .collect();
+            }
+            for schema in bridge {
+                if self.tools.dispatch(&schema.name).is_none() {
+                    tool_schemas.push(schema.clone());
+                    bridge_schemas.push(schema);
+                }
+            }
+        }
+        Ok(ToolSurface {
+            tool_schemas,
+            direct_schema_count,
+            direct_tool_schemas,
+            declared_tool_schemas: Vec::new(),
+            bridge_schemas,
+            deferred_catalog,
+            promoted_schemas,
+            promoted_names,
+            recorded_promotions,
+        })
+    }
+
+    /// Fails closed on a structured-output schema whose name collides with a
+    /// registered tool *or* the intrinsic discovery bridge.
+    ///
+    /// Under the tool-call strategy the schema is sent as an extra `function`
+    /// entry, so a collision puts two identically-named functions in one
+    /// request — which OpenAI rejects outright — and makes "was this the schema
+    /// or the real tool?" unanswerable for every returned call. Two checks,
+    /// because neither alone covers every name that ends up on the wire:
+    /// `self.tools.names()` covers every registered tool (Direct, Deferred,
+    /// Hidden) but not the intrinsic bridge; `tool_schemas` covers the bridge
+    /// (and the Direct set) but never contains a Deferred tool's own name.
+    pub(super) fn check_structured_schema_name(&self, tool_schemas: &[ToolSchema]) -> Result<()> {
+        if let Some(name) = self
+            .policy
+            .default_response_format
+            .as_ref()
+            .and_then(|format| match format {
+                ResponseFormat::Auto { name, .. } | ResponseFormat::JsonSchema { name, .. } => {
+                    Some(name)
+                }
+                _ => None,
+            })
+            && (self
+                .tools
+                .names()
+                .iter()
+                .any(|registered| registered == name)
+                || tool_schemas.iter().any(|schema| &schema.name == name))
+        {
+            return Err(TinyAgentsError::Validation(format!(
+                "structured-output schema name `{name}` collides with a registered tool (or the \
+                 intrinsic discovery bridge) of the same name; rename one of them"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl ToolSurface {
+    /// B6 (`docs/runtime-comparison/plan.md`, `declare_tool_changes`):
+    /// re-consult the toolset chain (documented as "called once per turn",
+    /// `ToolSet::tools`) and diff its live set against what this transcript has
+    /// declared so far. A caller whose toolset never varies turn to turn sees no
+    /// diff and pays nothing here — this only fires for a genuine mid-run
+    /// change. Runs before the request/`ModelStarted`, so the patch (if any) is
+    /// part of *this* turn's request.
+    pub(super) async fn declare_toolset_changes<State: Send + Sync, Ctx: Send + Sync>(
+        &mut self,
+        harness: &AgentHarness<State, Ctx>,
+        ctx: &RunContext<Ctx>,
+        messages: &mut Vec<Message>,
+        host_allows: &dyn Fn(&str) -> bool,
+        patch_profile: Option<&tinyinference_llm::model::ModelProfile>,
+    ) -> Result<()> {
+        if harness.toolset.is_none() {
+            return Ok(());
+        }
+        let live_schemas = harness.direct_tool_schemas(ctx, host_allows).await?;
+        if let Some(patch) = tool_changes::diff_tool_set(&self.declared_tool_schemas, &live_schemas)
+        {
+            let in_place = tool_changes::patch_inserts_in_place(patch_profile);
+            tool_changes::apply_tool_change_patch(messages, patch, in_place);
+            self.declared_tool_schemas = live_schemas.clone();
+            self.direct_tool_schemas = live_schemas;
+        }
+        Ok(())
+    }
+
+    /// Promotes only names returned by a successful intrinsic search. The patch
+    /// makes the declaration recoverable from the transcript; the provider
+    /// receives its typed schema on this and later calls.
+    pub(super) fn promote_discovered(
+        &mut self,
+        messages: &mut Vec<Message>,
+        patch_profile: Option<&tinyinference_llm::model::ModelProfile>,
+    ) {
+        let newly_promoted: Vec<ToolSchema> = self
+            .promoted_names
+            .difference(&self.recorded_promotions)
+            .filter_map(|name| self.deferred_catalog.get(name).cloned())
+            .collect();
+        if newly_promoted.is_empty() {
+            return;
+        }
+        if let Some(patch) = tool_changes::diff_tool_set(&[], &newly_promoted) {
+            let in_place = tool_changes::patch_inserts_in_place(patch_profile);
+            tool_changes::apply_tool_change_patch(messages, patch, in_place);
+        }
+        self.recorded_promotions
+            .extend(newly_promoted.iter().map(|schema| schema.name.clone()));
+        self.promoted_schemas.extend(
+            newly_promoted
+                .into_iter()
+                .map(|schema| (schema.name.clone(), schema)),
+        );
+    }
+
+    /// Rebuilds the turn's wire list: the direct set, then promoted tools not
+    /// already direct, then the bridge schemas.
+    pub(super) fn assemble_turn_schemas(&mut self) {
+        self.tool_schemas = self.direct_tool_schemas.clone();
+        self.tool_schemas.extend(
+            self.promoted_schemas
+                .values()
+                .filter(|schema| {
+                    !self
+                        .direct_tool_schemas
+                        .iter()
+                        .any(|direct| direct.name == schema.name)
+                })
+                .cloned(),
+        );
+        self.tool_schemas.extend(self.bridge_schemas.clone());
+    }
+}
