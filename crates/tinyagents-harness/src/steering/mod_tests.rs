@@ -822,9 +822,11 @@ fn switch_model_is_recorded_sticky_and_latest_wins() {
     handle.send(switch("second"));
     apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
     assert_eq!(override_of(&ctx), Some("second".to_string()));
-    assert!(recorder.events().iter().any(|event| matches!(
+    // Queuing is not an outcome: the agent loop reports the switch once, when
+    // it is applied or rejected at the model-call boundary.
+    assert!(!recorder.events().iter().any(|event| matches!(
         event,
-        AgentEvent::Steered { command_kind, accepted: true } if command_kind == "switch_model"
+        AgentEvent::Steered { command_kind, .. } if command_kind == "switch_model"
     )));
 }
 
