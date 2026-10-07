@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sha2::{Digest, Sha256};
-use tinyinference_llm::message::{ContentBlock, Message};
-use tinyinference_llm::prompt_tools::replace_text_blocks;
+use tinyinference_llm::message::Message;
 use tinyinference_llm::model::{
     ModelRequest, ModelResponse, PromptSegment, SegmentRole, ToolChoice,
 };
+use tinyinference_llm::prompt_tools::replace_text_blocks;
 use tinyinference_llm::tool::{ToolCall, ToolSchema};
 use tinytools_agent::dialect::{CodeDialect, CodeStyle, PFormatDialect};
 use tinytools_agent::types::{ParseDiagnostic, ParseOptions, ParsedToolCall};

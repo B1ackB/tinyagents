@@ -58,4 +58,3 @@ pub(super) fn fnv1a_hex(data: &[u8]) -> String {
     }
     format!("{hash:016x}")
 }
-
