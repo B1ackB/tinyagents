@@ -674,6 +674,40 @@ async fn a_truncation_route_that_falls_short_still_cuts_the_result_after_compact
 }
 
 #[tokio::test]
+async fn the_mixed_route_reports_the_size_of_the_request_after_the_final_cut() {
+    let mw = ContextCompressionMiddleware::with_summarizer(
+        truncating_policy(),
+        Box::new(ShortSummarizer::default()),
+    )
+    .with_keep_recent_tokens(3_000)
+    .with_tool_result_truncation(400);
+    let mut messages = long_transcript();
+    messages.extend(long_transcript());
+    messages.extend(long_transcript());
+    messages.extend(call_and_result("c1", 10_000));
+    let mut request = ModelRequest {
+        messages,
+        ..Default::default()
+    };
+    let recorder = Arc::new(RecordingListener::new());
+    let mut c = ctx();
+    c.events.subscribe(recorder.clone());
+    Middleware::<(), ()>::before_model(&mw, &mut c, &(), &mut request)
+        .await
+        .unwrap();
+    let sent = crate::token_estimation::count_tokens_approximately(&request.messages);
+    let reported: Vec<u64> = recorder
+        .events()
+        .into_iter()
+        .filter_map(|r| match r.event {
+            AgentEvent::Compressed { to_tokens, .. } => Some(to_tokens),
+            _ => None,
+        })
+        .collect();
+    assert!(reported.contains(&sent), "{reported:?} vs sent {sent}");
+}
+
+#[tokio::test]
 async fn aging_out_an_oversized_result_moves_the_prefix_epoch_only_when_it_cuts() {
     let mw =
         ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
