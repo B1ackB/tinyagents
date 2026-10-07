@@ -11,6 +11,7 @@
 
 pub mod command_center;
 pub mod ops;
+pub mod recovery;
 pub mod store;
 pub mod tool_effects;
 pub mod types;
@@ -25,6 +26,9 @@ pub use ops::{
     shutdown_agent_team_member, transition_agent_run_status, transition_agent_run_status_from,
     try_claim_workflow_run, upsert_agent_run, upsert_agent_team, upsert_agent_team_member,
     upsert_agent_team_task, upsert_run_telemetry, upsert_workflow_run,
+};
+pub use recovery::{
+    CallRecovery, DanglingToolCall, RecoveryClass, classify_recovery, overall_recovery,
 };
 pub use tool_effects::{
     RunLedgerToolEffects, ToolEffectRow, ToolEffectSettle, ToolEffectStart, ToolEffectStatus,
