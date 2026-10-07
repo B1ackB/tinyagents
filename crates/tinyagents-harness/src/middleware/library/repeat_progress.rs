@@ -95,7 +95,7 @@ pub struct RepeatProgressMiddleware {
     exempt: RepeatExemption,
     /// Tools known not to change state; see [`Self::with_read_only`].
     read_only: ReadOnlyCheck,
-    state: Arc<RepeatState>,
+    pub(super) state: Arc<RepeatState>,
     /// Reduces a tool result to the identity the recurrence ledger keys on.
     fingerprinter: Arc<dyn OutcomeFingerprinter>,
     /// Batch bookkeeping bridging `after_model` → `after_tool` for the call guard.
