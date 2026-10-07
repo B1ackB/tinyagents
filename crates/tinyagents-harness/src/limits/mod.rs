@@ -26,7 +26,7 @@ mod types;
 
 pub use types::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, TinyAgentsError};
