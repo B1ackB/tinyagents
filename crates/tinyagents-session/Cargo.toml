@@ -46,6 +46,8 @@ storage-drivers = [
 ]
 
 [dev-dependencies]
+# The `storage-drivers` provider is checked against a real SQLite backend too.
+tinystoragedrivers-sqlite = { path = "../../vendor/tinystoragedrivers/crates/tinystoragedrivers-sqlite" }
 tokio = { workspace = true, default-features = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
