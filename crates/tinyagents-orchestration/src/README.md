@@ -64,7 +64,7 @@ and detached mappings sit beside their types. Fallible conversions return
 | `DetachedSubagentStatus` | `OrchestrationTaskStatus` | `to_task_status()` | payload dropped; `AwaitingUser` -> `Awaiting` |
 | `DetachedSubagentStatus` | `AgentRunStatus` | `to_run_status()` | payload dropped; `AwaitingUser` -> `AwaitingUser` |
 | `&DetachedSubagentStatus` | `SubAgentJobStatus` | `TryFrom` | payload dropped; `AwaitingUser` -> error |
-| `OrchestrationTaskStatus` | `AgentRunStatus` | `status::task_status_to_run_status` | `CancelRequested` -> `Running`; `TimedOut` -> `Failed`; `Abandoned` -> `Interrupted`; `Awaiting` -> `AwaitingUser` |
+| `OrchestrationTaskStatus` | `AgentRunStatus` | `status::task_status_to_run_status` | `CancelRequested` -> `Running`; `TimedOut` -> `Failed`; `Abandoned` -> `Interrupted`; `Awaiting` -> `AwaitingUser` (caveat: `Awaiting` may mean waiting on a child task rather than on the user) |
 | `AgentRunStatus` | `OrchestrationTaskStatus` | `status::run_status_to_task_status` | `Paused`, `AwaitingUser` -> `Awaiting`; `Interrupted` -> `Abandoned` |
 
 Terminality is preserved by every mapping, with one deliberate exception:
