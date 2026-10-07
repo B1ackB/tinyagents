@@ -207,6 +207,45 @@ fn the_newest_root_wins_and_sub_agents_are_never_roots() {
 }
 
 #[test]
+fn root_metadata_wins_over_separator_like_stem_names() {
+    let locator = InMemoryTranscriptLocator::new("test");
+    let meta = test_meta("separator-root");
+    let session = SessionRef::root("root__with_separator");
+    let stem = session_stem(&session);
+    assert!(!stem.contains("__"));
+    let history = locator.open_session(&session, meta.clone()).unwrap();
+    history.append(TranscriptMessage::user("root")).unwrap();
+
+    assert!(locator.root_for_thread("separator-root").is_some());
+}
+
+#[test]
+fn stale_baseline_is_rejected_before_sealing_or_reserving_successor() {
+    let locator = InMemoryTranscriptLocator::new("test");
+    let session = SessionRef::scoped("thread-baseline", "planner");
+    let meta = test_meta("thread-baseline");
+    let history = locator.open_session(&session, meta.clone()).unwrap();
+    let first = TranscriptMessage::user("first");
+    history.append(first.clone()).unwrap();
+
+    let error = match locator.begin_generation_from_baseline(&session, meta, &[]) {
+        Ok(_) => panic!("stale baseline unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("baseline is stale"));
+    assert!(
+        history
+            .append(TranscriptMessage::user("still writable"))
+            .is_ok()
+    );
+    assert!(
+        locator
+            .begin_generation(&session, test_meta("thread-baseline"))
+            .is_ok()
+    );
+}
+
+#[test]
 fn probing_then_opening_a_session_replaces_placeholder_metadata() {
     let locator = InMemoryTranscriptLocator::new("test");
     let session = SessionRef::scoped("thread-meta", "planner");

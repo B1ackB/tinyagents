@@ -198,33 +198,11 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         seed: TranscriptMeta,
         baseline: &[crate::transcript::TranscriptMessage],
     ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
-        // Validate baseline before acquiring the generation gate lock; the gate protects
-        // generation allocation, not transcript reads. Reading without the gate prevents
-        // a deadlock where read_session_transcript's open_stem would re-acquire it.
-        let stem = session_stem(session);
-        if let Some(transcript) = self
-            .stems
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|(known, _, _)| known == &stem)
-            .map(|(_, _, history)| history.clone())
-            && let Some(transcript) = transcript.read_session()?
-        {
-            anyhow::ensure!(
-                crate::transcript::same_transcript_messages(&transcript.messages, baseline),
-                "transcript baseline is stale; reload the session before creating a generation"
-            );
-        } else {
-            anyhow::ensure!(
-                baseline.is_empty(),
-                "transcript baseline is stale; reload the session before creating a generation"
-            );
-        }
         let _gate = self
             .generation_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        self.validate_baseline_locked(session, baseline)?;
         self.begin_generation_locked(session, seed)
     }
 
@@ -287,6 +265,34 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
 }
 
 impl InMemoryTranscriptLocator {
+    fn validate_baseline_locked(
+        &self,
+        session: &SessionRef,
+        baseline: &[crate::transcript::TranscriptMessage],
+    ) -> anyhow::Result<()> {
+        let stem = session_stem(session);
+        if let Some(transcript) = self
+            .stems
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(known, _, _)| known == &stem)
+            .map(|(_, _, history)| history.clone())
+            && let Some(transcript) = transcript.read_session()?
+        {
+            anyhow::ensure!(
+                crate::transcript::same_transcript_messages(&transcript.messages, baseline),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        } else {
+            anyhow::ensure!(
+                baseline.is_empty(),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        }
+        Ok(())
+    }
+
     fn open_stem_locked(
         &self,
         stem: &str,
