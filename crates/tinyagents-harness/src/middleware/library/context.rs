@@ -137,8 +137,10 @@ impl ContextCompressionMiddleware {
 
     /// Chooses which *successful-response* signals count as an overflow, in
     /// addition to the errors [`OverflowClassifier`] recognizes. Defaults to
-    /// [`ResponseOverflowDetection::Usage`]: usage above the window, and a
-    /// zero-output `length` stop with the window full. Both need a known
+    /// [`ResponseOverflowDetection::Off`]: successful responses are not
+    /// inspected. Opt into [`ResponseOverflowDetection::Usage`] (usage above
+    /// the window, and a zero-output `length` stop with the window full) or
+    /// [`ResponseOverflowDetection::UsageAndShortLength`]. Both need a known
     /// context window ([`SummarizationPolicy::context_window`], or the
     /// response's own `usage.context_window_tokens`).
     pub fn with_response_overflow_detection(
@@ -755,7 +757,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 return result;
             }
             attempts += 1;
-            self.account_discarded(ctx, &result);
             let route = self.overflow_route(&base, truncate.is_some(), &overflow);
             tracing::info!(
                 attempt = attempts,
@@ -770,6 +771,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 && let Some(cap) = cap
                 && self.announce_truncation(ctx, &base, cap)
             {
+                self.account_discarded(ctx, &result);
                 truncate = Some(cap);
                 continue;
             }
@@ -778,6 +780,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 .await
             {
                 Some(shrunk) => {
+                    self.account_discarded(ctx, &result);
                     base = shrunk;
                     if route.truncates()
                         && let Some(cap) = cap
@@ -1600,6 +1603,7 @@ impl PromptCacheGuardMiddleware {
             events: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_events: DEFAULT_CACHE_GUARD_EVENT_CAP,
             cache_misses: std::sync::Mutex::new(crate::cache::PromptCacheTracker::default()),
+            thread_epochs: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1615,18 +1619,40 @@ impl PromptCacheGuardMiddleware {
         self
     }
 
-    /// The conversation key cache accounting groups calls by: the thread when
-    /// the run has one (a provider cache spans runs of a thread), else the
-    /// run instance, plus the context's prompt-prefix epoch so a deliberate
-    /// rewrite starts a fresh baseline.
-    fn cache_key<Ctx: Send + Sync>(ctx: &RunContext<Ctx>) -> String {
+    /// The conversation key cache accounting groups calls by the thread when
+    /// the run has one (a provider cache spans runs of a thread), else the run
+    /// instance, plus the prompt-prefix epoch. Thread epochs are retained in
+    /// the guard so a fresh context for a resumed thread does not revert to the
+    /// pre-compaction epoch zero.
+    fn cache_key<Ctx: Send + Sync>(&self, ctx: &RunContext<Ctx>) -> String {
         let conversation = ctx
             .thread_id()
             .map(|thread| format!("thread:{thread}"))
             // A run id is a caller's label that two runs may share; the
             // instance id is unique.
             .unwrap_or_else(|| format!("run:{}", ctx.instance_id()));
-        format!("{conversation}@{}", ctx.prompt_prefix_epoch())
+        format!("{conversation}@{}", self.prefix_epoch(ctx))
+    }
+
+    fn prefix_epoch<Ctx: Send + Sync>(&self, ctx: &RunContext<Ctx>) -> u64 {
+        let Some(thread) = ctx.thread_id() else {
+            return ctx.prompt_prefix_epoch();
+        };
+        let mut epochs = self
+            .thread_epochs
+            .lock()
+            .expect("thread epochs mutex poisoned");
+        if ctx.prompt_prefix_epoch() != 0 {
+            const MAX_THREAD_EPOCHS: usize = 256;
+            if !epochs.contains_key(thread)
+                && epochs.len() >= MAX_THREAD_EPOCHS
+                && let Some(evicted) = epochs.keys().next().cloned()
+            {
+                epochs.remove(&evicted);
+            }
+            epochs.insert(thread.clone(), ctx.prompt_prefix_epoch());
+        }
+        epochs.get(thread).copied().unwrap_or(0)
     }
 
     /// Sets the maximum number of [`CacheLayoutEvent`]s retained before the
@@ -1701,7 +1727,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
                 self.cache_misses
                     .lock()
                     .expect("cache misses mutex poisoned")
-                    .reset(&Self::cache_key(ctx));
+                    .reset(&self.cache_key(ctx));
                 tracing::debug!(
                     "[cache] prompt_cache_guard: stable prefix changed run={run_id} \
                      before={} after={}",
@@ -1744,7 +1770,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         else {
             return Ok(());
         };
-        let key = Self::cache_key(ctx);
+        let key = self.cache_key(ctx);
         let model = response
             .resolved_model
             .as_ref()
@@ -1776,3 +1802,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "context_overflow_tests.rs"]
+mod context_overflow_tests;
+#[cfg(test)]
+#[path = "context_prompt_cache_miss_tests.rs"]
+mod context_prompt_cache_miss_tests;
+#[cfg(test)]
+#[path = "context_summary_tests.rs"]
+mod context_summary_tests;

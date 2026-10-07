@@ -214,10 +214,28 @@ pub fn extract_file_operations(
     extractor: &dyn FileOpExtractor,
 ) -> FileOperations {
     let mut ops = FileOperations::default();
+    let failed_calls: std::collections::HashSet<&str> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Tool(tool)
+                if tool
+                    .artifact
+                    .as_ref()
+                    .and_then(|artifact| artifact.get("is_error"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true) =>
+            {
+                Some(tool.tool_call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     for message in messages {
         if let Message::Assistant(assistant) = message {
             for call in &assistant.tool_calls {
-                extractor.extract(call, &mut ops);
+                if !failed_calls.contains(call.id.as_str()) {
+                    extractor.extract(call, &mut ops);
+                }
             }
         }
     }

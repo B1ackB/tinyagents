@@ -1171,6 +1171,10 @@ pub struct PromptCacheGuardMiddleware {
     /// Per-conversation prompt-cache miss accounting, fed from each
     /// response's usage. See [`crate::cache::PromptCacheTracker`].
     pub(crate) cache_misses: Mutex<crate::cache::PromptCacheTracker>,
+    /// Latest rewritten-prefix epoch for each durable conversation thread.
+    /// Fresh run contexts start at epoch zero, so this preserves the cache key
+    /// after a compacted transcript is carried into a later run.
+    pub(crate) thread_epochs: Mutex<std::collections::HashMap<crate::ids::ThreadId, u64>>,
 }
 
 // ── UsageAccountingMiddleware ─────────────────────────────────────────────────

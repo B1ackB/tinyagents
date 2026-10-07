@@ -1,6 +1,9 @@
 //! Tests for what [`ContextCompressionMiddleware`] puts in a compaction
 //! summary: file-operation lists and the split-turn prefix.
 
+#[allow(unused_imports)]
+use super::*;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

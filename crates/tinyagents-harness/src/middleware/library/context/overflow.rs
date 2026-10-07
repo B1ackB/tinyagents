@@ -483,6 +483,10 @@ impl ContextCompressionMiddleware {
         self.engage_truncation(ctx.instance_id());
         ctx.mark_prompt_prefix_changed();
         if route != CompactionRoute::TruncateToolResults {
+            // Compaction may retain the newest oversized result. Truncate the
+            // current request as well so the mixed route is safe even when the
+            // subsequent compaction does not get below the provider limit.
+            truncate_tool_results(&mut request.messages, cap);
             return false;
         }
         let from_tokens = total_message_tokens(&request.messages);

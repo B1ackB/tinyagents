@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::json;
 use tinyinference_llm::message::AssistantMessage;
+use tinyinference_llm::message::ToolMessage;
 use tinyinference_llm::tool::ToolCall;
 
 fn calls(calls: Vec<ToolCall>) -> Message {
@@ -15,6 +16,15 @@ fn calls(calls: Vec<ToolCall>) -> Message {
 
 fn extract(messages: &[Message]) -> FileOperations {
     extract_file_operations(messages, &DefaultFileOpExtractor)
+}
+
+fn failed_result(id: &str) -> Message {
+    Message::Tool(ToolMessage {
+        tool_call_id: id.into(),
+        content: Vec::new(),
+        trusted_verbatim: false,
+        artifact: Some(json!({"is_error": true})),
+    })
 }
 
 #[test]
@@ -57,6 +67,25 @@ fn calls_without_path_arguments_and_invalid_calls_are_ignored() {
         ]),
     ]);
     assert!(ops.is_empty());
+}
+
+#[test]
+fn failed_file_operations_are_not_carried_into_summaries() {
+    let messages = vec![
+        calls(vec![ToolCall::new(
+            "failed",
+            "edit_file",
+            json!({"path": "unchanged.rs"}),
+        )]),
+        failed_result("failed"),
+        calls(vec![ToolCall::new(
+            "ok",
+            "edit_file",
+            json!({"path": "changed.rs"}),
+        )]),
+    ];
+    let ops = extract(&messages);
+    assert_eq!(ops.modified(), vec!["changed.rs"]);
 }
 
 #[test]
