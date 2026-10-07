@@ -13,7 +13,10 @@ use super::{
     SubagentTerminalPersistenceDisposition,
 };
 use super::{SpawnAdmission, SpawnRejection};
-use tinyagents_harness::{CancellationToken, context::RunConfig};
+use tinyagents_harness::{
+    CancellationToken,
+    context::{RunConfig, RunId},
+};
 
 /// Optional host seams accepted by [`SubagentDriver::new`].
 ///
@@ -297,7 +300,14 @@ impl<C: Send + 'static, H: Send + 'static> SubagentDriver<C, H> {
         // The scope resolves from the parent as the key describes it: the
         // durable thread when there is one, else the parent run id. Fresh spawns
         // and continuations resolve identically.
+        //
+        // The key carries the parent's run id, thread and the tree's root run
+        // id, so a custom scope rule that groups by root
+        // (`cfg.lineage.root_run_id`) sees the real root, not the immediate
+        // parent. Tags and metadata are not part of the durable key and so are
+        // not available to a resolver here.
         let mut parent_config = RunConfig::new(task_key.parent_run_id.as_str());
+        parent_config.lineage.root_run_id = RunId::new(task_key.root_run_id.as_str());
         if let Some(thread) = &task_key.thread_id {
             parent_config = parent_config.with_thread(thread.as_str());
         }
