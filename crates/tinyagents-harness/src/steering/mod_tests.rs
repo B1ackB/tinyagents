@@ -738,3 +738,155 @@ fn recent_request_ids_rejects_oversized_ids_without_storing_them() {
     assert_eq!(ids.claim(&oversized), Err(RequestIdError::TooLong));
     assert!(ids.order.is_empty());
 }
+
+// ── SwitchModel: policy gate, stickiness, child isolation ─────────────────────
+
+fn switch(model: &str) -> SteeringCommand {
+    SteeringCommand::SwitchModel {
+        model: model.to_string(),
+    }
+}
+
+fn override_of(ctx: &RunContext) -> Option<String> {
+    ctx.steering.as_ref().unwrap().model_override()
+}
+
+#[test]
+fn allow_all_does_not_grant_model_switch() {
+    // A model switch changes cost, data residency and the provider that sees
+    // the transcript, so the blanket "allow everything" policy withholds it.
+    assert!(!SteeringPolicy::allow_all().is_allowed(SteeringCommandKind::SwitchModel));
+    assert!(!SteeringHandle::allow_all()
+        .policy()
+        .is_allowed(SteeringCommandKind::SwitchModel));
+    for kind in SteeringCommandKind::ALL
+        .into_iter()
+        .filter(|kind| *kind != SteeringCommandKind::SwitchModel)
+    {
+        assert!(SteeringPolicy::allow_all().is_allowed(kind), "{kind:?}");
+    }
+}
+
+#[test]
+fn model_switch_is_granted_only_by_explicit_opt_in() {
+    assert!(
+        SteeringPolicy::allow_all_with_model_switch().is_allowed(SteeringCommandKind::SwitchModel)
+    );
+    assert!(
+        SteeringPolicy::new()
+            .allow(SteeringCommandKind::SwitchModel)
+            .is_allowed(SteeringCommandKind::SwitchModel)
+    );
+    assert!(
+        SteeringHandle::allow_all_with_model_switch()
+            .policy()
+            .is_allowed(SteeringCommandKind::SwitchModel)
+    );
+}
+
+#[test]
+fn switch_model_under_allow_all_is_rejected_and_records_nothing() {
+    let handle = SteeringHandle::allow_all();
+    handle.send(switch("other"));
+    let recorder = EventRecorder::new();
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("run"), ())
+        .with_steering(handle)
+        .with_events(recorder.sink());
+
+    apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
+
+    assert_eq!(override_of(&ctx), None);
+    assert!(recorder.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Steered { command_kind, accepted: false } if command_kind == "switch_model"
+    )));
+}
+
+#[test]
+fn switch_model_is_recorded_sticky_and_latest_wins() {
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("first"));
+    let recorder = EventRecorder::new();
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("run"), ())
+        .with_steering(handle.clone())
+        .with_events(recorder.sink());
+
+    apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
+    assert_eq!(override_of(&ctx), Some("first".to_string()));
+    // Later checkpoints with an empty queue keep it.
+    apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
+    assert_eq!(override_of(&ctx), Some("first".to_string()));
+    // A newer switch replaces it.
+    handle.send(switch("second"));
+    apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
+    assert_eq!(override_of(&ctx), Some("second".to_string()));
+    assert!(recorder.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Steered { command_kind, accepted: true } if command_kind == "switch_model"
+    )));
+}
+
+#[test]
+fn blank_model_switch_is_rejected_immediately() {
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    handle.send(switch("   "));
+    let recorder = EventRecorder::new();
+    let mut ctx: RunContext = RunContext::new(RunConfig::new("run"), ())
+        .with_steering(handle)
+        .with_events(recorder.sink());
+
+    apply_pending_steering(&mut ctx, &mut Vec::new()).unwrap();
+
+    assert_eq!(override_of(&ctx), None);
+    assert!(recorder.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Steered { command_kind, accepted: false } if command_kind == "switch_model"
+    )));
+}
+
+#[test]
+fn model_switch_is_isolated_between_parent_and_child() {
+    let handle = SteeringHandle::allow_all_with_model_switch();
+    let mut parent: RunContext =
+        RunContext::new(RunConfig::new("parent"), ()).with_steering(handle.clone());
+    let mut child: RunContext = parent.child(RunConfig::new("child"), ()).unwrap();
+
+    // A parent switch does not leak into a child created before or after it.
+    handle.send(switch("parent-model"));
+    apply_pending_steering(&mut parent, &mut Vec::new()).unwrap();
+    let mut later_child: RunContext = parent.child(RunConfig::new("later"), ()).unwrap();
+    apply_pending_steering(&mut child, &mut Vec::new()).unwrap();
+    apply_pending_steering(&mut later_child, &mut Vec::new()).unwrap();
+    assert_eq!(override_of(&parent), Some("parent-model".to_string()));
+    assert_eq!(override_of(&child), None);
+    assert_eq!(override_of(&later_child), None);
+
+    // A switch addressed to the child sticks to the child only, and the child
+    // rejecting it (as the model call does for an unknown name) leaves the
+    // parent's switch alone.
+    handle.send_to(
+        SteeringTarget::Run(child.run_id().clone()),
+        switch("child-model"),
+    );
+    apply_pending_steering(&mut child, &mut Vec::new()).unwrap();
+    assert_eq!(override_of(&child), Some("child-model".to_string()));
+    assert_eq!(override_of(&parent), Some("parent-model".to_string()));
+    child.steering.as_ref().unwrap().reject_model_override();
+    assert_eq!(override_of(&child), None);
+    assert_eq!(override_of(&parent), Some("parent-model".to_string()));
+}
+
+#[test]
+fn switch_model_command_round_trips_through_json() {
+    let command = switch("claude-haiku");
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(
+        json,
+        json!({"command": "switch_model", "model": "claude-haiku"})
+    );
+    assert_eq!(
+        serde_json::from_value::<SteeringCommand>(json).unwrap(),
+        command
+    );
+    assert_eq!(command.kind().as_str(), "switch_model");
+}
