@@ -197,3 +197,25 @@ async fn an_anonymous_locator_has_no_turn_lock() {
             .is_none()
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workspaces_sharing_a_symlinked_session_raw_share_the_lock() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let shared = dir.path().join("shared-raw");
+    std::fs::create_dir(&shared).unwrap();
+    let first_ws = dir.path().join("ws-a");
+    let second_ws = dir.path().join("ws-b");
+    std::fs::create_dir(&first_ws).unwrap();
+    std::fs::create_dir(&second_ws).unwrap();
+    symlink(&shared, first_ws.join("session_raw")).unwrap();
+    symlink(&shared, second_ws.join("session_raw")).unwrap();
+    let session = SessionRef::scoped("thread-1", "agent");
+    let first = FileTranscriptLocator::new(&first_ws);
+    let second = FileTranscriptLocator::new(&second_ws);
+
+    let _guard = lock_session_turn(&first, &session).await.unwrap();
+    assert!(is_held(&second, &session).await);
+}
