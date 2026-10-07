@@ -66,6 +66,14 @@
 //! Lifecycle `before_tool`/`after_tool` hooks never forced serial execution:
 //! they run in the admission/fold phases and still bracket each call.
 //!
+//! ## Nested calls
+//!
+//! A tool may call another tool through
+//! [`ToolExecutionContext::call_tool`][crate::tool::ToolExecutionContext::call_tool];
+//! those calls are admitted and executed by `super::nested`, share this
+//! module's `max_tool_calls` budget, and never touch the transcript. See
+//! `docs/modules/harness/nested-tool-calls.md`.
+//!
 //! ## Semantics preserved (and one deliberate difference)
 //!
 //! - **Event ordering**: every call's `ToolStarted` precedes its
