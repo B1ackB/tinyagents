@@ -68,13 +68,13 @@ impl SubagentPlanner<String, HostRequest> for PayloadPlanner {
     ) -> Result<PreparedSubagent<String>, SubagentError> {
         let request = request.into_parts();
         self.payloads.lock().unwrap().push(request.host_request);
-        Ok(PreparedSubagent {
-            task_id: request.task_key.task_id,
-            agent_key: "payload-agent".into(),
-            input: vec![Message::user(request.input)],
-            tools: ToolSnapshot::new(vec![]).unwrap(),
-            run_context: request.run_context,
-        })
+        Ok(PreparedSubagent::new(
+            request.task_key.task_id,
+            "payload-agent",
+            vec![Message::user(request.input)],
+            ToolSnapshot::new(vec![]).unwrap(),
+            request.run_context,
+        ))
     }
 }
 
@@ -95,13 +95,13 @@ impl SubagentPlanner<String> for FakePlanner {
         if self.reject {
             return Err(SubagentError::Planning("rejected".into()));
         }
-        Ok(PreparedSubagent {
-            task_id: request.task_key.task_id,
-            agent_key: "resolved-agent".into(),
-            input: vec![Message::user(request.input)],
-            tools: ToolSnapshot::new(vec![]).unwrap(),
-            run_context: request.run_context,
-        })
+        Ok(PreparedSubagent::new(
+            request.task_key.task_id,
+            "resolved-agent",
+            vec![Message::user(request.input)],
+            ToolSnapshot::new(vec![]).unwrap(),
+            request.run_context,
+        ))
     }
 }
 
@@ -156,9 +156,7 @@ impl SubagentExecutor<String> for FakeExecutor {
             ExecutorMode::Completed
             | ExecutorMode::WaitForCancellation
             | ExecutorMode::CancelAfterExecution => SubagentStatus::Completed,
-            ExecutorMode::Incomplete => SubagentStatus::Incomplete(SubagentIncomplete {
-                reason: "budget exhausted".into(),
-            }),
+            ExecutorMode::Incomplete => SubagentStatus::Incomplete(SubagentIncomplete::new("budget exhausted")),
             ExecutorMode::Pause => SubagentStatus::AwaitingInput(SubagentPause {
                 reason: "need approval".into(),
                 resume: SubagentResume::default(),
@@ -178,6 +176,7 @@ impl SubagentExecutor<String> for FakeExecutor {
                 id: "artifact-1".into(),
                 ..ArtifactReference::default()
             }],
+            schema_error: None,
         })
     }
 }
@@ -482,6 +481,7 @@ impl SubagentExecutor<String> for MismatchedExecutor {
             status: SubagentStatus::Completed,
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
+            schema_error: None,
         })
     }
 }
@@ -529,6 +529,7 @@ impl SubagentExecutor<String> for PauseThenCompleteExecutor {
             },
             usage: UsageTotals::default(),
             artifacts: Vec::new(),
+            schema_error: None,
         })
     }
 }
@@ -577,6 +578,7 @@ impl SubagentExecutor<String> for NestedExecutor {
                     ..UsageTotals::default()
                 },
                 artifacts: Vec::new(),
+            schema_error: None,
             });
         }
         Ok(SubagentOutcome {
@@ -589,6 +591,7 @@ impl SubagentExecutor<String> for NestedExecutor {
                 ..UsageTotals::default()
             },
             artifacts: Vec::new(),
+            schema_error: None,
         })
     }
 }
