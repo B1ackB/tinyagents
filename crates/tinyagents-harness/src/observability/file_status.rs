@@ -212,9 +212,7 @@ impl HarnessStatusStore for FileStatusStore {
         let key = status_key(run_id);
         let value = match self.kv.get(STATUS_NS, &key).await? {
             Some(value) => Some(value),
-            None if key != run_id => {
-                self.kv.get(STATUS_NS, run_id).await?
-            }
+            None if key != run_id => self.kv.get(STATUS_NS, run_id).await?,
             None => None,
         };
         match value {

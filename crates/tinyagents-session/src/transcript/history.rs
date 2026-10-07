@@ -634,10 +634,8 @@ impl TranscriptLocator for FileTranscriptLocator {
         // interruption callbacks must not append display-only data to the
         // sealed predecessor. Wrap the successor scan and append in write
         // locks so they are atomic.
-        let history = FileTranscriptHistory::opened_at(
-            path.clone(),
-            seed_meta_for_discovered(thread_id),
-        );
+        let history =
+            FileTranscriptHistory::opened_at(path.clone(), seed_meta_for_discovered(thread_id));
         history.with_write_locks(|| {
             if path
                 .parent()
