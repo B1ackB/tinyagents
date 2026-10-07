@@ -123,4 +123,4 @@ pub fn truncate_older_tool_results(messages: &mut [Message], max_bytes: usize) -
 
 #[cfg(test)]
 #[path = "request_truncation_tests.rs"]
-mod request_truncation_test;
+mod tests;

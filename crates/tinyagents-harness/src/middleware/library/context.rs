@@ -559,6 +559,7 @@ impl ContextCompressionMiddleware {
                 let text = previous_summary
                     .as_deref()
                     .map_or(text.clone(), |previous| format!("{previous}\n{text}"));
+                let text = self.hook_summary_text(&to_summarize, text);
                 let record = SummaryRecord {
                     summary: checkpoint_message(self.placement, &text),
                     provenance: crate::summarization::CompressionProvenance {

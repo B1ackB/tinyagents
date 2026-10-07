@@ -8,6 +8,22 @@ use crate::summarization::{
 };
 
 impl ContextCompressionMiddleware {
+    /// A summary a `before_compaction` hook supplied (already built on the
+    /// previous summary's text), with this compaction's file lists added to
+    /// the ones it carried.
+    pub(in crate::middleware::library) fn hook_summary_text(
+        &self,
+        to_summarize: &[Message],
+        text: String,
+    ) -> String {
+        let Some(extractor) = &self.file_ops else {
+            return text;
+        };
+        let (body, mut ops) = split_file_sections(&text);
+        ops.merge(&extract_file_operations(to_summarize, extractor.as_ref()));
+        append_file_sections(&body, &ops)
+    }
+
     /// Summarizes `to_summarize` (the messages folded away) for a compaction
     /// that keeps `to_keep` verbatim.
     ///
