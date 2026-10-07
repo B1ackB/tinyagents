@@ -1,0 +1,266 @@
+//! Overflow recovery for [`ContextCompressionMiddleware`]: one compaction
+//! attempt over a request the provider (or its response usage) says did not
+//! fit. The retry loop around it lives in `wrap_model`.
+//!
+//! A child module of `context` so it shares that module's private fold
+//! helpers (`remember_fold`, `finish_compaction`, the fingerprint chain).
+
+use super::*;
+use crate::summarization::OverflowInfo;
+
+impl ContextCompressionMiddleware {
+    /// Compacts `request` once for an overflow and returns the request to
+    /// retry, or `None` when no compaction can help: nothing safe to cut, the
+    /// `before_compaction` hook declined, the summarizer failed, or the
+    /// result would not be smaller than `request`. `None` always leaves the
+    /// run's fold and transcript untouched, so the caller surfaces the
+    /// original failure.
+    pub(super) async fn compact_for_overflow<Ctx: Send + Sync>(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &ModelRequest,
+        overflow: OverflowInfo,
+    ) -> Option<ModelRequest> {
+        let before_tokens = total_message_tokens(&request.messages);
+        // Checkpoints in the request (this run's fold summary, or one carried
+        // in from an earlier turn) are the previous summary, never raw history
+        // to summarize again.
+        let mut stripped = request.messages.clone();
+        let carried = take_checkpoints(&mut stripped);
+        // The provider just rejected a request `before_model` judged to fit, so
+        // the estimate cannot be trusted to size the kept tail: keep at most
+        // half of what the transcript estimates to (and half the provider's
+        // stated limit, when it gave one), never more than the trigger budget.
+        // Keeping the full trigger budget found no cut at all whenever the
+        // estimate was under the trigger, which is exactly when a provider
+        // overflow is a surprise.
+        let keep_recent_tokens = self
+            .policy
+            .trigger_budget()
+            .min(total_message_tokens(&stripped) / 2)
+            .min(overflow.limit.map_or(u64::MAX, |limit| limit / 2))
+            .max(1);
+        let Some(cut) = find_cut_point(
+            &stripped,
+            keep_recent_tokens,
+            crate::token_estimation::estimate_message_tokens,
+        ) else {
+            // Nothing safe to cut (e.g. the whole transcript is already
+            // within budget, or is a single indivisible tool-call pair) —
+            // there is no compaction that could help, so surface the
+            // original provider error.
+            return None;
+        };
+
+        let (system, non_system) = partition_messages_system(&stripped);
+        // This run's fold and the live transcript its `before_model` saw. The
+        // fold extends in live-transcript coordinates only when this request's
+        // non-system messages still line up one-to-one with that live
+        // remainder: a later middleware dropping messages would shift every
+        // index, and persisting a shifted boundary would corrupt a resumed
+        // session.
+        // With no `before_model` state for this run (compression installed only
+        // as model middleware), nothing rewrote the request: it is the live
+        // transcript itself.
+        // (Over the request's own non-system messages, checkpoint included,
+        // so a carried checkpoint the fold does not know about breaks the
+        // alignment instead of shifting it.)
+        let (prior, live_chain) = self.run_state(ctx.instance_id()).unwrap_or_else(|| {
+            let (_, live) = partition_messages_system(&request.messages);
+            (None, fingerprint_chain(&live))
+        });
+        let folded = prior.as_ref().map_or(0, |fold| fold.folded);
+        // `before_model` splices the fold's pinned message in right after the
+        // summary. It is a copy of a message inside the folded range, not part
+        // of the live remainder, so it is set aside for the alignment check.
+        let prior_pin = prior
+            .as_ref()
+            .and_then(|fold| fold.pinned.clone())
+            .filter(|pin| non_system.first() == Some(&pin.message));
+        let remainder = &non_system[usize::from(prior_pin.is_some())..];
+        // Content, not just count: a later step that rewrites messages in place
+        // (microcompact blanking tool bodies) keeps the count but changes what
+        // a summary of this request would describe.
+        let seed = folded
+            .checked_sub(1)
+            .and_then(|i| live_chain.get(i))
+            .copied()
+            .unwrap_or(0);
+        let fold_extends = live_chain.len() >= folded
+            && fingerprint_chain_from(seed, remainder) == live_chain[folded..];
+        // The request's checkpoint (stripped above) is superseded by the new
+        // one, which is built on it: the checkpoint is taken from this very
+        // request, so it describes exactly the history before the cut whether
+        // or not the request still aligns with the live transcript.
+        let kept_system: Vec<Message> = system;
+        let plan = crate::summarization::split_at_cut(
+            kept_system.clone(),
+            &non_system,
+            cut.index,
+            self.policy.pin_turn_user_message,
+        );
+        if plan.to_summarize.is_empty() {
+            // Only the pinned message lay before the cut, and it stays pinned:
+            // nothing to compact.
+            return None;
+        }
+        let coords = LiveCoords {
+            folded,
+            prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
+        };
+        let new_folded = coords.live_index(plan.cut);
+        let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
+        let boundary = LiveBoundary {
+            first_kept_index: new_folded,
+            pinned_user_index: pinned.as_ref().map(|pin| pin.live_index),
+        };
+        let crate::summarization::CompactionPlan {
+            to_summarize,
+            to_keep,
+            ..
+        } = plan;
+        let from_tokens = cut.tokens_before + cut.tokens_after;
+        if !fold_extends {
+            tracing::debug!(
+                folded,
+                live = live_chain.len(),
+                request = non_system.len(),
+                "[context_compression] overflow request no longer aligns with the live transcript; compacting without extending the fold or persisting a boundary"
+            );
+        }
+
+        // The request's own checkpoint describes its history before the cut;
+        // without one, the run's summaries only do when the request still
+        // lines up with the live transcript (an unaligned request's summary
+        // would describe altered history). Both the summarizer and a
+        // `before_compaction` hook's own summary build on it, since the
+        // checkpoint it came from is dropped from `to_keep` either way.
+        let previous_summary = carried.as_ref().map(summary_text).or_else(|| {
+            fold_extends
+                .then(|| {
+                    prior
+                        .as_ref()
+                        .map(|fold| summary_text(&fold.summary))
+                        .or_else(|| self.run_last_summary(ctx.instance_id()))
+                })
+                .flatten()
+        });
+
+        match self.hook_decision(
+            CompactionReason::Overflow,
+            from_tokens,
+            &to_summarize,
+            &to_keep,
+        ) {
+            CompactionDecision::Decline => return None,
+            CompactionDecision::Proceed => {}
+            CompactionDecision::UseSummary(text) => {
+                let text = previous_summary
+                    .as_deref()
+                    .map_or(text.clone(), |previous| format!("{previous}\n{text}"));
+                let record = SummaryRecord {
+                    summary: checkpoint_message(self.placement, &text),
+                    provenance: crate::summarization::CompressionProvenance {
+                        source_ids: Vec::new(),
+                        original_token_estimate: 0,
+                        summary_token_estimate: 0,
+                        reason: "before_compaction hook supplied the summary".to_string(),
+                    },
+                    usage: None,
+                };
+                let new_messages = splice_summary(to_keep, record.summary.clone());
+                let to_tokens = total_message_tokens(&new_messages);
+                if to_tokens >= before_tokens {
+                    tracing::debug!(
+                        before_tokens,
+                        to_tokens,
+                        "[context_compression] hook summary does not shrink the request; stopping overflow recovery"
+                    );
+                    return None;
+                }
+                if fold_extends {
+                    self.remember_fold(
+                        ctx.instance_id(),
+                        new_folded,
+                        &live_chain,
+                        &record.summary,
+                        pinned.clone(),
+                    );
+                }
+                self.finish_compaction(
+                    ctx,
+                    record,
+                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
+                    from_tokens,
+                    to_tokens,
+                    CompactionReason::Overflow,
+                    None,
+                );
+                let mut retried = request.clone();
+                retried.messages = new_messages;
+                self.forget_pending(ctx.instance_id());
+                return Some(retried);
+            }
+        }
+
+        tracing::info!(
+            to_summarize = to_summarize.len(),
+            to_keep = to_keep.len(),
+            from_tokens,
+            "[context_compression] provider reported a context overflow; compacting and retrying"
+        );
+        let started = std::time::Instant::now();
+        let record = match summarize_with_split(
+            self.summarizer.as_ref(),
+            &to_summarize,
+            self.max_turn_tokens.unwrap_or(u64::MAX),
+            previous_summary,
+            crate::token_estimation::estimate_message_tokens,
+        )
+        .await
+        {
+            Ok(record) => record,
+            // Compaction itself failed: nothing changed, so surface the
+            // original overflow rather than a confusing summarizer error.
+            Err(_) => return None,
+        };
+        let latency_ms = elapsed_ms(started);
+        let record = self.placed(record);
+
+        let new_messages = splice_summary(to_keep, record.summary.clone());
+        let to_tokens = total_message_tokens(&new_messages);
+        // A summary that is not smaller than what it replaces cannot help, and
+        // a further attempt would only repeat it: stop here, change nothing.
+        if to_tokens >= before_tokens {
+            tracing::info!(
+                before_tokens,
+                to_tokens,
+                "[context_compression] compaction did not shrink the request; stopping overflow recovery"
+            );
+            return None;
+        }
+        if fold_extends {
+            self.remember_fold(
+                ctx.instance_id(),
+                new_folded,
+                &live_chain,
+                &record.summary,
+                pinned,
+            );
+        }
+        self.finish_compaction(
+            ctx,
+            record,
+            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
+            from_tokens,
+            to_tokens,
+            CompactionReason::Overflow,
+            Some(latency_ms),
+        );
+
+        let mut retried = request.clone();
+        retried.messages = new_messages;
+        self.forget_pending(ctx.instance_id());
+        Some(retried)
+    }
+}
