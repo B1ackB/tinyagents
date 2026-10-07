@@ -36,8 +36,9 @@ hook" section in `mod.rs` for that contract.
   identity the trackers compare. The default, [`VolatileSpanNormalizer`],
   blanks timestamps, clock times, 10/13-digit epochs that are the value of a
   time-like key (`ts=`, `"timestamp":`, `updated_at:`; a bare 10-digit number
-  is a byte count or an id as often as a clock), attached durations (`123ms`,
-  `1.2s`), `attempt N` / `retry N of M`, `pid N` and UUIDs, and leaves every other
+  is a byte count or an id as often as a clock), measurement durations (`took
+  123ms`, `duration=1.2s`), `attempt N` / `retry N of M`, `pid N`, and UUIDs in
+  request/trace-style fields, and leaves every other
   number alone, including long hex ids such as commit SHAs and checksums, which
   are usually the result itself. An outcome that is *only*
   volatile (a bare commit id or checksum: fewer than four alphanumeric
@@ -48,7 +49,8 @@ hook" section in `mod.rs` for that contract.
   error line (identical-failure rung) and `SuccessfulRepeatTracker` on the
   result; both take a replacement through `with_fingerprinter`, and a host
   that wants the previous byte-for-byte behavior passes a verbatim
-  fingerprinter (`|text| text.to_string()`).
+  fingerprinter (a unit struct whose `fingerprint` returns
+  `outcome.to_string()`).
 - [`ClassifiedFailureTracker`] — an additive ledger for equivalent failures
   keyed by class, operation, and resource or permission scope. `record` accepts
   a class-specific recovery budget; `clear` removes one group only after an

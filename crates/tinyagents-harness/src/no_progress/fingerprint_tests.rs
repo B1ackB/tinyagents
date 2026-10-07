@@ -103,6 +103,7 @@ fn durations_are_normalized() {
     same("took 250us", "took 3us");
     same("elapsed 1h2m3.5s", "elapsed 4h5m6s");
     differ("took 123ms to read", "took 123ms to write");
+    differ("lease expires in 30s", "lease expires in 20s");
 }
 
 #[test]
@@ -126,6 +127,14 @@ fn uuids_are_normalized_but_long_hex_ids_are_content() {
     same(
         "request 123e4567-e89b-12d3-a456-426614174000 failed",
         "request 00000000-1111-2222-3333-444444444444 failed",
+    );
+    same(
+        r#"{"request_id":"123e4567-e89b-12d3-a456-426614174000","status":"failed"}"#,
+        r#"{"request_id":"00000000-1111-2222-3333-444444444444","status":"failed"}"#,
+    );
+    differ(
+        r#"{"job_id":"123e4567-e89b-12d3-a456-426614174000","status":"ready"}"#,
+        r#"{"job_id":"00000000-1111-2222-3333-444444444444","status":"ready"}"#,
     );
     // A commit id or checksum is usually the answer, not noise around it.
     differ(

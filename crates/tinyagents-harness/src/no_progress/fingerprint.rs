@@ -100,7 +100,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             not_followed_by_word,
         ),
         rule(
-            r"(?-u:\b)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?-u:\b)",
+            r#"(?i)(?-u:\b)(?:request|trace|correlation|session|run|call|invocation|operation|message|event)(?:[_ -]?(?:id|uuid))?\s*["']?\s*(?:[:=]\s*|\s+)["']?\s*(?P<span>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?-u:\b)"#,
             "<uuid>",
             accept_all,
         ),
@@ -120,12 +120,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             "<epoch>",
             not_after_dot,
         ),
-        // `123ms`, `250us`, `1.2s`, `45s`, and Go-style `1h2m3.5s`. The unit
-        // must be attached to the number. A bare-seconds integer is limited to
-        // two digits so decades and rough counts ("the 1990s", "100s of
-        // files") are untouched.
+        // Measurement fields and phrases such as `duration=123ms`,
+        // `elapsed 1.2s`, and `took 1h2m3.5s`. Restricting the context keeps
+        // semantic countdowns such as `lease expires in 30s` distinct.
         rule(
-            r"(?-u:\b)(?:(?:\d+h)?(?:\d+m)?(?:\d{1,2}|\d+\.\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms))(?-u:\b)",
+            r#"(?i)(?-u:\b)(?:took|elapsed|duration|latency|timeout|wait(?:ed)?|sleep(?:ing)?)(?:\s*(?:was|of|in))?\s*["']?\s*(?:[:=]\s*)?["']?\s*(?P<span>(?:(?:\d+h)?(?:\d+m)?(?:\d{1,2}|\d+\.\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms)))(?-u:\b)"#,
             "<duration>",
             not_after_dot,
         ),
