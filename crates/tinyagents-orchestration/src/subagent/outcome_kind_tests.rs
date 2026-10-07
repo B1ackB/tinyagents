@@ -27,7 +27,7 @@ fn outcome_kind_wire_format_is_unchanged_by_the_rename() {
 fn awaiting_input_wire_key_is_unchanged_by_the_rename() {
     let kind = SubagentOutcomeKind::AwaitingInput(SubagentPause {
         reason: "need input".to_string(),
-        resume: SubagentResume::new("state".to_string()),
+        resume: SubagentResume::default(),
     });
     let wire = serde_json::to_value(&kind).unwrap();
     assert!(wire.get("AwaitingInput").is_some(), "{wire}");
