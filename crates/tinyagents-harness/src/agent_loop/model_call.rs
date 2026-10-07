@@ -19,6 +19,9 @@ pub(super) const PER_CALL_BOUND_LABEL: &str = "per-model-call ceiling";
 use super::*;
 use crate::cache::{CacheSkipReason, apply_prompt_cache_breakpoints, scoped_cache_key};
 use crate::no_progress::StreamTextStallDetector;
+use crate::retry::{
+    FailoverDecision, FailoverReason, FailoverState, decide, is_model_specific_format,
+};
 use tinyinference_llm::cache::CachePolicy;
 
 /// Converts a configured stream window to a [`Duration`]. `None` and a zero
