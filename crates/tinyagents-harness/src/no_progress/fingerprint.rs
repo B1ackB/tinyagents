@@ -63,6 +63,30 @@ fn not_after_dot(text: &str, found: &Match<'_>) -> bool {
     !text[..found.start()].ends_with('.')
 }
 
+/// Accepts duration phrases that describe elapsed work, while keeping
+/// semantic countdowns such as `lease expires in 30s` as content.
+fn duration_context(text: &str, found: &Match<'_>) -> bool {
+    let before = text[..found.start()].to_ascii_lowercase();
+    let keyword_context = before.trim_end_matches([' ', ':', '=']);
+    if [
+        "took", "elapsed", "duration", "latency", "timeout", "wait", "waited", "sleep", "sleeping",
+    ]
+    .iter()
+    .any(|keyword| keyword_context.ends_with(keyword))
+    {
+        return true;
+    }
+    if before.ends_with("after ") {
+        return true;
+    }
+    before.ends_with(" in ") && {
+        let preceding = &before[..before.len() - " in ".len()];
+        preceding.contains("<timestamp>")
+            || (preceding.contains(|character: char| character.is_ascii_digit())
+                && preceding.contains('-'))
+    }
+}
+
 /// The span must not run straight into a word character: `2026-10-06T12:34:56Zebra`
 /// is not a timestamp followed by text, and the regex crate has no
 /// look-ahead to say so in the pattern.
@@ -137,12 +161,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             not_after_dot,
         ),
         // Measurement fields and phrases such as `duration=123ms`,
-        // `elapsed 1.2s`, and `took 1h2m3.5s`. Restricting the context keeps
-        // semantic countdowns such as `lease expires in 30s` distinct.
+        // `elapsed 1.2s`, `took 1h2m3.5s`, and log phrases such as
+        // `after 5003ms` or `...2026-10-06T12:00:01Z in 12ms`.
         rule(
-            r#"(?i)(?-u:\b)(?:took|elapsed|duration|latency|timeout|wait(?:ed)?|sleep(?:ing)?)(?:\s*(?:was|of|in))?\s*["']?\s*(?:[:=]\s*)?["']?\s*(?P<span>(?:(?:\d+h)?(?:\d+m)?(?:\d+\.\d+|\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms)))(?-u:\b)"#,
+            r#"(?i)(?-u:\b)(?:(?:took|elapsed|duration|latency|timeout|wait(?:ed)?|sleep(?:ing)?)(?:\s*(?:was|of|in))?|after|in)\s*["']?\s*(?:[:=]\s*)?["']?(?P<span>(?:(?:\d+h)?(?:\d+m)?(?:\d+\.\d+|\d+)s|\d+(?:\.\d+)?(?:ns|[µu]s|ms)))(?-u:\b)"#,
             "<duration>",
-            not_after_dot,
+            |text, found| not_after_dot(text, found) && duration_context(text, found),
         ),
         rule(
             r"(?i)(?-u:\b)(?:attempt|retry)\s*#?\s*\d+(?:\s*(?:of|/)\s*\d+)?(?-u:\b)",

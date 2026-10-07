@@ -106,6 +106,10 @@ fn durations_are_normalized() {
     same("elapsed 1h2m3.5s", "elapsed 4h5m6s");
     differ("took 123ms to read", "took 123ms to write");
     differ("lease expires in 30s", "lease expires in 20s");
+    same(
+        "doc fetched at 2026-10-06T12:00:00Z in 10ms",
+        "doc fetched at 2026-10-06T12:00:01Z in 11ms",
+    );
 }
 
 #[test]
