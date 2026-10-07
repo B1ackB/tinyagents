@@ -16,7 +16,8 @@ or mid-tool-call.
 
 - `SteeringCommand` — the typed instruction sent to a running loop: `Pause`,
   `PauseWith { reason }`, `Resume`, `Cancel`, `InjectMessage(Message)`,
-  `Redirect { instruction }`, `SetMetadata { metadata }`.
+  `Redirect { instruction }`, `SetMetadata { metadata }`,
+  `SwitchModel { model }` (opt-in, see below).
   `Serialize`/`Deserialize` so commands can be logged, transported, and
   replayed. `.kind()` returns the payload-free `SteeringCommandKind`.
 - `SteeringCommandKind` — the policy-relevant discriminant of a command;
@@ -24,7 +25,9 @@ or mid-tool-call.
   logging/events.
 - `SteeringPolicy` — an allowlist of permitted `SteeringCommandKind`s.
   `SteeringPolicy::new()` permits nothing (fail-closed default);
-  `allow_all()` / `.allow(kind)` grant kinds explicitly.
+  `allow_all()` / `.allow(kind)` grant kinds explicitly. `allow_all()` does
+  **not** include `SwitchModel`; use `allow_all_with_model_switch()` (or
+  `.allow(SteeringCommandKind::SwitchModel)`).
 - `SteeringHandle` — a cloneable, `Arc`-backed handle shared by the sender
   (orchestrator) and receiver (agent loop). `send` enqueues; `drain` empties
   the FIFO queue; `pending`/`is_empty` inspect it; `pause_state`/`is_paused`/
@@ -40,6 +43,33 @@ or mid-tool-call.
   drains `ctx`'s handle (if any), validates the whole batch against the run's
   policy before applying anything, applies permitted commands to `messages`
   and `ctx.config`, and returns the resulting `SteeringOutcome`.
+
+## Live model switch (`SwitchModel`)
+
+`SteeringCommand::SwitchModel { model }` re-points the run at another model of
+the harness's registry. Because it changes cost, rate limits and which provider
+receives the transcript, it is **opt-in**: `SteeringPolicy::allow_all()` and
+`SteeringHandle::allow_all()` withhold it.
+
+- The checkpoint records the name on the run's handle
+  (`SteeringHandle::model_override`); the agent loop applies it as
+  `request.model` at the next model-call boundary, **before** the binding is
+  resolved. `ModelStarted`/`ModelFailed`, `ctx.model_profile`, the
+  cross-provider handoff transform, the host budget estimate and the dialect
+  decision therefore all use the new model. It wins over a model a
+  `before_model` middleware selected.
+- Sticky for the rest of the run; the latest accepted switch wins. The
+  in-flight call is never interrupted.
+- An unknown, capability-ineligible or retired name, a blank name, or a
+  host-routed run is rejected: `Steered { accepted: false }` (plus
+  `ModelOverrideSkipped` from the loop) and the run continues on its current
+  model; the rejected name is dropped so it is reported once.
+- Fallback: when the switched model is in `RunPolicy::fallback`, the walk
+  continues from its position; when it is not, a failure falls back through the
+  whole chain from its head (the original primary's chain).
+- Per-run state: a child's handle (`for_child`) has its own override, so a
+  parent's switch never reaches a child and a child's rejection never clears
+  the parent's.
 
 ## Files
 
