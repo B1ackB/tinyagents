@@ -113,9 +113,11 @@ fn a_flood_is_coalesced_and_the_latest_state_survives_close() {
     }
     // Two pass straight through; the rest collapse into the newest one.
     assert_eq!(messages(&recorder), vec!["step 1", "step 2"]);
+    // Closing flushes the held (newest) update even though the window is full.
     gate.close();
-    assert_eq!(messages(&recorder), vec!["step 1", "step 2"]);
-    assert_eq!(gate.take_pending().len(), 2);
+    assert_eq!(messages(&recorder), vec!["step 1", "step 2", "step 6"]);
+    let pending: Vec<_> = gate.take_pending().into_iter().map(|d| d.content).collect();
+    assert_eq!(pending, vec!["step 1", "step 2", "step 6"]);
 }
 
 #[test]
@@ -158,7 +160,7 @@ fn a_new_window_flushes_what_the_last_one_held_back() {
     std::thread::sleep(Duration::from_millis(20));
     sink.report(ToolProgress::message("c")); // new window: flush "b", pass "c"
     gate.close();
-    assert_eq!(messages(&recorder), vec!["a", "b"]);
+    assert_eq!(messages(&recorder), vec!["a", "b", "c"]);
 }
 
 #[tokio::test]

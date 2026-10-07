@@ -160,16 +160,9 @@ impl ToolProgressGate {
             return;
         }
         if let Some(held) = state.held.take() {
-            let window_expired = state
-                .window_start
-                .is_none_or(|start| start.elapsed() >= self.limits.window);
-            if window_expired {
-                state.window_start = Some(Instant::now());
-                state.emitted_in_window = 0;
-            }
-            if state.emitted_in_window < self.limits.max_per_window {
-                self.emit(&mut state, held);
-            }
+            // The terminal flush is exempt from the per-window limit: it is at
+            // most one extra event, and it is what keeps the final state.
+            self.emit(&mut state, held);
         }
         state.closed = true;
     }
@@ -296,7 +289,7 @@ impl Drop for CloseOnDrop {
 /// value costs a bounded amount of work.
 fn delta_content(update: &ToolProgress, fraction: Option<f32>) -> String {
     let mut content = if let Some(message) = &update.message {
-        message.clone()
+        bounded_text(message)
     } else if let Some(partial) = &update.partial {
         bounded_json(partial)
     } else {
@@ -318,10 +311,13 @@ fn truncate_at_char_boundary(text: &mut String, max: usize) {
     }
 }
 
+/// Copies at most [`MAX_DELTA_CONTENT_BYTES`] of `text`, never the whole of it.
 fn bounded_text(text: &str) -> String {
-    let mut text = text.to_owned();
-    truncate_at_char_boundary(&mut text, MAX_DELTA_CONTENT_BYTES);
-    text
+    let mut end = text.len().min(MAX_DELTA_CONTENT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 fn bounded_value(value: &serde_json::Value) -> serde_json::Value {

@@ -281,7 +281,7 @@ impl Middleware<(), ()> for DeltaLog {
     }
 }
 
-struct RejectDelta;
+struct RejectDelta(Arc<Mutex<Vec<String>>>);
 
 #[async_trait]
 impl Middleware<(), ()> for RejectDelta {
@@ -293,8 +293,9 @@ impl Middleware<(), ()> for RejectDelta {
         &self,
         _ctx: &mut RunContext<()>,
         _state: &(),
-        _delta: &mut ToolDelta,
+        delta: &mut ToolDelta,
     ) -> Result<()> {
+        self.0.lock().unwrap().push(delta.content.clone());
         Err(crate::error::TinyAgentsError::Middleware(
             "delta rejected".into(),
         ))
@@ -304,7 +305,9 @@ impl Middleware<(), ()> for RejectDelta {
 #[tokio::test]
 async fn a_failing_delta_hook_does_not_fail_the_call_or_stop_replay() {
     let mut fx = fixture(calls(&[("c1", "build")]));
-    fx.harness.push_middleware(Arc::new(RejectDelta));
+    let rejected = Arc::new(Mutex::new(Vec::new()));
+    fx.harness
+        .push_middleware(Arc::new(RejectDelta(rejected.clone())));
     fx.harness.register_tool(Arc::new(ProgressTool {
         name: "build",
         updates: vec!["p1", "p2"],
@@ -322,6 +325,7 @@ async fn a_failing_delta_hook_does_not_fail_the_call_or_stop_replay() {
             Seen::Completed("c1".into()),
         ]
     );
+    assert_eq!(*rejected.lock().unwrap(), vec!["p1", "p2"]);
 }
 
 #[tokio::test]
