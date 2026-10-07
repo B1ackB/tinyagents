@@ -157,8 +157,9 @@ run with `AgentMiddleware`.
 ## Subagent orchestration
 
 `tinyagents-orchestration` owns child-agent composition. `SubAgentTool` is a
-typed parent-context dispatcher: it starts a child in the background and
-returns a stable job id immediately. `SubAgentJobsTool` queries job
+typed parent-context dispatcher: its default `background` mode starts a child
+in the background and returns a stable job id immediately, while `inline` mode
+waits for and returns the child's final result in the same call. `SubAgentJobsTool` queries job
 status/results and `SubAgentMessageTool` sends messages to a live job;
 hosts register these control tools over the same explicitly shared
 `SubAgentJobRegistry`. `SubAgentSession` covers retained post-completion

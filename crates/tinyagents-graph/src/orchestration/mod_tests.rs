@@ -133,6 +133,49 @@ async fn detached_registry_enforces_owner_and_waits_for_terminal_status() {
 }
 
 #[tokio::test]
+async fn detached_registry_remembers_steer_request_ids_per_task() {
+    let registry = runtime_registry();
+    let (first, rx_first, cancel_first, join_first) = detached_handles();
+    let (second, rx_second, cancel_second, join_second) = detached_handles();
+    let _keep = (first, second);
+    let first_id = TaskId::new("steer-a");
+    let second_id = TaskId::new("steer-b");
+    for (id, rx, cancel, join) in [
+        (&first_id, rx_first, cancel_first, &join_first),
+        (&second_id, rx_second, cancel_second, &join_second),
+    ] {
+        registry
+            .register(
+                id.clone(),
+                "p",
+                "m".to_string(),
+                rx,
+                cancel,
+                join.abort_handle(),
+            )
+            .unwrap();
+    }
+
+    assert_eq!(registry.claim_steer_request(&first_id, "req-1"), Ok(true));
+    assert_eq!(
+        registry.claim_steer_request(&first_id, "req-1"),
+        Ok(false),
+        "the same request id on the same task is a duplicate"
+    );
+    assert_eq!(
+        registry.claim_steer_request(&second_id, "req-1"),
+        Ok(true),
+        "request ids are scoped to a task"
+    );
+    assert_eq!(
+        registry.claim_steer_request(&TaskId::new("nope"), "req-1"),
+        Err(DetachedTaskRegistryError::Unknown)
+    );
+    join_first.abort();
+    join_second.abort();
+}
+
+#[tokio::test]
 async fn detached_registry_timeout_keeps_task_registered() {
     let registry = runtime_registry();
     let task_id = TaskId::new("detached-timeout");

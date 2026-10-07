@@ -74,6 +74,8 @@
 mod jobs;
 mod types;
 
+const LOG_PREFIX: &str = "[subagent-tool]";
+
 pub use jobs::{SubAgentJobsTool, SubAgentMessageTool, register_subagent_job_tools};
 pub use types::*;
 
@@ -389,6 +391,29 @@ impl<State: Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgent<State, C
     }
 }
 
+/// Stamps the explicit parent-call -> child-run link onto a child run's
+/// metadata, preserving whatever metadata the child already carries.
+fn stamp_link_metadata(
+    metadata: &mut Value,
+    subagent_run_id: &str,
+    job_id: &str,
+    tool_call_id: Option<&str>,
+) {
+    if !metadata.is_object() {
+        let original = std::mem::take(metadata);
+        *metadata = json!({"value": original});
+    }
+    if let Value::Object(map) = metadata {
+        map.insert("subagent_run_id".into(), json!(subagent_run_id));
+        map.insert("subagent_job_id".into(), json!(job_id));
+        if let Some(tool_call_id) = tool_call_id {
+            map.insert("parent_tool_call_id".into(), json!(tool_call_id));
+        } else {
+            map.remove("parent_tool_call_id");
+        }
+    }
+}
+
 /// Derives an isolated child thread id from the parent thread and the child's
 /// run id. The run id already carries a process-unique sequence, so the thread
 /// id inherits its uniqueness.
@@ -559,6 +584,11 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 SUBAGENT_INPUT_FIELD: {
                     "type": "string",
                     "description": "The task or question to delegate to the sub-agent."
+                },
+                SUBAGENT_MODE_FIELD: {
+                    "type": "string",
+                    "enum": ["background", "inline"],
+                    "description": "`background` (default) returns a job id immediately while the sub-agent keeps running; `inline` waits for the sub-agent and returns its final result in this call."
                 }
             },
             "required": [SUBAGENT_INPUT_FIELD]
@@ -620,6 +650,18 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         }
     }
 
+    /// Reads the optional `mode` argument; absent means [`SubAgentMode::Background`].
+    fn extract_mode(arguments: &Value) -> std::result::Result<SubAgentMode, String> {
+        match arguments.get(SUBAGENT_MODE_FIELD) {
+            None | Some(Value::Null) => Ok(SubAgentMode::Background),
+            Some(Value::String(mode)) if mode == "background" => Ok(SubAgentMode::Background),
+            Some(Value::String(mode)) if mode == "inline" => Ok(SubAgentMode::Inline),
+            Some(_) => Err(format!(
+                "`{SUBAGENT_MODE_FIELD}` must be \"background\" or \"inline\""
+            )),
+        }
+    }
+
     /// Spawns this sub-agent from the actual parent [`RunContext`].
     ///
     /// This is the agent-native recursive-tool boundary.  It is intentionally
@@ -633,10 +675,35 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         &self,
         state: &State,
         args: Value,
-        _options: tinytools::ToolCallOptions,
+        options: tinytools::ToolCallOptions,
         parent: &RunContext<Ctx>,
     ) -> Result<tinytools::ToolResult> {
+        self.invoke_in_parent_context_for_call(state, args, options, parent, None)
+            .await
+    }
+
+    /// Like [`Self::invoke_in_parent_context`], additionally recording the
+    /// parent's `call_id` as the explicit parent-call -> child-run link.
+    ///
+    /// The link is carried by the queued result (`subagent_run_id`,
+    /// `parent_tool_call_id`, `job_id`), the job snapshot, and the child run's
+    /// metadata (`subagent_run_id`, `subagent_job_id`, `parent_tool_call_id`).
+    pub async fn invoke_in_parent_context_for_call(
+        &self,
+        state: &State,
+        args: Value,
+        _options: tinytools::ToolCallOptions,
+        parent: &RunContext<Ctx>,
+        call_id: Option<&tinyagents_harness::ids::CallId>,
+    ) -> Result<tinytools::ToolResult> {
         let input = Self::extract_input(&args);
+        let mode = match Self::extract_mode(&args) {
+            Ok(mode) => mode,
+            Err(message) => {
+                tracing::debug!("{LOG_PREFIX} invalid_mode tool={}", self.tool_name);
+                return Ok(tinytools::ToolResult::error(message));
+            }
+        };
         let config = match self.subagent.child_config(
             parent.depth(),
             parent.thread_id(),
@@ -662,25 +729,87 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             }
             Err(error) => return Err(error),
         };
-        let (job_id, steering) = self.jobs.create(&self.tool_name, parent.instance_id());
-        let child = child.with_steering(steering);
+        let subagent_run_id = child.run_id().as_str().to_owned();
+        let tool_call_id = call_id.map(|id| id.as_str().to_owned());
+        let (job_id, steering) = self.jobs.create_with_cancellation(
+            &self.tool_name,
+            parent.instance_id(),
+            child.cancellation.clone(),
+            JobLink {
+                subagent_run_id: Some(subagent_run_id.clone()),
+                parent_tool_call_id: tool_call_id.clone(),
+            },
+        );
+        tracing::debug!(
+            "{LOG_PREFIX} spawn job_id={job_id} subagent_run_id={subagent_run_id} tool_call_id={tool_call_id:?}"
+        );
+        let mut child = child.with_steering(steering);
+        stamp_link_metadata(
+            &mut child.config.metadata,
+            &subagent_run_id,
+            job_id.as_str(),
+            tool_call_id.as_deref(),
+        );
+        let streaming = parent.streaming;
+        if mode == SubAgentMode::Inline {
+            tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
+            self.jobs.mark_running(&job_id);
+            let mut guard = jobs::InlineJobGuard::new(self.jobs.clone(), job_id.clone());
+            let result = self
+                .subagent
+                .run_hosted_child(state, child, input, streaming)
+                .await;
+            self.jobs.mark_result(&job_id, result);
+            guard.disarm();
+            let Some(job) = self.jobs.get(job_id.as_str()) else {
+                return Ok(tinytools::ToolResult::error(format!(
+                    "Sub-agent job `{job_id}` was removed before its result could be read."
+                )));
+            };
+            tracing::debug!(
+                "{LOG_PREFIX} inline.done job_id={job_id} status={:?}",
+                job.status
+            );
+            // The job snapshot, plus the `job_id` key the queued result uses
+            // so both modes name the job the same way.
+            let mut payload = serde_json::to_value(&job)?;
+            payload["job_id"] = json!(job_id);
+            return Ok(match job.status {
+                SubAgentJobStatus::Completed => tinytools::ToolResult::json(payload),
+                _ => tinytools::ToolResult::error(payload.to_string()),
+            });
+        }
         let jobs = self.jobs.clone();
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
         let owned_state = state.clone();
-        let streaming = parent.streaming;
-        tokio::spawn(async move {
-            jobs.mark_running(&task_job_id);
+        // The child runs in its own task and a supervisor awaits its
+        // `JoinHandle`: a panic inside the child surfaces as a `JoinError`
+        // there, so the job can never stay `Running` forever.
+        let child_job_id = task_job_id.clone();
+        let child_jobs = jobs.clone();
+        let child_task = tokio::spawn(async move {
+            child_jobs.mark_running(&child_job_id);
             let result = subagent
                 .run_hosted_child(&owned_state, child, input, streaming)
                 .await;
-            jobs.mark_result(&task_job_id, result);
+            child_jobs.mark_result(&child_job_id, result);
+        });
+        tokio::spawn(async move {
+            if let Err(join_error) = child_task.await {
+                jobs.mark_aborted(&task_job_id, join_error.is_panic());
+            }
         });
 
-        Ok(tinytools::ToolResult::json(json!({
+        let mut queued = json!({
             "job_id": job_id,
-            "status": "queued"
-        })))
+            "status": "queued",
+            "subagent_run_id": subagent_run_id,
+        });
+        if let Some(tool_call_id) = tool_call_id {
+            queued["parent_tool_call_id"] = Value::String(tool_call_id);
+        }
+        Ok(tinytools::ToolResult::json(queued))
     }
 }
 
@@ -712,12 +841,12 @@ where
     async fn execute(
         &self,
         state: &State,
-        _call_id: tinyagents_harness::ids::CallId,
+        call_id: tinyagents_harness::ids::CallId,
         arguments: Value,
         options: tinytools::ToolCallOptions,
         parent: &RunContext<Ctx>,
     ) -> anyhow::Result<tinytools::ToolResult> {
-        self.invoke_in_parent_context(state, arguments, options, parent)
+        self.invoke_in_parent_context_for_call(state, arguments, options, parent, Some(&call_id))
             .await
             .map_err(anyhow::Error::from)
     }
@@ -759,3 +888,15 @@ impl tinytools::Tool for SubAgentToolDeclaration {
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+
+#[cfg(test)]
+#[path = "mod_jobs_tests.rs"]
+mod jobs_tests;
+
+#[cfg(test)]
+#[path = "mod_link_tests.rs"]
+mod link_test;
+
+#[cfg(test)]
+#[path = "mod_inline_tests.rs"]
+mod inline_test;

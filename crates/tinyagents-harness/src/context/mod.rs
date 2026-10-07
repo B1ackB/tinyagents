@@ -456,7 +456,9 @@ impl<Ctx> RunContext<Ctx> {
             .with_optional_namespaced_store(self.namespaced_store.clone())
             .with_optional_state_view(self.state_view.clone())
             .with_events(self.events.clone())
-            .with_cancellation(self.cancellation.clone())
+            // A linked child token: a parent cancel cascades down, but
+            // cancelling this child leaves the parent and siblings running.
+            .with_cancellation(self.cancellation.child_token())
             .with_optional_steering(steering)
             .with_optional_workspace(self.workspace.clone())
             .with_streaming(self.streaming);

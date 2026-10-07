@@ -148,6 +148,7 @@ pub use run_queue::{
     QueuedMessage, RunQueue, RunQueueHandle, SteeringForwarderGuard,
 };
 pub use steering::{
-    SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringOutcome, SteeringPolicy,
+    RecentRequestIds, RequestIdError, SteeringCommand, SteeringCommandKind, SteeringHandle,
+    SteeringOutcome, SteeringPolicy,
 };
 pub use tool::ToolRegistry;

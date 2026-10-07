@@ -41,8 +41,8 @@ pub use roster::{
 };
 pub use status::{wait_detached, wait_error_from_registry};
 pub use steer::{
-    SteerAccess, SteerError, SteerRoute, cancel_for_thread, distinct_parent_threads,
-    queue_lane_name, steer_detached, steering_command_for_lane,
+    SteerAccess, SteerError, SteerReceipt, SteerRoute, cancel_for_thread, distinct_parent_threads,
+    queue_lane_name, steer_detached, steer_detached_with_request_id, steering_command_for_lane,
 };
 pub use types::{
     DetachedSubagentStatus, FinishedOutcome, SpawnedSubagent, SubagentIdentity, SubagentResumeRef,

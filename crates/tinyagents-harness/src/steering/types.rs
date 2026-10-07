@@ -299,3 +299,18 @@ pub(crate) struct SteeringLocal {
     /// [`PauseState::paused_at_checkpoint`].
     pub(crate) checkpoints: Mutex<usize>,
 }
+
+/// Bounded memory of recently applied steering `request_id`s, used to make a
+/// retried steering request idempotent.
+///
+/// A steering caller that retries (a flaky transport, a model repeating a tool
+/// call) attaches the same `request_id` each time; the owner of the steered
+/// task keeps one `RecentRequestIds` per task and delivers a request only when
+/// [`Self::claim`] reports it as new. Only the most recent
+/// [`Self::DEFAULT_CAPACITY`] ids are remembered by default, so memory per task
+/// stays constant however long it runs.
+#[derive(Clone, Debug)]
+pub struct RecentRequestIds {
+    pub(crate) capacity: usize,
+    pub(crate) order: VecDeque<String>,
+}

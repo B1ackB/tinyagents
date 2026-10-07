@@ -15,7 +15,7 @@ use tokio::task::AbortHandle;
 use crate::{Result, TinyAgentsError};
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::ids::TaskId;
-use tinyagents_harness::steering::SteeringHandle;
+use tinyagents_harness::steering::{RecentRequestIds, SteeringHandle};
 
 use super::{
     CancelledDetachedTask, DetachedTaskRegistryError, DetachedTaskSnapshot,
@@ -28,6 +28,10 @@ struct DetachedTaskEntry<Metadata, Status> {
     status: watch::Receiver<Status>,
     cancellation: CancellationToken,
     abort: AbortHandle,
+    /// Steering `request_id`s already applied to this task, so a retried
+    /// request is delivered once while its id remains in the bounded recent
+    /// window. Older ids may be accepted again after eviction.
+    steer_requests: RecentRequestIds,
 }
 
 type RegistryGuard<'a, Metadata, Status> =
@@ -103,9 +107,37 @@ where
                 status,
                 cancellation,
                 abort,
+                steer_requests: RecentRequestIds::default(),
             },
         );
         Ok(())
+    }
+
+    /// Records a steering `request_id` against `task_id`.
+    ///
+    /// Returns `Ok(true)` the first time the id is seen for this task and
+    /// `Ok(false)` for a duplicate, in which case the caller must not deliver
+    /// the steer again. Only the most recent
+    /// [`RecentRequestIds::DEFAULT_CAPACITY`] ids per task are remembered. This
+    /// performs no ownership or terminal check; callers validate those first so
+    /// a rejected steer never consumes its id.
+    pub fn claim_steer_request(
+        &self,
+        task_id: &TaskId,
+        request_id: &str,
+    ) -> std::result::Result<bool, DetachedTaskRegistryError> {
+        let mut guard = self.lock()?;
+        let entry = guard
+            .get_mut(task_id)
+            .ok_or(DetachedTaskRegistryError::Unknown)?;
+        let is_new = entry
+            .steer_requests
+            .claim(request_id)
+            .map_err(|_| DetachedTaskRegistryError::RequestIdTooLong)?;
+        tracing::debug!(
+            "[detached-registry] claim_steer_request task_id={task_id} is_new={is_new}"
+        );
+        Ok(is_new)
     }
 
     /// Number of process-local task runtimes currently registered.

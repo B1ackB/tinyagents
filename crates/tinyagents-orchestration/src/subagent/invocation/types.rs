@@ -16,9 +16,10 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
+use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::events::EventSink;
 use tinyagents_harness::runtime::AgentHarness;
-use tinyagents_harness::steering::SteeringHandle;
+use tinyagents_harness::steering::{RecentRequestIds, SteeringHandle};
 use tinyinference_llm::message::Message;
 
 /// The argument key a [`SubAgentTool`] reads the child input from.
@@ -28,6 +29,20 @@ use tinyinference_llm::message::Message;
 /// the child run's user prompt; if the arguments are a bare JSON string the
 /// whole string is used instead.
 pub const SUBAGENT_INPUT_FIELD: &str = "input";
+
+/// The argument key a [`SubAgentTool`] reads the delegation mode from.
+pub const SUBAGENT_MODE_FIELD: &str = "mode";
+
+/// How a [`SubAgentTool`] call runs its child.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubAgentMode {
+    /// Spawn the child as a background job and return its job id immediately.
+    #[default]
+    Background,
+    /// Await the child inside the tool call and return its final result.
+    Inline,
+}
 
 /// Typed policy that constructs a child's user data from its parent data.
 ///
@@ -131,7 +146,9 @@ pub struct SubAgentSession<State: Send + Sync, Ctx: Send + Sync = ()> {
 ///
 /// When the parent model calls this tool, [`SubAgentTool`] spawns the wrapped
 /// sub-agent as a background child run and immediately returns a
-/// [`SubAgentJobId`]. It never waits for the child's final answer. Hosts share
+/// [`SubAgentJobId`]. By default it never waits for the child's final answer;
+/// the optional `mode: "inline"` argument ([`SubAgentMode::Inline`]) instead
+/// awaits the child and returns its final result in the same call. Hosts share
 /// the tool's [`SubAgentJobRegistry`] with [`super::SubAgentJobsTool`] and
 /// [`super::SubAgentMessageTool`] so callers can query completion or inject a message
 /// at the child's next steering checkpoint.
@@ -203,6 +220,10 @@ impl SubAgentJobStatus {
 }
 
 /// Host-queryable snapshot of one asynchronous subagent job.
+///
+/// The registry is the source of job snapshots. The link fields are populated
+/// by the registry when a job is created; callers should obtain snapshots from
+/// it rather than constructing this record directly.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubAgentJob {
     /// Stable job identifier returned by the spawning tool.
@@ -217,6 +238,22 @@ pub struct SubAgentJob {
     /// Host-safe failure text, once failed or cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Run id of the child run executing this job; the same id the child's
+    /// own events and transcript use. Absent on jobs created before the link
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_run_id: Option<String>,
+    /// Id of the parent tool call that spawned this job, when the dispatcher
+    /// supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
+}
+
+/// Explicit link from a spawned job back to the parent call and child run.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct JobLink {
+    pub(crate) subagent_run_id: Option<String>,
+    pub(crate) parent_tool_call_id: Option<String>,
 }
 
 /// Shared registry behind asynchronous subagent spawning and host controls.
@@ -230,6 +267,16 @@ pub(crate) struct SubAgentJobEntry {
     /// Identity of the parent run that created this capability.
     pub(crate) owner: u64,
     pub(crate) steering: SteeringHandle,
+    /// The child run's own cancellation token (a linked child of the parent's),
+    /// so one job can be cancelled without touching the parent or siblings.
+    ///
+    /// `None` once the job is terminal: a settled job holds no live token.
+    pub(crate) cancellation: Option<CancellationToken>,
+    /// Message `request_id`s already applied, so a retried message is queued once.
+    pub(crate) message_requests: RecentRequestIds,
+    /// Whether cancellation was requested while the child was still running.
+    /// The job remains non-terminal until the child reports its result.
+    pub(crate) cancellation_requested: bool,
 }
 
 /// Error returned by job lookup or live-message delivery.
@@ -238,7 +285,7 @@ pub enum SubAgentJobError {
     /// No job exists for the supplied id.
     #[error("unknown subagent job `{0}`")]
     NotFound(String),
-    /// Messages can only be sent while a job is queued or running.
+    /// Messages and cancellation only apply while a job is queued or running.
     #[error("subagent job `{job_id}` is already {status:?}")]
     Terminal {
         /// Target job id.
@@ -246,4 +293,10 @@ pub enum SubAgentJobError {
         /// Terminal status observed by the registry.
         status: SubAgentJobStatus,
     },
+    /// Cancellation has been requested and queued messages will not be read.
+    #[error("subagent job `{0}` is cancelling")]
+    Cancelling(String),
+    /// The request identifier exceeds the bounded registry size.
+    #[error("subagent request id is too long")]
+    RequestIdTooLong,
 }

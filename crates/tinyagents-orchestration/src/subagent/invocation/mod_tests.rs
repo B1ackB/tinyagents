@@ -37,9 +37,9 @@ fn child_harness<Ctx: Send + Sync>(answer: &str) -> AgentHarness<(), Ctx> {
     harness
 }
 
-struct BlockedModel {
-    started: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
+pub(super) struct BlockedModel {
+    pub(super) started: Arc<tokio::sync::Semaphore>,
+    pub(super) release: Arc<tokio::sync::Semaphore>,
 }
 
 #[async_trait::async_trait]
@@ -49,13 +49,17 @@ impl ChatModel<()> for BlockedModel {
         _state: &(),
         _request: ModelRequest,
     ) -> tinyinference_llm::Result<ModelResponse> {
-        self.started.notify_one();
-        self.release.notified().await;
+        self.started.add_permits(1);
+        let _permit = self
+            .release
+            .acquire()
+            .await
+            .expect("release semaphore open");
         Ok(ModelResponse::assistant("finished later"))
     }
 }
 
-fn spawned_job_id(result: &tinytools::ToolResult) -> String {
+pub(super) fn spawned_job_id(result: &tinytools::ToolResult) -> String {
     serde_json::from_str::<serde_json::Value>(&result.output())
         .expect("spawn result is JSON")
         .get("job_id")
@@ -64,7 +68,11 @@ fn spawned_job_id(result: &tinytools::ToolResult) -> String {
         .to_owned()
 }
 
-async fn wait_for_terminal(jobs: &SubAgentJobRegistry, job_id: &str, owner: u64) -> SubAgentJob {
+pub(super) async fn wait_for_terminal(
+    jobs: &SubAgentJobRegistry,
+    job_id: &str,
+    owner: u64,
+) -> SubAgentJob {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             let job = jobs
@@ -114,8 +122,8 @@ async fn job_host_tools_query_and_message_a_live_child() {
 
 #[tokio::test]
 async fn subagent_tool_returns_job_id_before_child_completion() {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut child_harness = AgentHarness::new();
     child_harness.register_model(
         "blocked",
@@ -144,7 +152,7 @@ async fn subagent_tool_returns_job_id_before_child_completion() {
     .expect("spawn does not wait for the child")
     .expect("spawn succeeds");
     let job_id = spawned_job_id(&result);
-    started.notified().await;
+    let _permit = started.acquire().await.unwrap();
     assert_eq!(
         jobs.get_owned(&job_id, parent.instance_id())
             .unwrap()
@@ -152,7 +160,7 @@ async fn subagent_tool_returns_job_id_before_child_completion() {
         SubAgentJobStatus::Running
     );
 
-    release.notify_one();
+    release.add_permits(1);
     let job = wait_for_terminal(&jobs, &job_id, parent.instance_id()).await;
     assert_eq!(job.output.as_deref(), Some("finished later"));
 }
