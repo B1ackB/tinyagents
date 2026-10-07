@@ -74,6 +74,38 @@ slice is summarized in one call instead of forcing an unsafe split.
 into both the threshold and overflow compaction paths; leaving it unset
 (default) never splits.
 
+### A cut inside a turn: the turn prefix
+
+Size-halving is for a turn that is merely too big. When the *cut* lands inside
+a turn (the kept tail starts with an assistant or tool message, so the user's
+request and the first steps of the answer are folded away), the folded prefix
+loses what the kept tail needs. `split_turn_start(to_summarize, to_keep)` finds
+the turn's opening user message (only when earlier history exists and the
+turn's user message is not itself kept/pinned), and `summarize_split_turn`
+summarizes the history before it as usual and the turn's prefix as its own
+request, `SummaryRequest { kind: SummaryKind::TurnPrefix, .. }`, then joins
+them: `<history>\n\n---\n\n**Turn Context (split turn):**\n\n<prefix>`.
+`ModelSummarizer` answers a `TurnPrefix` request with a short-paragraph prompt
+(request, constraints, early steps) instead of the structured checkpoint
+sections; other summarizers may ignore `kind`. The middleware uses this in both
+the threshold and overflow paths (port of pi's `generateTurnPrefixSummary`).
+
+### File lists in summaries
+
+Each compaction summary ends with `<read-files>` and `<modified-files>`
+sections listing the files the folded tool calls touched (port of pi's
+`compaction/utils.ts`). They are derived from the *calls*, not the model's
+prose, and accumulate: the previous summary's lists are parsed off before it
+reaches the summarizer and unioned with the new ones, so each appears once and
+a summarizer cannot drop them. `FileOpExtractor` is pluggable
+(`with_file_op_extractor`); `DefaultFileOpExtractor` reads the `path`, `file`,
+`file_path` and `paths` arguments, and treats a tool whose name contains a
+mutating verb (`write`, `edit`, `patch`, `create`, `delete`, `remove`,
+`append`, `replace`, `move`, `rename`, `save`, `touch`, `mkdir`) as a
+modification and any other as a read; a file both read and modified is listed
+as modified. `without_file_operations()` turns it off. A summary supplied by a
+`before_compaction` hook (`UseSummary`) is used as given.
+
 ## Iterative summaries
 
 `Summarizer::summarize_request(&SummaryRequest) -> Result<SummaryRecord>` is a
@@ -377,31 +409,98 @@ stack.push(mw.clone());               // before_model: proactive threshold compa
 stack.push_model_middleware(mw.clone()); // wrap_model: overflow → compact → retry
 ```
 
-`wrap_model`:
+`wrap_model` (overflow recovery v2):
 
-1. Calls the wrapped model once. On success, forwards the response.
-2. On error, consults `OverflowClassifier`. A non-overflow error propagates
-   unchanged — no compaction, no retry.
-3. On a classified overflow, finds a cut point via `find_cut_point` over the
-   request without its checkpoint. `keep_recent_tokens` is the smallest of
-   `trigger_budget()`, half the request's estimate, and half the provider's
-   stated limit. The provider just rejected a request the estimate judged to
-   fit, so keeping the full trigger budget would find no cut. No safe cut
-   (already-minimal transcript, or a single indivisible tool pair)
-   propagates the original error.
+1. Calls the wrapped model. A result is an **overflow** when it is an error
+   `OverflowClassifier` recognizes, *or* a successful response that shows the
+   window was exceeded (see "Overflow from the response" below). Anything else
+   is forwarded unchanged — no compaction, no retry.
+2. Makes up to `with_max_overflow_attempts(n)` recovery attempts (default
+   `DEFAULT_MAX_OVERFLOW_ATTEMPTS = 3`; `0` disables recovery), re-calling the
+   model after each. The first success is returned; when the budget is spent
+   the last result — error or response — is returned as it came.
+3. Each attempt takes the cheapest step that can help (see "Cheaper first:
+   truncate tool results"). A compaction finds a cut point via `find_cut_point`
+   over the request without its checkpoint. `keep_recent_tokens` is the
+   smallest of `trigger_budget()`, half the request's estimate, and half the
+   provider's stated limit. The provider just rejected a request the estimate
+   judged to fit, so keeping the full trigger budget would find no cut. No safe
+   cut (already-minimal transcript, or a single indivisible tool pair) ends
+   recovery.
 
    The classifier only sees errors that reach the wrap layer. A failure the
    model-call core treats as retryable is retried there first, so register the
    middleware with `push_model_middleware` *and* make sure provider adapters
    report overflows as non-retryable (`ProviderError::retryable = false`).
-4. Consults `before_compaction`. `Decline` propagates the original error.
-   `Proceed`/`UseSummary` run the compaction (`CompactionReason::Overflow`),
-   persist/emit as above, and retry the **same** turn exactly once more with
-   the compacted transcript.
-5. The retry's result (success or a second failure) is returned as-is — a
-   second overflow is not compacted again. This bounds the loop to at most
-   two model calls per turn even against a transcript that cannot be shrunk
-   under the window.
+4. Consults `before_compaction`. `Decline` ends recovery (the original result
+   is returned). `Proceed`/`UseSummary` run the compaction
+   (`CompactionReason::Overflow`), persist/emit as above, and retry the **same**
+   turn with the compacted request.
+5. **Every attempt after the first must produce a strictly smaller request**
+   than the one it started from, or recovery stops and the original result is
+   returned. The first attempt is exempt: the provider has just refused the
+   request, and the default `ConcatSummarizer` (never smaller than its input)
+   would otherwise never recover. Together with the attempt budget this bounds
+   the loop even against a transcript that cannot be shrunk under the window.
+
+The transcript is never rewritten. A retry is a rewrite of the *request*;
+compactions extend the run's fingerprint-chained fold exactly as `before_model`
+compactions do, so a later call re-applies them instead of re-summarizing.
+
+### Overflow from the response
+
+Some servers never raise an error: they accept an oversized prompt and report
+usage above the window ("silent overflow"), or truncate the input to fit and
+stop with `length` and no output. `detect_response_overflow` (a port of the
+response cases of pi's `isContextOverflow` / `isRecoverableLength`) classifies
+these; `with_response_overflow_detection(ResponseOverflowDetection)` chooses
+how much to trust:
+
+| Mode | Counts as overflow |
+| --- | --- |
+| `Off` | nothing (errors only, the pre-v2 behaviour) |
+| `Usage` (default) | `usage.input_tokens > window` on a non-`length` stop; a `length` stop with zero output and `input_tokens >= 0.99 * window` |
+| `UsageAndShortLength` | the above, plus a `length` stop whose output is under half the request's `max_tokens` |
+
+The window is the response's `usage.context_window_tokens`, else
+`SummarizationPolicy::context_window`; without one only the short-`length` rule
+can fire. `input_tokens` is the whole prompt (cache reads are a subset). The
+short-`length` rule is opt-in because a model can stop short for its own
+reasons and each false positive costs a compaction. A cache-served response is
+never classified.
+
+### Cheaper first: truncate tool results
+
+`with_tool_result_truncation(max_bytes)` (opt-in; unset never truncates) adds a
+route in front of summarization. `CompactionPressure::route(prompt, budget,
+reducible)` (a port of OpenClaw's `resolveCompactionPressureDecision`) returns:
+
+| Route | When | Action |
+| --- | --- | --- |
+| `Fits` | `prompt <= budget` | nothing |
+| `Compact` | over budget, nothing reducible | summarize |
+| `TruncateToolResults` | `reducible >= max(overflow + 512, 1.5 * overflow)` tokens | cut tool results only, no summary |
+| `CompactThenTruncate` | reducible, but not enough alone | summarize, then cut what remains |
+
+`reducible` is the bytes above `max_bytes` in every tool-result text block
+(`artifacts::reducible_tool_result_bytes`, /4 for tokens). The cut
+(`artifacts::truncate_tool_results`) keeps the head and appends the standard
+`truncated by tool_result_budget` notice; it skips `trusted_verbatim` results,
+non-text blocks and `[tool_result_preview]` envelopes, and is idempotent.
+
+It runs in two places: before the call (`before_model`, once the prompt is over
+the trigger; `budget` is the trigger budget) and on a reported overflow
+(`budget` is the provider's stated limit, or the trigger budget when none).
+The provider's word outranks the estimate, so a `Fits` verdict on a reported
+overflow still compacts. A route that truncates switches the run into
+*truncating mode*: every later request of the run has its oversized results cut
+again before it is measured, so the prompt prefix stays byte-stable and the
+measured prompt size stays valid. A compaction summarizes the **uncut**
+results; the cut is applied on top when sending.
+
+Limitation: in truncating mode `wrap_model` sees an already-cut request, which
+no longer fingerprint-aligns with the live transcript, so an overflow
+compaction in that state is not persisted as a boundary (it still retries).
 
 ## Tests
 
@@ -414,6 +513,14 @@ stack.push_model_middleware(mw.clone()); // wrap_model: overflow → compact →
   transcript untouched (both `before_model` and `wrap_model`), persistence
   via a recording `CompactionSink`, and iterative-summary threading across
   two compactions on one middleware instance.
+- `middleware::library::context_overflow_test` — multi-attempt recovery and the
+  strictly-smaller rule, response-detected overflow, the truncate routes (error
+  path and preemptive, truncating mode), no truncation under the trigger.
+- `middleware::library::context_summary_test` — file lists (default,
+  pluggable, off, accumulating) and the split-turn prefix.
+- `summarization::{response_overflow,file_ops,split_turn}`,
+  `artifacts::request_truncation`, `compaction_pressure` (route table) — the
+  pure pieces.
 - `middleware::library::context_loop_test` — the middleware driven through the
   real agent loop with a scripted model: one compaction per crossing, the
   incremental second compaction, the user-role checkpoint after the system
