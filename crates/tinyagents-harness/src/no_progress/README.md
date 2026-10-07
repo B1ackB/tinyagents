@@ -115,6 +115,13 @@ hook" section in `mod.rs` for that contract.
   `SuccessfulRepeat`, `CallGate` and `RepeatProgressConfig` are
   `#[non_exhaustive]`; configure the latter with its `with_*` builders.
 
+- [`StreamTextStallDetector`] — consumes visible text fragments during one
+  model call and flags a long run of similarly opened sentences before the
+  provider stream finishes.
+- Threshold constants: [`DEFAULT_IDENTICAL_HALT_THRESHOLD`],
+  [`DEFAULT_REPEAT_OUTPUT_THRESHOLD`], [`DEFAULT_REPEAT_CALL_THRESHOLD`] (all
+  re-exported from `crate`).
+
 ## Marker on guard-answered results
 
 `RepeatProgressMiddleware` answers a blocked call (and the halting call) without
@@ -125,15 +132,8 @@ running the tool. Those results carry `"tinyagents.repeat_guard": "blocked"` or
 repeated-failure middleware should skip results where the marker is present.
 The marker is queued at refusal time (`RunContext::set_refusal_metadata`) and
 stamped by the loop when it builds the error result, so it is present for
-every `after_tool` hook whatever its registration order:
-they are the guard's answer, not the tool failing, and counting them would
-double-escalate.
-- [`StreamTextStallDetector`] — consumes visible text fragments during one
-  model call and flags a long run of similarly opened sentences before the
-  provider stream finishes.
-- Threshold constants: [`DEFAULT_IDENTICAL_HALT_THRESHOLD`],
-  [`DEFAULT_REPEAT_OUTPUT_THRESHOLD`], [`DEFAULT_REPEAT_CALL_THRESHOLD`] (all
-  re-exported from `crate`).
+every `after_tool` hook, whatever its registration order. They are the
+guard's answer, not the tool failing, and counting them would double-escalate.
 
 ## Files
 
