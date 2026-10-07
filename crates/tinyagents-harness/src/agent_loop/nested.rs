@@ -54,7 +54,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use futures::channel::{mpsc, oneshot};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -187,7 +187,13 @@ impl<'a, State: Send + Sync, Ctx: Send + Sync> NestedCalls<'a, State, Ctx> {
         let mut in_flight = FuturesUnordered::new();
         loop {
             tokio::select! {
-                result = &mut scoped => return result,
+                result = &mut scoped => {
+                    // A tool that stopped waiting on a call dropped its half
+                    // of the reply channel; give those calls one poll to
+                    // observe it and record themselves as abandoned.
+                    while let Some(Some(())) = in_flight.next().now_or_never() {}
+                    return result;
+                }
                 Some(request) = incoming.next() => in_flight.push(self.serve(request)),
                 Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
             }
