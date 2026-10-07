@@ -11,6 +11,7 @@
 //! [`tinyagents_harness::tool::ToolRegistry`] alongside any other tools.
 
 mod reconcile;
+mod recovery;
 mod runtime;
 mod store;
 mod store_registry;
@@ -19,6 +20,10 @@ mod types;
 
 pub use reconcile::{
     ReconcileOutcome, ReconcileReport, ReconciledTask, reconcile_orphaned_tasks, task_status_label,
+};
+pub use recovery::{
+    MAX_RECOVERY_CHILDREN, MAX_RECOVERY_LABEL_CHARS, RESTART_RECOVERY_INSTRUCTION, RecoveryChild,
+    build_restart_recovery_note, recovery_children,
 };
 pub use runtime::DetachedTaskRegistry;
 pub use store::{InMemoryTaskStore, JsonlTaskStore, TaskStore};

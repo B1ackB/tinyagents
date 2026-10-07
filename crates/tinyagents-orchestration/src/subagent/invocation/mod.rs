@@ -95,6 +95,8 @@ use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
 use tinyinference_llm::message::Message;
 
+use super::SpawnAdmission;
+
 impl<State: Send + Sync, Ctx: Send + Sync + 'static> SubAgent<State, Ctx> {
     /// Creates a sub-agent wrapping `harness` with a stable `name` and
     /// `description`.
@@ -610,7 +612,22 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             parameters: Self::default_parameters(),
             declaration: std::sync::OnceLock::new(),
             jobs: SubAgentJobRegistry::new(),
+            admission: SpawnAdmission::default(),
         }
+    }
+
+    /// Enforces spawn limits through `admission` (see [`super::SpawnPolicy`]).
+    ///
+    /// Share one [`SpawnAdmission`] across every tool whose spawns should
+    /// count against the same limits. Without this call spawning is unlimited.
+    pub fn with_spawn_admission(mut self, admission: SpawnAdmission) -> Self {
+        self.admission = admission;
+        self
+    }
+
+    /// Returns the admission ledger this tool reserves spawn slots from.
+    pub fn spawn_admission(&self) -> &SpawnAdmission {
+        &self.admission
     }
 
     /// Uses a host-shared registry for spawned jobs and control tools.
@@ -706,6 +723,25 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 return Ok(tinytools::ToolResult::error(message));
             }
         };
+        // Reserve the slot atomically before anything is spawned. The guard
+        // refunds on every early return below; it is committed once the child
+        // is registered and then lives exactly as long as the child runs.
+        let mut reservation = match self
+            .admission
+            .try_reserve(&parent.config, self.subagent.name())
+        {
+            Ok(reservation) => reservation,
+            Err(rejection) => {
+                tracing::debug!(
+                    "{LOG_PREFIX} spawn_rejected tool={} reason={rejection}",
+                    self.tool_name
+                );
+                return Ok(tinytools::ToolResult::error(format!(
+                    "Sub-agent `{}` was not started because a spawn limit was reached: {rejection}. The parent orchestrator should treat this as a delegated-agent limit signal, not a completed answer.",
+                    self.tool_name
+                )));
+            }
+        };
         let config = match self.subagent.child_config(
             parent.depth(),
             parent.thread_id(),
@@ -752,6 +788,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             job_id.as_str(),
             tool_call_id.as_deref(),
         );
+        reservation.commit();
         let streaming = parent.streaming;
         if mode == SubAgentMode::Inline {
             tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
@@ -763,6 +800,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 .await;
             self.jobs.mark_result(&job_id, result);
             guard.disarm();
+            drop(reservation);
             let Some(job) = self.jobs.get(job_id.as_str()) else {
                 return Ok(tinytools::ToolResult::error(format!(
                     "Sub-agent job `{job_id}` was removed before its result could be read."
@@ -791,6 +829,9 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         let child_job_id = task_job_id.clone();
         let child_jobs = jobs.clone();
         let child_task = tokio::spawn(async move {
+            // The slot is held for the child's whole lifetime and released
+            // when this task ends, however it ends (result, panic, abort).
+            let _reservation = reservation;
             child_jobs.mark_running(&child_job_id);
             let result = subagent
                 .run_hosted_child(&owned_state, child, input, streaming)
@@ -902,3 +943,7 @@ mod link_test;
 #[cfg(test)]
 #[path = "mod_inline_tests.rs"]
 mod inline_test;
+
+#[cfg(test)]
+#[path = "mod_admission_tests.rs"]
+mod admission_test;

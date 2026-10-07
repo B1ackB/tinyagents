@@ -97,6 +97,29 @@ call `orchestration_tools` to build the full set, or call
   per-task and aggregate results; `task_status_label(status)` gives the
   stable lowercase label used in logs.
 
+### Restart recovery note (`recovery.rs`)
+
+Reconciliation fixes the store; the *parent agent* still has to be told its
+children died. These pure functions turn a `ReconcileReport` into a note for the
+parent's next turn (wiring it into a host is the host's job):
+
+- `recovery_children(report, reason)` — selects the interrupted children
+  (everything the sweep failed or could not settle; tasks settled as cancelled
+  are user intent and are skipped), ordered by creation time then task id. Each
+  `RecoveryChild` carries `task_id`, `kind`, `label` (the `label` metadata, else
+  the agent/graph/tool name), `last_status`, and `interrupted_reason` (the sweep's persisted reason).
+  Labels and reasons are truncated to `MAX_RECOVERY_LABEL_CHARS` = 256 chars
+  here, in `recovery_children`; the builder does not re-truncate rows a caller
+  constructs by hand.
+- `build_restart_recovery_note(children)` — a capped roster (at most
+  `MAX_RECOVERY_CHILDREN` = 32 rows, then a `+N more` line) as JSON inside
+  a `<child_task_facts>` block (`<` is escaped so labels cannot close it),
+  followed by `RESTART_RECOVERY_INSTRUCTION`: reconcile against saved results,
+  verify uncertain side effects, never blindly re-run. Empty input gives `""`.
+
+Nothing here ever relaunches a task. For the per-tool-call side of recovery see
+`tinyagents_session::run_ledger::classify_recovery`.
+
 ## Files
 
 | File | Role |
@@ -107,6 +130,7 @@ call `orchestration_tools` to build the full set, or call
 | `store_registry.rs` | `TaskStoreRegistry<K>`, `open_jsonl_task_store_or_memory`. |
 | `runtime.rs` | `DetachedTaskRegistry<Metadata, Status>` — process-local executor handles keyed by task id. |
 | `reconcile.rs` | `reconcile_orphaned_tasks` and its report types, for settling orphans left by a dead executor. |
+| `recovery.rs` | `recovery_children` / `build_restart_recovery_note`: the parent-facing roster of interrupted children after a reconcile sweep (tests in `recovery_tests.rs`). |
 | `test.rs` | Unit tests (spawn/await/cancel/timeout/race semantics, store round-trips, filters, reconciliation, detached-task registry). |
 
 ## Operational constraints

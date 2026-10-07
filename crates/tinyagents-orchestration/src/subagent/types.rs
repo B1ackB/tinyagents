@@ -12,6 +12,7 @@ use tinyinference_llm::{message::Message, usage::UsageTotals};
 /// continuation can use a fresh execution context without changing its
 /// original persistence key.
 pub struct SubagentRequest<C = (), H = ()> {
+    target: Option<String>,
     task_key: SubagentTaskKey,
     run_context: RunContext<C>,
     host_request: H,
@@ -101,6 +102,7 @@ impl<C, H> SubagentRequest<C, H> {
         }
         Self::validate_thread(&task_key, &owned_child)?;
         Ok(Self {
+            target: None,
             task_key,
             run_context: owned_child,
             host_request,
@@ -123,12 +125,29 @@ impl<C, H> SubagentRequest<C, H> {
         Self::validate_key(&original_key)?;
         Self::validate_thread(&original_key, &fresh_owned_context)?;
         Ok(Self {
+            target: None,
             task_key: original_key,
             run_context: fresh_owned_context,
             host_request,
             input: input.into(),
             resume,
         })
+    }
+
+    /// Names the sub-agent this lifecycle runs, for spawn-policy
+    /// [`allowed_targets`](super::SpawnPolicy::allowed_targets) checks.
+    ///
+    /// The neutral request carries no agent identity (hosts resolve it in their
+    /// planner), so a host that configures an allowlist must set it here; a
+    /// request without a target is refused when an allowlist is configured.
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    /// The target named by [`Self::with_target`], if any.
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
     }
 
     /// Returns the sole durable identity for this lifecycle.
@@ -416,6 +435,7 @@ pub enum SubagentTerminalPersistenceDisposition {
 /// Typed lifecycle failures. Adapters classify their errors at the seam that
 /// owns them; the driver never flattens them into an untyped host error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubagentError {
     /// A supplied context or durable key violates neutral lifecycle invariants.
     InvalidRequest(String),
@@ -438,6 +458,9 @@ pub enum SubagentError {
     },
     /// Cooperative cancellation interrupted the lifecycle.
     Cancelled,
+    /// The spawn policy refused to admit this lifecycle; nothing was planned
+    /// or executed. A limit signal, not a failed or completed child.
+    SpawnRejected(super::SpawnRejection),
 }
 
 impl std::fmt::Display for SubagentError {
@@ -455,6 +478,9 @@ impl std::fmt::Display for SubagentError {
                 "subagent host seam returned task id {actual:?}, expected {expected:?}"
             ),
             Self::Cancelled => write!(f, "subagent execution was cancelled"),
+            Self::SpawnRejected(rejection) => {
+                write!(f, "subagent spawn was not admitted: {rejection}")
+            }
         }
     }
 }

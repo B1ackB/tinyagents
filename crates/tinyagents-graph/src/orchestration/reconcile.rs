@@ -51,6 +51,10 @@ pub struct ReconciledTask {
     /// The record as it stood before the transition, so callers can read their
     /// own metadata off it when emitting lifecycle events.
     pub record: OrchestrationTaskRecord,
+    /// The failure reason the sweep evaluated and persisted for this task;
+    /// `None` when the task was not failed by the sweep (cancelled, or the
+    /// transition errored).
+    pub recorded_reason: Option<String>,
 }
 
 /// The result of one reconciliation sweep.
@@ -129,15 +133,22 @@ pub fn reconcile_orphaned_tasks(
         let task_id = record.spec.task_id.clone();
         let prior_status = record.status;
 
+        let mut recorded_reason = None;
         let outcome = match prior_status {
             OrchestrationTaskStatus::CancelRequested => match store.mark_cancelled(&task_id) {
                 Ok(_) => ReconcileOutcome::Cancelled,
                 Err(err) => ReconcileOutcome::Error(err.to_string()),
             },
-            _ => match store.fail(&task_id, reason(&record)) {
-                Ok(_) => ReconcileOutcome::Failed,
-                Err(err) => ReconcileOutcome::Error(err.to_string()),
-            },
+            _ => {
+                let text = reason(&record);
+                match store.fail(&task_id, text.clone()) {
+                    Ok(_) => {
+                        recorded_reason = Some(text);
+                        ReconcileOutcome::Failed
+                    }
+                    Err(err) => ReconcileOutcome::Error(err.to_string()),
+                }
+            }
         };
 
         if let ReconcileOutcome::Error(detail) = &outcome {
@@ -154,6 +165,7 @@ pub fn reconcile_orphaned_tasks(
             prior_status,
             outcome,
             record,
+            recorded_reason,
         });
     }
 
