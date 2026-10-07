@@ -142,10 +142,18 @@ live and queues a `ToolDelta` for `Middleware::on_tool_delta`. Guarantees:
   middleware sees a call's deltas replayed in order immediately after the call
   settles and before `after_tool` and the terminal event. It observes; the live
   event is already out. A failing hook is logged and does not fail the call.
-- Flooding is coalesced: at most 32 events per second per call
-  (`ToolProgressLimits`); beyond that the newest value of each field replaces
-  the held update, which is emitted when the next window opens or the call
-  settles, so the final reported state is never lost.
+- The gate also closes if the dispatch future is dropped (run cancelled or
+  timed out mid-call), so a task the tool spawned cannot emit afterwards.
+- Flooding is coalesced: at most 32 events per second per call (fixed,
+  crate-private `ToolProgressLimits`); beyond that the newest value of each
+  field replaces the held update. There is no timer: the held update is emitted
+  on the first update of the next window or when the call settles, so the final
+  reported state is never lost.
+- The middleware replay queue is bounded (newest 64 deltas, each `content`
+  capped at 4 KiB, partials serialized only up to the cap) and is not filled at
+  all when the run has no middleware.
+- An event listener must not call `report_progress` re-entrantly (events are
+  emitted under the call's gate lock).
 
 The typed
 `HarnessStreamItem` enum, `StreamMode::{tools, usage, cost, events, final}`,

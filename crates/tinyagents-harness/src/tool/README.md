@@ -56,8 +56,11 @@ scrub) lives in `tinytools-agent`, reached through
   scopes it in a task-local around the dispatch future and
   `ToolExecutionContext::from_run_context` picks it up for the matching call
   id, so `ToolDispatch` implementors need no change.
-- `ToolProgressLimits` — events admitted per window before coalescing
-  (default 32 per second).
+- `ToolProgressLimits` (crate-private) — events admitted per window before
+  coalescing (fixed at 32 per second). The gate closes on settle **or when the
+  scoped future is dropped**; the replay queue is bounded (64 deltas, 4 KiB
+  content each) and skipped when the run has no middleware. A `ToolDispatch`
+  must build its `ToolExecutionContext` inside `execute`'s future.
 
 ### Injected arguments (`injected.rs`)
 
