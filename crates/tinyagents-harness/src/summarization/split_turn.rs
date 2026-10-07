@@ -75,7 +75,7 @@ pub async fn summarize_split_turn(
         history,
         max_turn_tokens,
         previous_summary,
-        estimator,
+        &estimator,
     )
     .await?;
     // The prefix can itself be too big for one call (a huge tool result in the
