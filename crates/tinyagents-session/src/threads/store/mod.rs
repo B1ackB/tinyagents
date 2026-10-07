@@ -130,7 +130,7 @@ pub(super) enum ThreadLogEntry {
     /// NOTE (audit TR-8): `labels: Some(_)` always **replaces** the folded
     /// label set (see `thread_index_unlocked`'s `Upsert` handling) — it is
     /// not a merge. Callers that want to touch a thread without disturbing
-    /// its labels (e.g. `bus::persist_channel_turn`) must pass `labels: None`.
+    /// its labels (e.g. a host's channel-persistence subscriber) must pass `labels: None`.
     Upsert {
         thread_id: String,
         title: String,
