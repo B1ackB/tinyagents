@@ -159,6 +159,7 @@ pub struct NoProgressTracker {
 
 /// Verdict returned after recording a successful-repeat signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SuccessfulRepeat {
     /// The signature changed, is exempt, failed, or remains below its threshold.
     Continue,
@@ -175,14 +176,15 @@ pub enum SuccessfulRepeat {
 /// Verdict from [`SuccessfulRepeatTracker::pre_call`], asked *before* a call
 /// executes. Only staged escalation ever answers anything but `Allow`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallGate {
     /// Run the call.
     Allow,
     /// Do not run the call: answer it with this error text asking the model to
     /// reassess.
     Block(String),
-    /// A second block in the same run: do not run the call and halt the run
-    /// with this summary.
+    /// The call's second block: do not run it and halt the run with this
+    /// summary.
     Halt(String),
 }
 
@@ -224,6 +226,7 @@ pub struct SuccessfulRepeatTracker {
     /// last, so [`SuccessfulRepeatTracker::pre_call`] can tell how often the
     /// next attempt would repeat a result without executing it.
     pub(super) last_outcome: Mutex<HashMap<u64, u64>>,
-    /// Calls blocked so far this run (survives context eviction).
-    pub(super) blocks: Mutex<u32>,
+    /// Call-signature hash → times that call was blocked (survives context
+    /// eviction; cleared when the call returns a new result).
+    pub(super) blocks: Mutex<HashMap<u64, u32>>,
 }

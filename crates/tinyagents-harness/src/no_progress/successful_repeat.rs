@@ -13,12 +13,12 @@
 //! `(call, result)` recurrences fed by
 //! [`SuccessfulRepeatTracker::record_call_outcome`].
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use super::escalation::RepeatEscalation;
 use super::fingerprint::{OutcomeFingerprinter, VolatileSpanNormalizer};
 use super::types::{CallGate, Streak, SuccessfulRepeat, SuccessfulRepeatTracker};
+use super::util::{hash_of, hash_pair, lock};
 
 /// Consecutive identical assistant-output batches required to halt.
 pub const DEFAULT_REPEAT_OUTPUT_THRESHOLD: u32 = 4;
@@ -31,9 +31,7 @@ impl Streak {
     /// update. Hashing rather than storing the signature keeps the tracker
     /// cheap to hold for a whole turn.
     fn record(&mut self, signature: &str) -> u32 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        signature.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = hash_of(signature);
         if self.last_hash == Some(hash) {
             self.consecutive += 1;
         } else {
@@ -72,7 +70,7 @@ impl SuccessfulRepeatTracker {
             recurrences: std::sync::Mutex::new(std::collections::HashMap::new()),
             escalation: None,
             last_outcome: std::sync::Mutex::new(std::collections::HashMap::new()),
-            blocks: std::sync::Mutex::new(0),
+            blocks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -210,14 +208,20 @@ impl SuccessfulRepeatTracker {
         call_signature: &str,
         outcome_identity: &str,
     ) -> SuccessfulRepeat {
-        let key = ledger_key(call_signature, outcome_identity);
-        let mut recurrences = lock(&self.recurrences);
-        let count = recurrences.entry(key).or_insert(0);
-        *count += 1;
-        let count = *count;
-        drop(recurrences);
-        lock(&self.last_outcome)
-            .insert(hash_of(call_signature), key);
+        let call = hash_of(call_signature);
+        let key = hash_pair(call_signature, outcome_identity);
+        let count = {
+            let mut recurrences = lock(&self.recurrences);
+            let count = recurrences.entry(key).or_insert(0);
+            *count += 1;
+            *count
+        };
+        lock(&self.last_outcome).insert(call, key);
+        if count == 1 {
+            // The call returned something new: that is progress, so earlier
+            // blocks of it no longer count toward a halt.
+            lock(&self.blocks).remove(&call);
+        }
         let warn = || {
             format!(
                 "the same successful tool call returned the identical result {count} times in this run; re-running steps whose results are already in the conversation adds no new information, so you are cycling without making progress."
@@ -230,9 +234,14 @@ impl SuccessfulRepeatTracker {
         };
         match self.escalation {
             None if count >= self.call_threshold => SuccessfulRepeat::Halt(halt()),
-            // Only reachable when the host never consults `pre_call`: the
-            // block did not happen, so stop rather than loop on.
-            Some(escalation) if count >= self.block_count(escalation) => {
+            // The block stage is skipped when the host never consults
+            // `pre_call`, or when state-changing calls kept discarding its
+            // prediction (see `invalidate_predictions_except`). Stop at the
+            // count where a second block would have happened rather than
+            // loop on.
+            Some(escalation)
+                if count >= self.block_count(escalation) + escalation.halt_block() - 1 =>
+            {
                 SuccessfulRepeat::Halt(halt())
             }
             Some(_) if count == self.call_threshold => SuccessfulRepeat::Warn(warn()),
@@ -246,39 +255,49 @@ impl SuccessfulRepeatTracker {
         self.call_threshold + escalation.gap()
     }
 
+    /// How many times `call_signature` has returned `outcome_identity` in this
+    /// run (since the last ledger reset).
+    pub fn recurrence_count(&self, call_signature: &str, outcome_identity: &str) -> u32 {
+        lock(&self.recurrences)
+            .get(&hash_pair(call_signature, outcome_identity))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Asked *before* a call executes: whether running it would only repeat a
     /// result the model already holds.
     ///
     /// With staged escalation, a call whose last result has already recurred
-    /// `block_after_warn` times past the warning is answered with
-    /// [`CallGate::Block`] instead of running; the `blocks_before_halt`-th
-    /// block in the run answers [`CallGate::Halt`]. A call never seen, or whose
-    /// last result differed, is allowed. Without escalation this is always
-    /// [`CallGate::Allow`].
+    /// enough times (the warning count plus `block_after_warn`, minus the call
+    /// about to run) is answered with [`CallGate::Block`] instead of running.
+    /// The `blocks_before_halt`-th block *of the same call signature* answers
+    /// [`CallGate::Halt`]; blocks of other calls do not count, so a batch of
+    /// two repeating calls is blocked once each before either halts, and
+    /// the count clears when the call returns a new result. A call never seen,
+    /// or whose recorded prediction was invalidated, is allowed. Without
+    /// escalation this is always [`CallGate::Allow`].
+    ///
+    /// The block is a *prediction*: the call is assumed to return what it last
+    /// returned. A host that knows a state-changing call ran in between should
+    /// call [`invalidate_predictions_except`](Self::invalidate_predictions_except).
     pub fn pre_call(&self, call_signature: &str) -> CallGate {
         let Some(escalation) = self.escalation else {
             return CallGate::Allow;
         };
-        let Some(key) = self
-            .lock(&last_outcome)
-            .get(&hash_of(call_signature))
-            .copied()
-        else {
+        let call = hash_of(call_signature);
+        let Some(key) = lock(&self.last_outcome).get(&call).copied() else {
             return CallGate::Allow;
         };
-        let count = self
-            .lock(&recurrences)
-            .get(&key)
-            .copied()
-            .unwrap_or(0);
+        let count = lock(&self.recurrences).get(&key).copied().unwrap_or(0);
         if count + 1 < self.block_count(escalation) {
             return CallGate::Allow;
         }
         let mut blocks = lock(&self.blocks);
-        *blocks += 1;
-        if *blocks >= escalation.halt_block() {
+        let blocked = blocks.entry(call).or_insert(0);
+        *blocked += 1;
+        if *blocked >= escalation.halt_block() {
             return CallGate::Halt(format!(
-                "Stopping: the same successful tool call was blocked {blocks} times for returning the identical result {count} times; the model kept re-issuing it after being warned, so the run is stuck cycling without making progress."
+                "Stopping: the same successful tool call was blocked {blocked} times for returning the identical result {count} times; the model kept re-issuing it after being warned, so the run is stuck cycling without making progress."
             ));
         }
         CallGate::Block(format!(
@@ -286,31 +305,27 @@ impl SuccessfulRepeatTracker {
         ))
     }
 
-    /// Jumps a call straight to the block stage: its next attempt with the
-    /// same result is blocked by [`pre_call`](Self::pre_call), without waiting
-    /// for the ledger to count up. A no-op without staged escalation.
-    pub fn escalate_to_block(&self, call_signature: &str, outcome_identity: &str) {
-        let Some(escalation) = self.escalation else {
-            return;
-        };
-        let key = ledger_key(call_signature, outcome_identity);
-        let mut recurrences = lock(&self.recurrences);
-        let count = recurrences.entry(key).or_insert(0);
-        *count = (*count).max(self.block_count(escalation) - 1);
-        drop(recurrences);
-        lock(&self.last_outcome)
-            .insert(hash_of(call_signature), key);
+    /// Discards the remembered last result of every call except
+    /// `call_signature`, so [`pre_call`](Self::pre_call) stops predicting them.
+    /// Call it after a successful call that may have changed state (anything
+    /// not known to be read-only): a read repeated after an edit can return
+    /// something new and must run. The recurrence counts are untouched, since
+    /// a result that really did recur still did. Pass the changing call's own
+    /// signature to keep predicting it.
+    pub fn invalidate_predictions_except(&self, call_signature: &str) {
+        let keep = hash_of(call_signature);
+        lock(&self.last_outcome).retain(|call, _| *call == keep);
     }
 
-    /// Clears both streaks, the recurrence ledger and the block count, for
+    /// Clears both streaks, the recurrence ledger and the block counts, for
     /// example when a paused run is resumed.
     pub fn reset(&self) {
         self.reset_ledger();
-        *lock(&self.blocks) = 0;
+        lock(&self.blocks).clear();
     }
 
-    /// Clears the streaks and the recurrence ledger but keeps the run-wide
-    /// block count: for a context eviction, where the model forgets the
+    /// Clears the streaks and the recurrence ledger but keeps the per-call
+    /// block counts: for a context eviction, where the model forgets the
     /// results it repeated but has still already been blocked once.
     pub fn reset_ledger(&self) {
         lock(&self.output).reset();
@@ -318,16 +333,4 @@ impl SuccessfulRepeatTracker {
         lock(&self.recurrences).clear();
         lock(&self.last_outcome).clear();
     }
-}
-
-fn hash_of(value: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn ledger_key(call_signature: &str, outcome_identity: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (call_signature, outcome_identity).hash(&mut hasher);
-    hasher.finish()
 }

@@ -69,6 +69,7 @@ mod post_compaction;
 mod stream_text;
 mod successful_repeat;
 mod types;
+mod util;
 
 pub use classified::{ClassifiedFailure, ClassifiedFailureTracker};
 pub use escalation::{DEFAULT_BLOCK_AFTER_WARN, DEFAULT_BLOCKS_BEFORE_HALT, RepeatEscalation};
