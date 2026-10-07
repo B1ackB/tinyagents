@@ -3,16 +3,23 @@
 //! Context compaction can erase the evidence that a run was looping: the model
 //! wakes up with a summary, repeats the call it was stuck on, gets the same
 //! result and is back in the loop, with the repeat ledger cleared. This guard
-//! remembers the last few `(call, result)` pairs recorded right before a
-//! compaction. For a short window of calls after it, a call that repeats one
-//! of those pairs is flagged so the host can escalate straight to blocking
-//! instead of letting the ledger count up from zero again.
+//! remembers the last few `(call, result)` pairs that were *already repeating*
+//! (recurred at least [`REPEATING_AT`] times) right before a compaction. For a
+//! short window of calls after it, a call that repeats one of those pairs is
+//! flagged so the host can warn the model.
+//!
+//! It is warning-only. Re-reading content a compaction evicted is correct
+//! behaviour, so a single repeat is never blocked, and a pair that was not
+//! repeating before the compaction is not remembered at all.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use super::util::{hash_pair, lock};
 
+/// Recurrences of a `(call, result)` pair before a compaction that make it
+/// part of the tail the guard remembers.
+pub const REPEATING_AT: u32 = 2;
 /// Tool calls watched after a compaction, and recent calls remembered before it.
 pub const DEFAULT_POST_COMPACTION_WINDOW: u32 = 3;
 
@@ -46,10 +53,12 @@ impl PostCompactionGuard {
         }
     }
 
-    /// Records one successful call. Returns `true` when the guard is armed and
-    /// this call repeats a pair from before the compaction (and disarms, so one
-    /// compaction flags at most one repeat).
-    pub fn record(&self, call_signature: &str, outcome_identity: &str) -> bool {
+    /// Records one successful call; `repeating` says whether the pair had
+    /// already recurred [`REPEATING_AT`] times. Before a compaction only
+    /// repeating pairs are remembered. Returns `true` when the guard is armed
+    /// and this call repeats a remembered pair (and disarms, so one compaction
+    /// flags at most one repeat).
+    pub fn record(&self, call_signature: &str, outcome_identity: &str, repeating: bool) -> bool {
         if self.window == 0 {
             return false;
         }
@@ -63,10 +72,12 @@ impl PostCompactionGuard {
             }
             return repeated;
         }
-        if state.tail.len() == self.window as usize {
-            state.tail.pop_front();
+        if repeating {
+            if state.tail.len() == self.window as usize {
+                state.tail.pop_front();
+            }
+            state.tail.push_back(pair);
         }
-        state.tail.push_back(pair);
         false
     }
 
