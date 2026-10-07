@@ -852,7 +852,7 @@ async fn fallback_from_a_plain_request_model_override_retargets_request_model() 
     }));
 
     let run = harness
-        .invoke(&(), vec![Message::user("hi")])
+        .invoke(&(), (), RunConfig::new("plain"), vec![Message::user("hi")])
         .await
         .expect("c answers after b fails");
 
