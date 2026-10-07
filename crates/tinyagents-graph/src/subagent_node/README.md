@@ -41,9 +41,15 @@ one fails closed rather than silently fabricating agent behavior.
   the harness `RetryPolicy` for backoff. Default is a conservative *single
   attempt, no timeout, no budget* so a node never silently re-runs a
   non-idempotent agent.
-- `SubAgentBudget` — optional cap on model/tool call counts, enforced *after*
-  the child run returns; violating it fails the node with
-  `TinyAgentsError::LimitExceeded`.
+- `SubAgentBudget` — optional caps on model/tool calls and input/output tokens,
+  checked *after* the child run returns; violating one fails the node with
+  `TinyAgentsError::LimitExceeded`. `apply_call_caps` tightens a `RunConfig`
+  for in-run enforcement; `max_cost` is carried but not enforced here
+  (`to_budget_limits` hands it to the harness `BudgetMiddleware`).
+  `SubAgentPolicy::retry_after_tool_calls` (default `false`) is honoured by the
+  orchestration paths; the graph node cannot see whether a failed attempt ran
+  tools. The policy types are re-exported from
+  `tinyagents_orchestration::subagent`.
 - `InputMapper<State>` / `OutputMapper<Update>` — type aliases for the parent↔
   child mapping closures.
 

@@ -71,9 +71,10 @@
 //! - `types` holds the public type definitions.
 //! - This file holds the impls (constructors, the invoke methods, and the
 //!   typed-parent dispatcher).
-//! - `test.rs` holds focused tests.
+//! - `*_tests.rs` files hold the focused tests.
 
 mod jobs;
+mod policy_run;
 mod types;
 
 const LOG_PREFIX: &str = "[subagent-tool]";
@@ -89,7 +90,7 @@ use serde_json::{Value, json};
 use tinyagents_harness::context::{RunConfig, RunContext};
 use tinyagents_harness::error::{Result, TinyAgentsError};
 use tinyagents_harness::events::{AgentEvent, EventSink};
-use tinyagents_harness::ids::{ThreadId, next_seq};
+use tinyagents_harness::ids::{RunId, ThreadId, next_seq};
 use tinyagents_harness::middleware::AgentRun;
 use tinyagents_harness::runtime::AgentHarness;
 use tinyagents_harness::tool::ToolDispatch;
@@ -613,7 +614,75 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             declaration: std::sync::OnceLock::new(),
             jobs: SubAgentJobRegistry::new(),
             admission: SpawnAdmission::default(),
+            policy: crate::subagent::SubAgentPolicy::default(),
+            role: crate::subagent::SubagentRole::default(),
+            delegation_tools: Vec::new(),
+            result_policy: crate::subagent::ResultPolicy::default(),
         }
+    }
+
+    /// Applies a timeout/retry/budget policy to every spawned child.
+    ///
+    /// Call caps tighten the child's run limits; token caps are checked when it
+    /// finishes; a retry needs `retry.max_attempts > 1` and re-runs a fresh
+    /// child only after a retryable failure that ran no tools (unless
+    /// [`SubAgentPolicy::retry_after_tool_calls`](crate::subagent::SubAgentPolicy)).
+    pub fn with_policy(mut self, policy: crate::subagent::SubAgentPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Declares the child's role. A [`SubagentRole::Leaf`](crate::subagent::SubagentRole)
+    /// child's harness must not expose delegation tools: the spawn is refused
+    /// otherwise (the shared harness cannot be filtered per call).
+    pub fn with_role(mut self, role: crate::subagent::SubagentRole) -> Self {
+        self.role = role;
+        self.warn_if_leaf_misconfigured();
+        self
+    }
+
+    /// Names the host's own delegation tools, which a leaf must not expose.
+    pub fn with_delegation_tools(mut self, names: Vec<String>) -> Self {
+        self.delegation_tools = names;
+        self.warn_if_leaf_misconfigured();
+        self
+    }
+
+    /// Why a leaf cannot spawn: its harness exposes a delegation tool (the job
+    /// and message tools, a host-named tool, or a tool with this tool's own
+    /// name). `None` for an orchestrator or a clean leaf.
+    fn leaf_violation(&self) -> Option<String> {
+        if self.role.can_delegate() {
+            return None;
+        }
+        let exposed = policy_run::delegation_tools_exposed(
+            &self.subagent,
+            &self.delegation_tools,
+            &self.tool_name,
+        );
+        (!exposed.is_empty()).then(|| {
+            format!(
+                "You are a leaf agent: do this work yourself; do not call this tool again. (Its harness exposes delegation tools {exposed:?}, so `{}` was not started.)",
+                self.tool_name
+            )
+        })
+    }
+
+    /// Construction-time visibility for a misconfigured leaf: the spawn is
+    /// refused per call, and this logs the cause once up front.
+    fn warn_if_leaf_misconfigured(&self) {
+        if let Some(message) = self.leaf_violation() {
+            tracing::warn!(
+                "{LOG_PREFIX} leaf_misconfigured tool={} {message}",
+                self.tool_name
+            );
+        }
+    }
+
+    /// Trims and schema-checks each child's final output.
+    pub fn with_result_policy(mut self, policy: crate::subagent::ResultPolicy) -> Self {
+        self.result_policy = policy;
+        self
     }
 
     /// Enforces spawn limits through `admission` (see [`super::SpawnPolicy`]).
@@ -723,6 +792,10 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 return Ok(tinytools::ToolResult::error(message));
             }
         };
+        if let Some(message) = self.leaf_violation() {
+            tracing::debug!("{LOG_PREFIX} leaf_violation tool={}", self.tool_name);
+            return Ok(tinytools::ToolResult::error(message));
+        }
         // Reserve the slot atomically before anything is spawned. The guard
         // refunds on every early return below; it is committed once the child
         // is registered and then lives exactly as long as the child runs.
@@ -742,7 +815,7 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 )));
             }
         };
-        let config = match self.subagent.child_config(
+        let mut config = match self.subagent.child_config(
             parent.depth(),
             parent.thread_id(),
             parent.config.max_turn_output_tokens,
@@ -756,6 +829,8 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
                 )));
             }
         };
+        self.policy.budget.apply_call_caps(&mut config);
+        let retry_base = (self.policy.retry.max_attempts > 1).then(|| config.clone());
         let child_data = self.child_data.child_data(&parent.data);
         let child = match parent.child(config, child_data) {
             Ok(child) => child,
@@ -781,24 +856,68 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         tracing::debug!(
             "{LOG_PREFIX} spawn job_id={job_id} subagent_run_id={subagent_run_id} tool_call_id={tool_call_id:?}"
         );
-        let mut child = child.with_steering(steering);
+        let mut child = child.with_steering(steering.clone());
         stamp_link_metadata(
             &mut child.config.metadata,
             &subagent_run_id,
             job_id.as_str(),
             tool_call_id.as_deref(),
         );
+        // Retries need fresh child contexts, and a background child outlives the
+        // borrow of `parent`, so the (cheap) contexts are built up front. Their
+        // ids derive from the first child's (`{first}-a{n}`), so no extra child
+        // ordinals are consumed and sibling ids do not depend on retries.
+        let attempt_count = self.policy.retry.max_attempts.max(1);
+        let watch = attempt_count > 1;
+        let job_token = child.cancellation.clone();
+        let mut attempts = vec![policy_run::Attempt::new(child, watch)];
+        if let Some(base) = retry_base {
+            for n in 1..attempt_count {
+                let spare_id = format!("{subagent_run_id}-a{n}");
+                let mut config = base.clone();
+                config.run_id = RunId::new(spare_id.clone());
+                config.thread_id = parent
+                    .thread_id()
+                    .map(|thread| child_thread_id(thread, &spare_id));
+                match parent.child(config, self.child_data.child_data(&parent.data)) {
+                    Ok(spare) => {
+                        let mut spare = spare
+                            .with_cancellation(job_token.clone())
+                            .with_steering(steering.clone());
+                        stamp_link_metadata(
+                            &mut spare.config.metadata,
+                            &spare_id,
+                            job_id.as_str(),
+                            tool_call_id.as_deref(),
+                        );
+                        attempts.push(policy_run::Attempt::new(spare, watch));
+                    }
+                    Err(error) => {
+                        tracing::debug!("{LOG_PREFIX} retry_context_unavailable error={error}");
+                        break;
+                    }
+                }
+            }
+        }
         reservation.commit();
         let streaming = parent.streaming;
         if mode == SubAgentMode::Inline {
             tracing::debug!("{LOG_PREFIX} inline.start job_id={job_id}");
             self.jobs.mark_running(&job_id);
             let mut guard = jobs::InlineJobGuard::new(self.jobs.clone(), job_id.clone());
-            let result = self
-                .subagent
-                .run_hosted_child(state, child, input, streaming)
-                .await;
-            self.jobs.mark_result(&job_id, result);
+            let finished = policy_run::run_attempts(
+                &self.subagent,
+                &self.policy,
+                state,
+                attempts,
+                input,
+                streaming,
+                &job_token,
+                &self.jobs,
+                &job_id,
+            )
+            .await;
+            policy_run::settle(&self.jobs, &job_id, finished, &self.result_policy).await;
             guard.disarm();
             drop(reservation);
             let Some(job) = self.jobs.get(job_id.as_str()) else {
@@ -823,6 +942,8 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
         let task_job_id = job_id.clone();
         let subagent = self.subagent.clone();
         let owned_state = state.clone();
+        let policy = self.policy.clone();
+        let result_policy = self.result_policy.clone();
         // The child runs in its own task and a supervisor awaits its
         // `JoinHandle`: a panic inside the child surfaces as a `JoinError`
         // there, so the job can never stay `Running` forever.
@@ -833,10 +954,19 @@ impl<State: Clone + Send + Sync + 'static, Ctx: Send + Sync + 'static> SubAgentT
             // when this task ends, however it ends (result, panic, abort).
             let _reservation = reservation;
             child_jobs.mark_running(&child_job_id);
-            let result = subagent
-                .run_hosted_child(&owned_state, child, input, streaming)
-                .await;
-            child_jobs.mark_result(&child_job_id, result);
+            let finished = policy_run::run_attempts(
+                &subagent,
+                &policy,
+                &owned_state,
+                attempts,
+                input,
+                streaming,
+                &job_token,
+                &child_jobs,
+                &child_job_id,
+            )
+            .await;
+            policy_run::settle(&child_jobs, &child_job_id, finished, &result_policy).await;
         });
         tokio::spawn(async move {
             if let Err(join_error) = child_task.await {
@@ -947,3 +1077,7 @@ mod inline_test;
 #[cfg(test)]
 #[path = "mod_admission_tests.rs"]
 mod admission_test;
+
+#[cfg(test)]
+#[path = "mod_policy_tests.rs"]
+mod policy_test;
