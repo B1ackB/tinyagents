@@ -1717,6 +1717,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tinyagents-harness",
  "tinyinference-llm",

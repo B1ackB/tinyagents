@@ -111,8 +111,70 @@ fn long_keys_are_hashed_and_tuples_never_collide() {
     assert_ne!(key(&["a/b", "c"]), key(&["a", "b/c"]));
     let long = "t".repeat(500);
     let hashed = key(&[&long]);
-    assert!(hashed.starts_with("h:") && hashed.len() < 64, "{hashed}");
+    assert!(hashed.starts_with("h:") && hashed.len() == 66, "{hashed}");
     assert_ne!(hashed, key(&[&"u".repeat(500)]));
+    assert_ne!(
+        key(&[&"t".repeat(500)]),
+        key(&[&"t".repeat(499), "t"]),
+        "the hash covers the length-prefixed tuple"
+    );
+}
+
+#[test]
+fn namespaces_encode_injectively() {
+    let ns = |parts: &[&str]| parts.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
+    assert_ne!(namespace_key(&ns(&["a", "b"])), namespace_key(&ns(&["a\u{1f}b"])));
+    assert_ne!(namespace_key(&ns(&["a", "b"])), namespace_key(&ns(&["a/b"])));
+    assert_ne!(namespace_key(&ns(&["ab"])), namespace_key(&ns(&["a", "b"])));
+    assert_eq!(namespace_key(&[]), "");
+}
+
+#[tokio::test]
+async fn scoped_reads_stay_in_their_namespace_when_ids_repeat() {
+    let saver = checkpointer();
+    let child = vec!["sub".to_string()];
+    saver.put(sample("t", "same", None, 1)).await.unwrap();
+    saver
+        .put(sample("t", "same", None, 2).with_namespace(child.clone()))
+        .await
+        .unwrap();
+    let root = saver.get_scoped("t", Some("same"), &[]).await.unwrap().unwrap();
+    assert_eq!(root.state, 1, "the root never loads the subgraph's checkpoint");
+    let nested = saver
+        .get_scoped("t", Some("same"), &child)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(nested.state, 2);
+    assert_eq!(saver.get_scoped("t", None, &[]).await.unwrap().unwrap().state, 1);
+    assert!(
+        saver
+            .get_scoped("t", None, &["other".to_string()])
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn pending_writes_never_merge_across_lookalike_namespaces() {
+    let saver = checkpointer();
+    let config = |namespace: Vec<String>| CheckpointConfig {
+        thread_id: "t".to_string(),
+        checkpoint_id: Some("c".to_string()),
+        namespace,
+    };
+    let split = config(vec!["a".to_string(), "b".to_string()]);
+    let joined = config(vec!["a\u{1f}b".to_string()]);
+    saver
+        .put_writes(
+            &split,
+            &[PendingWrite::data("n", "task", 0, "out", json!("split"))],
+        )
+        .await
+        .unwrap();
+    assert!(saver.get_writes(&joined).await.unwrap().is_empty());
+    assert_eq!(saver.get_writes(&split).await.unwrap().len(), 1);
 }
 
 #[test]
