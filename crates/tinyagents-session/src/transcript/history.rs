@@ -781,7 +781,10 @@ fn path_entry_exists(path: &Path) -> anyhow::Result<bool> {
     }
 }
 
-fn same_transcript_messages(left: &[TranscriptMessage], right: &[TranscriptMessage]) -> bool {
+pub(crate) fn same_transcript_messages(
+    left: &[TranscriptMessage],
+    right: &[TranscriptMessage],
+) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| a.same_row_as(b))
 }
 

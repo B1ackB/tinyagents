@@ -154,11 +154,23 @@ impl HarnessStatusStore for FileStatusStore {
     async fn put_status(&self, status: HarnessRunStatus) -> Result<()> {
         let key = status_key(status.run_id.as_str());
         let run_id = status.run_id.as_str();
-        let legacy_value = if key != run_id {
+        let legacy_value = if key != run_id && is_safe_status_key(run_id) {
             self.kv.get(STATUS_NS, run_id).await?
         } else {
             None
         };
+        if let Some(value) = self.kv.get(STATUS_NS, &key).await?
+            && let Ok(existing) = serde_json::from_value::<HarnessRunStatus>(value)
+            && existing.run_id != status.run_id
+        {
+            let existing_key = status_key(existing.run_id.as_str());
+            if existing_key != key {
+                self.kv
+                    .put(STATUS_NS, &existing_key, serde_json::to_value(&existing)?)
+                    .await?;
+                self.kv.delete(STATUS_NS, &key).await?;
+            }
+        }
         let value = serde_json::to_value(&status)?;
         self.kv.put(STATUS_NS, &key, value).await?;
         if legacy_value
@@ -175,11 +187,16 @@ impl HarnessStatusStore for FileStatusStore {
         let key = status_key(run_id);
         let value = match self.kv.get(STATUS_NS, &key).await? {
             Some(value) => Some(value),
-            None if key != run_id => self.kv.get(STATUS_NS, run_id).await?,
+            None if key != run_id && is_safe_status_key(run_id) => {
+                self.kv.get(STATUS_NS, run_id).await?
+            }
             None => None,
         };
         match value {
-            Some(value) => Ok(Some(serde_json::from_value(value)?)),
+            Some(value) => {
+                let status: HarnessRunStatus = serde_json::from_value(value)?;
+                Ok((status.run_id.as_str() == run_id).then_some(status))
+            }
             None => Ok(None),
         }
     }

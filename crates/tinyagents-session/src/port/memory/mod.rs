@@ -99,6 +99,7 @@ pub struct InMemoryTranscriptLocator {
     label: String,
     stems: Mutex<Vec<(String, bool, Arc<InMemoryTranscriptHistory>)>>,
     reserved_generations: Mutex<HashSet<String>>,
+    generation_gate: Arc<Mutex<()>>,
 }
 
 impl InMemoryTranscriptLocator {
@@ -108,6 +109,7 @@ impl InMemoryTranscriptLocator {
             label: label.into(),
             stems: Mutex::new(Vec::new()),
             reserved_generations: Mutex::new(HashSet::new()),
+            generation_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -136,6 +138,44 @@ impl InMemoryTranscriptLocator {
 
 impl TranscriptLocator for InMemoryTranscriptLocator {
     fn begin_generation(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.begin_generation_locked(session, seed)
+    }
+
+    fn begin_generation_from_baseline(
+        &self,
+        session: &SessionRef,
+        seed: TranscriptMeta,
+        baseline: &[crate::transcript::TranscriptMessage],
+    ) -> anyhow::Result<(SessionRef, Arc<dyn TranscriptHistory>)> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(transcript) = self.read_session_transcript(session)
+            && let Some(transcript) = transcript.read_session()?
+        {
+            anyhow::ensure!(
+                crate::transcript::same_transcript_messages(&transcript.messages, baseline),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        } else {
+            anyhow::ensure!(
+                baseline.is_empty(),
+                "transcript baseline is stale; reload the session before creating a generation"
+            );
+        }
+        self.begin_generation_locked(session, seed)
+    }
+
+    fn begin_generation_locked(
         &self,
         session: &SessionRef,
         seed: TranscriptMeta,
@@ -227,16 +267,14 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         if let Some((_, _, history)) = stems.iter().find(|(known, _, _)| known == stem) {
             return Ok(history.clone());
         }
-        // A root key may itself contain `__`; only classify the separator as
-        // lineage when the encoded parent stem is already known. This keeps
-        // the classification explicit in the locator index rather than
-        // treating a substring as proof of ancestry.
-        let is_subagent = stem
-            .split_once("__")
-            .is_some_and(|(parent, _)| stems.iter().any(|(known, _, _)| known == parent));
-        let history = Arc::new(InMemoryTranscriptHistory::new(
+        // Session stems reserve `__` for the parent/child separator. Check the
+        // stem itself so bounded parent stems remain children even when the
+        // parent prefix is not present in this locator's index.
+        let is_subagent = stem.contains("__");
+        let history = Arc::new(InMemoryTranscriptHistory::new_with_gate(
             format!("{}/{stem}", self.label),
             seed,
+            self.generation_gate.clone(),
         ));
         stems.push((stem.to_string(), is_subagent, history.clone()));
         Ok(history)
