@@ -117,8 +117,8 @@ impl<C> AttemptSource<C> {
 /// Applies the budget and result policies to a finished outcome.
 ///
 /// A completed run over its token budget becomes `Incomplete(BudgetExceeded)`
-/// (its output and usage are kept); a completed run then has its output
-/// trimmed and schema-checked per `result_policy`.
+/// (its output and usage are kept); an over-budget or completed run then has
+/// its output trimmed and schema-checked per `result_policy`.
 pub(crate) async fn apply_outcome_policies(
     mut outcome: SubagentOutcome,
     policy: &SubAgentPolicy,
@@ -135,7 +135,6 @@ pub(crate) async fn apply_outcome_policies(
         outcome.status = SubagentStatus::Incomplete(
             SubagentIncomplete::new(error.to_string()).with_kind(IncompleteKind::BudgetExceeded),
         );
-        return outcome;
     }
     if result_policy.is_active() {
         let applied = result_policy
