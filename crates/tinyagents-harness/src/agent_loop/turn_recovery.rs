@@ -12,37 +12,6 @@
 //! kind of turn boundary, replacing the field-by-field resets that used to be
 //! repeated at each exit of the loop body.
 
-/// The recovery counters and boosted output cap of the turn in flight.
-///
-/// Every counter is consecutive-per-turn, not per-run (the output-validation
-/// retry budget, which is run-wide, lives outside this struct).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct TurnRecovery {
-    /// Retries of a length-truncated empty reply
-    /// (`RunPolicy::truncated_empty_retries`).
-    pub(super) truncated_empty_retries_used: u32,
-    /// "Stop deliberating" re-prompts once the retries above are spent
-    /// (`RunPolicy::truncated_empty_nudges`).
-    pub(super) truncated_empty_nudges_used: u32,
-    /// Retries of a normally-finished reply with no visible answer
-    /// (`RunPolicy::empty_response_retries`).
-    pub(super) empty_response_retries_used: u32,
-    /// Consecutive "you said tool_calls but sent none" re-prompts
-    /// (`RunPolicy::dropped_tool_call_nudges`).
-    pub(super) dropped_tool_call_nudges_used: u32,
-    /// Consecutive re-prompts after a call written on a turn with no callable
-    /// tool (bounded by the same `dropped_tool_call_nudges`).
-    pub(super) withheld_call_nudges_used: u32,
-    /// Consecutive length-truncated tool turns answered with errors
-    /// (`RunPolicy::truncated_tool_call_retries`); reset by any tool turn that
-    /// was not cut off, never by the truncated turn itself.
-    pub(super) truncated_tool_call_retries_used: u32,
-    /// Overrides the next request's output cap after a length truncation.
-    pub(super) boosted_max_tokens: Option<u32>,
-    /// The original output cap, so growth stays clamped at 4x.
-    pub(super) truncation_base: Option<u32>,
-}
-
 impl TurnRecovery {
     /// Grows the next request's output cap after a length-truncated reply:
     /// double the cap last sent, clamped at 4x the original. An unset cap

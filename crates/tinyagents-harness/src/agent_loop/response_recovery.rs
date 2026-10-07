@@ -15,40 +15,7 @@ use super::run_loop::{
     DROPPED_TOOL_CALL_NUDGE, TRUNCATED_EMPTY_ANSWER_NUDGE, TRUNCATED_EMPTY_TOOL_NUDGE,
     UNDECODABLE_TOOL_CALL_NUDGE, WITHHELD_TOOL_CALL_NUDGE, truncated_call_positions,
 };
-use super::turn_recovery::TurnRecovery;
 use super::*;
-
-/// What the recovery stages need to know about the response in hand.
-pub(super) struct ResponseTurn<'a> {
-    pub(super) call_id: &'a CallId,
-    pub(super) response: &'a ModelResponse,
-    pub(super) tool_calls: &'a [ToolCall],
-    /// The output cap actually sent with the request that produced `response`.
-    pub(super) attempt_max_tokens: Option<u32>,
-    /// What the dialect layer recovered or withheld from the response text.
-    pub(super) recovery: &'a super::dialect::TextRecovery,
-    /// Whether the request offered a callable tool this turn.
-    pub(super) tools_available: bool,
-    /// Whether text-dialect call recovery applied to this response (a forced
-    /// text dialect, or `RunPolicy::text_dialect_recovery` enabled for it).
-    pub(super) text_dialect_calls_recoverable: bool,
-    /// Whether this turn carried a structured-output plan.
-    pub(super) has_structured_plan: bool,
-    /// Names of the structured-output tool(s) the plan can call.
-    pub(super) structured_call_names: &'a [String],
-}
-
-/// How [`AgentHarness::reject_truncated_tool_calls`] left the turn.
-pub(super) enum TruncationOutcome {
-    /// No call was cut off; the turn proceeds normally.
-    Clean,
-    /// Suspect calls are marked for an error answer at admission; the turn
-    /// proceeds (the model retries them next turn).
-    CallsRejected,
-    /// The turn was failed and settled here. `None` restarts the loop;
-    /// `Some(exit)` ends the run.
-    EndTurn(Option<LoopExit>),
-}
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// A length stop means the output cap cut the reply off somewhere: the LAST

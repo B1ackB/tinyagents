@@ -14,35 +14,6 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use super::tool_changes;
 use super::*;
 
-/// The tool schemas a run advertises and the discovery state behind them.
-pub(super) struct ToolSurface {
-    /// The wire list for the turn in flight: direct tools, promoted tools,
-    /// then the discovery bridge schemas. Rebuilt by
-    /// [`ToolSurface::assemble_turn_schemas`] each turn.
-    pub(super) tool_schemas: Vec<ToolSchema>,
-    /// `Direct`-exposure count at run start, captured before the bridge
-    /// schemas are appended so `ToolsAdvertised.direct` is not inflated.
-    pub(super) direct_schema_count: usize,
-    /// The direct set (registry plus toolset chain); replaced when the
-    /// toolset's live set changes mid-run.
-    direct_tool_schemas: Vec<ToolSchema>,
-    /// What the transcript has actually been told about the toolset chain's
-    /// tools so far (B6). Starts empty so the first-turn diff always declares
-    /// the full initial set; bridge schemas are deliberately excluded.
-    declared_tool_schemas: Vec<ToolSchema>,
-    /// The intrinsic discovery-bridge schemas; constant within a run.
-    bridge_schemas: Vec<ToolSchema>,
-    /// Deferred tools reachable through `tool_search`.
-    pub(super) deferred_catalog: crate::tool::discover::DeferredCatalog,
-    /// Typed declarations of discovered tools already promoted.
-    promoted_schemas: BTreeMap<String, ToolSchema>,
-    /// Names returned by a successful intrinsic search; grown by tool
-    /// execution.
-    pub(super) promoted_names: BTreeSet<String>,
-    /// Promoted names already recorded on the transcript as a patch.
-    recorded_promotions: BTreeSet<String>,
-}
-
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// The direct tool schemas: the registry's `Direct` schemas filtered by the
     /// host allow-list, extended by this run's toolset chain (B3), name-sorted,

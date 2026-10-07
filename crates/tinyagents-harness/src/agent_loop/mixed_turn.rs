@@ -5,28 +5,7 @@
 //! happens to the two, through three named, documented outcomes
 //! ([`EndStrategy`]).
 
-use super::turn_recovery::TurnRecovery;
 use super::*;
-
-/// What the loop does after a mixed turn has been handled.
-pub(super) enum TurnFlow {
-    /// Run another turn of the loop.
-    NextTurn,
-    /// The run is over; propagate this exit to the caller.
-    Exit(LoopExit),
-}
-
-/// The pieces of a mixed turn, split out of its response.
-pub(super) struct MixedStructuredTurn<'a> {
-    pub(super) response: ModelResponse,
-    pub(super) structured_plan: Option<&'a (StructuredStrategy, String, Value)>,
-    /// The structured-output schema call(s).
-    pub(super) structured_hits: Vec<ToolCall>,
-    /// The genuine tool calls alongside them.
-    pub(super) real_tool_calls: Vec<ToolCall>,
-    /// A length stop cut one of the real calls off.
-    pub(super) turn_had_truncated_calls: bool,
-}
 
 impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     /// Settles a mixed turn per `RunPolicy::end_strategy`.
