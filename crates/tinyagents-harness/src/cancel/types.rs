@@ -32,17 +32,15 @@ pub(super) struct CancelState {
     pub(super) cancelled: AtomicBool,
     /// Wakes tasks awaiting [`CancellationToken::cancelled`] on transition.
     pub(super) notify: Notify,
-    /// Weak links to every descendant token. Registering at every ancestor
-    /// keeps propagation working when an intermediate handle is dropped while
-    /// allowing completed child states to be collected.
+    /// Weak links to direct child tokens. Cancellation walks this tree
+    /// iteratively, keeping registration and ancestry storage bounded.
     pub(super) children: Mutex<Vec<Weak<CancelState>>>,
     /// Serializes descendant registration with cancellation draining across
     /// the whole token lineage. Without one shared lock, cancellation could
     /// drain an ancestor immediately before a child is linked to it.
     pub(super) registration_lock: Arc<Mutex<()>>,
-    /// Ancestors kept alive by a live descendant so their cancellation state
-    /// remains reachable until that descendant is dropped.
-    pub(super) ancestors: Vec<Arc<CancelState>>,
+    /// The immediate parent is kept alive by a live child.
+    pub(super) parent: Option<Arc<CancelState>>,
 }
 
 /// A cheap, clonable handle used to request cooperative cancellation of a run.

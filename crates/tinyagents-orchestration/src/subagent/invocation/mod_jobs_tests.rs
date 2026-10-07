@@ -36,7 +36,7 @@ fn blocked_tool() -> (
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
-        "blocked",
+        "worker",
         Arc::new(BlockedModel {
             started: started.clone(),
             release: release.clone(),
@@ -158,7 +158,7 @@ async fn parent_cancellation_cascades_to_running_jobs() {
 #[tokio::test]
 async fn panicking_child_marks_the_job_failed() {
     let mut harness = AgentHarness::new();
-    harness.register_model("boom", Arc::new(PanickingModel));
+    harness.register_model("worker", Arc::new(PanickingModel));
     let tool = SubAgentTool::new(
         Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
         ChildDataPolicy::new(|_: &()| ()),

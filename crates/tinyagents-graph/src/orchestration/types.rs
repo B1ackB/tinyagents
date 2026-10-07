@@ -486,6 +486,7 @@ pub enum DetachedTaskWaitOutcome<Status> {
 }
 
 /// Why a detached task runtime control could not be completed.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetachedTaskRegistryError {
     /// The process-local registry mutex was poisoned by a panicking operation.

@@ -891,7 +891,7 @@ mod test;
 
 #[cfg(test)]
 #[path = "mod_jobs_tests.rs"]
-mod jobs_test;
+mod jobs_tests;
 
 #[cfg(test)]
 #[path = "mod_link_tests.rs"]

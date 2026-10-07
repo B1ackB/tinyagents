@@ -16,8 +16,8 @@ use crate::error::TinyAgentsError;
 use crate::events::AgentEvent;
 use crate::runtime::AgentHarness;
 use crate::steering::{
-    RecentRequestIds, SteeringCommand, SteeringCommandKind, SteeringHandle, SteeringOutcome,
-    SteeringPolicy, SteeringTarget, apply_pending_steering,
+    RecentRequestIds, RequestIdError, SteeringCommand, SteeringCommandKind, SteeringHandle,
+    SteeringOutcome, SteeringPolicy, SteeringTarget, apply_pending_steering,
 };
 use crate::testkit::{EventRecorder, Trajectory};
 use tinyinference_llm::message::Message;
@@ -719,37 +719,40 @@ fn all_addressed_command_is_drained_by_whichever_run_checkpoints_first() {
 #[test]
 fn recent_request_ids_claims_each_id_once() {
     let mut ids = RecentRequestIds::default();
-    assert!(ids.claim("req-1"), "first sighting is new");
-    assert!(!ids.claim("req-1"), "second sighting is a duplicate");
-    assert!(ids.claim("req-2"), "other ids are independent");
+    assert!(ids.claim("req-1").unwrap(), "first sighting is new");
+    assert!(
+        !ids.claim("req-1").unwrap(),
+        "second sighting is a duplicate"
+    );
+    assert!(ids.claim("req-2").unwrap(), "other ids are independent");
 }
 
 #[test]
 fn recent_request_ids_forgets_the_oldest_beyond_capacity() {
     let mut ids = RecentRequestIds::with_capacity(2);
-    assert!(ids.claim("a"));
-    assert!(ids.claim("b"));
-    assert!(ids.claim("c"), "evicts `a`");
-    assert!(!ids.claim("b"), "`b` is still remembered");
-    assert!(!ids.claim("c"), "`c` is still remembered");
-    assert!(ids.claim("a"), "`a` aged out and is new again");
+    assert!(ids.claim("a").unwrap());
+    assert!(ids.claim("b").unwrap());
+    assert!(ids.claim("c").unwrap(), "evicts `a`");
+    assert!(!ids.claim("b").unwrap(), "`b` is still remembered");
+    assert!(!ids.claim("c").unwrap(), "`c` is still remembered");
+    assert!(ids.claim("a").unwrap(), "`a` aged out and is new again");
 }
 
 #[test]
 fn recent_request_ids_default_remembers_the_last_64() {
     let mut ids = RecentRequestIds::default();
     for index in 0..RecentRequestIds::DEFAULT_CAPACITY {
-        assert!(ids.claim(&format!("req-{index}")));
+        assert!(ids.claim(&format!("req-{index}")).unwrap());
     }
-    assert!(!ids.claim("req-0"), "still within the window");
-    assert!(ids.claim("overflow"));
-    assert!(ids.claim("req-0"), "the oldest id aged out");
+    assert!(!ids.claim("req-0").unwrap(), "still within the window");
+    assert!(ids.claim("overflow").unwrap());
+    assert!(ids.claim("req-0").unwrap(), "the oldest id aged out");
 }
 
 #[test]
 fn recent_request_ids_rejects_oversized_ids_without_storing_them() {
     let mut ids = RecentRequestIds::default();
     let oversized = "x".repeat(RecentRequestIds::MAX_REQUEST_ID_BYTES + 1);
-    assert!(!ids.claim(&oversized));
+    assert_eq!(ids.claim(&oversized), Err(RequestIdError::TooLong));
     assert!(ids.order.is_empty());
 }

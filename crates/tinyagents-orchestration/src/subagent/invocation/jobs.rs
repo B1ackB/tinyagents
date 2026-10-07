@@ -59,7 +59,7 @@ impl SubAgentJobRegistry {
         Self::default()
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn create(&self, agent: &str, owner: u64) -> (SubAgentJobId, SteeringHandle) {
         self.create_with_cancellation(agent, owner, CancellationToken::new(), JobLink::default())
     }
@@ -241,7 +241,7 @@ impl SubAgentJobRegistry {
 
     /// Queues a user message for delivery at the running child's next safe
     /// steering checkpoint.
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn send_message_owned(
         &self,
         job_id: &str,
@@ -279,11 +279,15 @@ impl SubAgentJobRegistry {
         if entry.cancellation_requested {
             return Err(SubAgentJobError::Cancelling(job_id.to_owned()));
         }
-        if let Some(request_id) = request_id
-            && !entry.message_requests.claim(request_id)
-        {
-            tracing::debug!("{LOG_PREFIX} send_message.duplicate job_id={job_id}");
-            return Ok(true);
+        if let Some(request_id) = request_id {
+            match entry.message_requests.claim(request_id) {
+                Ok(false) => {
+                    tracing::debug!("{LOG_PREFIX} send_message.duplicate job_id={job_id}");
+                    return Ok(true);
+                }
+                Ok(true) => {}
+                Err(_) => return Err(SubAgentJobError::RequestIdTooLong),
+            }
         }
         entry
             .steering

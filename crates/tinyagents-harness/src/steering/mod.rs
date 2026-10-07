@@ -434,6 +434,13 @@ pub fn apply_pending_steering<Ctx>(
     }
 }
 
+/// Validation failure from [`RecentRequestIds::claim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestIdError {
+    /// The identifier exceeds [`RecentRequestIds::MAX_REQUEST_ID_BYTES`].
+    TooLong,
+}
+
 impl RecentRequestIds {
     /// Number of ids remembered per task by [`Self::default`].
     pub const DEFAULT_CAPACITY: usize = 64;
@@ -453,18 +460,18 @@ impl RecentRequestIds {
     /// Records `request_id`, returning `true` when it is new and `false` when
     /// it was already remembered (a duplicate). The oldest id is forgotten once
     /// the memory is full.
-    pub fn claim(&mut self, request_id: &str) -> bool {
+    pub fn claim(&mut self, request_id: &str) -> std::result::Result<bool, RequestIdError> {
         if request_id.len() > Self::MAX_REQUEST_ID_BYTES {
-            return false;
+            return Err(RequestIdError::TooLong);
         }
         if self.order.iter().any(|seen| seen == request_id) {
-            return false;
+            return Ok(false);
         }
         if self.order.len() >= self.capacity {
             self.order.pop_front();
         }
         self.order.push_back(request_id.to_owned());
-        true
+        Ok(true)
     }
 }
 

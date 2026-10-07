@@ -3,10 +3,11 @@
 
 use super::*;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::jobs_test::PanickingModel;
+use super::jobs_tests::PanickingModel;
 use super::test::BlockedModel;
 use tinyagents_harness::cancel::CancellationToken;
 use tinyagents_harness::context::{RunConfig, RunContext};
@@ -127,7 +128,7 @@ async fn inline_mode_observes_parent_cancellation_mid_run() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let mut harness = AgentHarness::new();
     harness.register_model(
-        "blocked",
+        "child",
         Arc::new(BlockedModel {
             started: started.clone(),
             release,
@@ -189,6 +190,21 @@ async fn dropping_an_inline_call_settles_its_job() {
         _ = started.acquire() => {}
     }
 
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if tool
+                .job_registry()
+                .list()
+                .first()
+                .is_some_and(|job| job.status.is_terminal())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropped inline job settles");
     let jobs = tool.job_registry().list();
     assert_eq!(jobs.len(), 1);
     assert!(
@@ -201,7 +217,7 @@ async fn dropping_an_inline_call_settles_its_job() {
 #[tokio::test]
 async fn a_panicking_inline_child_marks_its_job_failed() {
     let mut harness = AgentHarness::new();
-    harness.register_model("boom", Arc::new(PanickingModel));
+    harness.register_model("child", Arc::new(PanickingModel));
     let tool = Arc::new(SubAgentTool::new(
         Arc::new(SubAgent::new("worker", "works", Arc::new(harness))),
         ChildDataPolicy::new(|_: &()| ()),

@@ -126,14 +126,14 @@ where
         task_id: &TaskId,
         request_id: &str,
     ) -> std::result::Result<bool, DetachedTaskRegistryError> {
-        if request_id.len() > tinyagents_harness::steering::RecentRequestIds::MAX_REQUEST_ID_BYTES {
-            return Err(DetachedTaskRegistryError::RequestIdTooLong);
-        }
         let mut guard = self.lock()?;
         let entry = guard
             .get_mut(task_id)
             .ok_or(DetachedTaskRegistryError::Unknown)?;
-        let is_new = entry.steer_requests.claim(request_id);
+        let is_new = entry
+            .steer_requests
+            .claim(request_id)
+            .map_err(|_| DetachedTaskRegistryError::RequestIdTooLong)?;
         tracing::debug!(
             "[detached-registry] claim_steer_request task_id={task_id} is_new={is_new}"
         );

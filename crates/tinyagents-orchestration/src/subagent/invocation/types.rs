@@ -34,6 +34,7 @@ pub const SUBAGENT_INPUT_FIELD: &str = "input";
 pub const SUBAGENT_MODE_FIELD: &str = "mode";
 
 /// How a [`SubAgentTool`] call runs its child.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SubAgentMode {
     /// Spawn the child as a background job and return its job id immediately.
@@ -295,4 +296,7 @@ pub enum SubAgentJobError {
     /// Cancellation has been requested and queued messages will not be read.
     #[error("subagent job `{0}` is cancelling")]
     Cancelling(String),
+    /// The request identifier exceeds the bounded registry size.
+    #[error("subagent request id is too long")]
+    RequestIdTooLong,
 }

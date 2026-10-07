@@ -78,9 +78,10 @@ pub(super) fn attach(
     items: &mut Vec<DisplayItem>,
     sub_paths: &[PathBuf],
     segments: &[(String, i64)],
+    root_thread_id: Option<&str>,
     workspace_dir: Option<&Path>,
 ) {
-    let children = build_children(sub_paths, None, None, 0, workspace_dir);
+    let children = build_children(sub_paths, None, root_thread_id, 0, workspace_dir);
     place(items, children, segments, workspace_dir);
 }
 
@@ -135,7 +136,7 @@ fn build_children(
             path,
             stem,
             suffix,
-            stem_parent_thread_id.or(parent_thread_id),
+            parent_thread_id.or(stem_parent_thread_id),
             sub_paths,
             depth,
             workspace_dir,
@@ -239,17 +240,20 @@ fn link_ids(
     parent_thread_id: Option<&str>,
 ) -> Vec<String> {
     let mut ids: Vec<String> = task_id.map(str::to_owned).into_iter().collect();
-    let run_id = parent_thread_id
-        .and_then(|parent| {
-            thread_id?
-                .strip_prefix(parent)?
-                .strip_prefix(CHILD_THREAD_MARKER)
-        })
-        .or_else(|| {
-            thread_id.and_then(|thread| thread.rsplit_once(CHILD_THREAD_MARKER).map(|(_, id)| id))
-        });
-    if let Some(run_id) = run_id
+    let parent_run_id = parent_thread_id.and_then(|parent| {
+        thread_id?
+            .strip_prefix(parent)?
+            .strip_prefix(CHILD_THREAD_MARKER)
+    });
+    if let Some(run_id) = parent_run_id
         && !run_id.is_empty()
+    {
+        ids.push(run_id.to_owned());
+    }
+    if let Some(run_id) =
+        thread_id.and_then(|thread| thread.rsplit_once(CHILD_THREAD_MARKER).map(|(_, id)| id))
+        && !run_id.is_empty()
+        && !ids.iter().any(|id| id == run_id)
     {
         ids.push(run_id.to_owned());
     }
