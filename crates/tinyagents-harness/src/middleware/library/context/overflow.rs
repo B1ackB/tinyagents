@@ -516,7 +516,9 @@ impl ContextCompressionMiddleware {
             to_tokens,
         });
         // The estimate chose this route; the measured request decides whether
-        // it sufficed. Still over the trigger: compact as well.
+        // it sufficed. Still over the trigger: compact as well, and cut the
+        // results again afterwards, since the compaction rebuilds the request
+        // from the untruncated transcript.
         if to_tokens < from_tokens
             && !self
                 .policy
@@ -524,7 +526,7 @@ impl ContextCompressionMiddleware {
         {
             OverTrigger::Done
         } else {
-            OverTrigger::Compact
+            OverTrigger::CompactThenTruncate
         }
     }
 
@@ -541,9 +543,10 @@ impl ContextCompressionMiddleware {
 pub(super) enum OverTrigger {
     /// Truncation alone brought the request under the trigger.
     Done,
-    /// Compact (any truncation already applied did not suffice).
+    /// Compact; no truncation was applied for this request.
     Compact,
-    /// Compact, then cut the tool results again.
+    /// Compact, then cut the tool results again (truncation was applied but
+    /// did not suffice, or only partly covers the overflow).
     CompactThenTruncate,
 }
 
