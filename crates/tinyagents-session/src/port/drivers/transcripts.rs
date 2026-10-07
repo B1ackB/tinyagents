@@ -545,7 +545,10 @@ fn turn_entry(replay: &Replay, turn: &TurnRecord) -> anyhow::Result<Option<Entry
     let usage = turn.turn_usage.as_ref();
     let request_id = turn.request_id.as_deref();
     let (set, extend) = if replay.written && common == stored.len() {
-        (None, Some(stamped_rows(&turn.next[common..], usage, request_id)))
+        (
+            None,
+            Some(stamped_rows(&turn.next[common..], usage, request_id)),
+        )
     } else {
         (Some(stamped_rows(&turn.next, usage, request_id)), None)
     };
@@ -972,10 +975,7 @@ impl DriverTranscriptLocator {
             })??
         };
         let predecessor_stem = session_stem(session);
-        if let Err(error) = self
-            .handle(&predecessor_stem, seed.clone())
-            .seal(baseline)
-        {
+        if let Err(error) = self.handle(&predecessor_stem, seed.clone()).seal(baseline) {
             self.release(&stem, reservation);
             return Err(error);
         }

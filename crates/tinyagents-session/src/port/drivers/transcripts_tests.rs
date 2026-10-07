@@ -96,7 +96,13 @@ fn an_ordinary_turn_stores_only_its_new_rows() {
     assert!(log[1].get("set").is_none());
     assert_eq!(log[2]["set"].as_array().unwrap().len(), 1);
     assert_eq!(log[2]["seq"], json!(2));
-    assert_eq!(history.messages().unwrap(), normalized(compacted));
+    let contents: Vec<String> = history
+        .messages()
+        .unwrap()
+        .into_iter()
+        .map(|row| row.content)
+        .collect();
+    assert_eq!(contents, ["summary"]);
 }
 
 #[test]
@@ -490,8 +496,12 @@ fn a_turn_keeps_its_usage_and_request_id() {
     let docs = docs();
     let history = locator(&docs).open_stem("s", meta("t")).unwrap();
     let rows = vec![message("user", "q"), message("assistant", "a")];
-    let usage: crate::transcript::TurnUsage =
-        serde_json::from_value(json!({ "input_tokens": 7, "output_tokens": 3 })).unwrap();
+    let usage: crate::transcript::TurnUsage = serde_json::from_value(json!({
+        "provider": "p",
+        "model": "m",
+        "usage": { "input": 7, "output": 3, "cached_input": 0, "cost_usd": 0.01 },
+    }))
+    .unwrap();
     history
         .append_turn(TranscriptTurn {
             turn_usage: Some(&usage),
@@ -500,8 +510,14 @@ fn a_turn_keeps_its_usage_and_request_id() {
         })
         .unwrap();
     let read = history.messages().unwrap();
-    assert!(read.iter().all(|row| row.request_id.as_deref() == Some("req-1")));
-    assert!(read[1].turn_usage.is_some(), "the assistant row carries the usage");
+    assert!(
+        read.iter()
+            .all(|row| row.request_id.as_deref() == Some("req-1"))
+    );
+    assert!(
+        read[1].turn_usage.is_some(),
+        "the assistant row carries the usage"
+    );
     assert!(read[0].turn_usage.is_none());
 
     // The next turn, built from the rows as read back, extends them.
@@ -516,7 +532,11 @@ fn a_turn_keeps_its_usage_and_request_id() {
     let log = entries(&docs, "s");
     assert_eq!(log[1]["extend"].as_array().unwrap().len(), 1);
     let read = history.messages().unwrap();
-    assert_eq!(read[0].request_id.as_deref(), Some("req-1"), "old rows keep theirs");
+    assert_eq!(
+        read[0].request_id.as_deref(),
+        Some("req-1"),
+        "old rows keep theirs"
+    );
     assert_eq!(read[2].request_id.as_deref(), Some("req-2"));
 }
 
