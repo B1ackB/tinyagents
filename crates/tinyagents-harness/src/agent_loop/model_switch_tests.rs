@@ -604,8 +604,8 @@ impl Middleware<()> for RequiresToolsAfterFirstCall {
     ) -> crate::error::Result<()> {
         let mut calls = self.calls.lock().unwrap();
         *calls += 1;
-        // Two `before_model` passes per model call.
-        if *calls > 2 {
+        // Only once a tool result is in the transcript (second model call).
+        if request.messages.len() > 1 {
             request
                 .required_capabilities
                 .get_or_insert_default()
