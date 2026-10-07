@@ -47,7 +47,10 @@ fn truncation_is_idempotent() {
 #[test]
 fn trusted_verbatim_results_are_never_cut() {
     let mut message = Message::tool("c1", big(10_000));
-    if let Message::Tool(ToolMessage { trusted_verbatim, .. }) = &mut message {
+    if let Message::Tool(ToolMessage {
+        trusted_verbatim, ..
+    }) = &mut message
+    {
         *trusted_verbatim = true;
     }
     let mut messages = vec![message.clone()];
@@ -58,7 +61,10 @@ fn trusted_verbatim_results_are_never_cut() {
 
 #[test]
 fn reducible_bytes_matches_what_truncation_saves() {
-    let mut messages = vec![Message::tool("a", big(10_000)), Message::tool("b", big(4_000))];
+    let mut messages = vec![
+        Message::tool("a", big(10_000)),
+        Message::tool("b", big(4_000)),
+    ];
     let reducible = reducible_tool_result_bytes(&messages, 1_000);
     let outcome = truncate_tool_results(&mut messages, 1_000);
     assert_eq!(outcome.truncated, 2);

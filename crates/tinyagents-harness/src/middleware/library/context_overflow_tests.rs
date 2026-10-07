@@ -119,13 +119,21 @@ impl Summarizer for ShortSummarizer {
     }
 }
 
-/// A "summary" larger than anything it replaces.
-struct HugeSummarizer;
+/// Each summary is bigger than the last, and far bigger than the history.
+#[derive(Default)]
+struct GrowingSummarizer {
+    calls: Mutex<usize>,
+}
 
 #[async_trait]
-impl Summarizer for HugeSummarizer {
+impl Summarizer for GrowingSummarizer {
     async fn summarize(&self, _messages: &[Message]) -> Result<SummaryRecord> {
-        Ok(record(&"y".repeat(200_000)))
+        let n = {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            *calls
+        };
+        Ok(record(&"y".repeat(50_000 * n)))
     }
 }
 
@@ -169,7 +177,11 @@ fn stack_of(mw: ContextCompressionMiddleware) -> MiddlewareStack<()> {
     stack
 }
 
-async fn run(stack: &MiddlewareStack<()>, base: &ScriptedBase, messages: Vec<Message>) -> Result<ModelResponse> {
+async fn run(
+    stack: &MiddlewareStack<()>,
+    base: &ScriptedBase,
+    messages: Vec<Message>,
+) -> Result<ModelResponse> {
     let mut c = ctx();
     stack
         .run_wrapped_model(
@@ -223,16 +235,12 @@ async fn a_persistent_overflow_gets_three_compaction_attempts_by_default() {
 #[tokio::test]
 async fn the_attempt_budget_is_configurable() {
     let base = ScriptedBase::new(|_, _| Err(overflow_error()));
-    let stack = stack_of(
-        short_mw(roomy_policy()).with_max_overflow_attempts(1),
-    );
+    let stack = stack_of(short_mw(roomy_policy()).with_max_overflow_attempts(1));
     assert!(run(&stack, &base, long_transcript()).await.is_err());
     assert_eq!(base.calls(), 2);
 
     let base = ScriptedBase::new(|_, _| Err(overflow_error()));
-    let stack = stack_of(
-        short_mw(roomy_policy()).with_max_overflow_attempts(0),
-    );
+    let stack = stack_of(short_mw(roomy_policy()).with_max_overflow_attempts(0));
     assert!(run(&stack, &base, long_transcript()).await.is_err());
     assert_eq!(base.calls(), 1, "zero attempts disables recovery");
 }
@@ -252,15 +260,17 @@ async fn recovery_stops_at_the_first_attempt_that_succeeds() {
 }
 
 #[tokio::test]
-async fn an_attempt_that_does_not_shrink_the_request_ends_recovery() {
+async fn a_later_attempt_that_does_not_shrink_the_request_ends_recovery() {
     let base = ScriptedBase::new(|_, _| Err(overflow_error()));
     let stack = stack_of(ContextCompressionMiddleware::with_summarizer(
         roomy_policy(),
-        Box::new(HugeSummarizer),
+        Box::new(GrowingSummarizer::default()),
     ));
     let result = run(&stack, &base, long_transcript()).await;
     assert!(matches!(result, Err(TinyAgentsError::Model(_))));
-    assert_eq!(base.calls(), 1, "a retry that is not smaller is never sent");
+    // The first attempt is always made; the second's summary is bigger than
+    // its input, so it is never sent.
+    assert_eq!(base.calls(), 2);
 }
 
 // ── overflow reported by a successful response ────────────────────────────────
@@ -291,8 +301,7 @@ async fn usage_above_the_window_on_a_successful_response_is_recovered() {
 async fn response_overflow_detection_can_be_switched_off() {
     let base = silent_overflow_then_ok();
     let stack = stack_of(
-        short_mw(small_window())
-            .with_response_overflow_detection(ResponseOverflowDetection::Off),
+        short_mw(small_window()).with_response_overflow_detection(ResponseOverflowDetection::Off),
     );
     let response = run(&stack, &base, long_transcript()).await.unwrap();
     assert_eq!(response.usage.unwrap().input_tokens, 9_000);
@@ -321,7 +330,11 @@ async fn a_length_stop_far_below_the_cap_is_recovered_only_when_opted_in() {
         .run_wrapped_model(&mut c, &(), capped(long_transcript()), &base)
         .await
         .unwrap();
-    assert_eq!(base.calls(), 1, "default detection leaves a short length stop alone");
+    assert_eq!(
+        base.calls(),
+        1,
+        "default detection leaves a short length stop alone"
+    );
 
     let base = ScriptedBase::new(respond);
     let stack = stack_of(
@@ -390,11 +403,9 @@ const OVERFLOW_BY_2900: &str = "This model's maximum context length is 100 token
 #[tokio::test]
 async fn truncating_tool_results_alone_recovers_without_a_summary() {
     let summarizer = ShortSummarizer::default();
-    let mw = ContextCompressionMiddleware::with_summarizer(
-        roomy_policy(),
-        Box::new(summarizer.clone()),
-    )
-    .with_tool_result_truncation(2_000);
+    let mw =
+        ContextCompressionMiddleware::with_summarizer(roomy_policy(), Box::new(summarizer.clone()))
+            .with_tool_result_truncation(2_000);
     let stack = stack_of(mw);
     let recorder = Arc::new(RecordingListener::new());
     let mut c = ctx();
@@ -417,7 +428,11 @@ async fn truncating_tool_results_alone_recovers_without_a_summary() {
         .unwrap();
 
     assert_eq!(base.calls(), 2);
-    assert_eq!(*summarizer.calls.lock().unwrap(), 0, "no summary was bought");
+    assert_eq!(
+        *summarizer.calls.lock().unwrap(),
+        0,
+        "no summary was bought"
+    );
     assert_eq!(compacted_count(&recorder), 0);
     assert!(tool_text_len(&base.requests.lock().unwrap()[1]) < 3_000);
 }
@@ -509,7 +524,8 @@ async fn an_over_trigger_prompt_with_a_huge_tool_result_is_truncated_not_summari
 
 #[tokio::test]
 async fn once_truncation_engages_it_stays_applied_for_the_run() {
-    let mw = ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
+    let mw =
+        ContextCompressionMiddleware::new(truncating_policy()).with_tool_result_truncation(400);
     let mut messages = vec![user("read it")];
     messages.extend(call_and_result("c1", 10_000));
     let mut c = ctx();

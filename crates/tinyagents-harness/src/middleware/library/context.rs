@@ -694,9 +694,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
     /// configured, oversized tool results are cut first (no model call spent
     /// on a summary); otherwise, or when that cannot cover the overflow, the
     /// transcript is compacted ([`CompactionReason::Overflow`]). Every attempt
-    /// must produce a smaller request than the one before; one that cannot
-    /// (nothing safe to cut, the `before_compaction` hook declined, the
-    /// summary is no smaller) ends recovery and the original error — or
+    /// after the first must produce a smaller request than the one before;
+    /// one that cannot (nothing safe to cut, the `before_compaction` hook
+    /// declined, the summary is no smaller) ends recovery and the original error — or
     /// response — is returned, so a transcript that cannot be shrunk under the
     /// window cannot loop. The transcript itself is never rewritten: the
     /// shrunk request is a rewrite, and compactions extend the run's
@@ -741,7 +741,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
                 truncate = Some(cap);
                 continue;
             }
-            match self.compact_for_overflow(ctx, &base, overflow).await {
+            match self.compact_for_overflow(ctx, &base, overflow, attempts > 1).await {
                 Some(shrunk) => {
                     base = shrunk;
                     if route.truncates()

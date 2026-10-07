@@ -15,12 +15,16 @@ impl ContextCompressionMiddleware {
     /// `before_compaction` hook declined, the summarizer failed, or the
     /// result would not be smaller than `request`. `None` always leaves the
     /// run's fold and transcript untouched, so the caller surfaces the
-    /// original failure.
+    /// original failure. `require_shrink` is off for a call's first attempt:
+    /// the provider has just refused the request, so a summary that is not
+    /// smaller (the default `ConcatSummarizer` never is) is still worth one
+    /// retry; every later attempt must be strictly smaller than its input.
     pub(super) async fn compact_for_overflow<Ctx: Send + Sync>(
         &self,
         ctx: &mut RunContext<Ctx>,
         request: &ModelRequest,
         overflow: OverflowInfo,
+        require_shrink: bool,
     ) -> Option<ModelRequest> {
         let before_tokens = total_message_tokens(&request.messages);
         // Checkpoints in the request (this run's fold summary, or one carried
@@ -171,7 +175,7 @@ impl ContextCompressionMiddleware {
                 };
                 let new_messages = splice_summary(to_keep, record.summary.clone());
                 let to_tokens = total_message_tokens(&new_messages);
-                if to_tokens >= before_tokens {
+                if require_shrink && to_tokens >= before_tokens {
                     tracing::debug!(
                         before_tokens,
                         to_tokens,
@@ -232,7 +236,7 @@ impl ContextCompressionMiddleware {
         let to_tokens = total_message_tokens(&new_messages);
         // A summary that is not smaller than what it replaces cannot help, and
         // a further attempt would only repeat it: stop here, change nothing.
-        if to_tokens >= before_tokens {
+        if require_shrink && to_tokens >= before_tokens {
             tracing::info!(
                 before_tokens,
                 to_tokens,
@@ -320,9 +324,9 @@ impl ContextCompressionMiddleware {
         let Some(cap) = self.tool_result_truncation.filter(|_| !already_truncated) else {
             return CompactionRoute::Compact;
         };
-        let prompt = overflow.requested.unwrap_or_else(|| {
-            total_message_tokens(&base.messages) + schema_tokens(&base.tools)
-        });
+        let prompt = overflow
+            .requested
+            .unwrap_or_else(|| total_message_tokens(&base.messages) + schema_tokens(&base.tools));
         let budget = overflow
             .limit
             .unwrap_or_else(|| self.policy.trigger_budget());
