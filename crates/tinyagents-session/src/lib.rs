@@ -84,6 +84,7 @@
 mod context;
 pub mod entry_tree;
 mod migrations;
+mod paging;
 pub mod ops;
 pub mod retention;
 pub mod run_ledger;
