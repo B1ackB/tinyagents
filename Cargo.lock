@@ -1886,6 +1886,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinyagents-harness",
+ "tinystoragedrivers-core",
  "tinytools-agent",
  "tokio",
  "tracing",
@@ -1992,6 +1993,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

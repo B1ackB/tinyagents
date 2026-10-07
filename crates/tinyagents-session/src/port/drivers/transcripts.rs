@@ -622,8 +622,8 @@ impl DriverTranscriptLocator {
         )
     }
 
-    /// The newest written root transcript matching `filter`.
-    fn newest_root(&self, filter: Filter, what: &str) -> Option<Arc<dyn TranscriptRead>> {
+    /// The stem of the newest written root transcript matching `filter`.
+    fn newest_root_stem(&self, filter: Filter, what: &str) -> Option<String> {
         let found = self.run(|docs, declared| async move {
             declared.ensure(&docs).await?;
             let query = Query::filter(
@@ -639,24 +639,32 @@ impl DriverTranscriptLocator {
                 .items
                 .into_iter()
                 .next()
-                .and_then(|found| found.doc.get("stem").and_then(Value::as_str).map(str::to_string)))
+                .and_then(|found| {
+                    found
+                        .doc
+                        .get("stem")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }))
         });
-        match found {
-            Ok(stem) => stem.map(|stem| {
-                let seed = discovered_seed(&stem);
-                Arc::new(self.handle(&stem, seed)) as Arc<dyn TranscriptRead>
-            }),
-            Err(error) => {
-                tracing::warn!(
-                    target: "tinyagents_session::port::drivers",
-                    locator = %self.label,
-                    lookup = what,
-                    %error,
-                    "[session-store] transcript lookup failed"
-                );
-                None
-            }
-        }
+        found.unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "tinyagents_session::port::drivers",
+                locator = %self.label,
+                lookup = what,
+                %error,
+                "[session-store] transcript lookup failed"
+            );
+            None
+        })
+    }
+
+    /// The newest written root transcript matching `filter`.
+    fn newest_root(&self, filter: Filter, what: &str) -> Option<Arc<dyn TranscriptRead>> {
+        self.newest_root_stem(filter, what).map(|stem| {
+            let seed = discovered_seed(&stem);
+            Arc::new(self.handle(&stem, seed)) as Arc<dyn TranscriptRead>
+        })
     }
 
     /// Reserves `stem` as a new generation: succeeds when nothing is written
@@ -818,16 +826,9 @@ impl TranscriptLocator for DriverTranscriptLocator {
         if let Some(agent_id) = agent_id {
             filter = filter.and(Filter::eq("agent_id", agent_id));
         }
-        let Some(root) = self.newest_root(filter, "append_interrupted_partial") else {
+        let Some(stem) = self.newest_root_stem(filter, "append_interrupted_partial") else {
             return Ok(false);
         };
-        let stem = root
-            .path()
-            .strip_prefix(&self.label)
-            .ok()
-            .and_then(Path::to_str)
-            .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("transcript handle outside this locator"))?;
         self.handle(&stem, discovered_seed(&stem))
             .record_partial(partial, request_id)
     }
