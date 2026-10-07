@@ -25,6 +25,18 @@ pub const DEFAULT_CHURN_VARIANTS: u32 = 3;
 /// Calls each variant needs, all with the same result, to count as a variant.
 pub const DEFAULT_CHURN_CALLS_PER_VARIANT: u32 = 3;
 
+/// The tool name inside a call signature: `tool\u{1}args`, optionally with the
+/// tool name prefixed by its byte length (`4:tool\u{1}args`).
+fn tool_name(call_signature: &str) -> &str {
+    if let Some((len, rest)) = call_signature.split_once(':')
+        && let Ok(len) = len.parse::<usize>()
+        && let Some(name) = rest.get(..len)
+    {
+        return name;
+    }
+    call_signature.split('\u{1}').next().unwrap_or_default()
+}
+
 /// One call and the result it produced, as hashes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Step {
@@ -84,7 +96,7 @@ impl PingPongDetector {
         };
         state.prev = state.last;
         state.last = Some(step);
-        let tool = call_signature.split('\u{1}').next().unwrap_or_default();
+        let tool = tool_name(call_signature);
         state.names = (std::mem::take(&mut state.names.1), tool.to_string());
         if state.tail < self.alternations {
             return None;
@@ -106,14 +118,28 @@ impl PingPongDetector {
     }
 }
 
+/// `(tool, outcome)` groups tracked at once; later groups are not tracked.
+const MAX_CHURN_GROUPS: usize = 1024;
+/// Argument variants tracked per group; later variants are not tracked.
+const MAX_CHURN_VARIANTS_PER_GROUP: usize = 256;
+
+#[derive(Default)]
+struct ChurnState {
+    /// `(tool, outcome)` → argument variant → calls so far.
+    groups: HashMap<(String, u64), HashMap<u64, u32>>,
+    /// Groups already warned about; their counts are dropped.
+    warned: HashSet<(String, u64)>,
+}
+
 /// Detects one tool called with many argument variants that all return the
-/// same result.
+/// same result. Tracking is bounded ([`MAX_CHURN_GROUPS`],
+/// [`MAX_CHURN_VARIANTS_PER_GROUP`]) so a run supplying unique values cannot
+/// grow it without limit; past the bound new groups are simply not tracked.
 pub struct ArgumentChurnDetector {
     variants: u32,
     calls_per_variant: u32,
-    /// `(tool, outcome)` → argument variant → calls so far.
-    groups: Mutex<HashMap<(String, u64), HashMap<u64, u32>>>,
-    warned: Mutex<HashSet<(String, u64)>>,
+    /// One lock for counts and warnings so `record` and `reset` are atomic.
+    state: Mutex<ChurnState>,
 }
 
 impl Default for ArgumentChurnDetector {
@@ -130,8 +156,7 @@ impl ArgumentChurnDetector {
         Self {
             variants: variants.max(2),
             calls_per_variant: calls_per_variant.max(2),
-            groups: Mutex::default(),
-            warned: Mutex::default(),
+            state: Mutex::default(),
         }
     }
 
@@ -145,18 +170,28 @@ impl ArgumentChurnDetector {
         outcome_identity: &str,
     ) -> Option<String> {
         let key = (tool.to_string(), hash_of(outcome_identity));
-        let qualifying = {
-            let mut groups = lock(&self.groups);
-            let variants = groups.entry(key.clone()).or_default();
-            *variants.entry(hash_of(arguments_fingerprint)).or_insert(0) += 1;
-            variants
-                .values()
-                .filter(|calls| **calls >= self.calls_per_variant)
-                .count() as u32
-        };
-        if qualifying < self.variants || !lock(&self.warned).insert(key) {
+        let argument = hash_of(arguments_fingerprint);
+        let mut state = lock(&self.state);
+        if state.warned.contains(&key) {
             return None;
         }
+        if !state.groups.contains_key(&key) && state.groups.len() >= MAX_CHURN_GROUPS {
+            return None;
+        }
+        let variants = state.groups.entry(key.clone()).or_default();
+        if !variants.contains_key(&argument) && variants.len() >= MAX_CHURN_VARIANTS_PER_GROUP {
+            return None;
+        }
+        *variants.entry(argument).or_insert(0) += 1;
+        let qualifying = variants
+            .values()
+            .filter(|calls| **calls >= self.calls_per_variant)
+            .count() as u32;
+        if qualifying < self.variants {
+            return None;
+        }
+        state.groups.remove(&key);
+        state.warned.insert(key);
         Some(format!(
             "`{tool}` has been called with {qualifying} different sets of arguments, each at least {} times, and every one returned the same result; changing the arguments is not changing what you learn. Try a different tool or approach.",
             self.calls_per_variant
@@ -165,8 +200,7 @@ impl ArgumentChurnDetector {
 
     /// Forgets every count and warning.
     pub fn reset(&self) {
-        lock(&self.groups).clear();
-        lock(&self.warned).clear();
+        *lock(&self.state) = ChurnState::default();
     }
 }
 
