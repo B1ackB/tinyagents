@@ -1174,13 +1174,15 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
             // consumed by the scrubber, yet it is plainly producing tokens.
             // A delta with no payload (empty text, no reasoning, no call)
             // proves nothing and never counts.
-            let raw_delta_is_output = matches!(
-                &item,
-                ModelStreamItem::MessageDelta(delta)
-                    if !delta.text.is_empty()
+            let raw_delta_is_output = match &item {
+                ModelStreamItem::MessageDelta(delta) => {
+                    !delta.text.is_empty()
                         || !delta.reasoning.is_empty()
                         || delta.tool_call.is_some()
-            );
+                }
+                ModelStreamItem::ToolCallDelta(_) => true,
+                _ => false,
+            };
             // Scrub tool-call markup from visible text before anything else
             // sees it; a delta the scrubber empties carries nothing to emit.
             if let (Some(scrubber), ModelStreamItem::MessageDelta(delta)) =
@@ -1252,7 +1254,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
 
             // Surface incremental message/tool-call fragments through events and
             // the `on_model_delta` middleware hook before merging them.
-            let mut transformed_delta_is_output = false;
             let message_delta = match &item {
                 ModelStreamItem::MessageDelta(delta) => Some(delta.clone()),
                 ModelStreamItem::ToolCallDelta(tool_delta) => Some(MessageDelta {
@@ -1291,9 +1292,6 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 self.middleware
                     .run_on_model_delta(ctx, state, &mut model_delta)
                     .await?;
-                transformed_delta_is_output = !model_delta.content.is_empty()
-                    || !model_delta.reasoning.is_empty()
-                    || model_delta.tool_call.is_some();
                 if model_delta.tool_call.is_some() {
                     stream_stall.reset();
                 } else if stream_stall.observe(&model_delta.content) {
@@ -1355,16 +1353,18 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 *deltas_emitted += 1;
             }
 
-            // Arm the watchdog on provider output: a non-empty raw delta
-            // (measured before scrubbing and leading-whitespace removal, see
-            // `raw_delta_is_output`) or a post-middleware payload. Block-aware
-            // adapters do not necessarily emit the compatibility
-            // MessageDelta, so their non-empty payloads count as progress too.
+            // Arm the watchdog on provider output: a non-empty raw delta,
+            // measured before scrubbing, leading-whitespace removal and delta
+            // middleware (see `raw_delta_is_output`), so a payload that a
+            // later stage consumed or rewrote still proves the provider is
+            // alive while text a middleware injected into an empty delta does
+            // not. Block-aware adapters do not necessarily emit the
+            // compatibility MessageDelta, so their non-empty payloads count
+            // as progress too.
             let is_output = match &item {
-                ModelStreamItem::MessageDelta(_) => {
-                    raw_delta_is_output || transformed_delta_is_output
+                ModelStreamItem::MessageDelta(_) | ModelStreamItem::ToolCallDelta(_) => {
+                    raw_delta_is_output
                 }
-                ModelStreamItem::ToolCallDelta(_) => true,
                 ModelStreamItem::BlockDelta { delta, .. } => match delta {
                     tinyinference_llm::model::BlockDelta::Text(text)
                     | tinyinference_llm::model::BlockDelta::Thinking(text)
