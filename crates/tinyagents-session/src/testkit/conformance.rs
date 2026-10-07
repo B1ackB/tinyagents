@@ -516,7 +516,7 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
     );
 
     assert!(
-        !locator
+        locator
             .append_interrupted_partial(
                 "contract-store-thread",
                 Some("contract-agent"),
@@ -524,7 +524,7 @@ pub async fn session_store_conformance(provider: &dyn SessionStoreProvider) {
                 Some("contract-turn-2"),
             )
             .expect("a partial append is checked"),
-        "a sealed root rejects a late display partial"
+        "the current head accepts a display partial"
     );
     let replay = locator
         .read_session_transcript(&session)

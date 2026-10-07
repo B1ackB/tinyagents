@@ -158,7 +158,9 @@ pub use history::{
 };
 pub use legacy_md::read_transcript_legacy_md;
 pub use migration::{TranscriptLayoutMigration, migrate_layout_if_needed};
-pub use paths::{find_latest_transcript, resolve_keyed_transcript_path};
+pub use paths::{
+    find_latest_legacy_transcript, find_latest_transcript, resolve_keyed_transcript_path,
+};
 pub use reader::{read_transcript, read_transcript_display};
 pub use session::{SessionRef, session_stem};
 pub use thread_lookup::{
