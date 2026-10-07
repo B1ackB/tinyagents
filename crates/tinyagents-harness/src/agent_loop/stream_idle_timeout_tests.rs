@@ -731,6 +731,7 @@ async fn run_deadline_still_wins_as_a_terminal_timeout() {
     );
 
     let began = Instant::now();
+    std::thread::sleep(Duration::from_millis(20));
     let err = run(
         &harness,
         RunConfig::new("deadline-run").with_timeout_ms(500),
