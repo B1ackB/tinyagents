@@ -11,7 +11,9 @@ use tinyagents_harness::middleware::AgentRun;
 
 use super::SubAgent;
 use crate::subagent::policy::may_retry;
-use crate::subagent::{AppliedResult, ResultPolicy, SubAgentJobId, SubAgentJobRegistry, SubAgentPolicy};
+use crate::subagent::{
+    AppliedResult, ResultPolicy, SubAgentJobId, SubAgentJobRegistry, SubAgentPolicy,
+};
 
 const LOG_PREFIX: &str = "[subagent-tool-policy]";
 
