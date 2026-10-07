@@ -39,6 +39,7 @@ use std::sync::Arc;
 use crate::context::{MiddlewareControl, RunContext};
 use crate::error::{Result, TinyAgentsError};
 use crate::events::AgentEvent;
+use crate::ids::CallId;
 use tinyinference_llm::model::{ModelDelta, ModelRequest, ModelResponse};
 use tinyinference_llm::tool::{ToolCall, ToolDelta};
 use tinytools::ToolResult;

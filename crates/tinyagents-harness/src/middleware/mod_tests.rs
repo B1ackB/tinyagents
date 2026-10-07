@@ -236,10 +236,12 @@ async fn failing_hook_still_emits_balanced_completed_event() {
         brackets,
         vec![
             AgentEvent::MiddlewareStarted {
-                name: "failing".to_string()
+                name: "failing".to_string(),
+                call_id: None,
             },
             AgentEvent::MiddlewareCompleted {
-                name: "failing".to_string()
+                name: "failing".to_string(),
+                call_id: None,
             },
         ],
         "a failing hook must emit a balanced Started/Completed pair"

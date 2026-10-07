@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::context::{RunConfig, RunContext};
+use crate::context::{MiddlewareControl, RunConfig, RunContext};
 use crate::error::{Result, TinyAgentsError};
 use crate::events::AgentEvent;
 use crate::middleware::{MiddlewareToolOutcome, ToolHandler, ToolMiddleware};
@@ -72,6 +72,8 @@ enum Mode {
     FailB,
     /// Defer `call-b` for approval without calling `next`.
     DeferB,
+    /// Answer `call-b` with a `Command` outcome (a control request, no result).
+    CommandB,
 }
 
 struct ProbeWrap {
@@ -106,6 +108,11 @@ impl ToolMiddleware<()> for ProbeWrap {
                 Mode::DeferB => {
                     return Err(TinyAgentsError::ApprovalRequired {
                         metadata: json!({"why": "wrap"}),
+                    });
+                }
+                Mode::CommandB => {
+                    return Ok(MiddlewareToolOutcome::Command {
+                        control: MiddlewareControl::StopWithFinal("stopped by wrap".to_string()),
                     });
                 }
             }
@@ -398,4 +405,64 @@ async fn a_deferral_raised_inside_a_wrap_folds_like_any_other_deferral() {
         e,
         AgentEvent::ToolDeferred { call_id, .. } if call_id.as_str() == "call-b"
     )));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wrap_command_outcome_is_applied_by_the_concurrent_fold() {
+    let rig = rig(Mode::CommandB, true);
+    let recorder = EventRecorder::new();
+
+    let run = rig
+        .harness
+        .invoke_in_context(&(), ctx(&recorder), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    // The queued control ends the run with the wrap's final answer, and the
+    // siblings of the commanding call still ran and were answered.
+    assert_eq!(
+        run.final_response.as_ref().map(|r| r.message.text()),
+        Some("stopped by wrap".to_string())
+    );
+    assert_eq!(run.model_calls, 1, "the control ended the loop");
+    assert_eq!(
+        tool_text(&run.messages, "call-a").as_deref(),
+        Some("[w] alpha-out")
+    );
+    assert_eq!(
+        tool_text(&run.messages, "call-c").as_deref(),
+        Some("[w] gamma-out")
+    );
+    assert_eq!(middleware_balance(&recorder), (3, 3));
+}
+
+#[tokio::test(start_paused = true)]
+async fn tool_wrap_middleware_events_carry_the_call_id() {
+    let rig = rig(Mode::Stamp, true);
+    let recorder = EventRecorder::new();
+
+    rig.harness
+        .invoke_in_context(&(), ctx(&recorder), vec![Message::user("go")])
+        .await
+        .expect("run succeeds");
+
+    let ids = |started: bool| {
+        let mut ids: Vec<String> = recorder
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::MiddlewareStarted { call_id, .. } if started => {
+                    call_id.as_ref().map(|id| id.to_string())
+                }
+                AgentEvent::MiddlewareCompleted { call_id, .. } if !started => {
+                    call_id.as_ref().map(|id| id.to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(true), ["call-a", "call-b", "call-c"]);
+    assert_eq!(ids(false), ["call-a", "call-b", "call-c"]);
 }
