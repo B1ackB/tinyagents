@@ -92,6 +92,16 @@ impl InMemoryTranscriptHistory {
             .generation_gate
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        self.record_partial_under_gate(partial, request_id)
+    }
+
+    /// Records a partial while the caller already holds the shared generation
+    /// gate. This keeps locator selection and the mutation atomic.
+    pub(crate) fn record_partial_under_gate(
+        &self,
+        partial: TranscriptPartial,
+        request_id: Option<String>,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.sealed || partial.content.is_empty() {
             return false;

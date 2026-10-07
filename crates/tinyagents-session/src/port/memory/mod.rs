@@ -284,6 +284,10 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         partial: &TranscriptPartial,
         request_id: Option<&str>,
     ) -> anyhow::Result<bool> {
+        let _gate = self
+            .generation_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if partial.content.is_empty() {
             return Ok(false);
         }
@@ -306,7 +310,7 @@ impl TranscriptLocator for InMemoryTranscriptLocator {
         }) else {
             return Ok(false);
         };
-        Ok(history.record_partial(partial.clone(), request_id.map(str::to_string)))
+        Ok(history.record_partial_under_gate(partial.clone(), request_id.map(str::to_string)))
     }
 }
 
