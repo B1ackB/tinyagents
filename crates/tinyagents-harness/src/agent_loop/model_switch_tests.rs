@@ -629,7 +629,10 @@ async fn a_written_off_switched_model_is_not_resent_the_revoked_key() {
     // `b` is revoked on the first call; `c` answers. The next call must go
     // straight to `c` rather than retry the sticky, revoked switch target.
     let b = ScriptedOutcomesRevoked::new();
-    let c = Arc::new(ScriptedModel::new(vec![call("c1"), ModelResponse::assistant("done")]));
+    let c = Arc::new(ScriptedModel::new(vec![
+        call("c1"),
+        ModelResponse::assistant("done"),
+    ]));
     let mut harness = failover_harness(
         &["a", "b", "c"],
         vec![
@@ -675,13 +678,15 @@ impl ChatModel<()> for ScriptedOutcomesRevoked {
         _request: ModelRequest,
     ) -> tinyinference_llm::Result<ModelResponse> {
         *self.0.lock().unwrap() += 1;
-        Err(tinyinference_llm::Error::Provider(Box::new(ProviderError {
-            provider: "test".into(),
-            status: Some(401),
-            message: "API key has been revoked".into(),
-            retryable: false,
-            ..ProviderError::default()
-        })))
+        Err(tinyinference_llm::Error::Provider(Box::new(
+            ProviderError {
+                provider: "test".into(),
+                status: Some(401),
+                message: "API key has been revoked".into(),
+                retryable: false,
+                ..ProviderError::default()
+            },
+        )))
     }
 }
 

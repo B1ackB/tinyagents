@@ -67,6 +67,16 @@ receives the transcript, it is **opt-in**: `SteeringPolicy::allow_all()` and
 - Fallback: when the switched model is in `RunPolicy::fallback`, the walk
   continues from its position; when it is not, a failure falls back through the
   whole chain from its head (the original primary's chain).
+- Precedence: wins over a `before_model` middleware's `request.model`; a
+  rejection after middleware restores the request's earlier `request.model`
+  (one rejection event, the rejected name never reaches an adapter). The
+  `ModelMiddleware` wrap layer can still replace `request.model` afterwards.
+- Sticky means sticky: a failing switched model is tried first on every turn
+  (a fallback answers one call). A revoked credential is written off for the
+  run, so later calls skip it. `PromptCacheGuardMiddleware` does not record a
+  layout change at a switch. Host-routed runs always reject.
+- Binding a handle to a new root run (`with_steering`) clears a leftover
+  switch. `SteeringCommand`/`SteeringCommandKind` are `#[non_exhaustive]`.
 - Per-run state: a child's handle (`for_child`) has its own override, so a
   parent's switch never reaches a child and a child's rejection never clears
   the parent's.
