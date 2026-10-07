@@ -1914,6 +1914,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx>
     }
 }
 
+#[cfg(test)]
+#[path = "model_call_failover_tests.rs"]
+mod failover_test;
+
 /// Retargets an attempt's wire-level `request.model` at a fallback binding,
 /// but only when the request already carried an explicit model. Registry names
 /// are runtime aliases, not guaranteed provider model ids, so a request that

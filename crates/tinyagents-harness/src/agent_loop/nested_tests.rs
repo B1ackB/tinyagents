@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::context::{RunConfig, RunContext};
-use crate::error::{Result, TinyAgentsError};
+use crate::error::Result;
 use crate::events::AgentEvent;
 use crate::ids::CallId;
 use crate::limits::RunLimits;
@@ -351,7 +351,7 @@ async fn a_nested_call_that_needs_approval_fails_without_deferring_the_parent() 
     let outcomes = outcomes.lock().unwrap();
     assert_eq!(
         outcomes[0].as_ref().expect_err("approval-needed call fails"),
-        "tool failed: nested call 'delete' requires approval; nested calls cannot be deferred"
+        "permanent tool failure: nested call 'delete' requires approval; nested calls cannot be deferred"
     );
     assert_eq!(gated.runs(), 0);
     assert!(
