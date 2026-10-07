@@ -495,6 +495,25 @@ pub enum AgentEvent {
         key: String,
     },
 
+    /// A model call's provider prompt cache read back far less than the
+    /// previous call of the same conversation had put in it, so the
+    /// difference was re-billed as fresh input. Reported by
+    /// [`PromptCacheGuardMiddleware`][crate::middleware::PromptCacheGuardMiddleware]
+    /// from `usage.cache_read_tokens`; shortfalls within the noise floor
+    /// (see [`crate::cache::DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS`]) are not
+    /// reported. Distinct from [`Self::CacheMiss`], which is a *response*-cache
+    /// lookup miss.
+    PromptCacheMiss {
+        /// Identifier for the model call whose usage showed the miss.
+        call_id: CallId,
+        /// Prompt tokens that should have been cache reads.
+        expected_cached_tokens: u64,
+        /// Tokens the provider actually read from cache.
+        cached_tokens: u64,
+        /// `expected_cached_tokens - cached_tokens`, re-billed as input.
+        wasted_input_tokens: u64,
+    },
+
     /// A failed call has been scheduled for retry.
     RetryScheduled {
         /// Identifier for the call that will be retried.
@@ -932,6 +951,7 @@ impl AgentEvent {
             AgentEvent::MiddlewareCompleted { .. } => "middleware.completed",
             AgentEvent::CacheHit { .. } => "cache.hit",
             AgentEvent::CacheMiss { .. } => "cache.miss",
+            AgentEvent::PromptCacheMiss { .. } => "cache.prompt_miss",
             AgentEvent::RetryScheduled { .. } => "retry.scheduled",
             AgentEvent::RateLimitWaited { .. } => "rate_limit.waited",
             AgentEvent::FallbackSelected { .. } => "model.fallback_selected",

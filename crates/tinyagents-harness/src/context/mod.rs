@@ -325,6 +325,9 @@ impl<Ctx> RunContext<Ctx> {
             host_authority: None,
             terminal_observer: None,
             active_model_call: None,
+            call_streamed: false,
+            prefix_epoch: 0,
+            discarded_usage: Vec::new(),
             deferred_results: None,
             approved_calls: std::collections::HashSet::new(),
             refusal_metadata: std::collections::HashMap::new(),
@@ -545,6 +548,31 @@ impl<Ctx> RunContext<Ctx> {
     fn with_optional_steering(mut self, steering: Option<crate::steering::SteeringHandle>) -> Self {
         self.steering = steering;
         self
+    }
+
+    /// Records the usage of a provider response a wrap middleware is about to
+    /// discard and re-request. The provider billed it, so the agent loop adds
+    /// it to the run's usage (and the host budget) when it accounts for the
+    /// call that replaces it.
+    pub fn record_discarded_usage(&mut self, usage: tinyinference_llm::usage::Usage) {
+        self.discarded_usage.push(usage);
+    }
+
+    /// Declares that a middleware rewrote the prompt prefix on purpose
+    /// (compaction, truncation): the next provider cache read is expected to
+    /// be cold, so it is not a cache miss.
+    pub fn mark_prompt_prefix_changed(&mut self) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.prefix_epoch = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The value [`Self::mark_prompt_prefix_changed`] last set (`0` if never).
+    pub fn prompt_prefix_epoch(&self) -> u64 {
+        self.prefix_epoch
+    }
+
+    pub(crate) fn take_discarded_usage(&mut self) -> Vec<tinyinference_llm::usage::Usage> {
+        std::mem::take(&mut self.discarded_usage)
     }
 
     fn with_streaming(mut self, streaming: bool) -> Self {

@@ -42,7 +42,9 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
     ///
     /// Called both before and after `before_model` middleware: the second
     /// call re-validates against the capabilities middleware added and
-    /// re-asserts the switch over a model a middleware selected.
+    /// re-asserts the switch over a model a middleware selected. Neither call
+    /// reports the switch as applied; [`Self::announce_applied_model_switch`]
+    /// does that once the request is actually about to be dispatched.
     /// `model_before_switch` is what `request.model` held before the first
     /// call; a rejection puts it back when `request.model` still carries the
     /// rejected name, so that name never reaches resolution or an adapter that
@@ -118,6 +120,28 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 .to_string(),
             accepted: false,
         });
+    }
+
+    /// Reports a steered switch as applied (`Steered { accepted: true }`, once
+    /// per switch) when `request` carries the switched model and is about to be
+    /// dispatched. Called after the pre-call control checkpoint, so a switch
+    /// whose request never reaches a model call produces no outcome.
+    pub(super) fn announce_applied_model_switch(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        request: &ModelRequest,
+    ) {
+        let (Some(handle), Some(model)) = (ctx.steering.clone(), request.model.as_deref()) else {
+            return;
+        };
+        if handle.announce_model_override(model) {
+            ctx.emit(AgentEvent::Steered {
+                command_kind: crate::steering::SteeringCommandKind::SwitchModel
+                    .as_str()
+                    .to_string(),
+                accepted: true,
+            });
+        }
     }
 
     /// Whether a fallback walk starting at `cursor` should begin at the head of

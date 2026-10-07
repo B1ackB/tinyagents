@@ -4,19 +4,22 @@
 //! Split out of `middleware/mod.rs`; see that module's doc comment for the
 //! full middleware pipeline overview.
 
+use super::compaction_pressure::CompactionRoute;
 use super::*;
 use crate::cache::{CacheLayoutEvent, PromptCacheLayout};
 use crate::middleware::AgentRun;
+use crate::middleware::types::CompactionPressure;
 use crate::middleware::{
     CompressionFailurePolicy, ContextCompressionMiddleware, DEFAULT_CACHE_GUARD_EVENT_CAP,
-    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_THRASH_COOLDOWN_CALLS, DEFAULT_THRASH_STRIKES,
-    MessageTrimMiddleware, MicrocompactMiddleware, PromptCacheGuardMiddleware,
+    DEFAULT_COMPRESSION_RECORD_CAP, DEFAULT_MAX_OVERFLOW_ATTEMPTS, DEFAULT_THRASH_COOLDOWN_CALLS,
+    DEFAULT_THRASH_STRIKES, MessageTrimMiddleware, MicrocompactMiddleware,
+    PromptCacheGuardMiddleware,
 };
 use crate::summarization::{
     CompactionContext, CompactionDecision, CompactionReason, CompactionRecord, ConcatSummarizer,
-    OverflowClassifier, SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord,
-    TrimStrategy, checkpoint_body, checkpoint_message, find_cut_point, is_checkpoint,
-    summarize_with_split, trim_messages,
+    DefaultFileOpExtractor, FileOpExtractor, OverflowClassifier, ResponseOverflowDetection,
+    SummarizationPolicy, Summarizer, SummaryPlacement, SummaryRecord, TrimStrategy,
+    checkpoint_body, checkpoint_message, find_cut_point, is_checkpoint, trim_messages,
 };
 
 // ── MessageTrimMiddleware ─────────────────────────────────────────────────────
@@ -89,7 +92,79 @@ impl ContextCompressionMiddleware {
             thrash_strikes: DEFAULT_THRASH_STRIKES,
             thrash_cooldown_calls: DEFAULT_THRASH_COOLDOWN_CALLS,
             keep_recent_tokens: None,
+            max_overflow_attempts: DEFAULT_MAX_OVERFLOW_ATTEMPTS,
+            response_overflow: ResponseOverflowDetection::default(),
+            tool_result_truncation: None,
+            split_turn_prefix: true,
+            file_ops: Some(std::sync::Arc::new(DefaultFileOpExtractor)),
         }
+    }
+
+    /// Replaces the extractor that derives the file lists appended to every
+    /// compaction summary (`<read-files>` / `<modified-files>`, carried
+    /// forward across compactions). The default,
+    /// [`DefaultFileOpExtractor`], reads the `path` / `file` / `file_path` /
+    /// `paths` arguments and classifies the call by tool name.
+    pub fn with_file_op_extractor(mut self, extractor: impl FileOpExtractor + 'static) -> Self {
+        self.file_ops = Some(std::sync::Arc::new(extractor));
+        self
+    }
+
+    /// Chooses whether a compaction cut inside a turn summarizes that turn's
+    /// prefix with its own request (default `true`). The prefix is an *extra*
+    /// summarizer call on top of the history's (still bounded by
+    /// [`with_max_turn_tokens`][Self::with_max_turn_tokens]); turn it off to
+    /// summarize the folded messages in one call as before.
+    pub fn with_split_turn_prefix(mut self, enabled: bool) -> Self {
+        self.split_turn_prefix = enabled;
+        self
+    }
+
+    /// Stops appending file lists to compaction summaries.
+    pub fn without_file_operations(mut self) -> Self {
+        self.file_ops = None;
+        self
+    }
+
+    /// Sets how many compaction (or truncation) attempts one model call may
+    /// make after the provider reports a context overflow. Each attempt must
+    /// shrink the request or recovery stops. Defaults to
+    /// [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`]; `0` disables overflow recovery.
+    pub fn with_max_overflow_attempts(mut self, attempts: u32) -> Self {
+        self.max_overflow_attempts = attempts;
+        self
+    }
+
+    /// Chooses which *successful-response* signals count as an overflow, in
+    /// addition to the errors [`OverflowClassifier`] recognizes. Defaults to
+    /// [`ResponseOverflowDetection::Off`]: successful responses are not
+    /// inspected. Opt into [`ResponseOverflowDetection::Usage`] (usage above
+    /// the window, and a zero-output `length` stop with the window full) or
+    /// [`ResponseOverflowDetection::UsageAndShortLength`]. Both need a known
+    /// context window ([`SummarizationPolicy::context_window`], or the
+    /// response's own `usage.context_window_tokens`).
+    pub fn with_response_overflow_detection(
+        mut self,
+        detection: ResponseOverflowDetection,
+    ) -> Self {
+        self.response_overflow = detection;
+        self
+    }
+
+    /// Enables the cheap overflow route: when a request is over budget (before
+    /// the call, or after the provider reports an overflow) and cutting every
+    /// tool result longer than `max_bytes` would cover the overflow with
+    /// margin, the results are cut and no summary is bought. When cutting
+    /// would only partly cover it, compaction runs first and the cut follows.
+    ///
+    /// Opt-in: unset (the default) never truncates. The cut rewrites only the
+    /// outgoing request; the transcript keeps the full results, and a run that
+    /// has truncated once keeps truncating, so its prompt prefix stays
+    /// byte-stable within a run, apart from each result being cut once when a
+    /// later assistant turn follows it (the newest results are spared). Results flagged `trusted_verbatim` are never cut.
+    pub fn with_tool_result_truncation(mut self, max_bytes: usize) -> Self {
+        self.tool_result_truncation = Some(max_bytes).filter(|bytes| *bytes > 0);
+        self
     }
 
     /// Keeps the most recent `tokens` of history verbatim at each compaction
@@ -133,7 +208,7 @@ impl ContextCompressionMiddleware {
 
     /// Sets the token budget above which a single turn handed to the
     /// summarizer is split into two halves and merged (see
-    /// [`summarize_with_split`]). Unset (the default) never splits.
+    /// [`summarize_with_split`][crate::summarization::summarize_with_split]). Unset (the default) never splits.
     pub fn with_max_turn_tokens(mut self, max_turn_tokens: u64) -> Self {
         self.max_turn_tokens = Some(max_turn_tokens);
         self
@@ -255,6 +330,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for ContextCom
         .pressure
         .begin_call();
         let result = self.compress_request(ctx, request, suppressed).await;
+        self.apply_run_truncation(ctx, request);
         // Whatever the outcome, this is the request whose provider usage the
         // next `after_model` attributes.
         let schema_tokens = schema_tokens(&request.tools);
@@ -381,6 +457,10 @@ impl ContextCompressionMiddleware {
             );
         }
 
+        // A run that already truncated keeps its tool results cut, before the
+        // size is measured, so the measurement matches what was sent.
+        self.apply_run_truncation(ctx, request);
+
         // Below the threshold: pass through (no new compaction, no event).
         // Prefer the provider's own count of the previous request plus an
         // estimate of what was appended since; the tool declarations count
@@ -401,6 +481,12 @@ impl ContextCompressionMiddleware {
             trigger = self.policy.trigger_budget(),
             "[context_compression] request over the trigger"
         );
+
+        // The cheaper route first: cutting oversized tool results can cover the
+        // overflow without a summary.
+        if self.route_over_trigger(ctx, request, prompt_tokens) {
+            return Ok(());
+        }
 
         // Anti-thrash: summaries that did not bring the prompt under the
         // trigger are not bought again during the cooldown.
@@ -475,6 +561,7 @@ impl ContextCompressionMiddleware {
                 let text = previous_summary
                     .as_deref()
                     .map_or(text.clone(), |previous| format!("{previous}\n{text}"));
+                let text = self.hook_summary_text(&to_summarize, text);
                 let record = SummaryRecord {
                     summary: checkpoint_message(self.placement, &text),
                     provenance: crate::summarization::CompressionProvenance {
@@ -528,14 +615,9 @@ impl ContextCompressionMiddleware {
             "[context_compression] compacting"
         );
         let started = std::time::Instant::now();
-        let record = match summarize_with_split(
-            self.summarizer.as_ref(),
-            &to_summarize,
-            self.max_turn_tokens.unwrap_or(u64::MAX),
-            previous_summary,
-            crate::token_estimation::estimate_message_tokens,
-        )
-        .await
+        let record = match self
+            .summarize_batch(&to_summarize, &to_keep, previous_summary)
+            .await
         {
             Ok(record) => record,
             Err(err) => {
@@ -617,6 +699,9 @@ impl ContextCompressionMiddleware {
     }
 }
 
+mod overflow;
+mod summary;
+
 #[async_trait]
 impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
     for ContextCompressionMiddleware
@@ -625,16 +710,29 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         self.label
     }
 
-    /// Implements pi's overflow → compact → retry recovery
-    /// (`docs/runtime-comparison/pi.md` §4.5): the wrapped model call runs
-    /// once; if it fails with an error
-    /// [`Self::overflow_classifier`][ContextCompressionMiddleware] classifies
-    /// as a provider context-window overflow, this compacts the transcript
-    /// once (recorded with [`CompactionReason::Overflow`]) and retries the
-    /// *same* turn exactly once more. A second overflow (or a decline from
-    /// the `before_compaction` hook) propagates the error instead of retrying
-    /// again, so a pathological transcript that cannot be shrunk under the
-    /// window cannot loop forever.
+    /// Overflow recovery v2 (pi's overflow → compact → retry, extended): runs
+    /// the wrapped model call and, when it reports a context overflow, shrinks
+    /// the request and retries the *same* turn, up to
+    /// [`with_max_overflow_attempts`][ContextCompressionMiddleware::with_max_overflow_attempts]
+    /// times (default [`DEFAULT_MAX_OVERFLOW_ATTEMPTS`][crate::middleware::DEFAULT_MAX_OVERFLOW_ATTEMPTS]).
+    ///
+    /// An overflow is either an error
+    /// [`Self::overflow_classifier`][ContextCompressionMiddleware] classifies,
+    /// or a *successful* response whose usage / stop shows the window was
+    /// exceeded (see [`ResponseOverflowDetection`]).
+    ///
+    /// Each attempt takes the cheapest step that can help: with
+    /// [`with_tool_result_truncation`][ContextCompressionMiddleware::with_tool_result_truncation]
+    /// configured, oversized tool results are cut first (no model call spent
+    /// on a summary); otherwise, or when that cannot cover the overflow, the
+    /// transcript is compacted ([`CompactionReason::Overflow`]). Every attempt
+    /// after the first must produce a smaller request than the one before;
+    /// one that cannot (nothing safe to cut, the `before_compaction` hook
+    /// declined, the summary is no smaller) ends recovery and the original error — or
+    /// response — is returned, so a transcript that cannot be shrunk under the
+    /// window cannot loop. The transcript itself is never rewritten: the
+    /// shrunk request is a rewrite, and compactions extend the run's
+    /// fingerprint-chained fold exactly as `before_model` compactions do.
     async fn wrap_model(
         &self,
         ctx: &mut RunContext<Ctx>,
@@ -642,239 +740,71 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelMiddleware<State, Ctx>
         request: ModelRequest,
         next: ModelHandler<'_, State, Ctx>,
     ) -> Result<MiddlewareModelOutcome> {
-        let first_error = match next.run(ctx, state, request.clone()).await {
-            Ok(outcome) => return Ok(outcome),
-            Err(error) => error,
-        };
-
-        let Some(overflow) = self.overflow_classifier.classify(&first_error) else {
-            return Err(first_error);
-        };
-
-        // Checkpoints in the request (this run's fold summary, or one carried
-        // in from an earlier turn) are the previous summary, never raw history
-        // to summarize again.
-        let mut stripped = request.messages.clone();
-        let carried = take_checkpoints(&mut stripped);
-        // The provider just rejected a request `before_model` judged to fit, so
-        // the estimate cannot be trusted to size the kept tail: keep at most
-        // half of what the transcript estimates to (and half the provider's
-        // stated limit, when it gave one), never more than the trigger budget.
-        // Keeping the full trigger budget found no cut at all whenever the
-        // estimate was under the trigger, which is exactly when a provider
-        // overflow is a surprise.
-        let keep_recent_tokens = self
-            .policy
-            .trigger_budget()
-            .min(total_message_tokens(&stripped) / 2)
-            .min(overflow.limit.map_or(u64::MAX, |limit| limit / 2))
-            .max(1);
-        let Some(cut) = find_cut_point(
-            &stripped,
-            keep_recent_tokens,
-            crate::token_estimation::estimate_message_tokens,
-        ) else {
-            // Nothing safe to cut (e.g. the whole transcript is already
-            // within budget, or is a single indivisible tool-call pair) —
-            // there is no compaction that could help, so surface the
-            // original provider error.
-            return Err(first_error);
-        };
-
-        let (system, non_system) = partition_messages_system(&stripped);
-        // This run's fold and the live transcript its `before_model` saw. The
-        // fold extends in live-transcript coordinates only when this request's
-        // non-system messages still line up one-to-one with that live
-        // remainder: a later middleware dropping messages would shift every
-        // index, and persisting a shifted boundary would corrupt a resumed
-        // session.
-        // With no `before_model` state for this run (compression installed only
-        // as model middleware), nothing rewrote the request: it is the live
-        // transcript itself.
-        // (Over the request's own non-system messages, checkpoint included,
-        // so a carried checkpoint the fold does not know about breaks the
-        // alignment instead of shifting it.)
-        let (prior, live_chain) = self.run_state(ctx.instance_id()).unwrap_or_else(|| {
-            let (_, live) = partition_messages_system(&request.messages);
-            (None, fingerprint_chain(&live))
-        });
-        let folded = prior.as_ref().map_or(0, |fold| fold.folded);
-        // `before_model` splices the fold's pinned message in right after the
-        // summary. It is a copy of a message inside the folded range, not part
-        // of the live remainder, so it is set aside for the alignment check.
-        let prior_pin = prior
-            .as_ref()
-            .and_then(|fold| fold.pinned.clone())
-            .filter(|pin| non_system.first() == Some(&pin.message));
-        let remainder = &non_system[usize::from(prior_pin.is_some())..];
-        // Content, not just count: a later step that rewrites messages in place
-        // (microcompact blanking tool bodies) keeps the count but changes what
-        // a summary of this request would describe.
-        let seed = folded
-            .checked_sub(1)
-            .and_then(|i| live_chain.get(i))
-            .copied()
-            .unwrap_or(0);
-        let fold_extends = live_chain.len() >= folded
-            && fingerprint_chain_from(seed, remainder) == live_chain[folded..];
-        // The request's checkpoint (stripped above) is superseded by the new
-        // one, which is built on it: the checkpoint is taken from this very
-        // request, so it describes exactly the history before the cut whether
-        // or not the request still aligns with the live transcript.
-        let kept_system: Vec<Message> = system;
-        let plan = crate::summarization::split_at_cut(
-            kept_system.clone(),
-            &non_system,
-            cut.index,
-            self.policy.pin_turn_user_message,
-        );
-        if plan.to_summarize.is_empty() {
-            // Only the pinned message lay before the cut, and it stays pinned:
-            // nothing to compact.
-            return Err(first_error);
-        }
-        let coords = LiveCoords {
-            folded,
-            prior_pin: prior_pin.as_ref().map(|pin| pin.live_index),
-        };
-        let new_folded = coords.live_index(plan.cut);
-        let pinned = pinned_from_plan(&plan, kept_system.len(), &coords);
-        let boundary = LiveBoundary {
-            first_kept_index: new_folded,
-            pinned_user_index: pinned.as_ref().map(|pin| pin.live_index),
-        };
-        let crate::summarization::CompactionPlan {
-            to_summarize,
-            to_keep,
-            ..
-        } = plan;
-        let from_tokens = cut.tokens_before + cut.tokens_after;
-        if !fold_extends {
-            tracing::debug!(
-                folded,
-                live = live_chain.len(),
-                request = non_system.len(),
-                "[context_compression] overflow request no longer aligns with the live transcript; compacting without extending the fold or persisting a boundary"
+        // `base` holds the compactions so far; this loop never truncates it, so
+        // a later compaction summarizes the results as it received them.
+        // `truncate` is applied on top of it when sending. (A request that
+        // `before_model` already cut in truncating mode arrives cut.)
+        let mut base = request;
+        let mut truncate: Option<usize> = None;
+        let mut attempts = 0u32;
+        loop {
+            let outgoing = Self::outgoing_request(&base, truncate);
+            let result = next.run(ctx, state, outgoing).await;
+            let Some(overflow) = self.classify_outcome(ctx, &result, &base) else {
+                return result;
+            };
+            if attempts >= self.max_overflow_attempts {
+                return result;
+            }
+            attempts += 1;
+            let route = self.overflow_route(&base, truncate.is_some(), &overflow);
+            tracing::info!(
+                attempt = attempts,
+                max = self.max_overflow_attempts,
+                route = route.as_str(),
+                requested = ?overflow.requested,
+                limit = ?overflow.limit,
+                "[context_compression] context overflow reported; recovering"
             );
-        }
-
-        // The request's own checkpoint describes its history before the cut;
-        // without one, the run's summaries only do when the request still
-        // lines up with the live transcript (an unaligned request's summary
-        // would describe altered history). Both the summarizer and a
-        // `before_compaction` hook's own summary build on it, since the
-        // checkpoint it came from is dropped from `to_keep` either way.
-        let previous_summary = carried.as_ref().map(summary_text).or_else(|| {
-            fold_extends
-                .then(|| {
-                    prior
-                        .as_ref()
-                        .map(|fold| summary_text(&fold.summary))
-                        .or_else(|| self.run_last_summary(ctx.instance_id()))
-                })
-                .flatten()
-        });
-
-        match self.hook_decision(
-            CompactionReason::Overflow,
-            from_tokens,
-            &to_summarize,
-            &to_keep,
-        ) {
-            CompactionDecision::Decline => return Err(first_error),
-            CompactionDecision::Proceed => {}
-            CompactionDecision::UseSummary(text) => {
-                let text = previous_summary
-                    .as_deref()
-                    .map_or(text.clone(), |previous| format!("{previous}\n{text}"));
-                let record = SummaryRecord {
-                    summary: checkpoint_message(self.placement, &text),
-                    provenance: crate::summarization::CompressionProvenance {
-                        source_ids: Vec::new(),
-                        original_token_estimate: 0,
-                        summary_token_estimate: 0,
-                        reason: "before_compaction hook supplied the summary".to_string(),
-                    },
-                    usage: None,
-                };
-                let mut retried = request.clone();
-                if fold_extends {
-                    self.remember_fold(
-                        ctx.instance_id(),
-                        new_folded,
-                        &live_chain,
-                        &record.summary,
-                        pinned.clone(),
-                    );
+            let cap = self.tool_result_truncation;
+            if route == CompactionRoute::TruncateToolResults
+                && let Some(cap) = cap
+                && self.announce_truncation(ctx, &base, cap)
+            {
+                self.account_discarded(ctx, &result);
+                truncate = Some(cap);
+                continue;
+            }
+            match self
+                .compact_for_overflow(ctx, &base, overflow, attempts > 1)
+                .await
+            {
+                Some(shrunk) => {
+                    self.account_discarded(ctx, &result);
+                    base = shrunk;
+                    if route.truncates()
+                        && let Some(cap) = cap
+                        && truncate.is_none()
+                        && self.announce_truncation(ctx, &base, cap)
+                    {
+                        truncate = Some(cap);
+                    }
                 }
-                let new_messages = splice_summary(to_keep, record.summary.clone());
-                let to_tokens = total_message_tokens(&new_messages);
-                self.finish_compaction(
-                    ctx,
-                    record,
-                    self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
-                    from_tokens,
-                    to_tokens,
-                    CompactionReason::Overflow,
-                    None,
-                );
-                retried.messages = new_messages;
-                self.forget_pending(ctx.instance_id());
-                return next.run(ctx, state, retried).await;
+                None => {
+                    // Nothing to compact: cutting the tool results may still
+                    // be enough, so it is the last resort for a mixed route.
+                    if route.truncates()
+                        && truncate.is_none()
+                        && let Some(cap) = cap
+                        && self.announce_truncation(ctx, &base, cap)
+                    {
+                        truncate = Some(cap);
+                        continue;
+                    }
+                    return result;
+                }
             }
         }
-
-        tracing::info!(
-            to_summarize = to_summarize.len(),
-            to_keep = to_keep.len(),
-            from_tokens,
-            "[context_compression] provider reported a context overflow; compacting once and retrying"
-        );
-        let started = std::time::Instant::now();
-        let record = match summarize_with_split(
-            self.summarizer.as_ref(),
-            &to_summarize,
-            self.max_turn_tokens.unwrap_or(u64::MAX),
-            previous_summary,
-            crate::token_estimation::estimate_message_tokens,
-        )
-        .await
-        {
-            Ok(record) => record,
-            // Compaction itself failed: nothing changed, so surface the
-            // original overflow rather than a confusing summarizer error.
-            Err(_) => return Err(first_error),
-        };
-        let latency_ms = elapsed_ms(started);
-        let record = self.placed(record);
-
-        if fold_extends {
-            self.remember_fold(
-                ctx.instance_id(),
-                new_folded,
-                &live_chain,
-                &record.summary,
-                pinned,
-            );
-        }
-        let new_messages = splice_summary(to_keep, record.summary.clone());
-        let to_tokens = total_message_tokens(&new_messages);
-        self.finish_compaction(
-            ctx,
-            record,
-            self.boundary_for_run(ctx.instance_id(), fold_extends.then_some(boundary)),
-            from_tokens,
-            to_tokens,
-            CompactionReason::Overflow,
-            Some(latency_ms),
-        );
-
-        let mut retried = request;
-        retried.messages = new_messages;
-        self.forget_pending(ctx.instance_id());
-        // The retry is the *last* attempt: a second overflow propagates
-        // rather than looping — see this method's docs.
-        next.run(ctx, state, retried).await
     }
 }
 
@@ -1182,6 +1112,9 @@ impl ContextCompressionMiddleware {
         reason: CompactionReason,
         latency_ms: Option<u64>,
     ) {
+        // The prompt prefix is rewritten on purpose: the provider's next cache
+        // read is expected to be cold.
+        ctx.mark_prompt_prefix_changed();
         // The run's last summary is set by `remember_fold` only: a summary
         // with no valid fold (an unaligned overflow) is not built on later.
         touch_run(
@@ -1269,6 +1202,7 @@ impl ContextCompressionMiddleware {
         request: &mut ModelRequest,
         from_tokens: u64,
     ) {
+        ctx.mark_prompt_prefix_changed();
         let message_budget = self
             .policy
             .trigger_budget()
@@ -1668,7 +1602,57 @@ impl PromptCacheGuardMiddleware {
             previous: std::sync::Mutex::new(None),
             events: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_events: DEFAULT_CACHE_GUARD_EVENT_CAP,
+            cache_misses: std::sync::Mutex::new(crate::cache::PromptCacheTracker::default()),
+            thread_epochs: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Sets the noise floor of the prompt-cache miss accounting: a call whose
+    /// cache read falls short of the previous prompt by this many tokens or
+    /// fewer is not reported. Defaults to
+    /// [`DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS`][crate::cache::DEFAULT_CACHE_MISS_NOISE_FLOOR_TOKENS].
+    pub fn with_cache_miss_noise_floor(self, tokens: u64) -> Self {
+        *self
+            .cache_misses
+            .lock()
+            .expect("cache misses mutex poisoned") = crate::cache::PromptCacheTracker::new(tokens);
+        self
+    }
+
+    /// The conversation key cache accounting groups calls by the thread when
+    /// the run has one (a provider cache spans runs of a thread), else the run
+    /// instance, plus the prompt-prefix epoch. Thread epochs are retained in
+    /// the guard so a fresh context for a resumed thread does not revert to the
+    /// pre-compaction epoch zero.
+    fn cache_key<Ctx: Send + Sync>(&self, ctx: &RunContext<Ctx>) -> String {
+        let conversation = ctx
+            .thread_id()
+            .map(|thread| format!("thread:{thread}"))
+            // A run id is a caller's label that two runs may share; the
+            // instance id is unique.
+            .unwrap_or_else(|| format!("run:{}", ctx.instance_id()));
+        format!("{conversation}@{}", self.prefix_epoch(ctx))
+    }
+
+    fn prefix_epoch<Ctx: Send + Sync>(&self, ctx: &RunContext<Ctx>) -> u64 {
+        let Some(thread) = ctx.thread_id() else {
+            return ctx.prompt_prefix_epoch();
+        };
+        let mut epochs = self
+            .thread_epochs
+            .lock()
+            .expect("thread epochs mutex poisoned");
+        if ctx.prompt_prefix_epoch() != 0 {
+            const MAX_THREAD_EPOCHS: usize = 256;
+            if !epochs.contains_key(thread)
+                && epochs.len() >= MAX_THREAD_EPOCHS
+                && let Some(evicted) = epochs.keys().next().cloned()
+            {
+                epochs.remove(&evicted);
+            }
+            epochs.insert(thread.clone(), ctx.prompt_prefix_epoch());
+        }
+        epochs.get(thread).copied().unwrap_or(0)
     }
 
     /// Sets the maximum number of [`CacheLayoutEvent`]s retained before the
@@ -1737,6 +1721,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
                 !prev.has_same_stable_prefix_as(&layout)
             };
             if changed {
+                // The prefix changed on purpose (or by accident the layout
+                // event below records): the next uncached tokens are new
+                // content, not a silent miss.
+                self.cache_misses
+                    .lock()
+                    .expect("cache misses mutex poisoned")
+                    .reset(&self.cache_key(ctx));
                 tracing::debug!(
                     "[cache] prompt_cache_guard: stable prefix changed run={run_id} \
                      before={} after={}",
@@ -1761,4 +1752,63 @@ impl<State: Send + Sync, Ctx: Send + Sync> Middleware<State, Ctx> for PromptCach
         *previous = Some((run_id, layout));
         Ok(())
     }
+
+    /// Compares the call's `cache_read_tokens` with the previous call's prompt
+    /// for the same conversation and emits [`AgentEvent::PromptCacheMiss`]
+    /// when the cache read fell short beyond the noise floor.
+    async fn after_model(
+        &self,
+        ctx: &mut RunContext<Ctx>,
+        _state: &State,
+        response: &mut ModelResponse,
+    ) -> Result<()> {
+        // A replayed response consumed no provider cache.
+        let Some(usage) = response
+            .usage
+            .as_ref()
+            .filter(|_| !response.served_from_cache)
+        else {
+            return Ok(());
+        };
+        let key = self.cache_key(ctx);
+        let model = response
+            .resolved_model
+            .as_ref()
+            .map_or("", |resolved| resolved.name.as_str());
+        let miss = self
+            .cache_misses
+            .lock()
+            .expect("cache misses mutex poisoned")
+            .observe(&key, model, usage);
+        if let Some(miss) = miss {
+            let call_id = ctx
+                .active_model_call
+                .clone()
+                .unwrap_or_else(|| crate::ids::CallId::new(format!("{}-model", ctx.run_id())));
+            tracing::warn!(
+                run = %ctx.run_id(),
+                expected_cached = miss.expected_cached_tokens,
+                cached = miss.cached_tokens,
+                wasted = miss.wasted_input_tokens,
+                "[cache] prompt cache read back less than the previous prompt"
+            );
+            ctx.emit(AgentEvent::PromptCacheMiss {
+                call_id,
+                expected_cached_tokens: miss.expected_cached_tokens,
+                cached_tokens: miss.cached_tokens,
+                wasted_input_tokens: miss.wasted_input_tokens,
+            });
+        }
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+#[path = "context_overflow_tests.rs"]
+mod context_overflow_tests;
+#[cfg(test)]
+#[path = "context_prompt_cache_miss_tests.rs"]
+mod context_prompt_cache_miss_tests;
+#[cfg(test)]
+#[path = "context_summary_tests.rs"]
+mod context_summary_tests;

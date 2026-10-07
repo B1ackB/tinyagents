@@ -218,10 +218,10 @@ const AGGREGATE_PREVIEW_BUDGET_BYTES: usize = 512;
 /// survives. Slightly overshooting the aggregate budget here is the correct
 /// trade — a valid pointer is worth a few hundred bytes.
 const MIN_ENVELOPE_ALLOWANCE_BYTES: usize = 512;
-const TRAILER_RESERVED: usize = 256;
+pub(super) const TRAILER_RESERVED: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BudgetOutcome {
+pub(super) struct BudgetOutcome {
     original_bytes: usize,
     final_bytes: usize,
     truncated: bool,
@@ -237,7 +237,10 @@ impl BudgetOutcome {
     }
 }
 
-fn apply_tool_result_budget(content: String, budget_bytes: usize) -> (String, BudgetOutcome) {
+pub(super) fn apply_tool_result_budget(
+    content: String,
+    budget_bytes: usize,
+) -> (String, BudgetOutcome) {
     let original_bytes = content.len();
     if budget_bytes == 0 || original_bytes <= budget_bytes {
         return (content, BudgetOutcome::unchanged(original_bytes));

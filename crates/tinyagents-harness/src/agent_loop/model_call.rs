@@ -603,6 +603,12 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
         let mut model = binding.model;
         let mut resolved = binding.resolved;
         let run_id = ctx.run_id().clone();
+        // The request each attempt sends. `request.model` is the wire-level
+        // override providers such as the Claude CLI adapters honour, so it must
+        // always name the binding actually being called: every fallback
+        // rebinding below retargets it, or a fallback would re-ask the model
+        // that just failed while events report the fallback's name.
+        let mut attempt_request = request.clone();
         // Tracks every model name already attempted in this fallback chain so
         // a chain containing a repeated name (e.g. `[primary, backup,
         // primary]`) cannot alternate between the same two models forever;
@@ -636,6 +642,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                 requested: Some(name.clone()),
                 source: ModelResolutionSource::Hint,
             };
+            retarget_request_model(&mut attempt_request, &name);
             current_name = name;
             model = next_model;
         }
@@ -674,7 +681,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                         state,
                         ctx,
                         &model,
-                        request,
+                        &attempt_request,
                         call_id,
                         &mut deltas_emitted,
                         &current_name,
@@ -693,7 +700,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                     // still short-circuits before the request is ever issued.
                     let fut = async {
                         model
-                            .invoke(state, request.clone())
+                            .invoke(state, attempt_request.clone())
                             .await
                             .map_err(TinyAgentsError::from)
                     };
@@ -893,6 +900,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> AgentHarness<State, Ctx> {
                                 requested: Some(name.clone()),
                                 source: ModelResolutionSource::Hint,
                             };
+                            retarget_request_model(&mut attempt_request, &name);
                             current_name = name;
                             model = next_model;
                             if streaming && deltas_emitted > 0 {
@@ -1819,6 +1827,10 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
         Box::pin(async move {
             let mut request = request;
             let binding = self.rebind(ctx, &request).await?;
+            // Claim the switch only after the wrap onion has elected to call
+            // this base. A wrap middleware may short-circuit with a command or
+            // replacement response without invoking the model at all.
+            self.harness.announce_applied_model_switch(ctx, &request);
             crate::middleware::library::rehome_ephemeral_system_instructions(
                 &mut request,
                 binding.model.profile(),
@@ -1829,6 +1841,7 @@ impl<State: Send + Sync, Ctx: Send + Sync> ModelBaseCall<State, Ctx>
             // failure: a wrap middleware may answer in place of the failed
             // attempt, and that answer attempted no call.
             self.shape.recovery.dropped.reset();
+            ctx.call_streamed = self.shape.streaming;
             let result = self
                 .harness
                 .invoke_model_with_retry(state, ctx, &request, &self.call_id, binding, &self.shape)
@@ -1885,3 +1898,13 @@ impl<State: Send + Sync, Ctx: Send + Sync> ToolBaseCall<State, Ctx> for ToolCall
 #[cfg(test)]
 #[path = "model_call_failover_tests.rs"]
 mod failover_test;
+
+/// Retargets an attempt's wire-level `request.model` at a fallback binding,
+/// but only when the request already carried an explicit model. Registry names
+/// are runtime aliases, not guaranteed provider model ids, so a request that
+/// sent none (the provider's own configured model) keeps sending none.
+fn retarget_request_model(request: &mut ModelRequest, name: &str) {
+    if request.model.is_some() {
+        request.model = Some(name.to_string());
+    }
+}

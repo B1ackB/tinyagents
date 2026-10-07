@@ -384,15 +384,40 @@ pub struct SummaryRequest {
     /// run's transcript, when one exists. `None` for the first compaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_summary: Option<String>,
+    /// What the messages are, so a summarizer can pick the right prompt.
+    #[serde(default)]
+    pub kind: SummaryKind,
+}
+
+/// What a [`SummaryRequest`]'s messages are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryKind {
+    /// Older history, summarized as a standalone checkpoint.
+    #[default]
+    Full,
+    /// The beginning of a turn whose remainder stays verbatim after the
+    /// summary (a compaction cut landed inside the turn): capture what was
+    /// asked and what has been done so far, briefly.
+    TurnPrefix,
 }
 
 impl SummaryRequest {
+    /// Builds a [`SummaryKind::TurnPrefix`] request for `messages`.
+    pub fn turn_prefix(messages: Vec<Message>) -> Self {
+        Self {
+            kind: SummaryKind::TurnPrefix,
+            ..Self::new(messages)
+        }
+    }
+
     /// Builds a request with no previous summary (the common, first-compaction
     /// case).
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
             messages,
             previous_summary: None,
+            kind: SummaryKind::Full,
         }
     }
 

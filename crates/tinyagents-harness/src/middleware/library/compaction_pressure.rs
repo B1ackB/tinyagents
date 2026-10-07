@@ -30,6 +30,41 @@ impl PromptSource {
     }
 }
 
+/// Tokens of headroom truncation must clear beyond the overflow before it is
+/// trusted to do the job without a summary (OpenClaw's
+/// `TRUNCATION_ROUTE_BUFFER_TOKENS`).
+const TRUNCATION_ROUTE_BUFFER_TOKENS: u64 = 512;
+
+/// What to do about a prompt that may not fit, cheapest remedy first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactionRoute {
+    /// The prompt fits; leave it alone.
+    Fits,
+    /// Cutting oversized tool results alone covers the overflow with margin.
+    TruncateToolResults,
+    /// Nothing worth truncating; summarize older history.
+    Compact,
+    /// Truncation helps but cannot cover the overflow: summarize, then cut
+    /// oversized tool results left in the request.
+    CompactThenTruncate,
+}
+
+impl CompactionRoute {
+    /// Whether this route truncates tool results.
+    pub(crate) fn truncates(self) -> bool {
+        matches!(self, Self::TruncateToolResults | Self::CompactThenTruncate)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Fits => "fits",
+            Self::TruncateToolResults => "truncate_tool_results",
+            Self::Compact => "compact",
+            Self::CompactThenTruncate => "compact_then_truncate",
+        }
+    }
+}
+
 /// Fingerprint of a whole message prefix: the tip of the chained fingerprints
 /// (0 for an empty prefix).
 fn prefix_fingerprint(messages: &[Message]) -> u64 {
@@ -40,6 +75,34 @@ fn prefix_fingerprint(messages: &[Message]) -> u64 {
 }
 
 impl CompactionPressure {
+    /// Chooses the cheapest route for a prompt of `prompt_tokens` against
+    /// `budget_tokens`, given the tokens oversized tool results could shed.
+    ///
+    /// Truncation is trusted alone only when `reducible_tokens` covers the
+    /// overflow by `max(overflow + 512, 1.5 * overflow)`: the estimate ignores
+    /// the notices a cut appends, and a truncation that falls short costs a
+    /// whole extra model call to find out. Port of OpenClaw's
+    /// `resolveCompactionPressureDecision` (`preemptive-compaction.ts`).
+    pub(crate) fn route(
+        prompt_tokens: u64,
+        budget_tokens: u64,
+        reducible_tokens: u64,
+    ) -> CompactionRoute {
+        let overflow = prompt_tokens.saturating_sub(budget_tokens);
+        if overflow == 0 {
+            return CompactionRoute::Fits;
+        }
+        if reducible_tokens == 0 {
+            return CompactionRoute::Compact;
+        }
+        let bar = (overflow + TRUNCATION_ROUTE_BUFFER_TOKENS).max(overflow + overflow.div_ceil(2));
+        if reducible_tokens >= bar {
+            CompactionRoute::TruncateToolResults
+        } else {
+            CompactionRoute::CompactThenTruncate
+        }
+    }
+
     /// Starts a model call: spends one call of an active suppression window.
     /// Returns whether summarization is suppressed for this call.
     pub(crate) fn begin_call(&mut self) -> bool {

@@ -494,10 +494,11 @@ impl Middleware<()> for LaterStep {
 /// wrap, with threshold compaction declined so only the overflow path fires.
 async fn overflow_call(later: Option<LaterStep>) -> Vec<CompactionRecord> {
     let mw = Arc::new(
-        ContextCompressionMiddleware::new(
+        ContextCompressionMiddleware::with_summarizer(
             SummarizationPolicy::default()
                 .with_context_window(100)
                 .with_threshold_fraction(0.5),
+            Box::new(ShortSummarizer::default()),
         )
         .with_before_compaction(|c| match c.reason {
             crate::summarization::CompactionReason::Threshold => {
@@ -589,10 +590,7 @@ async fn keeps_system_prompts_ahead_of_the_reapplied_summary() {
 #[tokio::test]
 async fn concat_summarizer_carries_the_previous_summary_forward() {
     let record = crate::summarization::ConcatSummarizer
-        .summarize_request(&SummaryRequest {
-            messages: vec![user("new")],
-            previous_summary: Some("earlier".into()),
-        })
+        .summarize_request(&SummaryRequest::new(vec![user("new")]).with_previous_summary("earlier"))
         .await
         .unwrap();
     let text = record.summary.text();
